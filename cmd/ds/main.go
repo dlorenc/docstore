@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 
 	"github.com/dlorenc/docstore/internal/cli"
 )
@@ -19,7 +20,11 @@ commands:
   checkout <branch>                      Switch to an existing branch
   pull                                   Sync files from the server
   merge                                  Merge current branch into main
-  diff                                   Show branch diff from server`
+  diff                                   Show branch diff from server
+  log [path] [--limit N]                 Show commit history (default limit 20)
+  show <sequence> [path]                 Show commit or file at a sequence
+  rebase                                 Rebase current branch onto main
+  resolve <path>                         Resolve a merge/rebase conflict`
 
 func main() {
 	if len(os.Args) < 2 {
@@ -102,6 +107,50 @@ func main() {
 
 	case "diff":
 		err = app.Diff()
+
+	case "log":
+		path := ""
+		limit := 20
+		for i := 1; i < len(args); i++ {
+			if args[i] == "--limit" && i+1 < len(args) {
+				n, convErr := strconv.Atoi(args[i+1])
+				if convErr != nil || n < 1 {
+					fmt.Fprintln(os.Stderr, "usage: ds log [path] [--limit N]")
+					os.Exit(1)
+				}
+				limit = n
+				i++
+			} else if len(args[i]) > 0 && args[i][0] != '-' {
+				path = args[i]
+			}
+		}
+		err = app.Log(path, limit)
+
+	case "show":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: ds show <sequence> [path]")
+			os.Exit(1)
+		}
+		seq, convErr := strconv.ParseInt(args[1], 10, 64)
+		if convErr != nil {
+			fmt.Fprintln(os.Stderr, "usage: ds show <sequence> [path]")
+			os.Exit(1)
+		}
+		filePath := ""
+		if len(args) > 2 {
+			filePath = args[2]
+		}
+		err = app.Show(seq, filePath)
+
+	case "rebase":
+		err = app.Rebase()
+
+	case "resolve":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: ds resolve <path>")
+			os.Exit(1)
+		}
+		err = app.Resolve(args[1])
 
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
