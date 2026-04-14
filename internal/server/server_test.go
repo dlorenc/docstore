@@ -1288,3 +1288,37 @@ func TestHandlePurge_RepoNotFound(t *testing.T) {
 		t.Fatalf("expected 404, got %d; body: %s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestParseDayDuration(t *testing.T) {
+	tests := []struct {
+		input   string
+		want    time.Duration
+		wantErr bool
+	}{
+		{"1d", 24 * time.Hour, false},
+		{"7d", 7 * 24 * time.Hour, false},
+		{"30d", 30 * 24 * time.Hour, false},
+		{"365d", 365 * 24 * time.Hour, false},
+		// invalid inputs
+		{"0d", 0, true},
+		{"-1d", 0, true},
+		{"7h", 0, true},
+		{"7", 0, true},
+		{"d", 0, true},
+		{"", 0, true},
+		{"abcd", 0, true},
+		{"1.5d", 0, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got, err := parseDayDuration(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("parseDayDuration(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+			}
+			if !tt.wantErr && got != tt.want {
+				t.Errorf("parseDayDuration(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
