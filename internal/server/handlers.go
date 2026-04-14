@@ -16,8 +16,82 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
-// handleTree implements GET /tree?branch=main&at=N&limit=N&after=cursor
+// handleCreateRepo implements POST /repos
+func (s *server) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
+	var req model.CreateRepoRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	if req.CreatedBy == "" {
+		req.CreatedBy = r.Header.Get("X-DocStore-Identity")
+	}
+
+	repo, err := s.commitStore.CreateRepo(r.Context(), req)
+	if err != nil {
+		switch {
+		case errors.Is(err, db.ErrRepoExists):
+			writeError(w, http.StatusConflict, "repo already exists")
+		default:
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+	writeJSON(w, http.StatusCreated, repo)
+}
+
+// handleListRepos implements GET /repos
+func (s *server) handleListRepos(w http.ResponseWriter, r *http.Request) {
+	repos, err := s.commitStore.ListRepos(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if repos == nil {
+		repos = []model.Repo{}
+	}
+	writeJSON(w, http.StatusOK, model.ReposResponse{Repos: repos})
+}
+
+// handleGetRepo implements GET /repos/:name
+func (s *server) handleGetRepo(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	repo, err := s.commitStore.GetRepo(r.Context(), name)
+	if err != nil {
+		switch {
+		case errors.Is(err, db.ErrRepoNotFound):
+			writeError(w, http.StatusNotFound, "repo not found")
+		default:
+			writeError(w, http.StatusInternalServerError, "query failed")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, repo)
+}
+
+// handleDeleteRepo implements DELETE /repos/:name (hard delete)
+func (s *server) handleDeleteRepo(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	err := s.commitStore.DeleteRepo(r.Context(), name)
+	if err != nil {
+		switch {
+		case errors.Is(err, db.ErrRepoNotFound):
+			writeError(w, http.StatusNotFound, "repo not found")
+		default:
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleTree implements GET /repos/:name/tree?branch=main&at=N&limit=N&after=cursor
 func (s *server) handleTree(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
 	branch := r.URL.Query().Get("branch")
 	if branch == "" {
 		branch = "main"
@@ -45,7 +119,7 @@ func (s *server) handleTree(w http.ResponseWriter, r *http.Request) {
 
 	afterPath := r.URL.Query().Get("after")
 
-	entries, err := s.readStore.MaterializeTree(r.Context(), branch, atSequence, limit, afterPath)
+	entries, err := s.readStore.MaterializeTree(r.Context(), repo, branch, atSequence, limit, afterPath)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -57,24 +131,25 @@ func (s *server) handleTree(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleFile implements:
-//   - GET /file/{path...}          → file content
-//   - GET /file/{path...}/history  → file change history
+//   - GET /repos/:name/file/{path...}          → file content
+//   - GET /repos/:name/file/{path...}/history  → file change history
 //
 // Query params: branch (default "main"), at (sequence), limit, after (cursor).
 func (s *server) handleFile(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
 	fullPath := r.PathValue("path")
 
 	// Check for /history suffix.
 	if strings.HasSuffix(fullPath, "/history") {
 		filePath := strings.TrimSuffix(fullPath, "/history")
-		s.handleFileHistory(w, r, filePath)
+		s.handleFileHistory(w, r, repo, filePath)
 		return
 	}
 
-	s.handleFileContent(w, r, fullPath)
+	s.handleFileContent(w, r, repo, fullPath)
 }
 
-func (s *server) handleFileContent(w http.ResponseWriter, r *http.Request, path string) {
+func (s *server) handleFileContent(w http.ResponseWriter, r *http.Request, repo, path string) {
 	branch := r.URL.Query().Get("branch")
 	if branch == "" {
 		branch = "main"
@@ -90,7 +165,7 @@ func (s *server) handleFileContent(w http.ResponseWriter, r *http.Request, path 
 		atSequence = &n
 	}
 
-	fc, err := s.readStore.GetFile(r.Context(), branch, path, atSequence)
+	fc, err := s.readStore.GetFile(r.Context(), repo, branch, path, atSequence)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -103,7 +178,7 @@ func (s *server) handleFileContent(w http.ResponseWriter, r *http.Request, path 
 	writeJSON(w, http.StatusOK, fc)
 }
 
-func (s *server) handleFileHistory(w http.ResponseWriter, r *http.Request, path string) {
+func (s *server) handleFileHistory(w http.ResponseWriter, r *http.Request, repo, path string) {
 	branch := r.URL.Query().Get("branch")
 	if branch == "" {
 		branch = "main"
@@ -129,7 +204,7 @@ func (s *server) handleFileHistory(w http.ResponseWriter, r *http.Request, path 
 		afterSeq = &n
 	}
 
-	entries, err := s.readStore.GetFileHistory(r.Context(), branch, path, limit, afterSeq)
+	entries, err := s.readStore.GetFileHistory(r.Context(), repo, branch, path, limit, afterSeq)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -140,8 +215,9 @@ func (s *server) handleFileHistory(w http.ResponseWriter, r *http.Request, path 
 	writeJSON(w, http.StatusOK, entries)
 }
 
-// handleGetCommit implements GET /commit/{sequence}
+// handleGetCommit implements GET /repos/:name/commit/{sequence}
 func (s *server) handleGetCommit(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
 	seqStr := r.PathValue("sequence")
 	seq, err := strconv.ParseInt(seqStr, 10, 64)
 	if err != nil {
@@ -149,7 +225,7 @@ func (s *server) handleGetCommit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	detail, err := s.readStore.GetCommit(r.Context(), seq)
+	detail, err := s.readStore.GetCommit(r.Context(), repo, seq)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -162,11 +238,12 @@ func (s *server) handleGetCommit(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, detail)
 }
 
-// handleBranches implements GET /branches?status=active
+// handleBranches implements GET /repos/:name/branches?status=active
 func (s *server) handleBranches(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
 	statusFilter := r.URL.Query().Get("status")
 
-	branches, err := s.readStore.ListBranches(r.Context(), statusFilter)
+	branches, err := s.readStore.ListBranches(r.Context(), repo, statusFilter)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -177,15 +254,16 @@ func (s *server) handleBranches(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, branches)
 }
 
-// handleDiff implements GET /diff?branch=X
+// handleDiff implements GET /repos/:name/diff?branch=X
 func (s *server) handleDiff(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
 	branch := r.URL.Query().Get("branch")
 	if branch == "" {
 		writeError(w, http.StatusBadRequest, "branch parameter is required")
 		return
 	}
 
-	result, err := s.readStore.GetDiff(r.Context(), branch)
+	result, err := s.readStore.GetDiff(r.Context(), repo, branch)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -217,13 +295,16 @@ func (s *server) handleDiff(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// handleCreateBranch implements POST /branch
+// handleCreateBranch implements POST /repos/:name/branch
 func (s *server) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+
 	var req model.CreateBranchRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	req.Repo = repo
 
 	if req.Name == "" {
 		writeError(w, http.StatusBadRequest, "name is required")
@@ -248,15 +329,16 @@ func (s *server) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, resp)
 }
 
-// handleDeleteBranch implements DELETE /branch/{name}
+// handleDeleteBranch implements DELETE /repos/:name/branch/{bname}
 func (s *server) handleDeleteBranch(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
-	if name == "main" {
+	repo := r.PathValue("name")
+	bname := r.PathValue("bname")
+	if bname == "main" {
 		writeError(w, http.StatusBadRequest, "cannot delete branch 'main'")
 		return
 	}
 
-	err := s.commitStore.DeleteBranch(r.Context(), name)
+	err := s.commitStore.DeleteBranch(r.Context(), repo, bname)
 	if err != nil {
 		switch {
 		case errors.Is(err, db.ErrBranchNotFound):
@@ -272,13 +354,16 @@ func (s *server) handleDeleteBranch(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleRebase implements POST /rebase
+// handleRebase implements POST /repos/:name/rebase
 func (s *server) handleRebase(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+
 	var req model.RebaseRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	req.Repo = repo
 
 	if req.Branch == "" {
 		writeError(w, http.StatusBadRequest, "branch is required")
@@ -318,13 +403,16 @@ func (s *server) handleRebase(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// handleMerge implements POST /merge
+// handleMerge implements POST /repos/:name/merge
 func (s *server) handleMerge(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+
 	var req model.MergeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	req.Repo = repo
 
 	if req.Branch == "" {
 		writeError(w, http.StatusBadRequest, "branch is required")

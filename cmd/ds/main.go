@@ -49,14 +49,18 @@ func main() {
 			os.Exit(1)
 		}
 		remote := args[1]
+		repo := ""
 		author := ""
 		for i := 2; i < len(args); i++ {
 			if args[i] == "--author" && i+1 < len(args) {
 				author = args[i+1]
 				i++
+			} else if args[i] == "--repo" && i+1 < len(args) {
+				repo = args[i+1]
+				i++
 			}
 		}
-		err = app.Init(remote, author)
+		err = app.Init(remote, repo, author)
 
 	case "status":
 		err = app.Status()
