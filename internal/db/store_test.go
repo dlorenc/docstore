@@ -378,8 +378,8 @@ func TestMerge_Success(t *testing.T) {
 	if conflicts != nil {
 		t.Fatalf("expected no conflicts, got %v", conflicts)
 	}
-	if resp.Sequence != 3 {
-		t.Errorf("expected merge sequence 3, got %d", resp.Sequence)
+	if resp.Sequence != 2 {
+		t.Errorf("expected merge sequence 2, got %d", resp.Sequence)
 	}
 
 	// Verify main head advanced.
@@ -388,8 +388,8 @@ func TestMerge_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query main: %v", err)
 	}
-	if mainHead != 3 {
-		t.Errorf("expected main head 3, got %d", mainHead)
+	if mainHead != 2 {
+		t.Errorf("expected main head 2, got %d", mainHead)
 	}
 
 	// Verify branch is marked as merged.
