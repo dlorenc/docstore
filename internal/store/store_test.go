@@ -147,6 +147,50 @@ func TestMaterializeTree(t *testing.T) {
 			t.Errorf("expected world.txt, got %s", entries2[0].Path)
 		}
 	})
+
+	t.Run("pagination empty after last page", func(t *testing.T) {
+		// Using the last path as cursor should return empty.
+		entries, err := s.MaterializeTree(ctx, "default", "main", nil, 100, "world.txt")
+		if err != nil {
+			t.Fatalf("MaterializeTree: %v", err)
+		}
+		if len(entries) != 0 {
+			t.Fatalf("expected 0 entries after last path, got %d: %+v", len(entries), entries)
+		}
+	})
+
+	t.Run("pagination cursor past all entries", func(t *testing.T) {
+		// A cursor lexicographically beyond all paths yields empty.
+		entries, err := s.MaterializeTree(ctx, "default", "main", nil, 100, "zzz.txt")
+		if err != nil {
+			t.Fatalf("MaterializeTree: %v", err)
+		}
+		if len(entries) != 0 {
+			t.Fatalf("expected 0 entries for cursor past all paths, got %d: %+v", len(entries), entries)
+		}
+	})
+
+	t.Run("pagination limit zero uses default", func(t *testing.T) {
+		// limit=0 should fall back to defaultLimit (100) and return all entries.
+		entries, err := s.MaterializeTree(ctx, "default", "main", nil, 0, "")
+		if err != nil {
+			t.Fatalf("MaterializeTree: %v", err)
+		}
+		if len(entries) != 2 {
+			t.Fatalf("expected 2 entries with limit=0, got %d", len(entries))
+		}
+	})
+
+	t.Run("pagination limit exactly equals result count", func(t *testing.T) {
+		// Limit equals the number of files; no truncation should occur.
+		entries, err := s.MaterializeTree(ctx, "default", "main", nil, 2, "")
+		if err != nil {
+			t.Fatalf("MaterializeTree: %v", err)
+		}
+		if len(entries) != 2 {
+			t.Fatalf("expected exactly 2 entries, got %d", len(entries))
+		}
+	})
 }
 
 func TestGetFile(t *testing.T) {
@@ -257,6 +301,66 @@ func TestGetFileHistory(t *testing.T) {
 		}
 		if entries[0].Sequence != 1 {
 			t.Errorf("expected sequence 1, got %d", entries[0].Sequence)
+		}
+	})
+
+	t.Run("pagination empty after oldest entry", func(t *testing.T) {
+		// Cursor at the oldest sequence means nothing older exists.
+		after := int64(1)
+		entries, err := s.GetFileHistory(ctx, "default", "main", "hello.txt", 100, &after)
+		if err != nil {
+			t.Fatalf("GetFileHistory: %v", err)
+		}
+		if len(entries) != 0 {
+			t.Fatalf("expected 0 entries after oldest sequence, got %d: %+v", len(entries), entries)
+		}
+	})
+
+	t.Run("pagination limit zero uses default", func(t *testing.T) {
+		// limit=0 should fall back to defaultLimit (100) and return all entries.
+		entries, err := s.GetFileHistory(ctx, "default", "main", "hello.txt", 0, nil)
+		if err != nil {
+			t.Fatalf("GetFileHistory: %v", err)
+		}
+		if len(entries) != 2 {
+			t.Fatalf("expected 2 history entries with limit=0, got %d", len(entries))
+		}
+	})
+
+	t.Run("pagination multi-page traversal", func(t *testing.T) {
+		// Page through hello.txt history one entry at a time.
+		page1, err := s.GetFileHistory(ctx, "default", "main", "hello.txt", 1, nil)
+		if err != nil {
+			t.Fatalf("GetFileHistory page 1: %v", err)
+		}
+		if len(page1) != 1 {
+			t.Fatalf("expected 1 entry on page 1, got %d", len(page1))
+		}
+		if page1[0].Sequence != 2 {
+			t.Errorf("expected sequence 2 on page 1, got %d", page1[0].Sequence)
+		}
+
+		// Cursor at sequence 2 → page 2 should return sequence 1.
+		cursor := page1[0].Sequence
+		page2, err := s.GetFileHistory(ctx, "default", "main", "hello.txt", 1, &cursor)
+		if err != nil {
+			t.Fatalf("GetFileHistory page 2: %v", err)
+		}
+		if len(page2) != 1 {
+			t.Fatalf("expected 1 entry on page 2, got %d", len(page2))
+		}
+		if page2[0].Sequence != 1 {
+			t.Errorf("expected sequence 1 on page 2, got %d", page2[0].Sequence)
+		}
+
+		// Cursor at sequence 1 → page 3 should be empty.
+		cursor = page2[0].Sequence
+		page3, err := s.GetFileHistory(ctx, "default", "main", "hello.txt", 1, &cursor)
+		if err != nil {
+			t.Fatalf("GetFileHistory page 3: %v", err)
+		}
+		if len(page3) != 0 {
+			t.Fatalf("expected empty page 3, got %d entries", len(page3))
 		}
 	})
 }
