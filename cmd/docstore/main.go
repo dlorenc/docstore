@@ -9,7 +9,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/server"
+
+	_ "github.com/lib/pq"
 )
 
 func main() {
@@ -18,7 +21,19 @@ func main() {
 		port = "8080"
 	}
 
-	srv := server.New()
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		log.Fatal("DATABASE_URL environment variable is required")
+	}
+
+	database, err := db.Open(dsn)
+	if err != nil {
+		log.Fatalf("database open: %v", err)
+	}
+	defer database.Close()
+
+	store := db.NewStore(database)
+	srv := server.New(store)
 
 	httpServer := &http.Server{
 		Addr:         ":" + port,
