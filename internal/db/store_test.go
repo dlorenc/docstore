@@ -3,64 +3,15 @@ package db
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
-	"os"
 	"testing"
 
 	"github.com/dlorenc/docstore/internal/model"
-
-	_ "github.com/lib/pq"
+	"github.com/dlorenc/docstore/internal/testutil"
 )
 
-// testDB returns a *sql.DB connected to a test PostgreSQL instance.
-// It skips the test if DOCSTORE_TEST_DSN is not set.
-// It runs the schema migration and returns a clean database.
-func testDB(t *testing.T) *sql.DB {
-	t.Helper()
-	dsn := os.Getenv("DOCSTORE_TEST_DSN")
-	if dsn == "" {
-		t.Skip("DOCSTORE_TEST_DSN not set, skipping integration test")
-	}
-
-	d, err := sql.Open("postgres", dsn)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(func() { d.Close() })
-
-	// Clean up tables in dependency order, then recreate schema.
-	for _, stmt := range []string{
-		"DROP TABLE IF EXISTS check_runs CASCADE",
-		"DROP TABLE IF EXISTS reviews CASCADE",
-		"DROP TABLE IF EXISTS roles CASCADE",
-		"DROP TABLE IF EXISTS file_commits CASCADE",
-		"DROP TABLE IF EXISTS documents CASCADE",
-		"DROP TABLE IF EXISTS branches CASCADE",
-		"DROP TYPE IF EXISTS branch_status CASCADE",
-		"DROP TYPE IF EXISTS role_type CASCADE",
-		"DROP TYPE IF EXISTS review_status CASCADE",
-		"DROP TYPE IF EXISTS check_status CASCADE",
-	} {
-		if _, err := d.Exec(stmt); err != nil {
-			t.Fatalf("cleanup %q: %v", stmt, err)
-		}
-	}
-
-	// Read and apply the migration.
-	migration, err := os.ReadFile("migrations/000001_initial_schema.up.sql")
-	if err != nil {
-		t.Fatalf("read migration: %v", err)
-	}
-	if _, err := d.Exec(string(migration)); err != nil {
-		t.Fatalf("apply migration: %v", err)
-	}
-
-	return d
-}
-
 func TestCommit_SingleFile(t *testing.T) {
-	d := testDB(t)
+	d := testutil.TestDB(t, MigrationSQL)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -99,7 +50,7 @@ func TestCommit_SingleFile(t *testing.T) {
 }
 
 func TestCommit_MultipleFiles(t *testing.T) {
-	d := testDB(t)
+	d := testutil.TestDB(t, MigrationSQL)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -136,7 +87,7 @@ func TestCommit_MultipleFiles(t *testing.T) {
 }
 
 func TestCommit_ContentDedup(t *testing.T) {
-	d := testDB(t)
+	d := testutil.TestDB(t, MigrationSQL)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -176,7 +127,7 @@ func TestCommit_ContentDedup(t *testing.T) {
 }
 
 func TestCommit_ContentDedupAcrossCommits(t *testing.T) {
-	d := testDB(t)
+	d := testutil.TestDB(t, MigrationSQL)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -215,7 +166,7 @@ func TestCommit_ContentDedupAcrossCommits(t *testing.T) {
 }
 
 func TestCommit_SequenceIncrementsPerCommit(t *testing.T) {
-	d := testDB(t)
+	d := testutil.TestDB(t, MigrationSQL)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -236,7 +187,7 @@ func TestCommit_SequenceIncrementsPerCommit(t *testing.T) {
 }
 
 func TestCommit_DeleteFile(t *testing.T) {
-	d := testDB(t)
+	d := testutil.TestDB(t, MigrationSQL)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -284,7 +235,7 @@ func TestCommit_DeleteFile(t *testing.T) {
 }
 
 func TestCommit_BranchNotFound(t *testing.T) {
-	d := testDB(t)
+	d := testutil.TestDB(t, MigrationSQL)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -300,7 +251,7 @@ func TestCommit_BranchNotFound(t *testing.T) {
 }
 
 func TestCommit_BranchNotActive(t *testing.T) {
-	d := testDB(t)
+	d := testutil.TestDB(t, MigrationSQL)
 	s := NewStore(d)
 	ctx := context.Background()
 

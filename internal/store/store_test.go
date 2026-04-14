@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"testing"
 
+	dbpkg "github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/store"
 	"github.com/dlorenc/docstore/internal/testutil"
 )
@@ -60,7 +61,7 @@ func seed(t *testing.T, db *sql.DB) {
 }
 
 func TestMaterializeTree(t *testing.T) {
-	db := testutil.TestDB(t)
+	db := testutil.TestDB(t, dbpkg.MigrationSQL)
 	seed(t, db)
 	s := store.New(db)
 	ctx := context.Background()
@@ -139,7 +140,7 @@ func TestMaterializeTree(t *testing.T) {
 }
 
 func TestGetFile(t *testing.T) {
-	db := testutil.TestDB(t)
+	db := testutil.TestDB(t, dbpkg.MigrationSQL)
 	seed(t, db)
 	s := store.New(db)
 	ctx := context.Background()
@@ -196,7 +197,7 @@ func TestGetFile(t *testing.T) {
 }
 
 func TestGetFileHistory(t *testing.T) {
-	db := testutil.TestDB(t)
+	db := testutil.TestDB(t, dbpkg.MigrationSQL)
 	seed(t, db)
 	s := store.New(db)
 	ctx := context.Background()
@@ -251,7 +252,7 @@ func TestGetFileHistory(t *testing.T) {
 }
 
 func TestGetCommit(t *testing.T) {
-	db := testutil.TestDB(t)
+	db := testutil.TestDB(t, dbpkg.MigrationSQL)
 	seed(t, db)
 	s := store.New(db)
 	ctx := context.Background()
@@ -323,7 +324,7 @@ func TestGetCommit(t *testing.T) {
 }
 
 func TestBranchTree(t *testing.T) {
-	db := testutil.TestDB(t)
+	db := testutil.TestDB(t, dbpkg.MigrationSQL)
 	seed(t, db)
 	s := store.New(db)
 	ctx := context.Background()
