@@ -1873,3 +1873,142 @@ func TestListCheckRuns_LatestPerName(t *testing.T) {
 		t.Errorf("expected most recent check run (passed) first, got %q", crs[0].Status)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Role store tests
+// ---------------------------------------------------------------------------
+
+func TestGetRole_Exists(t *testing.T) {
+	d := testutil.TestDB(t, MigrationSQL)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	if _, err := s.CreateRepo(ctx, model.CreateRepoRequest{Name: "r1"}); err != nil {
+		t.Fatalf("create repo: %v", err)
+	}
+	if err := s.SetRole(ctx, "r1", "alice@example.com", model.RoleWriter); err != nil {
+		t.Fatalf("set role: %v", err)
+	}
+
+	role, err := s.GetRole(ctx, "r1", "alice@example.com")
+	if err != nil {
+		t.Fatalf("get role: %v", err)
+	}
+	if role.Identity != "alice@example.com" {
+		t.Errorf("expected identity alice@example.com, got %q", role.Identity)
+	}
+	if role.Role != model.RoleWriter {
+		t.Errorf("expected writer, got %q", role.Role)
+	}
+}
+
+func TestGetRole_NotFound(t *testing.T) {
+	d := testutil.TestDB(t, MigrationSQL)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	if _, err := s.CreateRepo(ctx, model.CreateRepoRequest{Name: "r1"}); err != nil {
+		t.Fatalf("create repo: %v", err)
+	}
+
+	_, err := s.GetRole(ctx, "r1", "nobody@example.com")
+	if !errors.Is(err, ErrRoleNotFound) {
+		t.Errorf("expected ErrRoleNotFound, got %v", err)
+	}
+}
+
+func TestSetRole(t *testing.T) {
+	d := testutil.TestDB(t, MigrationSQL)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	if _, err := s.CreateRepo(ctx, model.CreateRepoRequest{Name: "r1"}); err != nil {
+		t.Fatalf("create repo: %v", err)
+	}
+
+	// Assign role.
+	if err := s.SetRole(ctx, "r1", "bob@example.com", model.RoleReader); err != nil {
+		t.Fatalf("set role: %v", err)
+	}
+	role, _ := s.GetRole(ctx, "r1", "bob@example.com")
+	if role.Role != model.RoleReader {
+		t.Errorf("expected reader, got %q", role.Role)
+	}
+
+	// Upsert: update to admin.
+	if err := s.SetRole(ctx, "r1", "bob@example.com", model.RoleAdmin); err != nil {
+		t.Fatalf("update role: %v", err)
+	}
+	role, _ = s.GetRole(ctx, "r1", "bob@example.com")
+	if role.Role != model.RoleAdmin {
+		t.Errorf("expected admin after upsert, got %q", role.Role)
+	}
+}
+
+func TestDeleteRole(t *testing.T) {
+	d := testutil.TestDB(t, MigrationSQL)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	if _, err := s.CreateRepo(ctx, model.CreateRepoRequest{Name: "r1"}); err != nil {
+		t.Fatalf("create repo: %v", err)
+	}
+	if err := s.SetRole(ctx, "r1", "carol@example.com", model.RoleMaintainer); err != nil {
+		t.Fatalf("set role: %v", err)
+	}
+
+	// Delete the role.
+	if err := s.DeleteRole(ctx, "r1", "carol@example.com"); err != nil {
+		t.Fatalf("delete role: %v", err)
+	}
+
+	// Verify it's gone.
+	if _, err := s.GetRole(ctx, "r1", "carol@example.com"); !errors.Is(err, ErrRoleNotFound) {
+		t.Errorf("expected ErrRoleNotFound after delete, got %v", err)
+	}
+
+	// Delete again → ErrRoleNotFound.
+	if err := s.DeleteRole(ctx, "r1", "carol@example.com"); !errors.Is(err, ErrRoleNotFound) {
+		t.Errorf("expected ErrRoleNotFound on second delete, got %v", err)
+	}
+}
+
+func TestRoleIsolation(t *testing.T) {
+	d := testutil.TestDB(t, MigrationSQL)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	for _, name := range []string{"repo-a", "repo-b"} {
+		if _, err := s.CreateRepo(ctx, model.CreateRepoRequest{Name: name}); err != nil {
+			t.Fatalf("create repo %s: %v", name, err)
+		}
+	}
+
+	// Set alice as admin in repo-a only.
+	if err := s.SetRole(ctx, "repo-a", "alice@example.com", model.RoleAdmin); err != nil {
+		t.Fatalf("set role: %v", err)
+	}
+
+	// Alice has role in repo-a.
+	role, err := s.GetRole(ctx, "repo-a", "alice@example.com")
+	if err != nil || role.Role != model.RoleAdmin {
+		t.Errorf("expected admin in repo-a, got %v %v", role, err)
+	}
+
+	// Alice has NO role in repo-b.
+	if _, err := s.GetRole(ctx, "repo-b", "alice@example.com"); !errors.Is(err, ErrRoleNotFound) {
+		t.Errorf("expected ErrRoleNotFound for alice in repo-b, got %v", err)
+	}
+
+	// HasAdmin for repo-a is true.
+	hasAdmin, err := s.HasAdmin(ctx, "repo-a")
+	if err != nil || !hasAdmin {
+		t.Errorf("expected HasAdmin true for repo-a, got %v %v", hasAdmin, err)
+	}
+
+	// HasAdmin for repo-b is false.
+	hasAdmin, err = s.HasAdmin(ctx, "repo-b")
+	if err != nil || hasAdmin {
+		t.Errorf("expected HasAdmin false for repo-b, got %v %v", hasAdmin, err)
+	}
+}

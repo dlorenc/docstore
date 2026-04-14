@@ -22,6 +22,7 @@ var (
 	ErrRebaseConflict  = errors.New("rebase conflict")
 	ErrRepoNotFound    = errors.New("repo not found")
 	ErrRepoExists      = errors.New("repo already exists")
+	ErrRoleNotFound    = errors.New("role not found")
 	ErrSelfApproval    = errors.New("reviewer cannot approve their own commits")
 )
 
@@ -901,6 +902,83 @@ func (s *Store) ListCheckRuns(ctx context.Context, repo, branch string, atSeq *i
 	}
 	return checkRuns, rows.Err()
 }
+
+// GetRole returns the role for an identity in a repo, or ErrRoleNotFound.
+func (s *Store) GetRole(ctx context.Context, repo, identity string) (*model.Role, error) {
+	var r model.Role
+	err := s.db.QueryRowContext(ctx,
+		"SELECT identity, role FROM roles WHERE repo = $1 AND identity = $2",
+		repo, identity,
+	).Scan(&r.Identity, &r.Role)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrRoleNotFound
+		}
+		return nil, err
+	}
+	return &r, nil
+}
+
+// SetRole assigns or updates the role for an identity in a repo (upsert).
+func (s *Store) SetRole(ctx context.Context, repo, identity string, role model.RoleType) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO roles (repo, identity, role) VALUES ($1, $2, $3)
+		 ON CONFLICT (repo, identity) DO UPDATE SET role = $3`,
+		repo, identity, string(role),
+	)
+	return err
+}
+
+// DeleteRole removes the role for an identity in a repo. Returns ErrRoleNotFound if not found.
+func (s *Store) DeleteRole(ctx context.Context, repo, identity string) error {
+	result, err := s.db.ExecContext(ctx,
+		"DELETE FROM roles WHERE repo = $1 AND identity = $2",
+		repo, identity,
+	)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrRoleNotFound
+	}
+	return nil
+}
+
+// ListRoles returns all roles for a repo ordered by identity.
+func (s *Store) ListRoles(ctx context.Context, repo string) ([]model.Role, error) {
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT identity, role FROM roles WHERE repo = $1 ORDER BY identity",
+		repo,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var roles []model.Role
+	for rows.Next() {
+		var r model.Role
+		if err := rows.Scan(&r.Identity, &r.Role); err != nil {
+			return nil, err
+		}
+		roles = append(roles, r)
+	}
+	return roles, rows.Err()
+}
+
+// HasAdmin returns true if any admin role exists for the given repo.
+func (s *Store) HasAdmin(ctx context.Context, repo string) (bool, error) {
+	var exists bool
+	err := s.db.QueryRowContext(ctx,
+		"SELECT EXISTS(SELECT 1 FROM roles WHERE repo = $1 AND role = 'admin')",
+		repo,
+	).Scan(&exists)
+	return exists, err
+}
+
 
 // isDuplicateKeyError checks if a PostgreSQL error is a unique violation (23505).
 func isDuplicateKeyError(err error) bool {
