@@ -612,6 +612,12 @@ func TestHandleMerge_Conflict(t *testing.T) {
 	if errResp.Conflicts[0].Path != "conflict.txt" {
 		t.Errorf("expected conflict.txt, got %q", errResp.Conflicts[0].Path)
 	}
+	if errResp.Conflicts[0].MainVersionID != "v1" {
+		t.Errorf("expected main_version_id v1, got %q", errResp.Conflicts[0].MainVersionID)
+	}
+	if errResp.Conflicts[0].BranchVersionID != "v2" {
+		t.Errorf("expected branch_version_id v2, got %q", errResp.Conflicts[0].BranchVersionID)
+	}
 }
 
 func TestHandleMerge_BranchNotFound(t *testing.T) {
@@ -629,6 +635,24 @@ func TestHandleMerge_BranchNotFound(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", rec.Code)
+	}
+}
+
+func TestHandleMerge_BranchNotActive(t *testing.T) {
+	store := &mockStore{
+		mergeFn: func(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error) {
+			return nil, nil, db.ErrBranchNotActive
+		},
+	}
+	srv := New(store, nil, devID, devID)
+
+	body, _ := json.Marshal(model.MergeRequest{Branch: "merged-branch"})
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/merge", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d; body: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -826,6 +850,12 @@ func TestHandleRebase_Conflict(t *testing.T) {
 	}
 	if errResp.Conflicts[0].Path != "conflict.txt" {
 		t.Errorf("expected conflict.txt, got %q", errResp.Conflicts[0].Path)
+	}
+	if errResp.Conflicts[0].MainVersionID != "v1" {
+		t.Errorf("expected main_version_id v1, got %q", errResp.Conflicts[0].MainVersionID)
+	}
+	if errResp.Conflicts[0].BranchVersionID != "v2" {
+		t.Errorf("expected branch_version_id v2, got %q", errResp.Conflicts[0].BranchVersionID)
 	}
 }
 

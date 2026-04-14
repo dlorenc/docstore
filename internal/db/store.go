@@ -682,9 +682,13 @@ func nullStr(s *string) string {
 }
 
 // DeleteBranch marks a branch as abandoned. It returns ErrBranchNotFound if
-// the branch does not exist, and ErrBranchNotActive if it is already merged
-// or abandoned (i.e. not active).
+// the branch does not exist, ErrBranchNotActive if it is already merged,
+// abandoned, or is the protected "main" branch.
 func (s *Store) DeleteBranch(ctx context.Context, repo, name string) error {
+	if name == "main" {
+		return ErrBranchNotActive
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)

@@ -502,6 +502,15 @@ func TestMerge_Conflict(t *testing.T) {
 	if conflicts[0].Path != "shared.txt" {
 		t.Errorf("expected conflict on shared.txt, got %q", conflicts[0].Path)
 	}
+	if conflicts[0].MainVersionID == "" {
+		t.Error("expected non-empty MainVersionID")
+	}
+	if conflicts[0].BranchVersionID == "" {
+		t.Error("expected non-empty BranchVersionID")
+	}
+	if conflicts[0].MainVersionID == conflicts[0].BranchVersionID {
+		t.Error("expected MainVersionID and BranchVersionID to differ")
+	}
 
 	// Branch should still be active (merge was aborted).
 	var status string
@@ -986,6 +995,15 @@ func TestRebase_Conflict(t *testing.T) {
 	}
 	if conflicts[0].Path != "shared.txt" {
 		t.Errorf("expected conflict on shared.txt, got %q", conflicts[0].Path)
+	}
+	if conflicts[0].MainVersionID == "" {
+		t.Error("expected non-empty MainVersionID")
+	}
+	if conflicts[0].BranchVersionID == "" {
+		t.Error("expected non-empty BranchVersionID")
+	}
+	if conflicts[0].MainVersionID == conflicts[0].BranchVersionID {
+		t.Error("expected MainVersionID and BranchVersionID to differ")
 	}
 }
 
@@ -2463,5 +2481,276 @@ func TestPurge_IsAtomic(t *testing.T) {
 	d.QueryRow("SELECT count(*) FROM branches WHERE repo = 'default' AND name = 'feature/atomic'").Scan(&branchCount)
 	if branchCount != 1 {
 		t.Errorf("branch should still exist after failed purge, count=%d", branchCount)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Conflict body assertions — multiple conflicts
+// ---------------------------------------------------------------------------
+
+func TestMerge_MultipleConflicts(t *testing.T) {
+	d := testutil.TestDB(t, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	// Commit to main (seq=1): two files that will both conflict.
+	_, err := s.Commit(ctx, model.CommitRequest{
+		Repo:   "default",
+		Branch: "main",
+		Files: []model.FileChange{
+			{Path: "alpha.txt", Content: []byte("alpha original")},
+			{Path: "beta.txt", Content: []byte("beta original")},
+		},
+		Message: "initial",
+		Author:  "alice",
+	})
+	if err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	// Create branch (base=1).
+	_, err = s.CreateBranch(ctx, model.CreateBranchRequest{Repo: "default", Name: "feature/multi-conflict"})
+	if err != nil {
+		t.Fatalf("create branch: %v", err)
+	}
+
+	// Main modifies both files (seq=2).
+	_, err = s.Commit(ctx, model.CommitRequest{
+		Repo:   "default",
+		Branch: "main",
+		Files: []model.FileChange{
+			{Path: "alpha.txt", Content: []byte("alpha main")},
+			{Path: "beta.txt", Content: []byte("beta main")},
+		},
+		Message: "main edit",
+		Author:  "alice",
+	})
+	if err != nil {
+		t.Fatalf("main commit: %v", err)
+	}
+
+	// Branch modifies both files (seq=3).
+	_, err = s.Commit(ctx, model.CommitRequest{
+		Repo:   "default",
+		Branch: "feature/multi-conflict",
+		Files: []model.FileChange{
+			{Path: "alpha.txt", Content: []byte("alpha branch")},
+			{Path: "beta.txt", Content: []byte("beta branch")},
+		},
+		Message: "branch edit",
+		Author:  "bob",
+	})
+	if err != nil {
+		t.Fatalf("branch commit: %v", err)
+	}
+
+	_, conflicts, err := s.Merge(ctx, model.MergeRequest{Repo: "default", Branch: "feature/multi-conflict"})
+	if err != ErrMergeConflict {
+		t.Fatalf("expected ErrMergeConflict, got %v", err)
+	}
+	if len(conflicts) != 2 {
+		t.Fatalf("expected 2 conflicts, got %d", len(conflicts))
+	}
+
+	// Collect conflict paths to verify both are reported.
+	paths := make(map[string]MergeConflict, 2)
+	for _, c := range conflicts {
+		paths[c.Path] = c
+	}
+	for _, path := range []string{"alpha.txt", "beta.txt"} {
+		c, ok := paths[path]
+		if !ok {
+			t.Errorf("expected conflict on %s not found", path)
+			continue
+		}
+		if c.MainVersionID == "" {
+			t.Errorf("%s: expected non-empty MainVersionID", path)
+		}
+		if c.BranchVersionID == "" {
+			t.Errorf("%s: expected non-empty BranchVersionID", path)
+		}
+		if c.MainVersionID == c.BranchVersionID {
+			t.Errorf("%s: MainVersionID and BranchVersionID should differ", path)
+		}
+	}
+}
+
+func TestRebase_MultipleConflicts(t *testing.T) {
+	d := testutil.TestDB(t, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	// Commit to main (seq=1).
+	_, err := s.Commit(ctx, model.CommitRequest{
+		Repo:   "default",
+		Branch: "main",
+		Files: []model.FileChange{
+			{Path: "alpha.txt", Content: []byte("alpha original")},
+			{Path: "beta.txt", Content: []byte("beta original")},
+		},
+		Message: "initial",
+		Author:  "alice",
+	})
+	if err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	// Create branch (base=1).
+	_, err = s.CreateBranch(ctx, model.CreateBranchRequest{Repo: "default", Name: "feature/rebase-multi"})
+	if err != nil {
+		t.Fatalf("create branch: %v", err)
+	}
+
+	// Branch modifies both files (seq=2).
+	_, err = s.Commit(ctx, model.CommitRequest{
+		Repo:   "default",
+		Branch: "feature/rebase-multi",
+		Files: []model.FileChange{
+			{Path: "alpha.txt", Content: []byte("alpha branch")},
+			{Path: "beta.txt", Content: []byte("beta branch")},
+		},
+		Message: "branch edit",
+		Author:  "bob",
+	})
+	if err != nil {
+		t.Fatalf("branch commit: %v", err)
+	}
+
+	// Main modifies both files (seq=3).
+	_, err = s.Commit(ctx, model.CommitRequest{
+		Repo:   "default",
+		Branch: "main",
+		Files: []model.FileChange{
+			{Path: "alpha.txt", Content: []byte("alpha main")},
+			{Path: "beta.txt", Content: []byte("beta main")},
+		},
+		Message: "main edit",
+		Author:  "alice",
+	})
+	if err != nil {
+		t.Fatalf("main commit: %v", err)
+	}
+
+	_, conflicts, err := s.Rebase(ctx, model.RebaseRequest{Repo: "default", Branch: "feature/rebase-multi"})
+	if err != ErrRebaseConflict {
+		t.Fatalf("expected ErrRebaseConflict, got %v", err)
+	}
+	if len(conflicts) != 2 {
+		t.Fatalf("expected 2 conflicts, got %d", len(conflicts))
+	}
+
+	paths := make(map[string]MergeConflict, 2)
+	for _, c := range conflicts {
+		paths[c.Path] = c
+	}
+	for _, path := range []string{"alpha.txt", "beta.txt"} {
+		c, ok := paths[path]
+		if !ok {
+			t.Errorf("expected conflict on %s not found", path)
+			continue
+		}
+		if c.MainVersionID == "" {
+			t.Errorf("%s: expected non-empty MainVersionID", path)
+		}
+		if c.BranchVersionID == "" {
+			t.Errorf("%s: expected non-empty BranchVersionID", path)
+		}
+		if c.MainVersionID == c.BranchVersionID {
+			t.Errorf("%s: MainVersionID and BranchVersionID should differ", path)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Branch lifecycle edge cases
+// ---------------------------------------------------------------------------
+
+func TestDeleteBranch_MainBranch(t *testing.T) {
+	d := testutil.TestDB(t, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	err := s.DeleteBranch(ctx, "default", "main")
+	if err != ErrBranchNotActive {
+		t.Fatalf("expected ErrBranchNotActive when deleting main, got %v", err)
+	}
+
+	// Verify main is still active.
+	var status string
+	if err := d.QueryRow("SELECT status FROM branches WHERE name = 'main'").Scan(&status); err != nil {
+		t.Fatalf("query branch: %v", err)
+	}
+	if status != "active" {
+		t.Errorf("expected main to remain active, got %q", status)
+	}
+}
+
+func TestMerge_AlreadyMergedBranch(t *testing.T) {
+	d := testutil.TestDB(t, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	// Create branch, commit, then merge it.
+	_, err := s.CreateBranch(ctx, model.CreateBranchRequest{Repo: "default", Name: "feature/once"})
+	if err != nil {
+		t.Fatalf("create branch: %v", err)
+	}
+	_, err = s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
+		Branch:  "feature/once",
+		Files:   []model.FileChange{{Path: "f.txt", Content: []byte("content")}},
+		Message: "work",
+		Author:  "alice",
+	})
+	if err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	_, _, err = s.Merge(ctx, model.MergeRequest{Repo: "default", Branch: "feature/once"})
+	if err != nil {
+		t.Fatalf("first merge: %v", err)
+	}
+
+	// Second merge of the same branch must fail.
+	_, _, err = s.Merge(ctx, model.MergeRequest{Repo: "default", Branch: "feature/once"})
+	if err != ErrBranchNotActive {
+		t.Fatalf("expected ErrBranchNotActive on second merge, got %v", err)
+	}
+}
+
+func TestCommit_ToMergedBranch(t *testing.T) {
+	d := testutil.TestDB(t, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	// Create branch, commit, merge it, then try to commit again.
+	_, err := s.CreateBranch(ctx, model.CreateBranchRequest{Repo: "default", Name: "feature/merged"})
+	if err != nil {
+		t.Fatalf("create branch: %v", err)
+	}
+	_, err = s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
+		Branch:  "feature/merged",
+		Files:   []model.FileChange{{Path: "x.txt", Content: []byte("x")}},
+		Message: "initial",
+		Author:  "alice",
+	})
+	if err != nil {
+		t.Fatalf("initial commit: %v", err)
+	}
+	_, _, err = s.Merge(ctx, model.MergeRequest{Repo: "default", Branch: "feature/merged"})
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+
+	// Commit to merged branch must fail.
+	_, err = s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
+		Branch:  "feature/merged",
+		Files:   []model.FileChange{{Path: "x.txt", Content: []byte("updated")}},
+		Message: "post-merge commit",
+		Author:  "alice",
+	})
+	if err != ErrBranchNotActive {
+		t.Fatalf("expected ErrBranchNotActive for commit to merged branch, got %v", err)
 	}
 }
