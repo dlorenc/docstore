@@ -5,8 +5,8 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
-	"strings"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
