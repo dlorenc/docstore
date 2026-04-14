@@ -55,14 +55,34 @@ func writeFile(t *testing.T, app *App, path, content string) {
 
 func strPtr(s string) *string { return &s }
 
+// newEmptyRepoServer returns a mock server that serves an empty tree and
+// a single "main" branch at sequence 0.  Suitable for Init tests.
+func newEmptyRepoServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/tree":
+			json.NewEncoder(w).Encode([]treeEntry{})
+		case r.Method == "GET" && r.URL.Path == "/branches":
+			json.NewEncoder(w).Encode([]model.Branch{{Name: "main", HeadSequence: 0}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+}
+
 // ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
 
 func TestInit(t *testing.T) {
-	app, out := newTestApp(t, nil)
+	srv := newEmptyRepoServer(t)
+	defer srv.Close()
 
-	if err := app.Init("http://localhost:8080", "alice"); err != nil {
+	app, out := newTestApp(t, srv)
+
+	if err := app.Init(srv.URL, "alice"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -70,8 +90,8 @@ func TestInit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Remote != "http://localhost:8080" {
-		t.Errorf("remote = %q, want %q", cfg.Remote, "http://localhost:8080")
+	if cfg.Remote != srv.URL {
+		t.Errorf("remote = %q, want %q", cfg.Remote, srv.URL)
 	}
 	if cfg.Branch != "main" {
 		t.Errorf("branch = %q, want %q", cfg.Branch, "main")
@@ -97,28 +117,83 @@ func TestInit(t *testing.T) {
 }
 
 func TestInitTrimsTrailingSlash(t *testing.T) {
-	app, _ := newTestApp(t, nil)
+	srv := newEmptyRepoServer(t)
+	defer srv.Close()
 
-	if err := app.Init("http://localhost:8080/", "bob"); err != nil {
+	app, _ := newTestApp(t, srv)
+
+	if err := app.Init(srv.URL+"/", "bob"); err != nil {
 		t.Fatal(err)
 	}
 
 	cfg, _ := app.loadConfig()
-	if cfg.Remote != "http://localhost:8080" {
+	if cfg.Remote != srv.URL {
 		t.Errorf("remote = %q, want trailing slash trimmed", cfg.Remote)
 	}
 }
 
 func TestInitDefaultAuthor(t *testing.T) {
-	app, _ := newTestApp(t, nil)
+	srv := newEmptyRepoServer(t)
+	defer srv.Close()
 
-	if err := app.Init("http://localhost:8080", ""); err != nil {
+	app, _ := newTestApp(t, srv)
+
+	if err := app.Init(srv.URL, ""); err != nil {
 		t.Fatal(err)
 	}
 
 	cfg, _ := app.loadConfig()
 	if cfg.Author == "" {
 		t.Error("expected non-empty default author")
+	}
+}
+
+func TestInitFetchesFiles(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/tree":
+			json.NewEncoder(w).Encode([]treeEntry{
+				{Path: "README.md", VersionID: "v1", ContentHash: HashBytes([]byte("hello"))},
+				{Path: "src/main.go", VersionID: "v2", ContentHash: HashBytes([]byte("package main"))},
+			})
+		case r.Method == "GET" && r.URL.Path == "/file/README.md":
+			json.NewEncoder(w).Encode(model.FileResponse{Path: "README.md", Content: []byte("hello")})
+		case r.Method == "GET" && r.URL.Path == "/file/src/main.go":
+			json.NewEncoder(w).Encode(model.FileResponse{Path: "src/main.go", Content: []byte("package main")})
+		case r.Method == "GET" && r.URL.Path == "/branches":
+			json.NewEncoder(w).Encode([]model.Branch{{Name: "main", HeadSequence: 7}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	app, out := newTestApp(t, srv)
+	if err := app.Init(srv.URL, "alice"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Files should be written to disk.
+	content, err := os.ReadFile(filepath.Join(app.Dir, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "hello" {
+		t.Errorf("README.md content = %q, want %q", string(content), "hello")
+	}
+
+	// State should reflect the files and correct sequence.
+	st, _ := app.loadState()
+	if len(st.Files) != 2 {
+		t.Errorf("state files = %d, want 2", len(st.Files))
+	}
+	if st.Sequence != 7 {
+		t.Errorf("state sequence = %d, want 7", st.Sequence)
+	}
+
+	if !strings.Contains(out.String(), "Initialized docstore workspace (2 files, sequence 7)") {
+		t.Errorf("unexpected output: %s", out.String())
 	}
 }
 
@@ -296,15 +371,12 @@ func TestCommit(t *testing.T) {
 }
 
 func TestCommitNoChanges(t *testing.T) {
-	app, out := newTestApp(t, nil)
+	app, _ := newTestApp(t, nil)
 	initWorkspace(t, app, "http://test", "main", "alice")
 
-	if err := app.Commit("nothing"); err != nil {
-		t.Fatal(err)
-	}
-
-	if !strings.Contains(out.String(), "No changes to commit") {
-		t.Errorf("expected 'No changes' in output: %s", out.String())
+	err := app.Commit("nothing")
+	if err == nil || !strings.Contains(err.Error(), "nothing to commit") {
+		t.Errorf("expected 'nothing to commit' error, got: %v", err)
 	}
 }
 
@@ -486,28 +558,28 @@ func TestCheckoutNewServerError(t *testing.T) {
 
 func TestCheckout(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "GET" && r.URL.Path == "/tree" {
-			w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/tree":
 			json.NewEncoder(w).Encode([]treeEntry{
 				{Path: "main.go", VersionID: "v1", ContentHash: "hash1"},
 				{Path: "README.md", VersionID: "v2", ContentHash: "hash2"},
 			})
-			return
-		}
-		if r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/file/") {
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/file/"):
 			path := strings.TrimPrefix(r.URL.Path, "/file/")
 			content := map[string]string{
 				"main.go":   "package main",
 				"README.md": "# Hello",
 			}
-			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(model.FileResponse{
 				Path:    path,
 				Content: []byte(content[path]),
 			})
-			return
+		case r.Method == "GET" && r.URL.Path == "/branches":
+			json.NewEncoder(w).Encode([]model.Branch{{Name: "main", HeadSequence: 3}})
+		default:
+			http.NotFound(w, r)
 		}
-		http.NotFound(w, r)
 	}))
 	defer srv.Close()
 
@@ -541,10 +613,13 @@ func TestCheckout(t *testing.T) {
 		t.Errorf("README.md content = %q, want %q", string(content), "# Hello")
 	}
 
-	// State should have both files.
+	// State should have both files and updated sequence.
 	st, _ := app.loadState()
 	if len(st.Files) != 2 {
 		t.Errorf("state files = %d, want 2", len(st.Files))
+	}
+	if st.Sequence != 3 {
+		t.Errorf("state sequence = %d, want 3", st.Sequence)
 	}
 
 	if !strings.Contains(out.String(), "Synced branch 'main'") {
@@ -554,20 +629,23 @@ func TestCheckout(t *testing.T) {
 
 func TestCheckoutRemovesDeletedFiles(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "GET" && r.URL.Path == "/tree" {
-			w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/tree":
 			json.NewEncoder(w).Encode([]treeEntry{})
-			return
+		case r.Method == "GET" && r.URL.Path == "/branches":
+			json.NewEncoder(w).Encode([]model.Branch{{Name: "feature/new", HeadSequence: 0}})
+		default:
+			http.NotFound(w, r)
 		}
-		http.NotFound(w, r)
 	}))
 	defer srv.Close()
 
 	app, _ := newTestApp(t, srv)
 	initWorkspace(t, app, srv.URL, "main", "alice")
 
-	// Pre-populate state with a file.
-	app.saveState(&State{Branch: "main", Files: map[string]string{"old.txt": "hash"}})
+	// Pre-populate state with a file using its actual hash so the tree is clean.
+	app.saveState(&State{Branch: "main", Files: map[string]string{"old.txt": HashBytes([]byte("old content"))}})
 	writeFile(t, app, "old.txt", "old content")
 
 	if err := app.Checkout("feature/new"); err != nil {
@@ -586,6 +664,19 @@ func TestCheckoutRemovesDeletedFiles(t *testing.T) {
 	}
 }
 
+func TestCheckoutDirtyTree(t *testing.T) {
+	app, _ := newTestApp(t, nil)
+	initWorkspace(t, app, "http://test", "main", "alice")
+
+	// Add a new untracked file — makes the tree dirty.
+	writeFile(t, app, "new.txt", "new content")
+
+	err := app.Checkout("feature/x")
+	if err == nil || !strings.Contains(err.Error(), "uncommitted changes") {
+		t.Errorf("expected 'uncommitted changes' error, got: %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Pull
 // ---------------------------------------------------------------------------
@@ -593,34 +684,37 @@ func TestCheckoutRemovesDeletedFiles(t *testing.T) {
 func TestPull(t *testing.T) {
 	callCount := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "GET" && r.URL.Path == "/tree" {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/tree":
 			if r.URL.Query().Get("branch") != "feature/x" {
 				t.Errorf("expected branch=feature/x, got %q", r.URL.Query().Get("branch"))
 			}
-			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode([]treeEntry{
 				{Path: "updated.txt", VersionID: "v3", ContentHash: "newhash"},
 			})
-			return
-		}
-		if r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/file/") {
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/file/"):
 			callCount++
-			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(model.FileResponse{
 				Path:    "updated.txt",
 				Content: []byte("updated content"),
 			})
-			return
+		case r.Method == "GET" && r.URL.Path == "/branches":
+			json.NewEncoder(w).Encode([]model.Branch{{Name: "feature/x", HeadSequence: 5}})
+		default:
+			http.NotFound(w, r)
 		}
-		http.NotFound(w, r)
 	}))
 	defer srv.Close()
 
 	app, out := newTestApp(t, srv)
 	initWorkspace(t, app, srv.URL, "feature/x", "alice")
 
-	// Pre-populate with old hash so the file gets downloaded.
-	app.saveState(&State{Branch: "feature/x", Files: map[string]string{"updated.txt": "oldhash"}})
+	// Pre-populate with old content on disk + matching state hash, so isDirty is clean
+	// but the server hash ("newhash") is different → file will be downloaded.
+	const oldContent = "old content"
+	writeFile(t, app, "updated.txt", oldContent)
+	app.saveState(&State{Branch: "feature/x", Files: map[string]string{"updated.txt": HashBytes([]byte(oldContent))}})
 
 	if err := app.Pull(); err != nil {
 		t.Fatal(err)
@@ -638,36 +732,45 @@ func TestPull(t *testing.T) {
 		t.Errorf("content = %q, want %q", string(content), "updated content")
 	}
 
+	// Sequence should be updated.
+	st, _ := app.loadState()
+	if st.Sequence != 5 {
+		t.Errorf("sequence = %d, want 5", st.Sequence)
+	}
+
 	if !strings.Contains(out.String(), "1 downloaded") {
 		t.Errorf("unexpected output: %s", out.String())
 	}
 }
 
 func TestPullSkipsUnchanged(t *testing.T) {
+	const sameContent = "same content"
+	sameHash := HashBytes([]byte(sameContent))
 	fileDownloads := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "GET" && r.URL.Path == "/tree" {
-			w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/tree":
 			json.NewEncoder(w).Encode([]treeEntry{
-				{Path: "same.txt", VersionID: "v1", ContentHash: "samehash"},
+				{Path: "same.txt", VersionID: "v1", ContentHash: sameHash},
 			})
-			return
-		}
-		if r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/file/") {
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/file/"):
 			fileDownloads++
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(model.FileResponse{Path: "same.txt", Content: []byte("same")})
-			return
+			json.NewEncoder(w).Encode(model.FileResponse{Path: "same.txt", Content: []byte(sameContent)})
+		case r.Method == "GET" && r.URL.Path == "/branches":
+			json.NewEncoder(w).Encode([]model.Branch{{Name: "main", HeadSequence: 1}})
+		default:
+			http.NotFound(w, r)
 		}
-		http.NotFound(w, r)
 	}))
 	defer srv.Close()
 
 	app, out := newTestApp(t, srv)
 	initWorkspace(t, app, srv.URL, "main", "alice")
 
-	// State already has the same hash.
-	app.saveState(&State{Branch: "main", Files: map[string]string{"same.txt": "samehash"}})
+	// Write the file to disk and store its real hash in state so isDirty is clean.
+	writeFile(t, app, "same.txt", sameContent)
+	app.saveState(&State{Branch: "main", Files: map[string]string{"same.txt": sameHash}})
 
 	if err := app.Pull(); err != nil {
 		t.Fatal(err)
@@ -682,24 +785,69 @@ func TestPullSkipsUnchanged(t *testing.T) {
 	}
 }
 
+func TestPullDirtyTree(t *testing.T) {
+	app, _ := newTestApp(t, nil)
+	initWorkspace(t, app, "http://test", "main", "alice")
+
+	// Add a new untracked file — makes the tree dirty.
+	writeFile(t, app, "new.txt", "new content")
+
+	err := app.Pull()
+	if err == nil || !strings.Contains(err.Error(), "uncommitted changes") {
+		t.Errorf("expected 'uncommitted changes' error, got: %v", err)
+	}
+}
+
+func TestSyncTreeUpdatesSequence(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/tree":
+			json.NewEncoder(w).Encode([]treeEntry{})
+		case r.Method == "GET" && r.URL.Path == "/branches":
+			json.NewEncoder(w).Encode([]model.Branch{{Name: "main", HeadSequence: 42}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	app, _ := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "main", "alice")
+
+	if err := app.Pull(); err != nil {
+		t.Fatal(err)
+	}
+
+	st, _ := app.loadState()
+	if st.Sequence != 42 {
+		t.Errorf("sequence = %d, want 42", st.Sequence)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Merge
 // ---------------------------------------------------------------------------
 
 func TestMerge(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "POST" && r.URL.Path == "/merge" {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == "POST" && r.URL.Path == "/merge":
 			var req model.MergeRequest
 			json.NewDecoder(r.Body).Decode(&req)
 			if req.Branch != "feature/done" {
 				t.Errorf("merge branch = %q, want %q", req.Branch, "feature/done")
 			}
-			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			json.NewEncoder(w).Encode(model.MergeResponse{Sequence: 10})
-			return
+		case r.Method == "GET" && r.URL.Path == "/tree":
+			json.NewEncoder(w).Encode([]treeEntry{})
+		case r.Method == "GET" && r.URL.Path == "/branches":
+			json.NewEncoder(w).Encode([]model.Branch{{Name: "main", HeadSequence: 10}})
+		default:
+			http.NotFound(w, r)
 		}
-		http.NotFound(w, r)
 	}))
 	defer srv.Close()
 
@@ -708,6 +856,12 @@ func TestMerge(t *testing.T) {
 
 	if err := app.Merge(); err != nil {
 		t.Fatal(err)
+	}
+
+	// Config should be switched to main.
+	cfg, _ := app.loadConfig()
+	if cfg.Branch != "main" {
+		t.Errorf("branch after merge = %q, want %q", cfg.Branch, "main")
 	}
 
 	if !strings.Contains(out.String(), "Merged 'feature/done' into main at sequence 10") {
@@ -833,6 +987,31 @@ func TestDiffWithConflicts(t *testing.T) {
 	}
 	if !strings.Contains(output, "shared.txt") {
 		t.Errorf("expected 'shared.txt' in output:\n%s", output)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Identity header
+// ---------------------------------------------------------------------------
+
+func TestIdentityHeaderSentOnCommit(t *testing.T) {
+	var gotIdentity string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotIdentity = r.Header.Get("X-DocStore-Identity")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(model.CommitResponse{Sequence: 1})
+	}))
+	defer srv.Close()
+
+	app, _ := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "main", "alice")
+	writeFile(t, app, "f.txt", "content")
+
+	app.Commit("test")
+
+	if gotIdentity != "alice" {
+		t.Errorf("X-DocStore-Identity = %q, want %q", gotIdentity, "alice")
 	}
 }
 

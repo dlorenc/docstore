@@ -146,7 +146,30 @@ func HashBytes(data []byte) string {
 	return hex.EncodeToString(h[:])
 }
 
-// Init creates a new docstore workspace.
+// isDirty returns true if there are local uncommitted changes.
+func (a *App) isDirty() (bool, error) {
+	st, err := a.loadState()
+	if err != nil {
+		return false, err
+	}
+	localFiles, err := a.scanLocalFiles()
+	if err != nil {
+		return false, err
+	}
+	for path, hash := range localFiles {
+		if stateHash, ok := st.Files[path]; !ok || hash != stateHash {
+			return true, nil
+		}
+	}
+	for path := range st.Files {
+		if _, ok := localFiles[path]; !ok {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// Init creates a new docstore workspace and fetches all files from the server.
 func (a *App) Init(remote, author string) error {
 	dir := filepath.Join(a.Dir, configDir)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -171,6 +194,7 @@ func (a *App) Init(remote, author string) error {
 		return err
 	}
 
+	// Save empty initial state.
 	st := &State{
 		Branch:   "main",
 		Sequence: 0,
@@ -180,7 +204,17 @@ func (a *App) Init(remote, author string) error {
 		return err
 	}
 
-	fmt.Fprintf(a.Out, "Initialized docstore workspace\n")
+	// Fetch files from the server.
+	if err := a.syncTree(cfg, "main"); err != nil {
+		return err
+	}
+
+	// Report result using the updated state.
+	st, err := a.loadState()
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(a.Out, "Initialized docstore workspace (%d files, sequence %d)\n", len(st.Files), st.Sequence)
 	fmt.Fprintf(a.Out, "Remote: %s\n", cfg.Remote)
 	fmt.Fprintf(a.Out, "Author: %s\n", author)
 	return nil
@@ -281,8 +315,7 @@ func (a *App) Commit(message string) error {
 	}
 
 	if len(files) == 0 {
-		fmt.Fprintf(a.Out, "No changes to commit\n")
-		return nil
+		return fmt.Errorf("nothing to commit")
 	}
 
 	// Sort for deterministic ordering.
@@ -295,7 +328,7 @@ func (a *App) Commit(message string) error {
 		Author:  cfg.Author,
 	}
 
-	resp, err := a.postJSON(cfg.Remote+"/commit", req)
+	resp, err := a.postJSON(cfg, cfg.Remote+"/commit", req)
 	if err != nil {
 		return err
 	}
@@ -331,7 +364,7 @@ func (a *App) CheckoutNew(branch string) error {
 	}
 
 	req := model.CreateBranchRequest{Name: branch}
-	resp, err := a.postJSON(cfg.Remote+"/branch", req)
+	resp, err := a.postJSON(cfg, cfg.Remote+"/branch", req)
 	if err != nil {
 		return err
 	}
@@ -373,6 +406,15 @@ func (a *App) Checkout(branch string) error {
 		return err
 	}
 
+	// Refuse if there are uncommitted local changes.
+	dirty, err := a.isDirty()
+	if err != nil {
+		return err
+	}
+	if dirty {
+		return fmt.Errorf("uncommitted changes -- commit or discard first")
+	}
+
 	cfg.Branch = branch
 	if err := a.saveConfig(cfg); err != nil {
 		return err
@@ -387,6 +429,16 @@ func (a *App) Pull() error {
 	if err != nil {
 		return err
 	}
+
+	// Refuse if there are uncommitted local changes.
+	dirty, err := a.isDirty()
+	if err != nil {
+		return err
+	}
+	if dirty {
+		return fmt.Errorf("uncommitted changes -- commit or discard first")
+	}
+
 	return a.syncTree(cfg, cfg.Branch)
 }
 
@@ -407,7 +459,7 @@ func (a *App) syncTree(cfg *Config, branch string) error {
 		if after != "" {
 			q.Set("after", after)
 		}
-		resp, err := a.HTTP.Get(cfg.Remote + "/tree?" + q.Encode())
+		resp, err := a.httpGet(cfg, cfg.Remote+"/tree?"+q.Encode())
 		if err != nil {
 			return fmt.Errorf("fetching tree: %w", err)
 		}
@@ -444,7 +496,7 @@ func (a *App) syncTree(cfg *Config, branch string) error {
 
 		q := url.Values{}
 		q.Set("branch", branch)
-		resp, err := a.HTTP.Get(cfg.Remote + "/file/" + entry.Path + "?" + q.Encode())
+		resp, err := a.httpGet(cfg, cfg.Remote+"/file/"+entry.Path+"?"+q.Encode())
 		if err != nil {
 			return fmt.Errorf("fetching %s: %w", entry.Path, err)
 		}
@@ -476,6 +528,24 @@ func (a *App) syncTree(cfg *Config, branch string) error {
 		}
 	}
 
+	// Fetch the branch's current head_sequence.
+	branchesResp, err := a.httpGet(cfg, cfg.Remote+"/branches")
+	if err != nil {
+		return fmt.Errorf("fetching branches: %w", err)
+	}
+	var branches []model.Branch
+	if err := json.NewDecoder(branchesResp.Body).Decode(&branches); err != nil {
+		branchesResp.Body.Close()
+		return fmt.Errorf("decoding branches: %w", err)
+	}
+	branchesResp.Body.Close()
+	for _, b := range branches {
+		if b.Name == branch {
+			st.Sequence = b.HeadSequence
+			break
+		}
+	}
+
 	// Update state.
 	st.Branch = branch
 	st.Files = serverFiles
@@ -499,7 +569,7 @@ func (a *App) Merge() error {
 	}
 
 	req := model.MergeRequest{Branch: cfg.Branch}
-	resp, err := a.postJSON(cfg.Remote+"/merge", req)
+	resp, err := a.postJSON(cfg, cfg.Remote+"/merge", req)
 	if err != nil {
 		return err
 	}
@@ -533,7 +603,13 @@ func (a *App) Merge() error {
 	}
 
 	fmt.Fprintf(a.Out, "Merged '%s' into main at sequence %d\n", cfg.Branch, mergeResp.Sequence)
-	return nil
+
+	// Switch to main after successful merge.
+	cfg.Branch = "main"
+	if err := a.saveConfig(cfg); err != nil {
+		return err
+	}
+	return a.syncTree(cfg, "main")
 }
 
 // Diff shows the diff for the current branch relative to its base.
@@ -545,7 +621,7 @@ func (a *App) Diff() error {
 
 	q := url.Values{}
 	q.Set("branch", cfg.Branch)
-	resp, err := a.HTTP.Get(cfg.Remote + "/diff?" + q.Encode())
+	resp, err := a.httpGet(cfg, cfg.Remote+"/diff?"+q.Encode())
 	if err != nil {
 		return fmt.Errorf("fetching diff: %w", err)
 	}
@@ -597,8 +673,18 @@ func (a *App) Diff() error {
 	return nil
 }
 
-// postJSON sends a POST request with a JSON body.
-func (a *App) postJSON(urlStr string, body interface{}) (*http.Response, error) {
+// httpGet sends a GET request with the X-DocStore-Identity header set.
+func (a *App) httpGet(cfg *Config, urlStr string) (*http.Response, error) {
+	req, err := http.NewRequest("GET", urlStr, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-DocStore-Identity", cfg.Author)
+	return a.HTTP.Do(req)
+}
+
+// postJSON sends a POST request with a JSON body and the X-DocStore-Identity header set.
+func (a *App) postJSON(cfg *Config, urlStr string, body interface{}) (*http.Response, error) {
 	data, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
@@ -608,6 +694,7 @@ func (a *App) postJSON(urlStr string, body interface{}) (*http.Response, error) 
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-DocStore-Identity", cfg.Author)
 	return a.HTTP.Do(req)
 }
 
