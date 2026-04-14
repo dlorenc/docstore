@@ -15,15 +15,19 @@ import (
 
 // mockStore implements WriteStore for testing.
 type mockStore struct {
-	commitFn       func(ctx context.Context, req model.CommitRequest) (*model.CommitResponse, error)
-	createBranchFn func(ctx context.Context, req model.CreateBranchRequest) (*model.CreateBranchResponse, error)
-	mergeFn        func(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error)
-	deleteBranchFn func(ctx context.Context, repo, name string) error
-	rebaseFn       func(ctx context.Context, req model.RebaseRequest) (*model.RebaseResponse, []db.MergeConflict, error)
-	createRepoFn   func(ctx context.Context, req model.CreateRepoRequest) (*model.Repo, error)
-	deleteRepoFn   func(ctx context.Context, name string) error
-	listReposFn    func(ctx context.Context) ([]model.Repo, error)
-	getRepoFn      func(ctx context.Context, name string) (*model.Repo, error)
+	commitFn        func(ctx context.Context, req model.CommitRequest) (*model.CommitResponse, error)
+	createBranchFn  func(ctx context.Context, req model.CreateBranchRequest) (*model.CreateBranchResponse, error)
+	mergeFn         func(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error)
+	deleteBranchFn  func(ctx context.Context, repo, name string) error
+	rebaseFn        func(ctx context.Context, req model.RebaseRequest) (*model.RebaseResponse, []db.MergeConflict, error)
+	createRepoFn    func(ctx context.Context, req model.CreateRepoRequest) (*model.Repo, error)
+	deleteRepoFn    func(ctx context.Context, name string) error
+	listReposFn     func(ctx context.Context) ([]model.Repo, error)
+	getRepoFn       func(ctx context.Context, name string) (*model.Repo, error)
+	createReviewFn  func(ctx context.Context, repo, branch, reviewer string, status model.ReviewStatus, body string) (*model.Review, error)
+	listReviewsFn   func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.Review, error)
+	createCheckRunFn func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string) (*model.CheckRun, error)
+	listCheckRunsFn  func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.CheckRun, error)
 }
 
 func (m *mockStore) Commit(ctx context.Context, req model.CommitRequest) (*model.CommitResponse, error) {
@@ -89,6 +93,34 @@ func (m *mockStore) GetRepo(ctx context.Context, name string) (*model.Repo, erro
 	return &model.Repo{Name: name}, nil
 }
 
+func (m *mockStore) CreateReview(ctx context.Context, repo, branch, reviewer string, status model.ReviewStatus, body string) (*model.Review, error) {
+	if m.createReviewFn != nil {
+		return m.createReviewFn(ctx, repo, branch, reviewer, status, body)
+	}
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockStore) ListReviews(ctx context.Context, repo, branch string, atSeq *int64) ([]model.Review, error) {
+	if m.listReviewsFn != nil {
+		return m.listReviewsFn(ctx, repo, branch, atSeq)
+	}
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockStore) CreateCheckRun(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string) (*model.CheckRun, error) {
+	if m.createCheckRunFn != nil {
+		return m.createCheckRunFn(ctx, repo, branch, checkName, status, reporter)
+	}
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockStore) ListCheckRuns(ctx context.Context, repo, branch string, atSeq *int64) ([]model.CheckRun, error) {
+	if m.listCheckRunsFn != nil {
+		return m.listCheckRunsFn(ctx, repo, branch, atSeq)
+	}
+	return nil, errors.New("not implemented")
+}
+
 func TestHealthEndpoint(t *testing.T) {
 	// /healthz is exempt from IAP auth, so devIdentity="" is fine here.
 	srv := New(nil, nil, "")
@@ -117,8 +149,6 @@ func TestNotImplementedEndpoints(t *testing.T) {
 		method string
 		path   string
 	}{
-		{"POST", "/repos/default/review"},
-		{"POST", "/repos/default/check"},
 		{"GET", "/repos/default/branch/main/status"},
 	}
 
@@ -866,5 +896,229 @@ func TestHandleRebase_RepoNotFound(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Review handler tests
+// ---------------------------------------------------------------------------
+
+func TestHandleReview_Success(t *testing.T) {
+	const identity = "reviewer@example.com"
+	store := &mockStore{
+		createReviewFn: func(ctx context.Context, repo, branch, reviewer string, status model.ReviewStatus, body string) (*model.Review, error) {
+			if repo != "default" {
+				t.Errorf("expected repo default, got %q", repo)
+			}
+			if branch != "feature/x" {
+				t.Errorf("expected branch feature/x, got %q", branch)
+			}
+			if reviewer != identity {
+				t.Errorf("expected reviewer %q from context, got %q", identity, reviewer)
+			}
+			if status != model.ReviewApproved {
+				t.Errorf("expected status approved, got %q", status)
+			}
+			if body != "LGTM" {
+				t.Errorf("expected body LGTM, got %q", body)
+			}
+			return &model.Review{ID: "review-uuid", Sequence: 5}, nil
+		},
+	}
+	srv := New(store, nil, identity)
+
+	b, _ := json.Marshal(model.CreateReviewRequest{Branch: "feature/x", Status: model.ReviewApproved, Body: "LGTM"})
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/review", bytes.NewReader(b))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	var resp model.CreateReviewResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.ID != "review-uuid" {
+		t.Errorf("expected id review-uuid, got %q", resp.ID)
+	}
+	if resp.Sequence != 5 {
+		t.Errorf("expected sequence 5, got %d", resp.Sequence)
+	}
+}
+
+func TestHandleReview_SelfApproval(t *testing.T) {
+	store := &mockStore{
+		createReviewFn: func(ctx context.Context, repo, branch, reviewer string, status model.ReviewStatus, body string) (*model.Review, error) {
+			return nil, db.ErrSelfApproval
+		},
+	}
+	srv := New(store, nil, devID)
+
+	b, _ := json.Marshal(model.CreateReviewRequest{Branch: "feature/x", Status: model.ReviewApproved})
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/review", bytes.NewReader(b))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", rec.Code)
+	}
+}
+
+func TestHandleReview_BranchNotFound(t *testing.T) {
+	store := &mockStore{
+		createReviewFn: func(ctx context.Context, repo, branch, reviewer string, status model.ReviewStatus, body string) (*model.Review, error) {
+			return nil, db.ErrBranchNotFound
+		},
+	}
+	srv := New(store, nil, devID)
+
+	b, _ := json.Marshal(model.CreateReviewRequest{Branch: "nonexistent", Status: model.ReviewApproved})
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/review", bytes.NewReader(b))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Check-run handler tests
+// ---------------------------------------------------------------------------
+
+func TestHandleCheck_Success(t *testing.T) {
+	const identity = "ci-bot@example.com"
+	store := &mockStore{
+		createCheckRunFn: func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string) (*model.CheckRun, error) {
+			if repo != "default" {
+				t.Errorf("expected repo default, got %q", repo)
+			}
+			if branch != "feature/x" {
+				t.Errorf("expected branch feature/x, got %q", branch)
+			}
+			if checkName != "ci/build" {
+				t.Errorf("expected check_name ci/build, got %q", checkName)
+			}
+			if status != model.CheckRunPassed {
+				t.Errorf("expected status passed, got %q", status)
+			}
+			if reporter != identity {
+				t.Errorf("expected reporter %q from context, got %q", identity, reporter)
+			}
+			return &model.CheckRun{ID: "check-uuid", Sequence: 3}, nil
+		},
+	}
+	srv := New(store, nil, identity)
+
+	b, _ := json.Marshal(model.CreateCheckRunRequest{Branch: "feature/x", CheckName: "ci/build", Status: model.CheckRunPassed})
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/check", bytes.NewReader(b))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	var resp model.CreateCheckRunResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.ID != "check-uuid" {
+		t.Errorf("expected id check-uuid, got %q", resp.ID)
+	}
+	if resp.Sequence != 3 {
+		t.Errorf("expected sequence 3, got %d", resp.Sequence)
+	}
+}
+
+func TestHandleCheck_BranchNotFound(t *testing.T) {
+	store := &mockStore{
+		createCheckRunFn: func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string) (*model.CheckRun, error) {
+			return nil, db.ErrBranchNotFound
+		},
+	}
+	srv := New(store, nil, devID)
+
+	b, _ := json.Marshal(model.CreateCheckRunRequest{Branch: "nonexistent", CheckName: "ci/build", Status: model.CheckRunPassed})
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/check", bytes.NewReader(b))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GET reviews/checks handler tests
+// ---------------------------------------------------------------------------
+
+func TestHandleGetReviews(t *testing.T) {
+	store := &mockStore{
+		listReviewsFn: func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.Review, error) {
+			if repo != "default" {
+				t.Errorf("expected repo default, got %q", repo)
+			}
+			if branch != "feature/x" {
+				t.Errorf("expected branch feature/x, got %q", branch)
+			}
+			return []model.Review{
+				{ID: "r1", Branch: "feature/x", Reviewer: "alice", Sequence: 2, Status: model.ReviewApproved},
+			}, nil
+		},
+	}
+	srv := New(store, nil, devID)
+
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/branch/feature/x/reviews", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	var reviews []model.Review
+	if err := json.NewDecoder(rec.Body).Decode(&reviews); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(reviews) != 1 {
+		t.Fatalf("expected 1 review, got %d", len(reviews))
+	}
+	if reviews[0].ID != "r1" {
+		t.Errorf("expected id r1, got %q", reviews[0].ID)
+	}
+}
+
+func TestHandleGetChecks(t *testing.T) {
+	store := &mockStore{
+		listCheckRunsFn: func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.CheckRun, error) {
+			if repo != "default" {
+				t.Errorf("expected repo default, got %q", repo)
+			}
+			if branch != "feature/x" {
+				t.Errorf("expected branch feature/x, got %q", branch)
+			}
+			return []model.CheckRun{
+				{ID: "cr1", Branch: "feature/x", CheckName: "ci/build", Sequence: 2, Status: model.CheckRunPassed, Reporter: "ci-bot"},
+			}, nil
+		},
+	}
+	srv := New(store, nil, devID)
+
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/branch/feature/x/checks", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	var checkRuns []model.CheckRun
+	if err := json.NewDecoder(rec.Body).Decode(&checkRuns); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(checkRuns) != 1 {
+		t.Fatalf("expected 1 check run, got %d", len(checkRuns))
+	}
+	if checkRuns[0].ID != "cr1" {
+		t.Errorf("expected id cr1, got %q", checkRuns[0].ID)
 	}
 }

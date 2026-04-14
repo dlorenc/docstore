@@ -15,8 +15,11 @@ var migration002 string
 //go:embed migrations/000003_multitenancy.up.sql
 var migration003 string
 
+//go:embed migrations/000004_reviews_checks.up.sql
+var migration004 string
+
 // MigrationSQL is the combined SQL for all schema migrations, run in order.
-var MigrationSQL = migration001 + "\n" + migration002 + "\n" + migration003
+var MigrationSQL = migration001 + "\n" + migration002 + "\n" + migration003 + "\n" + migration004
 
 //go:embed migrations/000001_initial_schema.down.sql
 var MigrationDownSQL string

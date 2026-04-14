@@ -26,6 +26,12 @@ type WriteStore interface {
 	Merge(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error)
 	DeleteBranch(ctx context.Context, repo, name string) error
 	Rebase(ctx context.Context, req model.RebaseRequest) (*model.RebaseResponse, []db.MergeConflict, error)
+
+	// Review and check-run operations
+	CreateReview(ctx context.Context, repo, branch, reviewer string, status model.ReviewStatus, body string) (*model.Review, error)
+	ListReviews(ctx context.Context, repo, branch string, atSeq *int64) ([]model.Review, error)
+	CreateCheckRun(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string) (*model.CheckRun, error)
+	ListCheckRuns(ctx context.Context, repo, branch string, atSeq *int64) ([]model.CheckRun, error)
 }
 
 // CommitStore is an alias for backward compatibility with tests.
@@ -61,14 +67,17 @@ func New(writeStore WriteStore, database *sql.DB, devIdentity string) http.Handl
 	inner.HandleFunc("GET /repos/{name}/diff", s.handleDiff)
 	inner.HandleFunc("GET /repos/{name}/branches", s.handleBranches)
 	inner.HandleFunc("GET /repos/{name}/branch/{bname}/status", notImplemented)
+	// Branch sub-resource reads; {branch...} handles names that contain slashes.
+	// More-specific {bname}/status route above wins for /status paths.
+	inner.HandleFunc("GET /repos/{name}/branch/{branch...}", s.handleBranchGet)
 
 	// Repo-scoped write endpoints
 	inner.HandleFunc("POST /repos/{name}/commit", s.handleCommit)
 	inner.HandleFunc("POST /repos/{name}/branch", s.handleCreateBranch)
 	inner.HandleFunc("POST /repos/{name}/merge", s.handleMerge)
 	inner.HandleFunc("POST /repos/{name}/rebase", s.handleRebase)
-	inner.HandleFunc("POST /repos/{name}/review", notImplemented)
-	inner.HandleFunc("POST /repos/{name}/check", notImplemented)
+	inner.HandleFunc("POST /repos/{name}/review", s.handleReview)
+	inner.HandleFunc("POST /repos/{name}/check", s.handleCheck)
 	inner.HandleFunc("DELETE /repos/{name}/branch/{bname...}", s.handleDeleteBranch)
 
 	outer.Handle("/", IAPMiddleware(devIdentity)(inner))
