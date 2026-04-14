@@ -1262,13 +1262,34 @@ func TestDeleteRepo_RemovesAllData(t *testing.T) {
 		t.Fatalf("Commit: %v", err)
 	}
 
+	// Seed a role, a review, and a check_run for the repo so we can verify
+	// they are all cleaned up on deletion.
+	_, err = d.Exec(
+		"INSERT INTO roles (repo, identity, role) VALUES ('todelete', 'alice', 'writer')",
+	)
+	if err != nil {
+		t.Fatalf("insert role: %v", err)
+	}
+	_, err = d.Exec(
+		"INSERT INTO reviews (repo, id, branch, reviewer, sequence, status) VALUES ('todelete', gen_random_uuid(), 'main', 'alice', 1, 'approved')",
+	)
+	if err != nil {
+		t.Fatalf("insert review: %v", err)
+	}
+	_, err = d.Exec(
+		"INSERT INTO check_runs (repo, id, branch, sequence, check_name, status, reporter) VALUES ('todelete', gen_random_uuid(), 'main', 1, 'ci', 'passed', 'ci-bot')",
+	)
+	if err != nil {
+		t.Fatalf("insert check_run: %v", err)
+	}
+
 	// Delete the repo.
 	if err := s.DeleteRepo(ctx, "todelete"); err != nil {
 		t.Fatalf("DeleteRepo: %v", err)
 	}
 
-	// All data should be gone.
-	for _, table := range []string{"branches", "commits", "file_commits", "documents"} {
+	// All data should be gone — including reviews, check_runs, and roles.
+	for _, table := range []string{"branches", "commits", "file_commits", "documents", "reviews", "check_runs", "roles"} {
 		var count int
 		err = d.QueryRow("SELECT count(*) FROM "+table+" WHERE repo = 'todelete'").Scan(&count)
 		if err != nil {
@@ -1335,6 +1356,52 @@ func TestDeleteRepo_NotFound(t *testing.T) {
 	ctx := context.Background()
 
 	err := s.DeleteRepo(ctx, "nonexistent")
+	if err != ErrRepoNotFound {
+		t.Fatalf("expected ErrRepoNotFound, got %v", err)
+	}
+}
+
+// TestCreateRepo_IsAtomic verifies that if the process were to fail between the
+// repo INSERT and the main-branch INSERT, the caller would not observe a half-
+// created repo.  Since we cannot inject a crash mid-transaction, we verify the
+// positive invariant: after a successful CreateRepo the repo and its main branch
+// always exist together.
+func TestCreateRepo_IsAtomic(t *testing.T) {
+	d := testutil.TestDB(t, MigrationSQL)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	_, err := s.CreateRepo(ctx, model.CreateRepoRequest{Name: "atomic-repo"})
+	if err != nil {
+		t.Fatalf("CreateRepo: %v", err)
+	}
+
+	// Both the repo row and its main branch must be present.
+	var repoExists bool
+	if err := d.QueryRow("SELECT EXISTS(SELECT 1 FROM repos WHERE name = 'atomic-repo')").Scan(&repoExists); err != nil {
+		t.Fatal(err)
+	}
+	if !repoExists {
+		t.Error("expected repo row to exist")
+	}
+
+	var branchStatus string
+	if err := d.QueryRow("SELECT status FROM branches WHERE repo = 'atomic-repo' AND name = 'main'").Scan(&branchStatus); err != nil {
+		t.Fatalf("expected main branch, got error: %v", err)
+	}
+	if branchStatus != "active" {
+		t.Errorf("expected main branch active, got %q", branchStatus)
+	}
+}
+
+// TestCreateBranch_RepoNotFound verifies that creating a branch for a repo that
+// does not exist returns ErrRepoNotFound rather than an opaque error.
+func TestCreateBranch_RepoNotFound(t *testing.T) {
+	d := testutil.TestDB(t, MigrationSQL)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	_, err := s.CreateBranch(ctx, model.CreateBranchRequest{Repo: "no-such-repo", Name: "feature/x"})
 	if err != ErrRepoNotFound {
 		t.Fatalf("expected ErrRepoNotFound, got %v", err)
 	}
