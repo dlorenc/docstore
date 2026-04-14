@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/server"
 )
 
@@ -18,7 +19,22 @@ func main() {
 		port = "8080"
 	}
 
-	srv := server.New()
+	// Set up the store. If DATABASE_URL is set, use PostgreSQL; otherwise
+	// handlers that require a store will fail gracefully.
+	var store server.Store
+	if dsn := os.Getenv("DATABASE_URL"); dsn != "" {
+		database, err := db.Open(dsn)
+		if err != nil {
+			log.Fatalf("database connection failed: %v", err)
+		}
+		defer database.Close()
+		store = db.NewStore(database)
+		log.Println("connected to database")
+	} else {
+		log.Println("WARNING: no DATABASE_URL set, database-backed endpoints will not work")
+	}
+
+	srv := server.New(store)
 
 	httpServer := &http.Server{
 		Addr:         ":" + port,

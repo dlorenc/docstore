@@ -2,7 +2,31 @@
 // described in DESIGN.md.
 package model
 
-import "time"
+import (
+	"crypto/rand"
+	"errors"
+	"fmt"
+	"time"
+)
+
+// Sentinel errors for store operations.
+var (
+	ErrBranchExists    = errors.New("branch already exists")
+	ErrBranchNotFound  = errors.New("branch not found")
+	ErrBranchNotActive = errors.New("branch is not active")
+	ErrProtectedBranch = errors.New("cannot modify protected branch")
+)
+
+// NewUUID generates a random UUID v4.
+func NewUUID() string {
+	var u [16]byte
+	if _, err := rand.Read(u[:]); err != nil {
+		panic(err)
+	}
+	u[6] = (u[6] & 0x0f) | 0x40 // version 4
+	u[8] = (u[8] & 0x3f) | 0x80 // variant
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", u[0:4], u[4:6], u[6:8], u[8:10], u[10:16])
+}
 
 // BranchStatus represents the lifecycle state of a branch.
 type BranchStatus string
@@ -100,3 +124,4 @@ type CheckRun struct {
 	Reporter  string         `json:"reporter"`
 	CreatedAt time.Time      `json:"created_at"`
 }
+
