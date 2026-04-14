@@ -277,7 +277,7 @@ func TestCommit_BranchNotActive(t *testing.T) {
 // --- CreateBranch tests ---
 
 func TestCreateBranch_Success(t *testing.T) {
-	d := testDB(t)
+	d := testutil.TestDB(t, MigrationSQL)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -320,7 +320,7 @@ func TestCreateBranch_Success(t *testing.T) {
 }
 
 func TestCreateBranch_Duplicate(t *testing.T) {
-	d := testDB(t)
+	d := testutil.TestDB(t, MigrationSQL)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -338,7 +338,7 @@ func TestCreateBranch_Duplicate(t *testing.T) {
 // --- Merge tests ---
 
 func TestMerge_Success(t *testing.T) {
-	d := testDB(t)
+	d := testutil.TestDB(t, MigrationSQL)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -414,7 +414,7 @@ func TestMerge_Success(t *testing.T) {
 }
 
 func TestMerge_Conflict(t *testing.T) {
-	d := testDB(t)
+	d := testutil.TestDB(t, MigrationSQL)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -480,7 +480,7 @@ func TestMerge_Conflict(t *testing.T) {
 }
 
 func TestMerge_BranchNotFound(t *testing.T) {
-	d := testDB(t)
+	d := testutil.TestDB(t, MigrationSQL)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -491,7 +491,7 @@ func TestMerge_BranchNotFound(t *testing.T) {
 }
 
 func TestMerge_BranchNotActive(t *testing.T) {
-	d := testDB(t)
+	d := testutil.TestDB(t, MigrationSQL)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -508,7 +508,7 @@ func TestMerge_BranchNotActive(t *testing.T) {
 }
 
 func TestMerge_EmptyBranch(t *testing.T) {
-	d := testDB(t)
+	d := testutil.TestDB(t, MigrationSQL)
 	s := NewStore(d)
 	ctx := context.Background()
 
