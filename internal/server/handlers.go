@@ -1,10 +1,14 @@
 package server
 
 import (
+	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 
+	"github.com/dlorenc/docstore/internal/db"
+	"github.com/dlorenc/docstore/internal/model"
 	"github.com/dlorenc/docstore/internal/store"
 )
 
@@ -156,4 +160,111 @@ func (s *server) handleGetCommit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, detail)
+}
+
+// handleBranches implements GET /branches?status=active
+func (s *server) handleBranches(w http.ResponseWriter, r *http.Request) {
+	statusFilter := r.URL.Query().Get("status")
+
+	branches, err := s.readStore.ListBranches(r.Context(), statusFilter)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if branches == nil {
+		branches = []store.BranchInfo{}
+	}
+	writeJSON(w, http.StatusOK, branches)
+}
+
+// handleDiff implements GET /diff?branch=X
+func (s *server) handleDiff(w http.ResponseWriter, r *http.Request) {
+	branch := r.URL.Query().Get("branch")
+	if branch == "" {
+		writeError(w, http.StatusBadRequest, "branch parameter is required")
+		return
+	}
+
+	result, err := s.readStore.GetDiff(r.Context(), branch)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if result == nil {
+		writeError(w, http.StatusNotFound, "branch not found")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+// handleCreateBranch implements POST /branch
+func (s *server) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
+	var req model.CreateBranchRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	if req.Name == "main" {
+		writeError(w, http.StatusBadRequest, "cannot create branch named 'main'")
+		return
+	}
+
+	resp, err := s.commitStore.CreateBranch(r.Context(), req)
+	if err != nil {
+		switch {
+		case errors.Is(err, db.ErrBranchExists):
+			writeError(w, http.StatusConflict, "branch already exists")
+		default:
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, resp)
+}
+
+// handleMerge implements POST /merge
+func (s *server) handleMerge(w http.ResponseWriter, r *http.Request) {
+	var req model.MergeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.Branch == "" {
+		writeError(w, http.StatusBadRequest, "branch is required")
+		return
+	}
+
+	resp, conflicts, err := s.commitStore.Merge(r.Context(), req)
+	if err != nil {
+		switch {
+		case errors.Is(err, db.ErrMergeConflict):
+			// Convert conflicts to API response.
+			apiConflicts := make([]model.ConflictEntry, len(conflicts))
+			for i, c := range conflicts {
+				apiConflicts[i] = model.ConflictEntry{
+					Path:            c.Path,
+					MainVersionID:   c.MainVersionID,
+					BranchVersionID: c.BranchVersionID,
+				}
+			}
+			writeJSON(w, http.StatusConflict, model.MergeConflictError{Conflicts: apiConflicts})
+		case errors.Is(err, db.ErrBranchNotFound):
+			writeError(w, http.StatusNotFound, "branch not found")
+		case errors.Is(err, db.ErrBranchNotActive):
+			writeError(w, http.StatusConflict, "branch is not active")
+		default:
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }
