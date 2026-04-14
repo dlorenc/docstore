@@ -82,6 +82,9 @@ type server struct {
 
 func (s *server) handleCommit(w http.ResponseWriter, r *http.Request) {
 	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
 
 	var req model.CommitRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
