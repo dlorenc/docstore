@@ -32,6 +32,10 @@ func main() {
 	}
 	defer database.Close()
 
+	if err := db.RunMigrations(database); err != nil {
+		log.Fatalf("run migrations: %v", err)
+	}
+
 	commitStore := db.NewStore(database)
 	srv := server.New(commitStore, database)
 
