@@ -324,7 +324,7 @@ func TestGetCommit(t *testing.T) {
 }
 
 func TestListBranches(t *testing.T) {
-	db := testutil.TestDB(t)
+	db := testutil.TestDB(t, dbpkg.MigrationSQL)
 	seed(t, db)
 	s := store.New(db)
 	ctx := context.Background()
@@ -379,7 +379,7 @@ func TestListBranches(t *testing.T) {
 }
 
 func TestGetDiff(t *testing.T) {
-	db := testutil.TestDB(t)
+	db := testutil.TestDB(t, dbpkg.MigrationSQL)
 	seed(t, db)
 	s := store.New(db)
 	ctx := context.Background()
@@ -443,7 +443,7 @@ func TestGetDiff(t *testing.T) {
 }
 
 func TestGetDiff_WithConflict(t *testing.T) {
-	db := testutil.TestDB(t)
+	db := testutil.TestDB(t, dbpkg.MigrationSQL)
 	s := store.New(db)
 	ctx := context.Background()
 
