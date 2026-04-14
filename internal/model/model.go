@@ -4,6 +4,13 @@ package model
 
 import "time"
 
+// Repo is a named tenant that owns its own isolated set of branches and commits.
+type Repo struct {
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+	CreatedBy string    `json:"created_by"`
+}
+
 // BranchStatus represents the lifecycle state of a branch.
 type BranchStatus string
 

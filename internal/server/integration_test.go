@@ -61,7 +61,7 @@ func TestIntegrationTreeEndpoint(t *testing.T) {
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/tree")
+	resp, err := http.Get(srv.URL + "/repos/default/tree")
 	if err != nil {
 		t.Fatalf("GET /tree: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestIntegrationFileEndpoint(t *testing.T) {
 	defer srv.Close()
 
 	t.Run("get file content", func(t *testing.T) {
-		resp, err := http.Get(srv.URL + "/file/hello.txt")
+		resp, err := http.Get(srv.URL + "/repos/default/file/hello.txt")
 		if err != nil {
 			t.Fatalf("GET /file/hello.txt: %v", err)
 		}
@@ -110,7 +110,7 @@ func TestIntegrationFileEndpoint(t *testing.T) {
 	})
 
 	t.Run("file not found", func(t *testing.T) {
-		resp, err := http.Get(srv.URL + "/file/nope.txt")
+		resp, err := http.Get(srv.URL + "/repos/default/file/nope.txt")
 		if err != nil {
 			t.Fatalf("GET /file/nope.txt: %v", err)
 		}
@@ -122,7 +122,7 @@ func TestIntegrationFileEndpoint(t *testing.T) {
 	})
 
 	t.Run("file history", func(t *testing.T) {
-		resp, err := http.Get(srv.URL + "/file/hello.txt/history")
+		resp, err := http.Get(srv.URL + "/repos/default/file/hello.txt/history")
 		if err != nil {
 			t.Fatalf("GET /file/hello.txt/history: %v", err)
 		}
@@ -143,7 +143,7 @@ func TestIntegrationFileEndpoint(t *testing.T) {
 	})
 
 	t.Run("file at sequence", func(t *testing.T) {
-		resp, err := http.Get(srv.URL + "/file/hello.txt?at=1")
+		resp, err := http.Get(srv.URL + "/repos/default/file/hello.txt?at=1")
 		if err != nil {
 			t.Fatalf("GET /file/hello.txt?at=1: %v", err)
 		}
@@ -180,7 +180,7 @@ func TestIntegrationBranchesEndpoint(t *testing.T) {
 	defer srv.Close()
 
 	t.Run("list all branches", func(t *testing.T) {
-		resp, err := http.Get(srv.URL + "/branches")
+		resp, err := http.Get(srv.URL + "/repos/default/branches")
 		if err != nil {
 			t.Fatalf("GET /branches: %v", err)
 		}
@@ -200,7 +200,7 @@ func TestIntegrationBranchesEndpoint(t *testing.T) {
 	})
 
 	t.Run("filter active", func(t *testing.T) {
-		resp, err := http.Get(srv.URL + "/branches?status=active")
+		resp, err := http.Get(srv.URL + "/repos/default/branches?status=active")
 		if err != nil {
 			t.Fatalf("GET /branches?status=active: %v", err)
 		}
@@ -246,7 +246,7 @@ func TestIntegrationDiffEndpoint(t *testing.T) {
 	defer srv.Close()
 
 	t.Run("diff with branch", func(t *testing.T) {
-		resp, err := http.Get(srv.URL + "/diff?branch=feature/diff")
+		resp, err := http.Get(srv.URL + "/repos/default/diff?branch=feature/diff")
 		if err != nil {
 			t.Fatalf("GET /diff: %v", err)
 		}
@@ -269,7 +269,7 @@ func TestIntegrationDiffEndpoint(t *testing.T) {
 	})
 
 	t.Run("diff missing branch param", func(t *testing.T) {
-		resp, err := http.Get(srv.URL + "/diff")
+		resp, err := http.Get(srv.URL + "/repos/default/diff")
 		if err != nil {
 			t.Fatalf("GET /diff: %v", err)
 		}
@@ -281,7 +281,7 @@ func TestIntegrationDiffEndpoint(t *testing.T) {
 	})
 
 	t.Run("diff nonexistent branch", func(t *testing.T) {
-		resp, err := http.Get(srv.URL + "/diff?branch=nonexistent")
+		resp, err := http.Get(srv.URL + "/repos/default/diff?branch=nonexistent")
 		if err != nil {
 			t.Fatalf("GET /diff: %v", err)
 		}
@@ -301,7 +301,7 @@ func TestIntegrationCommitEndpoint(t *testing.T) {
 	defer srv.Close()
 
 	t.Run("existing commit", func(t *testing.T) {
-		resp, err := http.Get(srv.URL + "/commit/1")
+		resp, err := http.Get(srv.URL + "/repos/default/commit/1")
 		if err != nil {
 			t.Fatalf("GET /commit/1: %v", err)
 		}
@@ -325,7 +325,7 @@ func TestIntegrationCommitEndpoint(t *testing.T) {
 	})
 
 	t.Run("nonexistent commit", func(t *testing.T) {
-		resp, err := http.Get(srv.URL + "/commit/999")
+		resp, err := http.Get(srv.URL + "/repos/default/commit/999")
 		if err != nil {
 			t.Fatalf("GET /commit/999: %v", err)
 		}
@@ -337,7 +337,7 @@ func TestIntegrationCommitEndpoint(t *testing.T) {
 	})
 
 	t.Run("invalid sequence", func(t *testing.T) {
-		resp, err := http.Get(srv.URL + "/commit/abc")
+		resp, err := http.Get(srv.URL + "/repos/default/commit/abc")
 		if err != nil {
 			t.Fatalf("GET /commit/abc: %v", err)
 		}
@@ -366,7 +366,7 @@ func TestIntegrationDeleteBranch(t *testing.T) {
 	}
 
 	t.Run("delete active branch returns 204", func(t *testing.T) {
-		req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/branch/feature/to-delete", nil)
+		req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/repos/default/branch/feature/to-delete", nil)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("DELETE /branch/feature/to-delete: %v", err)
@@ -388,7 +388,7 @@ func TestIntegrationDeleteBranch(t *testing.T) {
 	})
 
 	t.Run("delete main returns 400", func(t *testing.T) {
-		req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/branch/main", nil)
+		req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/repos/default/branch/main", nil)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("DELETE /branch/main: %v", err)
@@ -401,7 +401,7 @@ func TestIntegrationDeleteBranch(t *testing.T) {
 	})
 
 	t.Run("delete nonexistent branch returns 404", func(t *testing.T) {
-		req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/branch/nonexistent", nil)
+		req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/repos/default/branch/nonexistent", nil)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("DELETE /branch/nonexistent: %v", err)
@@ -414,7 +414,7 @@ func TestIntegrationDeleteBranch(t *testing.T) {
 	})
 
 	t.Run("delete abandoned branch returns 409", func(t *testing.T) {
-		req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/branch/feature/to-delete", nil)
+		req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/repos/default/branch/feature/to-delete", nil)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("DELETE /branch/feature/to-delete: %v", err)
@@ -444,35 +444,35 @@ func TestIntegrationRebase_FullFlow(t *testing.T) {
 	}
 
 	// Step 1: Commit to main (creates seq=1).
-	r := post("/commit", `{"branch":"main","message":"initial","author":"alice","files":[{"path":"base.txt","content":"YmFzZQ=="}]}`)
+	r := post("/repos/default/commit", `{"branch":"main","message":"initial","author":"alice","files":[{"path":"base.txt","content":"YmFzZQ=="}]}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("POST /commit to main: expected 201, got %d", r.StatusCode)
 	}
 
 	// Step 2: Create branch (base=1, head=1).
-	r = post("/branch", `{"name":"feature/rebase-flow"}`)
+	r = post("/repos/default/branch", `{"name":"feature/rebase-flow"}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("POST /branch: expected 201, got %d", r.StatusCode)
 	}
 
 	// Step 3: Commit to branch (seq=2, adds "branch.txt").
-	r = post("/commit", `{"branch":"feature/rebase-flow","message":"branch work","author":"bob","files":[{"path":"branch.txt","content":"YnJhbmNo"}]}`)
+	r = post("/repos/default/commit", `{"branch":"feature/rebase-flow","message":"branch work","author":"bob","files":[{"path":"branch.txt","content":"YnJhbmNo"}]}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("POST /commit to branch: expected 201, got %d", r.StatusCode)
 	}
 
 	// Step 4: Advance main (seq=3, adds "other.txt").
-	r = post("/commit", `{"branch":"main","message":"main advance","author":"alice","files":[{"path":"other.txt","content":"b3RoZXI="}]}`)
+	r = post("/repos/default/commit", `{"branch":"main","message":"main advance","author":"alice","files":[{"path":"other.txt","content":"b3RoZXI="}]}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("POST /commit to advance main: expected 201, got %d", r.StatusCode)
 	}
 
 	// Step 5: GET /diff — should show main_changes before rebase.
-	diffResp, err := http.Get(srv.URL + "/diff?branch=feature/rebase-flow")
+	diffResp, err := http.Get(srv.URL + "/repos/default/diff?branch=feature/rebase-flow")
 	if err != nil {
 		t.Fatalf("GET /diff: %v", err)
 	}
@@ -489,7 +489,7 @@ func TestIntegrationRebase_FullFlow(t *testing.T) {
 	}
 
 	// Step 6: POST /rebase.
-	r = post("/rebase", `{"branch":"feature/rebase-flow","author":"bob"}`)
+	r = post("/repos/default/rebase", `{"branch":"feature/rebase-flow","author":"bob"}`)
 	defer r.Body.Close()
 	if r.StatusCode != http.StatusOK {
 		var errBody map[string]interface{}
@@ -509,7 +509,7 @@ func TestIntegrationRebase_FullFlow(t *testing.T) {
 	}
 
 	// Step 7: GET /diff — should show no main_changes after rebase.
-	diffResp2, err := http.Get(srv.URL + "/diff?branch=feature/rebase-flow")
+	diffResp2, err := http.Get(srv.URL + "/repos/default/diff?branch=feature/rebase-flow")
 	if err != nil {
 		t.Fatalf("GET /diff after rebase: %v", err)
 	}
@@ -526,7 +526,7 @@ func TestIntegrationRebase_FullFlow(t *testing.T) {
 	}
 
 	// Step 8: POST /merge — should succeed cleanly.
-	r = post("/merge", `{"branch":"feature/rebase-flow","author":"alice"}`)
+	r = post("/repos/default/merge", `{"branch":"feature/rebase-flow","author":"alice"}`)
 	defer r.Body.Close()
 	if r.StatusCode != http.StatusOK {
 		var errBody map[string]interface{}
@@ -543,8 +543,8 @@ func TestHTTP_AuthRequired(t *testing.T) {
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
-	// POST /commit without X-Goog-IAP-JWT-Assertion must return 401.
-	resp, err := http.Post(srv.URL+"/commit", "application/json",
+	// POST /repos/default/commit without X-Goog-IAP-JWT-Assertion must return 401.
+	resp, err := http.Post(srv.URL+"/repos/default/commit", "application/json",
 		strings.NewReader(`{"branch":"main","message":"m","files":[{"path":"a.txt","content":"YQ=="}]}`))
 	if err != nil {
 		t.Fatalf("POST /commit: %v", err)
@@ -574,8 +574,8 @@ func TestHTTP_AuthIdentityUsedAsAuthor(t *testing.T) {
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
-	// POST /commit with a different author in the body — it must be ignored.
-	resp, err := http.Post(srv.URL+"/commit", "application/json",
+	// POST /repos/default/commit with a different author in the body — it must be ignored.
+	resp, err := http.Post(srv.URL+"/repos/default/commit", "application/json",
 		strings.NewReader(`{"branch":"main","message":"test commit","author":"not-alice@example.com","files":[{"path":"hello.txt","content":"aGVsbG8="}]}`))
 	if err != nil {
 		t.Fatalf("POST /commit: %v", err)
@@ -585,8 +585,8 @@ func TestHTTP_AuthIdentityUsedAsAuthor(t *testing.T) {
 		t.Fatalf("POST /commit: expected 201, got %d", resp.StatusCode)
 	}
 
-	// GET /commit/1 and verify the author is the identity, not the body value.
-	getResp, err := http.Get(srv.URL + "/commit/1")
+	// GET /repos/default/commit/1 and verify the author is the identity, not the body value.
+	getResp, err := http.Get(srv.URL + "/repos/default/commit/1")
 	if err != nil {
 		t.Fatalf("GET /commit/1: %v", err)
 	}
@@ -601,5 +601,259 @@ func TestHTTP_AuthIdentityUsedAsAuthor(t *testing.T) {
 	}
 	if detail.Author != identity {
 		t.Errorf("expected author %q, got %q", identity, detail.Author)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// New repo management integration tests
+// ---------------------------------------------------------------------------
+
+func TestHandleCreateRepo_Success(t *testing.T) {
+	database := testutil.TestDB(t, dbpkg.MigrationSQL)
+	writeStore := dbpkg.NewStore(database)
+	handler := server.New(writeStore, database, "test@example.com")
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/repos", "application/json",
+		strings.NewReader(`{"name":"myrepo"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
+	}
+}
+
+func TestHandleCreateRepo_Duplicate(t *testing.T) {
+	database := testutil.TestDB(t, dbpkg.MigrationSQL)
+	writeStore := dbpkg.NewStore(database)
+	handler := server.New(writeStore, database, "test@example.com")
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	for i, wantCode := range []int{http.StatusCreated, http.StatusConflict} {
+		resp, err := http.Post(srv.URL+"/repos", "application/json",
+			strings.NewReader(`{"name":"dup"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != wantCode {
+			t.Errorf("attempt %d: expected %d, got %d", i+1, wantCode, resp.StatusCode)
+		}
+	}
+}
+
+func TestHandleDeleteRepo_Success(t *testing.T) {
+	database := testutil.TestDB(t, dbpkg.MigrationSQL)
+	writeStore := dbpkg.NewStore(database)
+	handler := server.New(writeStore, database, "test@example.com")
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	// Create a repo first.
+	resp, err := http.Post(srv.URL+"/repos", "application/json",
+		strings.NewReader(`{"name":"todel"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	// Delete it.
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/repos/todel", nil)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", resp.StatusCode)
+	}
+}
+
+func TestHandleDeleteRepo_NotFound(t *testing.T) {
+	database := testutil.TestDB(t, dbpkg.MigrationSQL)
+	writeStore := dbpkg.NewStore(database)
+	handler := server.New(writeStore, database, "test@example.com")
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/repos/nonexistent", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", resp.StatusCode)
+	}
+}
+
+func TestHandleListRepos(t *testing.T) {
+	database := testutil.TestDB(t, dbpkg.MigrationSQL)
+	writeStore := dbpkg.NewStore(database)
+	handler := server.New(writeStore, database, "test@example.com")
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	// Create a repo to add alongside the seeded 'default'.
+	resp, err := http.Post(srv.URL+"/repos", "application/json",
+		strings.NewReader(`{"name":"extra"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	resp, err = http.Get(srv.URL + "/repos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var body struct {
+		Repos []struct{ Name string `json:"name"` } `json:"repos"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Repos) < 2 {
+		t.Fatalf("expected at least 2 repos, got %d", len(body.Repos))
+	}
+}
+
+func TestIntegrationMultiRepo_FullIsolation(t *testing.T) {
+	database := testutil.TestDB(t, dbpkg.MigrationSQL)
+	writeStore := dbpkg.NewStore(database)
+	handler := server.New(writeStore, database, "test@example.com")
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	post := func(path, body string) *http.Response {
+		t.Helper()
+		resp, err := http.Post(srv.URL+path, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST %s: %v", path, err)
+		}
+		return resp
+	}
+
+	// Create two repos.
+	for _, name := range []string{"alpha", "beta"} {
+		r := post("/repos", `{"name":"`+name+`"}`)
+		r.Body.Close()
+		if r.StatusCode != http.StatusCreated {
+			t.Fatalf("create repo %s: expected 201, got %d", name, r.StatusCode)
+		}
+	}
+
+	// Commit unique files to each repo.
+	r := post("/repos/alpha/commit", `{"branch":"main","message":"alpha init","files":[{"path":"alpha.txt","content":"YWxwaGE="}]}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("commit alpha: expected 201, got %d", r.StatusCode)
+	}
+
+	r = post("/repos/beta/commit", `{"branch":"main","message":"beta init","files":[{"path":"beta.txt","content":"YmV0YQ=="}]}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("commit beta: expected 201, got %d", r.StatusCode)
+	}
+
+	// GET /repos/alpha/tree must NOT contain beta.txt.
+	resp, err := http.Get(srv.URL + "/repos/alpha/tree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var alphaEntries []struct{ Path string `json:"path"` }
+	json.NewDecoder(resp.Body).Decode(&alphaEntries)
+	for _, e := range alphaEntries {
+		if e.Path == "beta.txt" {
+			t.Error("beta.txt should not appear in alpha's tree")
+		}
+	}
+	if len(alphaEntries) != 1 || alphaEntries[0].Path != "alpha.txt" {
+		t.Errorf("expected only alpha.txt in alpha tree, got %+v", alphaEntries)
+	}
+
+	// GET /repos/beta/tree must NOT contain alpha.txt.
+	resp2, err := http.Get(srv.URL + "/repos/beta/tree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	var betaEntries []struct{ Path string `json:"path"` }
+	json.NewDecoder(resp2.Body).Decode(&betaEntries)
+	for _, e := range betaEntries {
+		if e.Path == "alpha.txt" {
+			t.Error("alpha.txt should not appear in beta's tree")
+		}
+	}
+	if len(betaEntries) != 1 || betaEntries[0].Path != "beta.txt" {
+		t.Errorf("expected only beta.txt in beta tree, got %+v", betaEntries)
+	}
+}
+
+func TestIntegrationDeleteRepo_CleansUp(t *testing.T) {
+	database := testutil.TestDB(t, dbpkg.MigrationSQL)
+	writeStore := dbpkg.NewStore(database)
+	handler := server.New(writeStore, database, "test@example.com")
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	post := func(path, body string) *http.Response {
+		t.Helper()
+		resp, err := http.Post(srv.URL+path, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST %s: %v", path, err)
+		}
+		return resp
+	}
+
+	// Create repo, add data.
+	r := post("/repos", `{"name":"cleanup-test"}`)
+	r.Body.Close()
+	r = post("/repos/cleanup-test/commit", `{"branch":"main","message":"init","files":[{"path":"f.txt","content":"dGVzdA=="}]}`)
+	r.Body.Close()
+
+	// Verify tree is non-empty.
+	resp, err := http.Get(srv.URL + "/repos/cleanup-test/tree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 before delete, got %d", resp.StatusCode)
+	}
+
+	// Delete the repo.
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/repos/cleanup-test", nil)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", resp.StatusCode)
+	}
+
+	// Repo should no longer exist.
+	resp, err = http.Get(srv.URL + "/repos/cleanup-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 after delete, got %d", resp.StatusCode)
 	}
 }
