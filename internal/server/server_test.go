@@ -23,7 +23,7 @@ func (m *mockStore) Commit(ctx context.Context, req model.CommitRequest) (*model
 }
 
 func TestHealthEndpoint(t *testing.T) {
-	srv := New(nil)
+	srv := New(nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
@@ -43,13 +43,13 @@ func TestHealthEndpoint(t *testing.T) {
 }
 
 func TestNotImplementedEndpoints(t *testing.T) {
-	srv := New(nil)
+	srv := New(nil, nil)
 
 	endpoints := []struct {
 		method string
 		path   string
 	}{
-		{"GET", "/tree"},
+		{"GET", "/diff"},
 		{"GET", "/branches"},
 		{"POST", "/branch"},
 		{"POST", "/merge"},
@@ -87,7 +87,7 @@ func TestHandleCommit_Success(t *testing.T) {
 			}, nil
 		},
 	}
-	srv := New(store)
+	srv := New(store, nil)
 
 	body, _ := json.Marshal(model.CommitRequest{
 		Branch:  "main",
@@ -122,7 +122,7 @@ func TestHandleCommit_ValidationErrors(t *testing.T) {
 			t.Fatal("store should not be called on validation error")
 			return nil, nil
 		},
-	})
+	}, nil)
 
 	tests := []struct {
 		name string
@@ -155,7 +155,7 @@ func TestHandleCommit_BranchNotFound(t *testing.T) {
 			return nil, db.ErrBranchNotFound
 		},
 	}
-	srv := New(store)
+	srv := New(store, nil)
 
 	body, _ := json.Marshal(model.CommitRequest{
 		Branch:  "nonexistent",
@@ -179,7 +179,7 @@ func TestHandleCommit_BranchNotActive(t *testing.T) {
 			return nil, db.ErrBranchNotActive
 		},
 	}
-	srv := New(store)
+	srv := New(store, nil)
 
 	body, _ := json.Marshal(model.CommitRequest{
 		Branch:  "merged-branch",
@@ -203,7 +203,7 @@ func TestHandleCommit_InternalError(t *testing.T) {
 			return nil, errors.New("something went wrong")
 		},
 	}
-	srv := New(store)
+	srv := New(store, nil)
 
 	body, _ := json.Marshal(model.CommitRequest{
 		Branch:  "main",
@@ -227,7 +227,7 @@ func TestHandleCommit_InvalidJSON(t *testing.T) {
 			t.Fatal("store should not be called on invalid JSON")
 			return nil, nil
 		},
-	})
+	}, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/commit", bytes.NewReader([]byte("not json")))
 	rec := httptest.NewRecorder()

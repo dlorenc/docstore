@@ -9,10 +9,10 @@ import (
 	"syscall"
 	"time"
 
+	_ "github.com/lib/pq"
+
 	"github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/server"
-
-	_ "github.com/lib/pq"
 )
 
 func main() {
@@ -32,8 +32,8 @@ func main() {
 	}
 	defer database.Close()
 
-	store := db.NewStore(database)
-	srv := server.New(store)
+	commitStore := db.NewStore(database)
+	srv := server.New(commitStore, database)
 
 	httpServer := &http.Server{
 		Addr:         ":" + port,
