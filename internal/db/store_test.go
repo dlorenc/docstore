@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"testing"
 
 	"github.com/dlorenc/docstore/internal/model"
@@ -1560,4 +1561,315 @@ func TestRepoIsolation_Merge(t *testing.T) {
 	}
 
 	_ = resp
+}
+
+// ---------------------------------------------------------------------------
+// Review store tests
+// ---------------------------------------------------------------------------
+
+func TestCreateReview_Success(t *testing.T) {
+	d := testutil.TestDB(t, MigrationSQL)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	// Commit to main so head_sequence > 0 and reviewable by a different author.
+	_, err := s.Commit(ctx, model.CommitRequest{
+		Repo: "default", Branch: "main",
+		Files:   []model.FileChange{{Path: "f.txt", Content: []byte("v1")}},
+		Message: "init", Author: "alice@example.com",
+	})
+	if err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	rev, err := s.CreateReview(ctx, "default", "main", "bob@example.com", model.ReviewApproved, "LGTM")
+	if err != nil {
+		t.Fatalf("CreateReview: %v", err)
+	}
+	if rev.ID == "" {
+		t.Error("expected non-empty id")
+	}
+	if rev.Sequence != 1 {
+		t.Errorf("expected sequence 1, got %d", rev.Sequence)
+	}
+	if rev.Status != model.ReviewApproved {
+		t.Errorf("expected approved, got %q", rev.Status)
+	}
+	if rev.Body != "LGTM" {
+		t.Errorf("expected body LGTM, got %q", rev.Body)
+	}
+}
+
+func TestCreateReview_RecordedAtHeadSequence(t *testing.T) {
+	d := testutil.TestDB(t, MigrationSQL)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	// Two commits on main by alice.
+	for i := 0; i < 2; i++ {
+		_, err := s.Commit(ctx, model.CommitRequest{
+			Repo: "default", Branch: "main",
+			Files:   []model.FileChange{{Path: "f.txt", Content: []byte("v" + string(rune('1'+i)))}},
+			Message: "commit", Author: "alice@example.com",
+		})
+		if err != nil {
+			t.Fatalf("commit %d: %v", i, err)
+		}
+	}
+
+	// bob reviews at head (seq=2).
+	rev, err := s.CreateReview(ctx, "default", "main", "bob@example.com", model.ReviewApproved, "")
+	if err != nil {
+		t.Fatalf("CreateReview: %v", err)
+	}
+	if rev.Sequence != 2 {
+		t.Errorf("expected sequence 2 (head), got %d", rev.Sequence)
+	}
+}
+
+func TestCreateReview_StaleAfterCommit(t *testing.T) {
+	d := testutil.TestDB(t, MigrationSQL)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	_, err := s.Commit(ctx, model.CommitRequest{
+		Repo: "default", Branch: "main",
+		Files:   []model.FileChange{{Path: "f.txt", Content: []byte("v1")}},
+		Message: "init", Author: "alice@example.com",
+	})
+	if err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	// Bob reviews at seq=1.
+	rev, err := s.CreateReview(ctx, "default", "main", "bob@example.com", model.ReviewApproved, "")
+	if err != nil {
+		t.Fatalf("CreateReview: %v", err)
+	}
+	if rev.Sequence != 1 {
+		t.Fatalf("expected sequence 1, got %d", rev.Sequence)
+	}
+
+	// A new commit advances head_sequence to 2.
+	_, err = s.Commit(ctx, model.CommitRequest{
+		Repo: "default", Branch: "main",
+		Files:   []model.FileChange{{Path: "f.txt", Content: []byte("v2")}},
+		Message: "update", Author: "alice@example.com",
+	})
+	if err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	// The review at seq=1 is now stale: head_sequence is now 2.
+	var headSeq int64
+	err = d.QueryRow("SELECT head_sequence FROM branches WHERE name = 'main'").Scan(&headSeq)
+	if err != nil {
+		t.Fatalf("query branch: %v", err)
+	}
+	if headSeq != 2 {
+		t.Fatalf("expected head_sequence 2 after commit, got %d", headSeq)
+	}
+	// The review's sequence (1) no longer matches head (2) — it is stale.
+	if rev.Sequence == headSeq {
+		t.Error("expected review to be stale (sequence != head_sequence)")
+	}
+}
+
+func TestListReviews_ByBranch(t *testing.T) {
+	d := testutil.TestDB(t, MigrationSQL)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	_, err := s.Commit(ctx, model.CommitRequest{
+		Repo: "default", Branch: "main",
+		Files:   []model.FileChange{{Path: "f.txt", Content: []byte("v1")}},
+		Message: "init", Author: "alice@example.com",
+	})
+	if err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	// Two reviews by different users.
+	_, err = s.CreateReview(ctx, "default", "main", "bob@example.com", model.ReviewApproved, "LGTM")
+	if err != nil {
+		t.Fatalf("review 1: %v", err)
+	}
+	_, err = s.CreateReview(ctx, "default", "main", "carol@example.com", model.ReviewRejected, "needs work")
+	if err != nil {
+		t.Fatalf("review 2: %v", err)
+	}
+
+	reviews, err := s.ListReviews(ctx, "default", "main", nil)
+	if err != nil {
+		t.Fatalf("ListReviews: %v", err)
+	}
+	if len(reviews) != 2 {
+		t.Fatalf("expected 2 reviews, got %d", len(reviews))
+	}
+	// Most recent first (carol reviewed last).
+	if reviews[0].Reviewer != "carol@example.com" {
+		t.Errorf("expected first review by carol, got %q", reviews[0].Reviewer)
+	}
+}
+
+func TestCreateReview_SelfApproval(t *testing.T) {
+	d := testutil.TestDB(t, MigrationSQL)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	// alice commits to main.
+	_, err := s.Commit(ctx, model.CommitRequest{
+		Repo: "default", Branch: "main",
+		Files:   []model.FileChange{{Path: "f.txt", Content: []byte("v1")}},
+		Message: "init", Author: "alice@example.com",
+	})
+	if err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	// alice tries to approve her own commit.
+	_, err = s.CreateReview(ctx, "default", "main", "alice@example.com", model.ReviewApproved, "")
+	if !errors.Is(err, ErrSelfApproval) {
+		t.Fatalf("expected ErrSelfApproval, got %v", err)
+	}
+}
+
+func TestReviewRepoIsolation(t *testing.T) {
+	d := testutil.TestDB(t, MigrationSQL)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	// Create two repos.
+	for _, repo := range []string{"repo-a", "repo-b"} {
+		if _, err := s.CreateRepo(ctx, model.CreateRepoRequest{Name: repo}); err != nil {
+			t.Fatalf("CreateRepo %s: %v", repo, err)
+		}
+	}
+
+	// alice commits to repo-a.
+	_, err := s.Commit(ctx, model.CommitRequest{
+		Repo: "repo-a", Branch: "main",
+		Files:   []model.FileChange{{Path: "f.txt", Content: []byte("a")}},
+		Message: "init", Author: "alice@example.com",
+	})
+	if err != nil {
+		t.Fatalf("commit repo-a: %v", err)
+	}
+
+	// bob reviews repo-a.
+	_, err = s.CreateReview(ctx, "repo-a", "main", "bob@example.com", model.ReviewApproved, "")
+	if err != nil {
+		t.Fatalf("review repo-a: %v", err)
+	}
+
+	// Reviews in repo-b must be empty.
+	reviews, err := s.ListReviews(ctx, "repo-b", "main", nil)
+	if err != nil {
+		t.Fatalf("ListReviews repo-b: %v", err)
+	}
+	if len(reviews) != 0 {
+		t.Errorf("expected 0 reviews in repo-b, got %d", len(reviews))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Check-run store tests
+// ---------------------------------------------------------------------------
+
+func TestCreateCheckRun_Success(t *testing.T) {
+	d := testutil.TestDB(t, MigrationSQL)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	cr, err := s.CreateCheckRun(ctx, "default", "main", "ci/build", model.CheckRunPassed, "ci-bot")
+	if err != nil {
+		t.Fatalf("CreateCheckRun: %v", err)
+	}
+	if cr.ID == "" {
+		t.Error("expected non-empty id")
+	}
+	if cr.Sequence != 0 {
+		t.Errorf("expected sequence 0 (no commits yet), got %d", cr.Sequence)
+	}
+	if cr.Status != model.CheckRunPassed {
+		t.Errorf("expected passed, got %q", cr.Status)
+	}
+	if cr.Reporter != "ci-bot" {
+		t.Errorf("expected reporter ci-bot, got %q", cr.Reporter)
+	}
+}
+
+func TestCreateCheckRun_RecordedAtHeadSequence(t *testing.T) {
+	d := testutil.TestDB(t, MigrationSQL)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	_, err := s.Commit(ctx, model.CommitRequest{
+		Repo: "default", Branch: "main",
+		Files:   []model.FileChange{{Path: "f.txt", Content: []byte("v1")}},
+		Message: "init", Author: "alice",
+	})
+	if err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	cr, err := s.CreateCheckRun(ctx, "default", "main", "ci/build", model.CheckRunPassed, "ci-bot")
+	if err != nil {
+		t.Fatalf("CreateCheckRun: %v", err)
+	}
+	if cr.Sequence != 1 {
+		t.Errorf("expected sequence 1 (head), got %d", cr.Sequence)
+	}
+}
+
+func TestListCheckRuns_ByBranch(t *testing.T) {
+	d := testutil.TestDB(t, MigrationSQL)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	_, err := s.CreateCheckRun(ctx, "default", "main", "ci/build", model.CheckRunPassed, "ci-bot")
+	if err != nil {
+		t.Fatalf("check 1: %v", err)
+	}
+	_, err = s.CreateCheckRun(ctx, "default", "main", "ci/lint", model.CheckRunFailed, "ci-bot")
+	if err != nil {
+		t.Fatalf("check 2: %v", err)
+	}
+
+	crs, err := s.ListCheckRuns(ctx, "default", "main", nil)
+	if err != nil {
+		t.Fatalf("ListCheckRuns: %v", err)
+	}
+	if len(crs) != 2 {
+		t.Fatalf("expected 2 check runs, got %d", len(crs))
+	}
+}
+
+func TestListCheckRuns_LatestPerName(t *testing.T) {
+	d := testutil.TestDB(t, MigrationSQL)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	// First run: pending
+	_, err := s.CreateCheckRun(ctx, "default", "main", "ci/build", model.CheckRunPending, "ci-bot")
+	if err != nil {
+		t.Fatalf("check 1: %v", err)
+	}
+	// Second run: passed (same check_name, more recent)
+	_, err = s.CreateCheckRun(ctx, "default", "main", "ci/build", model.CheckRunPassed, "ci-bot")
+	if err != nil {
+		t.Fatalf("check 2: %v", err)
+	}
+
+	crs, err := s.ListCheckRuns(ctx, "default", "main", nil)
+	if err != nil {
+		t.Fatalf("ListCheckRuns: %v", err)
+	}
+	if len(crs) != 2 {
+		t.Fatalf("expected 2 check runs total, got %d", len(crs))
+	}
+	// Most recent first: passed should be first.
+	if crs[0].Status != model.CheckRunPassed {
+		t.Errorf("expected most recent check run (passed) first, got %q", crs[0].Status)
+	}
 }

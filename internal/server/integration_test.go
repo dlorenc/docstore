@@ -859,3 +859,226 @@ func TestIntegrationDeleteRepo_CleansUp(t *testing.T) {
 		t.Fatalf("expected 404 after delete, got %d", resp.StatusCode)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Review and check-run integration tests
+// ---------------------------------------------------------------------------
+
+func TestIntegrationReviewFlow(t *testing.T) {
+	database := testutil.TestDB(t, dbpkg.MigrationSQL)
+	writeStore := dbpkg.NewStore(database)
+	handler := server.New(writeStore, database, "alice@example.com")
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	post := func(path, body string) *http.Response {
+		t.Helper()
+		resp, err := http.Post(srv.URL+path, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST %s: %v", path, err)
+		}
+		return resp
+	}
+
+	// Step 1: Create a branch.
+	r := post("/repos/default/branch", `{"name":"feature/rev"}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("create branch: expected 201, got %d", r.StatusCode)
+	}
+
+	// Step 2: alice commits to the branch.
+	r = post("/repos/default/commit", `{"branch":"feature/rev","message":"work","files":[{"path":"f.txt","content":"dGVzdA=="}]}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("commit: expected 201, got %d", r.StatusCode)
+	}
+
+	// Step 3: alice tries to approve her own commit — should get 403.
+	r = post("/repos/default/review", `{"branch":"feature/rev","status":"approved","body":"self approve"}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusForbidden {
+		t.Fatalf("self-approval: expected 403, got %d", r.StatusCode)
+	}
+
+	// Step 4: Switch server identity to bob who hasn't committed anything.
+	handlerBob := server.New(writeStore, database, "bob@example.com")
+	srvBob := httptest.NewServer(handlerBob)
+	defer srvBob.Close()
+
+	r, err := http.Post(srvBob.URL+"/repos/default/review", "application/json",
+		strings.NewReader(`{"branch":"feature/rev","status":"approved","body":"LGTM"}`))
+	if err != nil {
+		t.Fatalf("bob review: %v", err)
+	}
+	defer r.Body.Close()
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("bob review: expected 201, got %d", r.StatusCode)
+	}
+
+	var reviewResp struct {
+		ID       string `json:"id"`
+		Sequence int64  `json:"sequence"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&reviewResp); err != nil {
+		t.Fatalf("decode review response: %v", err)
+	}
+	if reviewResp.ID == "" {
+		t.Error("expected non-empty review id")
+	}
+
+	// Step 5: GET reviews for the branch — should return 1 review.
+	getResp, err := http.Get(srv.URL + "/repos/default/branch/feature/rev/reviews")
+	if err != nil {
+		t.Fatalf("GET reviews: %v", err)
+	}
+	defer getResp.Body.Close()
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET reviews: expected 200, got %d", getResp.StatusCode)
+	}
+
+	var reviews []struct {
+		ID       string `json:"id"`
+		Reviewer string `json:"reviewer"`
+		Status   string `json:"status"`
+	}
+	if err := json.NewDecoder(getResp.Body).Decode(&reviews); err != nil {
+		t.Fatalf("decode reviews: %v", err)
+	}
+	if len(reviews) != 1 {
+		t.Fatalf("expected 1 review, got %d", len(reviews))
+	}
+	if reviews[0].Status != "approved" {
+		t.Errorf("expected status approved, got %q", reviews[0].Status)
+	}
+
+	// Step 6: alice makes another commit — the prior review becomes stale.
+	r2, err := http.Post(srv.URL+"/repos/default/commit", "application/json",
+		strings.NewReader(`{"branch":"feature/rev","message":"update","files":[{"path":"f.txt","content":"dXBkYXRlZA=="}]}`))
+	if err != nil {
+		t.Fatalf("second commit: %v", err)
+	}
+	var commitResp struct{ Sequence int64 `json:"sequence"` }
+	json.NewDecoder(r2.Body).Decode(&commitResp)
+	r2.Body.Close()
+	if r2.StatusCode != http.StatusCreated {
+		t.Fatalf("second commit: expected 201, got %d", r2.StatusCode)
+	}
+
+	// The old review's sequence should differ from current head_sequence.
+	if reviewResp.Sequence == commitResp.Sequence {
+		t.Error("expected review to be stale after new commit")
+	}
+}
+
+func TestIntegrationCheckRunFlow(t *testing.T) {
+	database := testutil.TestDB(t, dbpkg.MigrationSQL)
+	writeStore := dbpkg.NewStore(database)
+	handler := server.New(writeStore, database, "ci-bot@example.com")
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	post := func(path, body string) *http.Response {
+		t.Helper()
+		resp, err := http.Post(srv.URL+path, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST %s: %v", path, err)
+		}
+		return resp
+	}
+
+	// Create a check run on main.
+	r := post("/repos/default/check", `{"branch":"main","check_name":"ci/build","status":"passed"}`)
+	defer r.Body.Close()
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("create check: expected 201, got %d", r.StatusCode)
+	}
+
+	var checkResp struct {
+		ID       string `json:"id"`
+		Sequence int64  `json:"sequence"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&checkResp); err != nil {
+		t.Fatalf("decode check response: %v", err)
+	}
+	if checkResp.ID == "" {
+		t.Error("expected non-empty check run id")
+	}
+
+	// GET checks for main.
+	getResp, err := http.Get(srv.URL + "/repos/default/branch/main/checks")
+	if err != nil {
+		t.Fatalf("GET checks: %v", err)
+	}
+	defer getResp.Body.Close()
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET checks: expected 200, got %d", getResp.StatusCode)
+	}
+
+	var checks []struct {
+		ID        string `json:"id"`
+		CheckName string `json:"check_name"`
+		Status    string `json:"status"`
+	}
+	if err := json.NewDecoder(getResp.Body).Decode(&checks); err != nil {
+		t.Fatalf("decode checks: %v", err)
+	}
+	if len(checks) != 1 {
+		t.Fatalf("expected 1 check run, got %d", len(checks))
+	}
+	if checks[0].Status != "passed" {
+		t.Errorf("expected status passed, got %q", checks[0].Status)
+	}
+}
+
+func TestIntegrationReviewRepoIsolation(t *testing.T) {
+	database := testutil.TestDB(t, dbpkg.MigrationSQL)
+	writeStore := dbpkg.NewStore(database)
+	// alice is the reviewer; bob is the committer so alice can approve
+	handler := server.New(writeStore, database, "alice@example.com")
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	post := func(path, body string) *http.Response {
+		t.Helper()
+		resp, err := http.Post(srv.URL+path, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST %s: %v", path, err)
+		}
+		return resp
+	}
+
+	// Create two repos.
+	for _, name := range []string{"repo-x", "repo-y"} {
+		r := post("/repos", `{"name":"`+name+`"}`)
+		r.Body.Close()
+		if r.StatusCode != http.StatusCreated {
+			t.Fatalf("create repo %s: expected 201, got %d", name, r.StatusCode)
+		}
+	}
+
+	// alice leaves a review on repo-x/main
+	r := post("/repos/repo-x/review", `{"branch":"main","status":"approved"}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("review repo-x: expected 201, got %d", r.StatusCode)
+	}
+
+	// GET /repos/repo-y/branch/main/reviews must be empty.
+	getResp, err := http.Get(srv.URL + "/repos/repo-y/branch/main/reviews")
+	if err != nil {
+		t.Fatalf("GET reviews repo-y: %v", err)
+	}
+	defer getResp.Body.Close()
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET reviews: expected 200, got %d", getResp.StatusCode)
+	}
+
+	var reviews []interface{}
+	if err := json.NewDecoder(getResp.Body).Decode(&reviews); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(reviews) != 0 {
+		t.Errorf("expected 0 reviews in repo-y, got %d", len(reviews))
+	}
+}
