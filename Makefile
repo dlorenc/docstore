@@ -1,10 +1,13 @@
-.PHONY: build test lint clean
+.PHONY: build build-ds test lint clean
 
 BINARY := docstore
 BUILD_DIR := bin
 
 build:
 	go build -o $(BUILD_DIR)/$(BINARY) ./cmd/docstore
+
+build-ds:
+	go build -o $(BUILD_DIR)/ds ./cmd/ds
 
 test:
 	go test ./...
