@@ -77,8 +77,9 @@ type ConflictEntry struct {
 
 // DiffResponse is the response for GET /diff.
 type DiffResponse struct {
-	Changed   []DiffEntry     `json:"changed"`
-	Conflicts []ConflictEntry `json:"conflicts,omitempty"`
+	BranchChanges []DiffEntry     `json:"branch_changes"`
+	MainChanges   []DiffEntry     `json:"main_changes"`
+	Conflicts     []ConflictEntry `json:"conflicts,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -179,6 +180,7 @@ type CreateBranchResponse struct {
 // MergeRequest is the body for POST /merge.
 type MergeRequest struct {
 	Branch string `json:"branch"`
+	Author string `json:"author,omitempty"`
 }
 
 // MergeResponse is the response for a successful POST /merge.

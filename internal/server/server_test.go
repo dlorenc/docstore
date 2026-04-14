@@ -414,3 +414,88 @@ func TestHandleMerge_BranchNotFound(t *testing.T) {
 		t.Fatalf("expected 404, got %d", rec.Code)
 	}
 }
+
+func TestHandleMerge_CannotMergeMain(t *testing.T) {
+	srv := New(&mockStore{}, nil)
+
+	body, _ := json.Marshal(model.MergeRequest{Branch: "main"})
+	req := httptest.NewRequest(http.MethodPost, "/merge", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleMerge_AuthorFromHeader(t *testing.T) {
+	var capturedAuthor string
+	store := &mockStore{
+		mergeFn: func(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error) {
+			capturedAuthor = req.Author
+			return &model.MergeResponse{Sequence: 1}, nil, nil
+		},
+	}
+	srv := New(store, nil)
+
+	body, _ := json.Marshal(model.MergeRequest{Branch: "feature/test"})
+	req := httptest.NewRequest(http.MethodPost, "/merge", bytes.NewReader(body))
+	req.Header.Set("X-DocStore-Identity", "alice@example.com")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	if capturedAuthor != "alice@example.com" {
+		t.Errorf("expected author alice@example.com, got %q", capturedAuthor)
+	}
+}
+
+func TestHandleMerge_AuthorFromBody(t *testing.T) {
+	var capturedAuthor string
+	store := &mockStore{
+		mergeFn: func(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error) {
+			capturedAuthor = req.Author
+			return &model.MergeResponse{Sequence: 1}, nil, nil
+		},
+	}
+	srv := New(store, nil)
+
+	body, _ := json.Marshal(model.MergeRequest{Branch: "feature/test", Author: "bob@example.com"})
+	req := httptest.NewRequest(http.MethodPost, "/merge", bytes.NewReader(body))
+	req.Header.Set("X-DocStore-Identity", "alice@example.com")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	// Body author takes precedence over header.
+	if capturedAuthor != "bob@example.com" {
+		t.Errorf("expected author bob@example.com, got %q", capturedAuthor)
+	}
+}
+
+func TestHandleMerge_DefaultAuthorSystem(t *testing.T) {
+	var capturedAuthor string
+	store := &mockStore{
+		mergeFn: func(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error) {
+			capturedAuthor = req.Author
+			return &model.MergeResponse{Sequence: 1}, nil, nil
+		},
+	}
+	srv := New(store, nil)
+
+	body, _ := json.Marshal(model.MergeRequest{Branch: "feature/test"})
+	req := httptest.NewRequest(http.MethodPost, "/merge", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	if capturedAuthor != "system" {
+		t.Errorf("expected default author 'system', got %q", capturedAuthor)
+	}
+}

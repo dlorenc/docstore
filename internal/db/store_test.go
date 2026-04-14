@@ -371,13 +371,14 @@ func TestMerge_Success(t *testing.T) {
 	}
 
 	// Merge.
-	resp, conflicts, err := s.Merge(ctx, model.MergeRequest{Branch: "feature/merge"})
+	resp, conflicts, err := s.Merge(ctx, model.MergeRequest{Branch: "feature/merge", Author: "carol"})
 	if err != nil {
 		t.Fatalf("merge: %v", err)
 	}
 	if conflicts != nil {
 		t.Fatalf("expected no conflicts, got %v", conflicts)
 	}
+	// mainHead was 1 before merge, so merge commit is at seq 2.
 	if resp.Sequence != 2 {
 		t.Errorf("expected merge sequence 2, got %d", resp.Sequence)
 	}
@@ -410,6 +411,16 @@ func TestMerge_Success(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("expected 1 merge commit for new.txt on main, got %d", count)
+	}
+
+	// Verify merge commit author is the one passed in the request.
+	var author string
+	err = d.QueryRow("SELECT author FROM file_commits WHERE branch = 'main' AND path = 'new.txt' AND sequence = $1", resp.Sequence).Scan(&author)
+	if err != nil {
+		t.Fatalf("query author: %v", err)
+	}
+	if author != "carol" {
+		t.Errorf("expected merge author 'carol', got %q", author)
 	}
 }
 
