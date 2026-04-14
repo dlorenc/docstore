@@ -1,0 +1,54 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: ko-build/setup-ko@v0.7
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/320310132788/locations/global/workloadIdentityPools/github-actions/providers/github
+          service_account: docstore-deployer@dlorenc-chainguard.iam.gserviceaccount.com
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure ko
+        run: |
+          gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+      - name: Build and push image
+        id: build
+        env:
+          KO_DOCKER_REPO: us-central1-docker.pkg.dev/dlorenc-chainguard/images/docstore
+        run: |
+          IMAGE=$(ko build --bare --tags latest,$(git rev-parse --short HEAD) ./cmd/docstore)
+          echo "image=$IMAGE" >> $GITHUB_OUTPUT
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy docstore \
+            --image=${{ steps.build.outputs.image }} \
+            --project=dlorenc-chainguard \
+            --region=us-central1 \
+            --service-account=docstore-server@dlorenc-chainguard.iam.gserviceaccount.com \
+            --add-cloudsql-instances=dlorenc-chainguard:us-central1:docstore-mvp \
+            --update-secrets=DATABASE_URL=docstore-db-url:latest \
+            --allow-unauthenticated \
+            --min-instances=0 \
+            --max-instances=1 \
+            --port=8080
