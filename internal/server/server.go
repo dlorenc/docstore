@@ -12,12 +12,19 @@ import (
 	"github.com/dlorenc/docstore/internal/store"
 )
 
-// WriteStore abstracts the database write operations.
+// WriteStore abstracts the database write and repo management operations.
 type WriteStore interface {
+	// Repo management
+	CreateRepo(ctx context.Context, req model.CreateRepoRequest) (*model.Repo, error)
+	DeleteRepo(ctx context.Context, name string) error
+	ListRepos(ctx context.Context) ([]model.Repo, error)
+	GetRepo(ctx context.Context, name string) (*model.Repo, error)
+
+	// Branch and commit operations (all repo-scoped via req.Repo / explicit repo param)
 	Commit(ctx context.Context, req model.CommitRequest) (*model.CommitResponse, error)
 	CreateBranch(ctx context.Context, req model.CreateBranchRequest) (*model.CreateBranchResponse, error)
 	Merge(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error)
-	DeleteBranch(ctx context.Context, name string) error
+	DeleteBranch(ctx context.Context, repo, name string) error
 	Rebase(ctx context.Context, req model.RebaseRequest) (*model.RebaseResponse, []db.MergeConflict, error)
 }
 
@@ -40,20 +47,29 @@ func New(writeStore WriteStore, database *sql.DB, devIdentity string) http.Handl
 
 	// All other routes require IAP authentication.
 	inner := http.NewServeMux()
-	inner.HandleFunc("GET /tree", s.handleTree)
-	inner.HandleFunc("GET /file/{path...}", s.handleFile)
-	inner.HandleFunc("GET /commit/{sequence}", s.handleGetCommit)
-	inner.HandleFunc("GET /diff", s.handleDiff)
-	inner.HandleFunc("GET /branches", s.handleBranches)
-	inner.HandleFunc("GET /branch/{name}/status", notImplemented)
 
-	inner.HandleFunc("POST /commit", s.handleCommit)
-	inner.HandleFunc("POST /branch", s.handleCreateBranch)
-	inner.HandleFunc("POST /merge", s.handleMerge)
-	inner.HandleFunc("POST /rebase", s.handleRebase)
-	inner.HandleFunc("POST /review", notImplemented)
-	inner.HandleFunc("POST /check", notImplemented)
-	inner.HandleFunc("DELETE /branch/{name...}", s.handleDeleteBranch)
+	// Repo management endpoints
+	inner.HandleFunc("POST /repos", s.handleCreateRepo)
+	inner.HandleFunc("GET /repos", s.handleListRepos)
+	inner.HandleFunc("GET /repos/{name}", s.handleGetRepo)
+	inner.HandleFunc("DELETE /repos/{name}", s.handleDeleteRepo)
+
+	// Repo-scoped read endpoints
+	inner.HandleFunc("GET /repos/{name}/tree", s.handleTree)
+	inner.HandleFunc("GET /repos/{name}/file/{path...}", s.handleFile)
+	inner.HandleFunc("GET /repos/{name}/commit/{sequence}", s.handleGetCommit)
+	inner.HandleFunc("GET /repos/{name}/diff", s.handleDiff)
+	inner.HandleFunc("GET /repos/{name}/branches", s.handleBranches)
+	inner.HandleFunc("GET /repos/{name}/branch/{bname}/status", notImplemented)
+
+	// Repo-scoped write endpoints
+	inner.HandleFunc("POST /repos/{name}/commit", s.handleCommit)
+	inner.HandleFunc("POST /repos/{name}/branch", s.handleCreateBranch)
+	inner.HandleFunc("POST /repos/{name}/merge", s.handleMerge)
+	inner.HandleFunc("POST /repos/{name}/rebase", s.handleRebase)
+	inner.HandleFunc("POST /repos/{name}/review", notImplemented)
+	inner.HandleFunc("POST /repos/{name}/check", notImplemented)
+	inner.HandleFunc("DELETE /repos/{name}/branch/{bname...}", s.handleDeleteBranch)
 
 	outer.Handle("/", IAPMiddleware(devIdentity)(inner))
 	return outer
@@ -65,11 +81,14 @@ type server struct {
 }
 
 func (s *server) handleCommit(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+
 	var req model.CommitRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
+	req.Repo = repo
 
 	if req.Branch == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "branch is required"})
