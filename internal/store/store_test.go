@@ -322,6 +322,175 @@ func TestGetCommit(t *testing.T) {
 	})
 }
 
+func TestListBranches(t *testing.T) {
+	db := testutil.TestDB(t)
+	seed(t, db)
+	s := store.New(db)
+	ctx := context.Background()
+
+	// Add a feature branch.
+	stmts := []string{
+		`INSERT INTO branches (name, head_sequence, base_sequence, status) VALUES ('feature/a', 5, 2, 'active')`,
+		`INSERT INTO branches (name, head_sequence, base_sequence, status) VALUES ('feature/merged', 3, 1, 'merged')`,
+	}
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("seed: %v\n%s", err, stmt)
+		}
+	}
+
+	t.Run("all branches", func(t *testing.T) {
+		branches, err := s.ListBranches(ctx, "")
+		if err != nil {
+			t.Fatalf("ListBranches: %v", err)
+		}
+		if len(branches) != 3 {
+			t.Fatalf("expected 3 branches, got %d: %+v", len(branches), branches)
+		}
+		// Ordered by name
+		if branches[0].Name != "feature/a" {
+			t.Errorf("expected feature/a first, got %s", branches[0].Name)
+		}
+	})
+
+	t.Run("filter active", func(t *testing.T) {
+		branches, err := s.ListBranches(ctx, "active")
+		if err != nil {
+			t.Fatalf("ListBranches: %v", err)
+		}
+		if len(branches) != 2 {
+			t.Fatalf("expected 2 active branches, got %d", len(branches))
+		}
+	})
+
+	t.Run("filter merged", func(t *testing.T) {
+		branches, err := s.ListBranches(ctx, "merged")
+		if err != nil {
+			t.Fatalf("ListBranches: %v", err)
+		}
+		if len(branches) != 1 {
+			t.Fatalf("expected 1 merged branch, got %d", len(branches))
+		}
+		if branches[0].Name != "feature/merged" {
+			t.Errorf("expected feature/merged, got %s", branches[0].Name)
+		}
+	})
+}
+
+func TestGetDiff(t *testing.T) {
+	db := testutil.TestDB(t)
+	seed(t, db)
+	s := store.New(db)
+	ctx := context.Background()
+
+	// Create a feature branch forked at sequence 2.
+	stmts := []string{
+		`INSERT INTO branches (name, head_sequence, base_sequence, status) VALUES ('feature/diff', 6, 2, 'active')`,
+		// Branch changes: add new.txt, modify hello.txt
+		`INSERT INTO documents (version_id, path, content, content_hash, created_by)
+		 VALUES ('aaaaaaaa-0000-0000-0000-000000000020', 'new.txt', 'new file', 'hash_new', 'carol')`,
+		`INSERT INTO documents (version_id, path, content, content_hash, created_by)
+		 VALUES ('aaaaaaaa-0000-0000-0000-000000000021', 'hello.txt', 'hello v3 branch', 'hash_hello_v3', 'carol')`,
+		`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch, message, author)
+		 VALUES ('cccccccc-0000-0000-0000-000000000020', 5, 'new.txt', 'aaaaaaaa-0000-0000-0000-000000000020', 'feature/diff', 'add new', 'carol')`,
+		`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch, message, author)
+		 VALUES ('cccccccc-0000-0000-0000-000000000021', 6, 'hello.txt', 'aaaaaaaa-0000-0000-0000-000000000021', 'feature/diff', 'update hello', 'carol')`,
+	}
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("seed: %v\n%s", err, stmt)
+		}
+	}
+
+	t.Run("diff shows branch changes", func(t *testing.T) {
+		result, err := s.GetDiff(ctx, "feature/diff")
+		if err != nil {
+			t.Fatalf("GetDiff: %v", err)
+		}
+		if result == nil {
+			t.Fatal("expected diff result, got nil")
+		}
+		if len(result.Changed) != 2 {
+			t.Fatalf("expected 2 changed files, got %d: %+v", len(result.Changed), result.Changed)
+		}
+	})
+
+	t.Run("diff detects conflicts", func(t *testing.T) {
+		// Main also changed hello.txt at seq 3-4 (deleted.txt at seq 3, 4),
+		// but hello.txt was only changed at seq 2 on main (which is <= base_sequence=2).
+		// So no conflicts by default from the seed data because main changes at seq 3,4 are deleted.txt.
+		result, err := s.GetDiff(ctx, "feature/diff")
+		if err != nil {
+			t.Fatalf("GetDiff: %v", err)
+		}
+		// hello.txt changed on main at seq 2 which is <= base (2), not a conflict.
+		// deleted.txt changed on main at seq 3,4 but not on branch. Not a conflict.
+		if len(result.Conflicts) != 0 {
+			t.Errorf("expected 0 conflicts, got %d: %+v", len(result.Conflicts), result.Conflicts)
+		}
+	})
+
+	t.Run("nonexistent branch", func(t *testing.T) {
+		result, err := s.GetDiff(ctx, "nonexistent")
+		if err != nil {
+			t.Fatalf("GetDiff: %v", err)
+		}
+		if result != nil {
+			t.Errorf("expected nil for nonexistent branch, got %+v", result)
+		}
+	})
+}
+
+func TestGetDiff_WithConflict(t *testing.T) {
+	db := testutil.TestDB(t)
+	s := store.New(db)
+	ctx := context.Background()
+
+	// Minimal setup: commit to main, create branch, change same file on both.
+	stmts := []string{
+		// Initial main commit
+		`INSERT INTO documents (version_id, path, content, content_hash, created_by)
+		 VALUES ('dddddddd-0000-0000-0000-000000000001', 'shared.txt', 'original', 'hash_orig', 'alice')`,
+		`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch, message, author)
+		 VALUES ('eeeeeeee-0000-0000-0000-000000000001', 1, 'shared.txt', 'dddddddd-0000-0000-0000-000000000001', 'main', 'init', 'alice')`,
+		`UPDATE branches SET head_sequence = 1 WHERE name = 'main'`,
+
+		// Branch at base=1
+		`INSERT INTO branches (name, head_sequence, base_sequence, status) VALUES ('feature/conflict', 3, 1, 'active')`,
+
+		// Main changes shared.txt after branch point
+		`INSERT INTO documents (version_id, path, content, content_hash, created_by)
+		 VALUES ('dddddddd-0000-0000-0000-000000000002', 'shared.txt', 'main edit', 'hash_main', 'alice')`,
+		`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch, message, author)
+		 VALUES ('eeeeeeee-0000-0000-0000-000000000002', 2, 'shared.txt', 'dddddddd-0000-0000-0000-000000000002', 'main', 'main edit', 'alice')`,
+
+		// Branch also changes shared.txt
+		`INSERT INTO documents (version_id, path, content, content_hash, created_by)
+		 VALUES ('dddddddd-0000-0000-0000-000000000003', 'shared.txt', 'branch edit', 'hash_branch', 'bob')`,
+		`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch, message, author)
+		 VALUES ('eeeeeeee-0000-0000-0000-000000000003', 3, 'shared.txt', 'dddddddd-0000-0000-0000-000000000003', 'feature/conflict', 'branch edit', 'bob')`,
+	}
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("seed: %v\n%s", err, stmt)
+		}
+	}
+
+	result, err := s.GetDiff(ctx, "feature/conflict")
+	if err != nil {
+		t.Fatalf("GetDiff: %v", err)
+	}
+	if len(result.Changed) != 1 {
+		t.Fatalf("expected 1 changed, got %d", len(result.Changed))
+	}
+	if len(result.Conflicts) != 1 {
+		t.Fatalf("expected 1 conflict, got %d", len(result.Conflicts))
+	}
+	if result.Conflicts[0].Path != "shared.txt" {
+		t.Errorf("expected conflict on shared.txt, got %q", result.Conflicts[0].Path)
+	}
+}
+
 func TestBranchTree(t *testing.T) {
 	db := testutil.TestDB(t)
 	seed(t, db)

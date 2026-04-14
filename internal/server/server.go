@@ -12,18 +12,23 @@ import (
 	"github.com/dlorenc/docstore/internal/store"
 )
 
-// CommitStore abstracts the database operations needed by the commit handler.
-type CommitStore interface {
+// WriteStore abstracts the database write operations.
+type WriteStore interface {
 	Commit(ctx context.Context, req model.CommitRequest) (*model.CommitResponse, error)
+	CreateBranch(ctx context.Context, req model.CreateBranchRequest) (*model.CreateBranchResponse, error)
+	Merge(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error)
 }
 
+// CommitStore is an alias for backward compatibility with tests.
+type CommitStore = WriteStore
+
 // New returns an http.Handler with all routes registered.
-// commitStore provides write operations (POST /commit); pass nil if only
+// writeStore provides write operations (POST /commit, /branch, /merge); pass nil if only
 // read/health endpoints are needed.
-// database provides read operations (GET /tree, /file, /commit); pass nil
+// database provides read operations (GET /tree, /file, /commit, /branches, /diff); pass nil
 // if only write/health endpoints are needed (e.g. in unit tests).
-func New(commitStore CommitStore, database *sql.DB) http.Handler {
-	s := &server{commitStore: commitStore}
+func New(writeStore WriteStore, database *sql.DB) http.Handler {
+	s := &server{commitStore: writeStore}
 	if database != nil {
 		s.readStore = store.New(database)
 	}
@@ -35,14 +40,14 @@ func New(commitStore CommitStore, database *sql.DB) http.Handler {
 	mux.HandleFunc("GET /tree", s.handleTree)
 	mux.HandleFunc("GET /file/{path...}", s.handleFile)
 	mux.HandleFunc("GET /commit/{sequence}", s.handleGetCommit)
-	mux.HandleFunc("GET /diff", notImplemented)
-	mux.HandleFunc("GET /branches", notImplemented)
+	mux.HandleFunc("GET /diff", s.handleDiff)
+	mux.HandleFunc("GET /branches", s.handleBranches)
 	mux.HandleFunc("GET /branch/{name}/status", notImplemented)
 
 	// Write endpoints.
 	mux.HandleFunc("POST /commit", s.handleCommit)
-	mux.HandleFunc("POST /branch", notImplemented)
-	mux.HandleFunc("POST /merge", notImplemented)
+	mux.HandleFunc("POST /branch", s.handleCreateBranch)
+	mux.HandleFunc("POST /merge", s.handleMerge)
 	mux.HandleFunc("POST /rebase", notImplemented)
 	mux.HandleFunc("POST /review", notImplemented)
 	mux.HandleFunc("POST /check", notImplemented)
