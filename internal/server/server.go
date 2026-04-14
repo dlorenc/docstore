@@ -25,37 +25,38 @@ type WriteStore interface {
 type CommitStore = WriteStore
 
 // New returns an http.Handler with all routes registered.
-// writeStore provides write operations (POST /commit, /branch, /merge); pass nil if only
-// read/health endpoints are needed.
-// database provides read operations (GET /tree, /file, /commit, /branches, /diff); pass nil
-// if only write/health endpoints are needed (e.g. in unit tests).
-func New(writeStore WriteStore, database *sql.DB) http.Handler {
+// devIdentity, if non-empty, bypasses IAP JWT validation (for local dev/testing).
+// writeStore provides write operations; pass nil if only read/health endpoints are needed.
+// database provides read operations; pass nil if only write/health endpoints are needed.
+func New(writeStore WriteStore, database *sql.DB, devIdentity string) http.Handler {
 	s := &server{commitStore: writeStore}
 	if database != nil {
 		s.readStore = store.New(database)
 	}
-	mux := http.NewServeMux()
 
-	mux.HandleFunc("GET /healthz", handleHealth)
+	// Health check is exempt from auth — load balancers and probes call it.
+	outer := http.NewServeMux()
+	outer.HandleFunc("GET /healthz", handleHealth)
 
-	// Read endpoints.
-	mux.HandleFunc("GET /tree", s.handleTree)
-	mux.HandleFunc("GET /file/{path...}", s.handleFile)
-	mux.HandleFunc("GET /commit/{sequence}", s.handleGetCommit)
-	mux.HandleFunc("GET /diff", s.handleDiff)
-	mux.HandleFunc("GET /branches", s.handleBranches)
-	mux.HandleFunc("GET /branch/{name}/status", notImplemented)
+	// All other routes require IAP authentication.
+	inner := http.NewServeMux()
+	inner.HandleFunc("GET /tree", s.handleTree)
+	inner.HandleFunc("GET /file/{path...}", s.handleFile)
+	inner.HandleFunc("GET /commit/{sequence}", s.handleGetCommit)
+	inner.HandleFunc("GET /diff", s.handleDiff)
+	inner.HandleFunc("GET /branches", s.handleBranches)
+	inner.HandleFunc("GET /branch/{name}/status", notImplemented)
 
-	// Write endpoints.
-	mux.HandleFunc("POST /commit", s.handleCommit)
-	mux.HandleFunc("POST /branch", s.handleCreateBranch)
-	mux.HandleFunc("POST /merge", s.handleMerge)
-	mux.HandleFunc("POST /rebase", s.handleRebase)
-	mux.HandleFunc("POST /review", notImplemented)
-	mux.HandleFunc("POST /check", notImplemented)
-	mux.HandleFunc("DELETE /branch/{name...}", s.handleDeleteBranch)
+	inner.HandleFunc("POST /commit", s.handleCommit)
+	inner.HandleFunc("POST /branch", s.handleCreateBranch)
+	inner.HandleFunc("POST /merge", s.handleMerge)
+	inner.HandleFunc("POST /rebase", s.handleRebase)
+	inner.HandleFunc("POST /review", notImplemented)
+	inner.HandleFunc("POST /check", notImplemented)
+	inner.HandleFunc("DELETE /branch/{name...}", s.handleDeleteBranch)
 
-	return mux
+	outer.Handle("/", IAPMiddleware(devIdentity)(inner))
+	return outer
 }
 
 type server struct {
@@ -82,16 +83,15 @@ func (s *server) handleCommit(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "message is required"})
 		return
 	}
-	if req.Author == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "author is required"})
-		return
-	}
 	for _, f := range req.Files {
 		if f.Path == "" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "file path is required"})
 			return
 		}
 	}
+
+	// Author always comes from the authenticated identity; clients cannot override it.
+	req.Author = IdentityFromContext(r.Context())
 
 	resp, err := s.commitStore.Commit(r.Context(), req)
 	if err != nil {
