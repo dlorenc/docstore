@@ -2,12 +2,14 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
 
 	"github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/model"
+	"github.com/dlorenc/docstore/internal/store"
 )
 
 // CommitStore abstracts the database operations needed by the commit handler.
@@ -16,18 +18,23 @@ type CommitStore interface {
 }
 
 // New returns an http.Handler with all routes registered.
-// The store parameter provides database operations; pass nil if only
-// health/read stubs are needed (e.g. in tests).
-func New(store CommitStore) http.Handler {
-	s := &server{store: store}
+// commitStore provides write operations (POST /commit); pass nil if only
+// read/health endpoints are needed.
+// database provides read operations (GET /tree, /file, /commit); pass nil
+// if only write/health endpoints are needed (e.g. in unit tests).
+func New(commitStore CommitStore, database *sql.DB) http.Handler {
+	s := &server{commitStore: commitStore}
+	if database != nil {
+		s.readStore = store.New(database)
+	}
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", handleHealth)
 
-	// Read endpoints (placeholders).
-	mux.HandleFunc("GET /tree", notImplemented)
-	mux.HandleFunc("GET /file/{path...}", notImplemented)
-	mux.HandleFunc("GET /commit/{sequence}", notImplemented)
+	// Read endpoints.
+	mux.HandleFunc("GET /tree", s.handleTree)
+	mux.HandleFunc("GET /file/{path...}", s.handleFile)
+	mux.HandleFunc("GET /commit/{sequence}", s.handleGetCommit)
 	mux.HandleFunc("GET /diff", notImplemented)
 	mux.HandleFunc("GET /branches", notImplemented)
 	mux.HandleFunc("GET /branch/{name}/status", notImplemented)
@@ -45,7 +52,8 @@ func New(store CommitStore) http.Handler {
 }
 
 type server struct {
-	store CommitStore
+	commitStore CommitStore
+	readStore   *store.Store
 }
 
 func (s *server) handleCommit(w http.ResponseWriter, r *http.Request) {
@@ -78,7 +86,7 @@ func (s *server) handleCommit(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	resp, err := s.store.Commit(r.Context(), req)
+	resp, err := s.commitStore.Commit(r.Context(), req)
 	if err != nil {
 		switch {
 		case errors.Is(err, db.ErrBranchNotFound):
