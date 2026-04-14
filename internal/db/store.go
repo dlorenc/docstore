@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/dlorenc/docstore/internal/model"
@@ -65,9 +66,14 @@ func (s *Store) CreateRepo(ctx context.Context, req model.CreateRepoRequest) (*m
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
+		slog.Error("tx begin failed", "op", "create_repo", "error", err)
 		return nil, fmt.Errorf("begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			slog.Error("tx rollback failed", "op", "create_repo", "error", rollbackErr)
+		}
+	}()
 
 	var r model.Repo
 	err = tx.QueryRowContext(ctx,
@@ -102,9 +108,14 @@ func (s *Store) CreateRepo(ctx context.Context, req model.CreateRepoRequest) (*m
 func (s *Store) DeleteRepo(ctx context.Context, name string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
+		slog.Error("tx begin failed", "op", "delete_repo", "error", err)
 		return fmt.Errorf("begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			slog.Error("tx rollback failed", "op", "delete_repo", "error", rollbackErr)
+		}
+	}()
 
 	// Verify repo exists.
 	var exists bool
@@ -178,9 +189,14 @@ func (s *Store) GetRepo(ctx context.Context, name string) (*model.Repo, error) {
 func (s *Store) Commit(ctx context.Context, req model.CommitRequest) (*model.CommitResponse, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
+		slog.Error("tx begin failed", "op", "commit", "error", err)
 		return nil, fmt.Errorf("begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			slog.Error("tx rollback failed", "op", "commit", "error", rollbackErr)
+		}
+	}()
 
 	// Lock the branch row and read current state.
 	var headSeq int64
@@ -286,9 +302,14 @@ func (s *Store) Commit(ctx context.Context, req model.CommitRequest) (*model.Com
 func (s *Store) CreateBranch(ctx context.Context, req model.CreateBranchRequest) (*model.CreateBranchResponse, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
+		slog.Error("tx begin failed", "op", "create_branch", "error", err)
 		return nil, fmt.Errorf("begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			slog.Error("tx rollback failed", "op", "create_branch", "error", rollbackErr)
+		}
+	}()
 
 	// Read main's head to set as the base_sequence.
 	// If main doesn't exist the repo itself doesn't exist.
@@ -335,11 +356,18 @@ func (s *Store) CreateBranch(ctx context.Context, req model.CreateBranchRequest)
 //
 // On conflict, it returns a non-nil []MergeConflict and ErrMergeConflict.
 func (s *Store) Merge(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []MergeConflict, error) {
+	slog.Debug("merge started", "repo", req.Repo, "branch", req.Branch)
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
+		slog.Error("tx begin failed", "op", "merge", "error", err)
 		return nil, nil, fmt.Errorf("begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			slog.Error("tx rollback failed", "op", "merge", "error", rollbackErr)
+		}
+	}()
 
 	// Lock main first, then source branch — consistent ordering prevents deadlocks.
 	var mainHead int64
@@ -386,6 +414,7 @@ func (s *Store) Merge(ctx context.Context, req model.MergeRequest) (*model.Merge
 		if err := tx.Commit(); err != nil {
 			return nil, nil, fmt.Errorf("commit tx: %w", err)
 		}
+		slog.Info("merge complete", "repo", req.Repo, "branch", req.Branch, "sequence", mainHead, "files", 0)
 		return &model.MergeResponse{Sequence: mainHead}, nil, nil
 	}
 
@@ -455,6 +484,7 @@ func (s *Store) Merge(ctx context.Context, req model.MergeRequest) (*model.Merge
 		return nil, nil, fmt.Errorf("commit tx: %w", err)
 	}
 
+	slog.Info("merge complete", "repo", req.Repo, "branch", req.Branch, "sequence", newSeq, "files", len(branchChanges))
 	return &model.MergeResponse{Sequence: newSeq}, nil, nil
 }
 
@@ -466,11 +496,18 @@ func (s *Store) Rebase(ctx context.Context, req model.RebaseRequest) (*model.Reb
 		return nil, nil, ErrBranchNotActive
 	}
 
+	slog.Debug("rebase started", "repo", req.Repo, "branch", req.Branch)
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
+		slog.Error("tx begin failed", "op", "rebase", "error", err)
 		return nil, nil, fmt.Errorf("begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			slog.Error("tx rollback failed", "op", "rebase", "error", rollbackErr)
+		}
+	}()
 
 	// Lock main first, then source branch — consistent ordering prevents deadlocks.
 	var mainHead int64
@@ -517,6 +554,7 @@ func (s *Store) Rebase(ctx context.Context, req model.RebaseRequest) (*model.Reb
 		if err := tx.Commit(); err != nil {
 			return nil, nil, fmt.Errorf("commit tx: %w", err)
 		}
+		slog.Info("rebase complete", "repo", req.Repo, "branch", req.Branch, "commits_replayed", 0)
 		return &model.RebaseResponse{
 			NewBaseSequence: mainHead,
 			NewHeadSequence: mainHead,
@@ -594,6 +632,7 @@ func (s *Store) Rebase(ctx context.Context, req model.RebaseRequest) (*model.Reb
 		return nil, nil, fmt.Errorf("commit tx: %w", err)
 	}
 
+	slog.Info("rebase complete", "repo", req.Repo, "branch", req.Branch, "commits_replayed", len(groups))
 	return &model.RebaseResponse{
 		NewBaseSequence: mainHead,
 		NewHeadSequence: lastSeq,
@@ -687,9 +726,14 @@ func nullStr(s *string) string {
 func (s *Store) DeleteBranch(ctx context.Context, repo, name string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
+		slog.Error("tx begin failed", "op", "delete_branch", "error", err)
 		return fmt.Errorf("begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			slog.Error("tx rollback failed", "op", "delete_branch", "error", rollbackErr)
+		}
+	}()
 
 	var status string
 	err = tx.QueryRowContext(ctx,
@@ -725,9 +769,14 @@ func (s *Store) DeleteBranch(ctx context.Context, repo, name string) error {
 func (s *Store) CreateReview(ctx context.Context, repo, branch, reviewer string, status model.ReviewStatus, body string) (*model.Review, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
+		slog.Error("tx begin failed", "op", "create_review", "error", err)
 		return nil, fmt.Errorf("begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			slog.Error("tx rollback failed", "op", "create_review", "error", rollbackErr)
+		}
+	}()
 
 	var headSeq, baseSeq int64
 	err = tx.QueryRowContext(ctx,
@@ -826,9 +875,14 @@ func (s *Store) ListReviews(ctx context.Context, repo, branch string, atSeq *int
 func (s *Store) CreateCheckRun(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string) (*model.CheckRun, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
+		slog.Error("tx begin failed", "op", "create_check_run", "error", err)
 		return nil, fmt.Errorf("begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			slog.Error("tx rollback failed", "op", "create_check_run", "error", rollbackErr)
+		}
+	}()
 
 	var headSeq int64
 	err = tx.QueryRowContext(ctx,
@@ -1002,11 +1056,18 @@ type PurgeResult struct {
 // req.OlderThan. If req.DryRun is true, counts are returned without any rows being
 // deleted. All deletes happen within a single transaction.
 func (s *Store) Purge(ctx context.Context, req PurgeRequest) (*PurgeResult, error) {
+	slog.Debug("purge started", "repo", req.Repo, "older_than", req.OlderThan, "dry_run", req.DryRun)
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
+		slog.Error("tx begin failed", "op", "purge", "error", err)
 		return nil, fmt.Errorf("begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			slog.Error("tx rollback failed", "op", "purge", "error", rollbackErr)
+		}
+	}()
 
 	// Verify repo exists.
 	var exists bool
@@ -1132,6 +1193,8 @@ func (s *Store) Purge(ctx context.Context, req PurgeRequest) (*PurgeResult, erro
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit tx: %w", err)
 	}
+
+	slog.Info("purge complete", "repo", req.Repo, "branches_purged", result.BranchesPurged, "docs_deleted", result.DocumentsDeleted)
 	return &result, nil
 }
 
