@@ -39,6 +39,9 @@ type WriteStore interface {
 	DeleteRole(ctx context.Context, repo, identity string) error
 	ListRoles(ctx context.Context, repo string) ([]model.Role, error)
 	HasAdmin(ctx context.Context, repo string) (bool, error)
+
+	// Purge
+	Purge(ctx context.Context, req db.PurgeRequest) (*db.PurgeResult, error)
 }
 
 // CommitStore is an alias for backward compatibility with tests.
@@ -86,6 +89,7 @@ func New(writeStore WriteStore, database *sql.DB, devIdentity, bootstrapAdmin st
 	inner.HandleFunc("POST /repos/{name}/rebase", s.handleRebase)
 	inner.HandleFunc("POST /repos/{name}/review", s.handleReview)
 	inner.HandleFunc("POST /repos/{name}/check", s.handleCheck)
+	inner.HandleFunc("POST /repos/{name}/purge", s.handlePurge)
 	inner.HandleFunc("DELETE /repos/{name}/branch/{bname...}", s.handleDeleteBranch)
 
 	// Role management endpoints

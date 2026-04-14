@@ -1265,3 +1265,155 @@ func TestIntegrationRBAC_CrossRepoIsolation(t *testing.T) {
 		t.Fatalf("alice repo-y: expected 403, got %d", resp.StatusCode)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Purge integration tests
+// ---------------------------------------------------------------------------
+
+func TestIntegrationPurge_FullFlow(t *testing.T) {
+	database := testutil.TestDB(t, dbpkg.RunMigrations)
+	writeStore := dbpkg.NewStore(database)
+	handler := server.New(writeStore, database, "test@example.com", "test@example.com")
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	post := func(path, body string) *http.Response {
+		t.Helper()
+		resp, err := http.Post(srv.URL+path, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST %s: %v", path, err)
+		}
+		return resp
+	}
+	del := func(path string) *http.Response {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodDelete, srv.URL+path, nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("DELETE %s: %v", path, err)
+		}
+		return resp
+	}
+
+	// Step 1: Commit to main.
+	r := post("/repos/default/commit", `{"branch":"main","message":"init","files":[{"path":"main.txt","content":"bWFpbg=="}]}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("commit to main: expected 201, got %d", r.StatusCode)
+	}
+
+	// Step 2: Create and merge a feature branch (tests merged-branch cleanup).
+	r = post("/repos/default/branch", `{"name":"feature/merged"}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("create merged branch: expected 201, got %d", r.StatusCode)
+	}
+	r = post("/repos/default/commit", `{"branch":"feature/merged","message":"work","files":[{"path":"merged.txt","content":"bWVyZ2Vk"}]}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("commit to merged branch: expected 201, got %d", r.StatusCode)
+	}
+	r = post("/repos/default/merge", `{"branch":"feature/merged"}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("merge: expected 200, got %d", r.StatusCode)
+	}
+
+	// Step 3: Create and abandon a second branch with a unique file (orphan candidate).
+	r = post("/repos/default/branch", `{"name":"feature/abandoned"}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("create abandoned branch: expected 201, got %d", r.StatusCode)
+	}
+	r = post("/repos/default/commit", `{"branch":"feature/abandoned","message":"abandoned work","files":[{"path":"abandoned-only.txt","content":"b3JwaGFu"}]}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("commit to abandoned branch: expected 201, got %d", r.StatusCode)
+	}
+	r = del("/repos/default/branch/feature/abandoned")
+	r.Body.Close()
+	if r.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete branch: expected 204, got %d", r.StatusCode)
+	}
+
+	// Step 4: Age both branches and their commits.
+	for _, branch := range []string{"feature/merged", "feature/abandoned"} {
+		if _, err := database.Exec(`UPDATE branches SET created_at = now() - interval '100 days' WHERE repo = 'default' AND name = $1`, branch); err != nil {
+			t.Fatalf("age branch %s: %v", branch, err)
+		}
+		if _, err := database.Exec(`UPDATE commits SET created_at = now() - interval '100 days' WHERE repo = 'default' AND branch = $1`, branch); err != nil {
+			t.Fatalf("age commits %s: %v", branch, err)
+		}
+	}
+
+	// Step 5: POST /purge with 1d threshold.
+	r = post("/repos/default/purge", `{"older_than":"1d"}`)
+	defer r.Body.Close()
+	if r.StatusCode != http.StatusOK {
+		var errBody map[string]interface{}
+		json.NewDecoder(r.Body).Decode(&errBody)
+		t.Fatalf("purge: expected 200, got %d; body: %v", r.StatusCode, errBody)
+	}
+	var purgeResp struct {
+		BranchesPurged     int64 `json:"branches_purged"`
+		FileCommitsDeleted int64 `json:"file_commits_deleted"`
+		CommitsDeleted     int64 `json:"commits_deleted"`
+		DocumentsDeleted   int64 `json:"documents_deleted"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&purgeResp); err != nil {
+		t.Fatalf("decode purge response: %v", err)
+	}
+
+	if purgeResp.BranchesPurged != 2 {
+		t.Errorf("expected 2 branches purged, got %d", purgeResp.BranchesPurged)
+	}
+	if purgeResp.FileCommitsDeleted < 2 {
+		t.Errorf("expected at least 2 file_commits deleted, got %d", purgeResp.FileCommitsDeleted)
+	}
+	if purgeResp.CommitsDeleted < 1 {
+		t.Errorf("expected at least 1 commit deleted, got %d", purgeResp.CommitsDeleted)
+	}
+	// abandoned-only.txt was never merged, so its document is orphaned.
+	if purgeResp.DocumentsDeleted < 1 {
+		t.Errorf("expected at least 1 orphaned document deleted, got %d", purgeResp.DocumentsDeleted)
+	}
+
+	// Step 6: Verify both branch rows are gone.
+	for _, branch := range []string{"feature/merged", "feature/abandoned"} {
+		var count int
+		if err := database.QueryRow("SELECT count(*) FROM branches WHERE repo = 'default' AND name = $1", branch).Scan(&count); err != nil {
+			t.Fatalf("query branch %s: %v", branch, err)
+		}
+		if count != 0 {
+			t.Errorf("expected branch %s to be deleted, found %d rows", branch, count)
+		}
+	}
+
+	// Step 7: Verify main is unaffected — its tree has main.txt and merged.txt.
+	treeResp, err := http.Get(srv.URL + "/repos/default/tree")
+	if err != nil {
+		t.Fatalf("GET /tree: %v", err)
+	}
+	defer treeResp.Body.Close()
+	if treeResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /tree: expected 200, got %d", treeResp.StatusCode)
+	}
+	var entries []struct{ Path string `json:"path"` }
+	if err := json.NewDecoder(treeResp.Body).Decode(&entries); err != nil {
+		t.Fatalf("decode tree: %v", err)
+	}
+	// main should have main.txt and merged.txt (2 files).
+	if len(entries) != 2 {
+		t.Errorf("expected main tree to have 2 entries after purge, got %d", len(entries))
+	}
+	paths := make(map[string]bool)
+	for _, e := range entries {
+		paths[e.Path] = true
+	}
+	if !paths["main.txt"] {
+		t.Error("main.txt must still be present on main")
+	}
+	if !paths["merged.txt"] {
+		t.Error("merged.txt (from merged branch) must still be present on main")
+	}
+}
