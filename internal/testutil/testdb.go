@@ -73,36 +73,101 @@ func TestDB(t *testing.T, migrationSQL string) *sql.DB {
 }
 
 // testDBFromDSN is the legacy path: use a pre-existing PostgreSQL server via DSN.
+// It creates a unique database per test so parallel tests don't interfere.
 func testDBFromDSN(t *testing.T, dsn, migrationSQL string) *sql.DB {
 	t.Helper()
 
-	d, err := sql.Open("postgres", dsn)
+	// Connect to the server using the provided DSN (admin connection).
+	admin, err := sql.Open("postgres", dsn)
 	if err != nil {
 		t.Fatalf("connect to postgres: %v", err)
 	}
+	defer admin.Close()
 
-	// Clean and recreate schema so each test starts fresh.
-	for _, stmt := range []string{
-		"DROP TABLE IF EXISTS check_runs CASCADE",
-		"DROP TABLE IF EXISTS reviews CASCADE",
-		"DROP TABLE IF EXISTS roles CASCADE",
-		"DROP TABLE IF EXISTS file_commits CASCADE",
-		"DROP TABLE IF EXISTS documents CASCADE",
-		"DROP TABLE IF EXISTS branches CASCADE",
-		"DROP TYPE IF EXISTS branch_status CASCADE",
-		"DROP TYPE IF EXISTS role_type CASCADE",
-		"DROP TYPE IF EXISTS review_status CASCADE",
-		"DROP TYPE IF EXISTS check_status CASCADE",
-	} {
-		if _, err := d.Exec(stmt); err != nil {
-			t.Fatalf("cleanup %q: %v", stmt, err)
-		}
+	// Create a unique database for this test.
+	dbName := fmt.Sprintf("docstore_test_%d", time.Now().UnixNano())
+	if _, err := admin.Exec("CREATE DATABASE " + dbName); err != nil {
+		t.Fatalf("create test database %s: %v", dbName, err)
 	}
+	t.Cleanup(func() {
+		// Reconnect as admin to drop the test database.
+		c, err := sql.Open("postgres", dsn)
+		if err != nil {
+			t.Logf("reconnect to drop test db: %v", err)
+			return
+		}
+		defer c.Close()
+		if _, err := c.Exec("DROP DATABASE IF EXISTS " + dbName); err != nil {
+			t.Logf("drop test database %s: %v", dbName, err)
+		}
+	})
+
+	// Build a DSN for the new database by replacing the dbname parameter.
+	testDSN := replaceDBName(dsn, dbName)
+	d, err := sql.Open("postgres", testDSN)
+	if err != nil {
+		t.Fatalf("connect to test database %s: %v", dbName, err)
+	}
+	t.Cleanup(func() { d.Close() })
 
 	if _, err := d.Exec(migrationSQL); err != nil {
 		t.Fatalf("run migrations: %v", err)
 	}
 
-	t.Cleanup(func() { d.Close() })
 	return d
+}
+
+// replaceDBName replaces the dbname in a PostgreSQL DSN (key=value format)
+// or appends it if not present.
+func replaceDBName(dsn, dbName string) string {
+	// Handle key=value format DSNs.
+	// Try to replace existing dbname parameter.
+	parts := splitDSN(dsn)
+	found := false
+	for i, p := range parts {
+		if len(p) > 7 && p[:7] == "dbname=" {
+			parts[i] = "dbname=" + dbName
+			found = true
+			break
+		}
+	}
+	if !found {
+		parts = append(parts, "dbname="+dbName)
+	}
+	result := ""
+	for i, p := range parts {
+		if i > 0 {
+			result += " "
+		}
+		result += p
+	}
+	return result
+}
+
+// splitDSN splits a key=value DSN into its space-separated parts.
+func splitDSN(dsn string) []string {
+	var parts []string
+	current := ""
+	inQuote := false
+	for _, c := range dsn {
+		switch {
+		case c == '\'' && !inQuote:
+			inQuote = true
+			current += string(c)
+		case c == '\'' && inQuote:
+			inQuote = false
+			current += string(c)
+		case c == ' ' && !inQuote:
+			if current != "" {
+				parts = append(parts, current)
+				current = ""
+			}
+		default:
+			current += string(c)
+		}
+	}
+	if current != "" {
+		parts = append(parts, current)
+	}
+	return parts
 }
