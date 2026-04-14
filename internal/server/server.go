@@ -18,6 +18,7 @@ type WriteStore interface {
 	CreateBranch(ctx context.Context, req model.CreateBranchRequest) (*model.CreateBranchResponse, error)
 	Merge(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error)
 	DeleteBranch(ctx context.Context, name string) error
+	Rebase(ctx context.Context, req model.RebaseRequest) (*model.RebaseResponse, []db.MergeConflict, error)
 }
 
 // CommitStore is an alias for backward compatibility with tests.
@@ -49,7 +50,7 @@ func New(writeStore WriteStore, database *sql.DB) http.Handler {
 	mux.HandleFunc("POST /commit", s.handleCommit)
 	mux.HandleFunc("POST /branch", s.handleCreateBranch)
 	mux.HandleFunc("POST /merge", s.handleMerge)
-	mux.HandleFunc("POST /rebase", notImplemented)
+	mux.HandleFunc("POST /rebase", s.handleRebase)
 	mux.HandleFunc("POST /review", notImplemented)
 	mux.HandleFunc("POST /check", notImplemented)
 	mux.HandleFunc("DELETE /branch/{name...}", s.handleDeleteBranch)
