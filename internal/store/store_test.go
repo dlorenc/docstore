@@ -71,7 +71,7 @@ func seed(t *testing.T, db *sql.DB) {
 }
 
 func TestMaterializeTree(t *testing.T) {
-	db := testutil.TestDB(t, dbpkg.MigrationSQL)
+	db := testutil.TestDB(t, dbpkg.RunMigrations)
 	seed(t, db)
 	s := store.New(db)
 	ctx := context.Background()
@@ -150,7 +150,7 @@ func TestMaterializeTree(t *testing.T) {
 }
 
 func TestGetFile(t *testing.T) {
-	db := testutil.TestDB(t, dbpkg.MigrationSQL)
+	db := testutil.TestDB(t, dbpkg.RunMigrations)
 	seed(t, db)
 	s := store.New(db)
 	ctx := context.Background()
@@ -207,7 +207,7 @@ func TestGetFile(t *testing.T) {
 }
 
 func TestGetFileHistory(t *testing.T) {
-	db := testutil.TestDB(t, dbpkg.MigrationSQL)
+	db := testutil.TestDB(t, dbpkg.RunMigrations)
 	seed(t, db)
 	s := store.New(db)
 	ctx := context.Background()
@@ -262,7 +262,7 @@ func TestGetFileHistory(t *testing.T) {
 }
 
 func TestGetCommit(t *testing.T) {
-	db := testutil.TestDB(t, dbpkg.MigrationSQL)
+	db := testutil.TestDB(t, dbpkg.RunMigrations)
 	seed(t, db)
 	s := store.New(db)
 	ctx := context.Background()
@@ -334,7 +334,7 @@ func TestGetCommit(t *testing.T) {
 }
 
 func TestListBranches(t *testing.T) {
-	db := testutil.TestDB(t, dbpkg.MigrationSQL)
+	db := testutil.TestDB(t, dbpkg.RunMigrations)
 	seed(t, db)
 	s := store.New(db)
 	ctx := context.Background()
@@ -389,7 +389,7 @@ func TestListBranches(t *testing.T) {
 }
 
 func TestGetDiff(t *testing.T) {
-	db := testutil.TestDB(t, dbpkg.MigrationSQL)
+	db := testutil.TestDB(t, dbpkg.RunMigrations)
 	seed(t, db)
 	s := store.New(db)
 	ctx := context.Background()
@@ -472,7 +472,7 @@ func TestGetDiff(t *testing.T) {
 }
 
 func TestGetDiff_WithConflict(t *testing.T) {
-	db := testutil.TestDB(t, dbpkg.MigrationSQL)
+	db := testutil.TestDB(t, dbpkg.RunMigrations)
 	s := store.New(db)
 	ctx := context.Background()
 
@@ -529,7 +529,7 @@ func TestGetDiff_WithConflict(t *testing.T) {
 }
 
 func TestBranchTree(t *testing.T) {
-	db := testutil.TestDB(t, dbpkg.MigrationSQL)
+	db := testutil.TestDB(t, dbpkg.RunMigrations)
 	seed(t, db)
 	s := store.New(db)
 	ctx := context.Background()
