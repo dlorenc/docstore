@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -41,11 +42,13 @@ func (s *server) handleReview(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, db.ErrSelfApproval):
 			writeError(w, http.StatusForbidden, "reviewer cannot approve their own commits")
 		default:
+			slog.Error("internal error", "op", "review", "repo", repo, "error", err)
 			writeError(w, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
 
+	slog.Info("review submitted", "repo", repo, "branch", req.Branch, "reviewer", reviewer, "status", req.Status)
 	writeJSON(w, http.StatusCreated, model.CreateReviewResponse{
 		ID:       review.ID,
 		Sequence: review.Sequence,
@@ -81,6 +84,7 @@ func (s *server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, db.ErrBranchNotFound):
 			writeError(w, http.StatusNotFound, "branch not found")
 		default:
+			slog.Error("internal error", "op", "check", "repo", repo, "error", err)
 			writeError(w, http.StatusInternalServerError, "internal server error")
 		}
 		return
@@ -175,6 +179,7 @@ func parseDayDuration(s string) (time.Duration, error) {
 // handlePurge implements POST /repos/:name/purge
 func (s *server) handlePurge(w http.ResponseWriter, r *http.Request) {
 	repo := r.PathValue("name")
+	identity := IdentityFromContext(r.Context())
 
 	var req model.PurgeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -202,11 +207,13 @@ func (s *server) handlePurge(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, db.ErrRepoNotFound):
 			writeError(w, http.StatusNotFound, "repo not found")
 		default:
+			slog.Error("internal error", "op", "purge", "repo", repo, "error", err)
 			writeError(w, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
 
+	slog.Info("purge complete", "repo", repo, "dry_run", req.DryRun, "branches_purged", result.BranchesPurged, "docs_deleted", result.DocumentsDeleted, "by", identity)
 	writeJSON(w, http.StatusOK, model.PurgeResponse{
 		BranchesPurged:     result.BranchesPurged,
 		FileCommitsDeleted: result.FileCommitsDeleted,
@@ -259,10 +266,13 @@ func (s *server) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, db.ErrRepoExists):
 			writeError(w, http.StatusConflict, "repo already exists")
 		default:
+			slog.Error("internal error", "op", "create_repo", "repo", req.Name, "error", err)
 			writeError(w, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
+
+	slog.Info("repo created", "repo", repo.Name, "by", IdentityFromContext(r.Context()))
 	writeJSON(w, http.StatusCreated, repo)
 }
 
@@ -304,10 +314,13 @@ func (s *server) handleDeleteRepo(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, db.ErrRepoNotFound):
 			writeError(w, http.StatusNotFound, "repo not found")
 		default:
+			slog.Error("internal error", "op", "delete_repo", "repo", name, "error", err)
 			writeError(w, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
+
+	slog.Info("repo deleted", "repo", name, "by", IdentityFromContext(r.Context()))
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -557,11 +570,13 @@ func (s *server) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, db.ErrRepoNotFound):
 			writeError(w, http.StatusNotFound, "repo not found")
 		default:
+			slog.Error("internal error", "op", "create_branch", "repo", repo, "error", err)
 			writeError(w, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
 
+	slog.Info("branch created", "repo", repo, "branch", req.Name, "by", IdentityFromContext(r.Context()))
 	writeJSON(w, http.StatusCreated, resp)
 }
 
@@ -582,11 +597,13 @@ func (s *server) handleDeleteBranch(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, db.ErrBranchNotActive):
 			writeError(w, http.StatusConflict, "branch is already merged or abandoned")
 		default:
+			slog.Error("internal error", "op", "delete_branch", "repo", repo, "branch", bname, "error", err)
 			writeError(w, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
 
+	slog.Info("branch deleted", "repo", repo, "branch", bname, "by", IdentityFromContext(r.Context()))
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -629,10 +646,12 @@ func (s *server) handleSetRole(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.commitStore.SetRole(r.Context(), repo, identity, req.Role); err != nil {
+		slog.Error("internal error", "op", "set_role", "repo", repo, "identity", identity, "error", err)
 		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
+	slog.Info("role assigned", "repo", repo, "identity", identity, "role", req.Role, "by", IdentityFromContext(r.Context()))
 	writeJSON(w, http.StatusOK, model.Role{Identity: identity, Role: req.Role})
 }
 
@@ -651,11 +670,13 @@ func (s *server) handleDeleteRole(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, db.ErrRoleNotFound):
 			writeError(w, http.StatusNotFound, "role not found")
 		default:
+			slog.Error("internal error", "op", "delete_role", "repo", repo, "identity", identity, "error", err)
 			writeError(w, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
 
+	slog.Info("role removed", "repo", repo, "identity", identity, "by", IdentityFromContext(r.Context()))
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -689,6 +710,7 @@ func (s *server) handleRebase(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, db.ErrRebaseConflict):
+			slog.Warn("rebase conflict", "repo", repo, "branch", req.Branch, "conflicts", len(conflicts))
 			apiConflicts := make([]model.ConflictEntry, len(conflicts))
 			for i, c := range conflicts {
 				apiConflicts[i] = model.ConflictEntry{
@@ -703,11 +725,13 @@ func (s *server) handleRebase(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, db.ErrBranchNotActive):
 			writeError(w, http.StatusBadRequest, "branch is not active")
 		default:
+			slog.Error("internal error", "op", "rebase", "repo", repo, "branch", req.Branch, "error", err)
 			writeError(w, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
 
+	slog.Info("branch rebased", "repo", repo, "branch", req.Branch, "by", req.Author, "commits_replayed", resp.CommitsReplayed)
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -741,6 +765,7 @@ func (s *server) handleMerge(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, db.ErrMergeConflict):
+			slog.Warn("merge conflict", "repo", repo, "branch", req.Branch, "conflicts", len(conflicts))
 			// Convert conflicts to API response.
 			apiConflicts := make([]model.ConflictEntry, len(conflicts))
 			for i, c := range conflicts {
@@ -756,10 +781,12 @@ func (s *server) handleMerge(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, db.ErrBranchNotActive):
 			writeError(w, http.StatusConflict, "branch is not active")
 		default:
+			slog.Error("internal error", "op", "merge", "repo", repo, "branch", req.Branch, "error", err)
 			writeError(w, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
 
+	slog.Info("branch merged", "repo", repo, "branch", req.Branch, "by", req.Author, "sequence", resp.Sequence)
 	writeJSON(w, http.StatusOK, resp)
 }

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 
 	"github.com/dlorenc/docstore/internal/db"
@@ -104,7 +105,7 @@ func New(writeStore WriteStore, database *sql.DB, devIdentity, bootstrapAdmin st
 		routed = RBACMiddleware(writeStore, bootstrapAdmin)(inner)
 	}
 	outer.Handle("/", IAPMiddleware(devIdentity)(routed))
-	return outer
+	return RequestLogger(outer)
 }
 
 type server struct {
@@ -155,11 +156,13 @@ func (s *server) handleCommit(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, db.ErrBranchNotActive):
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "branch is not active"})
 		default:
+			slog.Error("internal error", "op", "commit", "repo", repo, "error", err)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal server error"})
 		}
 		return
 	}
 
+	slog.Info("commit created", "repo", repo, "branch", req.Branch, "sequence", resp.Sequence, "files", len(req.Files), "author", req.Author)
 	writeJSON(w, http.StatusCreated, resp)
 }
 

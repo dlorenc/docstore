@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"flag"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -21,6 +21,17 @@ func main() {
 	bootstrapAdmin := flag.String("bootstrap-admin", "", "identity granted admin access to repos with no admin assigned yet")
 	flag.Parse()
 
+	// Set up structured logger based on LOG_FORMAT env var.
+	// Default is JSON (GCP Cloud Run picks this up natively).
+	var handler slog.Handler
+	if os.Getenv("LOG_FORMAT") == "text" {
+		handler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})
+	} else {
+		handler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})
+	}
+	logger := slog.New(handler)
+	slog.SetDefault(logger)
+
 	// Also accept DEV_IDENTITY and BOOTSTRAP_ADMIN env vars for container-based testing.
 	if *devIdentity == "" {
 		*devIdentity = os.Getenv("DEV_IDENTITY")
@@ -30,10 +41,10 @@ func main() {
 	}
 
 	if *devIdentity != "" {
-		log.Printf("WARNING: IAP JWT validation disabled; using dev identity %q", *devIdentity)
+		logger.Warn("IAP JWT validation disabled", "dev_identity", *devIdentity)
 	}
 	if *bootstrapAdmin != "" {
-		log.Printf("bootstrap admin: %q (has admin access to repos with no admin)", *bootstrapAdmin)
+		logger.Info("bootstrap admin configured", "identity", *bootstrapAdmin)
 	}
 
 	port := os.Getenv("PORT")
@@ -43,18 +54,22 @@ func main() {
 
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
-		log.Fatal("DATABASE_URL environment variable is required")
+		logger.Error("DATABASE_URL environment variable is required")
+		os.Exit(1)
 	}
 
 	database, err := db.Open(dsn)
 	if err != nil {
-		log.Fatalf("database open: %v", err)
+		logger.Error("failed to connect to database", "error", err)
+		os.Exit(1)
 	}
 	defer database.Close()
 
 	if err := db.RunMigrations(database); err != nil {
-		log.Fatalf("run migrations: %v", err)
+		logger.Error("failed to run migrations", "error", err)
+		os.Exit(1)
 	}
+	logger.Info("migrations complete")
 
 	commitStore := db.NewStore(database)
 	srv := server.New(commitStore, database, *devIdentity, *bootstrapAdmin)
@@ -69,9 +84,10 @@ func main() {
 
 	// Start server in background.
 	go func() {
-		log.Printf("docstore listening on :%s", port)
+		logger.Info("starting server", "port", port, "dev_identity", *devIdentity != "")
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("server error: %v", err)
+			logger.Error("server error", "error", err)
+			os.Exit(1)
 		}
 	}()
 
@@ -79,12 +95,13 @@ func main() {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
-	log.Println("shutting down...")
+	logger.Info("shutting down")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := httpServer.Shutdown(ctx); err != nil {
-		log.Fatalf("shutdown error: %v", err)
+		logger.Error("shutdown error", "error", err)
+		os.Exit(1)
 	}
-	log.Println("stopped")
+	logger.Info("stopped")
 }
