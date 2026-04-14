@@ -12,6 +12,151 @@ import (
 	"github.com/dlorenc/docstore/internal/store"
 )
 
+// handleReview implements POST /repos/:name/review
+func (s *server) handleReview(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	reviewer := IdentityFromContext(r.Context())
+
+	var req model.CreateReviewRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Branch == "" {
+		writeError(w, http.StatusBadRequest, "branch is required")
+		return
+	}
+	if req.Status == "" {
+		writeError(w, http.StatusBadRequest, "status is required")
+		return
+	}
+
+	review, err := s.commitStore.CreateReview(r.Context(), repo, req.Branch, reviewer, req.Status, req.Body)
+	if err != nil {
+		switch {
+		case errors.Is(err, db.ErrBranchNotFound):
+			writeError(w, http.StatusNotFound, "branch not found")
+		case errors.Is(err, db.ErrSelfApproval):
+			writeError(w, http.StatusForbidden, "reviewer cannot approve their own commits")
+		default:
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, model.CreateReviewResponse{
+		ID:       review.ID,
+		Sequence: review.Sequence,
+	})
+}
+
+// handleCheck implements POST /repos/:name/check
+func (s *server) handleCheck(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	reporter := IdentityFromContext(r.Context())
+
+	var req model.CreateCheckRunRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Branch == "" {
+		writeError(w, http.StatusBadRequest, "branch is required")
+		return
+	}
+	if req.CheckName == "" {
+		writeError(w, http.StatusBadRequest, "check_name is required")
+		return
+	}
+	if req.Status == "" {
+		writeError(w, http.StatusBadRequest, "status is required")
+		return
+	}
+
+	cr, err := s.commitStore.CreateCheckRun(r.Context(), repo, req.Branch, req.CheckName, req.Status, reporter)
+	if err != nil {
+		switch {
+		case errors.Is(err, db.ErrBranchNotFound):
+			writeError(w, http.StatusNotFound, "branch not found")
+		default:
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, model.CreateCheckRunResponse{
+		ID:       cr.ID,
+		Sequence: cr.Sequence,
+	})
+}
+
+// handleBranchGet dispatches GET /repos/:name/branch/{branch...} to the
+// appropriate sub-resource handler based on the path suffix.
+// Branch names may contain slashes (e.g. "feature/x"), so we use a trailing
+// wildcard and strip the sub-resource suffix manually — the same technique
+// used by handleFile for the "/history" suffix.
+func (s *server) handleBranchGet(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	branchPath := r.PathValue("branch")
+
+	switch {
+	case strings.HasSuffix(branchPath, "/reviews"):
+		branch := strings.TrimSuffix(branchPath, "/reviews")
+		s.handleGetReviews(w, r, repo, branch)
+	case strings.HasSuffix(branchPath, "/checks"):
+		branch := strings.TrimSuffix(branchPath, "/checks")
+		s.handleGetChecks(w, r, repo, branch)
+	default:
+		writeError(w, http.StatusNotFound, "not found")
+	}
+}
+
+// handleGetReviews serves GET /repos/:name/branch/:branch/reviews
+func (s *server) handleGetReviews(w http.ResponseWriter, r *http.Request, repo, branch string) {
+	var atSeq *int64
+	if v := r.URL.Query().Get("at"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid 'at' parameter")
+			return
+		}
+		atSeq = &n
+	}
+
+	reviews, err := s.commitStore.ListReviews(r.Context(), repo, branch, atSeq)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if reviews == nil {
+		reviews = []model.Review{}
+	}
+	writeJSON(w, http.StatusOK, reviews)
+}
+
+// handleGetChecks serves GET /repos/:name/branch/:branch/checks
+func (s *server) handleGetChecks(w http.ResponseWriter, r *http.Request, repo, branch string) {
+	var atSeq *int64
+	if v := r.URL.Query().Get("at"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid 'at' parameter")
+			return
+		}
+		atSeq = &n
+	}
+
+	checkRuns, err := s.commitStore.ListCheckRuns(r.Context(), repo, branch, atSeq)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if checkRuns == nil {
+		checkRuns = []model.CheckRun{}
+	}
+	writeJSON(w, http.StatusOK, checkRuns)
+}
+
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }

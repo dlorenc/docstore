@@ -93,6 +93,7 @@ type Review struct {
 	Reviewer  string       `json:"reviewer"`
 	Sequence  int64        `json:"sequence"`
 	Status    ReviewStatus `json:"status"`
+	Body      string       `json:"body,omitempty"`
 	CreatedAt time.Time    `json:"created_at"`
 }
 

@@ -232,6 +232,7 @@ type RebaseConflictError struct {
 type CreateReviewRequest struct {
 	Branch string       `json:"branch"`
 	Status ReviewStatus `json:"status"`
+	Body   string       `json:"body,omitempty"`
 }
 
 // CreateReviewResponse is the response for POST /review.
