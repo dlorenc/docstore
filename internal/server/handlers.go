@@ -248,6 +248,30 @@ func (s *server) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, resp)
 }
 
+// handleDeleteBranch implements DELETE /branch/{name}
+func (s *server) handleDeleteBranch(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "main" {
+		writeError(w, http.StatusBadRequest, "cannot delete branch 'main'")
+		return
+	}
+
+	err := s.commitStore.DeleteBranch(r.Context(), name)
+	if err != nil {
+		switch {
+		case errors.Is(err, db.ErrBranchNotFound):
+			writeError(w, http.StatusNotFound, "branch not found")
+		case errors.Is(err, db.ErrBranchNotActive):
+			writeError(w, http.StatusConflict, "branch is already merged or abandoned")
+		default:
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // handleMerge implements POST /merge
 func (s *server) handleMerge(w http.ResponseWriter, r *http.Request) {
 	var req model.MergeRequest

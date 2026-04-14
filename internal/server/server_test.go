@@ -15,9 +15,10 @@ import (
 
 // mockStore implements WriteStore for testing.
 type mockStore struct {
-	commitFn       func(ctx context.Context, req model.CommitRequest) (*model.CommitResponse, error)
-	createBranchFn func(ctx context.Context, req model.CreateBranchRequest) (*model.CreateBranchResponse, error)
-	mergeFn        func(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error)
+	commitFn        func(ctx context.Context, req model.CommitRequest) (*model.CommitResponse, error)
+	createBranchFn  func(ctx context.Context, req model.CreateBranchRequest) (*model.CreateBranchResponse, error)
+	mergeFn         func(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error)
+	deleteBranchFn  func(ctx context.Context, name string) error
 }
 
 func (m *mockStore) Commit(ctx context.Context, req model.CommitRequest) (*model.CommitResponse, error) {
@@ -36,6 +37,13 @@ func (m *mockStore) Merge(ctx context.Context, req model.MergeRequest) (*model.M
 		return m.mergeFn(ctx, req)
 	}
 	return nil, nil, errors.New("not implemented")
+}
+
+func (m *mockStore) DeleteBranch(ctx context.Context, name string) error {
+	if m.deleteBranchFn != nil {
+		return m.deleteBranchFn(ctx, name)
+	}
+	return errors.New("not implemented")
 }
 
 func TestHealthEndpoint(t *testing.T) {
@@ -68,6 +76,7 @@ func TestNotImplementedEndpoints(t *testing.T) {
 		{"POST", "/rebase"},
 		{"POST", "/review"},
 		{"POST", "/check"},
+		{"GET", "/branch/main/status"},
 	}
 
 	for _, ep := range endpoints {
@@ -497,5 +506,90 @@ func TestHandleMerge_DefaultAuthorSystem(t *testing.T) {
 	}
 	if capturedAuthor != "system" {
 		t.Errorf("expected default author 'system', got %q", capturedAuthor)
+	}
+}
+
+// --- DELETE /branch/:name tests ---
+
+func TestHandleDeleteBranch_Success(t *testing.T) {
+	store := &mockStore{
+		deleteBranchFn: func(ctx context.Context, name string) error {
+			if name != "feature/delete-me" {
+				t.Errorf("expected name feature/delete-me, got %q", name)
+			}
+			return nil
+		},
+	}
+	srv := New(store, nil)
+
+	req := httptest.NewRequest(http.MethodDelete, "/branch/feature/delete-me", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleDeleteBranch_CannotDeleteMain(t *testing.T) {
+	srv := New(&mockStore{}, nil)
+
+	req := httptest.NewRequest(http.MethodDelete, "/branch/main", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestHandleDeleteBranch_NotFound(t *testing.T) {
+	store := &mockStore{
+		deleteBranchFn: func(ctx context.Context, name string) error {
+			return db.ErrBranchNotFound
+		},
+	}
+	srv := New(store, nil)
+
+	req := httptest.NewRequest(http.MethodDelete, "/branch/nonexistent", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec.Code)
+	}
+}
+
+func TestHandleDeleteBranch_AlreadyMerged(t *testing.T) {
+	store := &mockStore{
+		deleteBranchFn: func(ctx context.Context, name string) error {
+			return db.ErrBranchNotActive
+		},
+	}
+	srv := New(store, nil)
+
+	req := httptest.NewRequest(http.MethodDelete, "/branch/merged-branch", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", rec.Code)
+	}
+}
+
+func TestHandleDeleteBranch_AlreadyAbandoned(t *testing.T) {
+	store := &mockStore{
+		deleteBranchFn: func(ctx context.Context, name string) error {
+			return db.ErrBranchNotActive
+		},
+	}
+	srv := New(store, nil)
+
+	req := httptest.NewRequest(http.MethodDelete, "/branch/abandoned-branch", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", rec.Code)
 	}
 }
