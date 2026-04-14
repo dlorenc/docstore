@@ -264,7 +264,7 @@ func TestRBACMiddleware_ReaderCanGet(t *testing.T) {
 		},
 	}
 	h := rbacTestServer(store, "", "alice@example.com")
-	rec := rbacDo(t, h, http.MethodGet, "/repos/myrepo/tree", "")
+	rec := rbacDo(t, h, http.MethodGet, "/repos/myrepo/myrepo/-/tree", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
@@ -277,7 +277,7 @@ func TestRBACMiddleware_ReaderCannotPost(t *testing.T) {
 		},
 	}
 	h := rbacTestServer(store, "", "alice@example.com")
-	rec := rbacDo(t, h, http.MethodPost, "/repos/myrepo/commit", `{"branch":"feature/x","message":"m","files":[]}`)
+	rec := rbacDo(t, h, http.MethodPost, "/repos/myrepo/myrepo/-/commit", `{"branch":"feature/x","message":"m","files":[]}`)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d", rec.Code)
 	}
@@ -290,7 +290,7 @@ func TestRBACMiddleware_WriterCanCommitToBranch(t *testing.T) {
 		},
 	}
 	h := rbacTestServer(store, "", "bob@example.com")
-	rec := rbacDo(t, h, http.MethodPost, "/repos/myrepo/commit", `{"branch":"feature/work","message":"m","files":[]}`)
+	rec := rbacDo(t, h, http.MethodPost, "/repos/myrepo/myrepo/-/commit", `{"branch":"feature/work","message":"m","files":[]}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
@@ -303,7 +303,7 @@ func TestRBACMiddleware_WriterCannotCommitToMain(t *testing.T) {
 		},
 	}
 	h := rbacTestServer(store, "", "bob@example.com")
-	rec := rbacDo(t, h, http.MethodPost, "/repos/myrepo/commit", `{"branch":"main","message":"m","files":[]}`)
+	rec := rbacDo(t, h, http.MethodPost, "/repos/myrepo/myrepo/-/commit", `{"branch":"main","message":"m","files":[]}`)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d", rec.Code)
 	}
@@ -316,7 +316,7 @@ func TestRBACMiddleware_WriterCannotMerge(t *testing.T) {
 		},
 	}
 	h := rbacTestServer(store, "", "bob@example.com")
-	rec := rbacDo(t, h, http.MethodPost, "/repos/myrepo/merge", `{"branch":"feature/x"}`)
+	rec := rbacDo(t, h, http.MethodPost, "/repos/myrepo/myrepo/-/merge", `{"branch":"feature/x"}`)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d", rec.Code)
 	}
@@ -329,7 +329,7 @@ func TestRBACMiddleware_MaintainerCanMerge(t *testing.T) {
 		},
 	}
 	h := rbacTestServer(store, "", "carol@example.com")
-	rec := rbacDo(t, h, http.MethodPost, "/repos/myrepo/merge", `{"branch":"feature/x"}`)
+	rec := rbacDo(t, h, http.MethodPost, "/repos/myrepo/myrepo/-/merge", `{"branch":"feature/x"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
@@ -340,7 +340,7 @@ func TestRBACMiddleware_UnknownIdentity(t *testing.T) {
 		// getRoleFn nil → returns ErrRoleNotFound by default
 	}
 	h := rbacTestServer(store, "", "unknown@example.com")
-	rec := rbacDo(t, h, http.MethodGet, "/repos/myrepo/tree", "")
+	rec := rbacDo(t, h, http.MethodGet, "/repos/myrepo/myrepo/-/tree", "")
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d", rec.Code)
 	}
@@ -355,13 +355,13 @@ func TestRBACMiddleware_AdminCanManageRoles(t *testing.T) {
 	h := rbacTestServer(store, "", "admin@example.com")
 
 	// Admin can list roles.
-	rec := rbacDo(t, h, http.MethodGet, "/repos/myrepo/roles", "")
+	rec := rbacDo(t, h, http.MethodGet, "/repos/myrepo/myrepo/-/roles", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET roles: expected 200, got %d", rec.Code)
 	}
 
 	// Admin can PUT a role.
-	rec = rbacDo(t, h, http.MethodPut, "/repos/myrepo/roles/bob@example.com", `{"role":"writer"}`)
+	rec = rbacDo(t, h, http.MethodPut, "/repos/myrepo/myrepo/-/roles/bob@example.com", `{"role":"writer"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("PUT role: expected 200, got %d", rec.Code)
 	}
@@ -375,7 +375,7 @@ func TestRBACMiddleware_BootstrapAdmin(t *testing.T) {
 	h := rbacTestServer(store, bootstrapAdmin, bootstrapAdmin)
 
 	// Bootstrap admin can access admin-only roles endpoint.
-	rec := rbacDo(t, h, http.MethodGet, "/repos/newrepo/roles", "")
+	rec := rbacDo(t, h, http.MethodGet, "/repos/newrepo/newrepo/-/roles", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("bootstrap admin GET roles: expected 200, got %d", rec.Code)
 	}
@@ -391,7 +391,7 @@ func TestRBACMiddleware_BootstrapAdmin(t *testing.T) {
 		},
 	}
 	h2 := rbacTestServer(storeWithAdmin, bootstrapAdmin, bootstrapAdmin)
-	rec = rbacDo(t, h2, http.MethodGet, "/repos/newrepo/roles", "")
+	rec = rbacDo(t, h2, http.MethodGet, "/repos/newrepo/newrepo/-/roles", "")
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("bootstrap admin after admin exists: expected 403, got %d", rec.Code)
 	}
@@ -401,7 +401,7 @@ func TestRBACMiddleware_RepoIsolation(t *testing.T) {
 	// alice is admin in repo-a but has NO role in repo-b.
 	store := &mockRoleStore{
 		getRoleFn: func(_ context.Context, repo, identity string) (*model.Role, error) {
-			if repo == "repo-a" && identity == "alice@example.com" {
+			if repo == "repo-a/repo-a" && identity == "alice@example.com" {
 				return &model.Role{Identity: identity, Role: model.RoleAdmin}, nil
 			}
 			return nil, dbpkg.ErrRoleNotFound
@@ -410,13 +410,13 @@ func TestRBACMiddleware_RepoIsolation(t *testing.T) {
 	h := rbacTestServer(store, "", "alice@example.com")
 
 	// Alice can access repo-a.
-	rec := rbacDo(t, h, http.MethodGet, "/repos/repo-a/tree", "")
+	rec := rbacDo(t, h, http.MethodGet, "/repos/repo-a/repo-a/-/tree", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("repo-a GET: expected 200, got %d", rec.Code)
 	}
 
 	// Alice has no access to repo-b.
-	rec = rbacDo(t, h, http.MethodGet, "/repos/repo-b/tree", "")
+	rec = rbacDo(t, h, http.MethodGet, "/repos/repo-b/repo-b/-/tree", "")
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("repo-b GET: expected 403, got %d", rec.Code)
 	}
@@ -718,10 +718,11 @@ func TestRepoAndSubPath(t *testing.T) {
 		{"/repos", "", ""},
 		{"/repos/", "", ""},
 		{"/repos/myrepo", "", ""},
-		{"/repos/myrepo/", "myrepo", ""},
-		{"/repos/myrepo/branches", "myrepo", "branches"},
-		{"/repos/myrepo/commit", "myrepo", "commit"},
-		{"/repos/myrepo/branch/feature/with/slashes", "myrepo", "branch/feature/with/slashes"},
+		{"/repos/org/myrepo", "", ""},
+		{"/repos/org/myrepo/-/branches", "org/myrepo", "branches"},
+		{"/repos/org/myrepo/-/commit", "org/myrepo", "commit"},
+		{"/repos/org/myrepo/-/branch/feature/with/slashes", "org/myrepo", "branch/feature/with/slashes"},
+		{"/repos/acme/team/sub/-/tree", "acme/team/sub", "tree"},
 		{"/healthz", "", ""},
 		{"", "", ""},
 	}
@@ -748,7 +749,7 @@ func TestRBACMiddleware_ReaderUpgradedToWriter(t *testing.T) {
 	h := rbacTestServer(store, "", "bob@example.com")
 
 	// As reader, POST /commit to a branch → 403.
-	rec := rbacDo(t, h, http.MethodPost, "/repos/myrepo/commit",
+	rec := rbacDo(t, h, http.MethodPost, "/repos/myrepo/myrepo/-/commit",
 		`{"branch":"feature/x","message":"m","files":[]}`)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("reader POST commit: expected 403, got %d", rec.Code)
@@ -758,7 +759,7 @@ func TestRBACMiddleware_ReaderUpgradedToWriter(t *testing.T) {
 	currentRole = model.RoleWriter
 
 	// Writer can now commit to a feature branch → 200.
-	rec = rbacDo(t, h, http.MethodPost, "/repos/myrepo/commit",
+	rec = rbacDo(t, h, http.MethodPost, "/repos/myrepo/myrepo/-/commit",
 		`{"branch":"feature/x","message":"m","files":[]}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("writer POST commit: expected 200, got %d", rec.Code)

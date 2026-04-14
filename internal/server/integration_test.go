@@ -19,33 +19,34 @@ func seed(t *testing.T, db *sql.DB) {
 	t.Helper()
 
 	stmts := []string{
-		// Ensure the 'default' repo row exists so validateRepo passes.
-		`INSERT INTO repos (name) VALUES ('default') ON CONFLICT DO NOTHING`,
-		`INSERT INTO documents (version_id, path, content, content_hash, created_by)
-		 VALUES ('aaaaaaaa-0000-0000-0000-000000000001', 'hello.txt', 'hello world', 'hash_hello_v1', 'alice')`,
-		`INSERT INTO documents (version_id, path, content, content_hash, created_by)
-		 VALUES ('aaaaaaaa-0000-0000-0000-000000000002', 'hello.txt', 'hello world v2', 'hash_hello_v2', 'alice')`,
-		`INSERT INTO documents (version_id, path, content, content_hash, created_by)
-		 VALUES ('aaaaaaaa-0000-0000-0000-000000000003', 'world.txt', 'the world', 'hash_world_v1', 'bob')`,
-		`INSERT INTO documents (version_id, path, content, content_hash, created_by)
-		 VALUES ('aaaaaaaa-0000-0000-0000-000000000004', 'deleted.txt', 'gone soon', 'hash_deleted_v1', 'alice')`,
+		// Ensure the 'default' org and repo rows exist so validateRepo passes.
+		`INSERT INTO orgs (name) VALUES ('default') ON CONFLICT DO NOTHING`,
+		`INSERT INTO repos (name, owner) VALUES ('default/default', 'default') ON CONFLICT DO NOTHING`,
+		`INSERT INTO documents (repo, version_id, path, content, content_hash, created_by)
+		 VALUES ('default/default', 'aaaaaaaa-0000-0000-0000-000000000001', 'hello.txt', 'hello world', 'hash_hello_v1', 'alice')`,
+		`INSERT INTO documents (repo, version_id, path, content, content_hash, created_by)
+		 VALUES ('default/default', 'aaaaaaaa-0000-0000-0000-000000000002', 'hello.txt', 'hello world v2', 'hash_hello_v2', 'alice')`,
+		`INSERT INTO documents (repo, version_id, path, content, content_hash, created_by)
+		 VALUES ('default/default', 'aaaaaaaa-0000-0000-0000-000000000003', 'world.txt', 'the world', 'hash_world_v1', 'bob')`,
+		`INSERT INTO documents (repo, version_id, path, content, content_hash, created_by)
+		 VALUES ('default/default', 'aaaaaaaa-0000-0000-0000-000000000004', 'deleted.txt', 'gone soon', 'hash_deleted_v1', 'alice')`,
 		// Insert commits rows for global sequence allocation.
-		`INSERT INTO commits (sequence, branch, message, author) OVERRIDING SYSTEM VALUE VALUES
-		 (1, 'main', 'initial commit', 'alice'),
-		 (2, 'main', 'update hello',   'alice'),
-		 (3, 'main', 'add deleted',    'bob'),
-		 (4, 'main', 'remove deleted', 'bob')`,
+		`INSERT INTO commits (repo, sequence, branch, message, author) OVERRIDING SYSTEM VALUE VALUES
+		 ('default/default', 1, 'main', 'initial commit', 'alice'),
+		 ('default/default', 2, 'main', 'update hello',   'alice'),
+		 ('default/default', 3, 'main', 'add deleted',    'bob'),
+		 ('default/default', 4, 'main', 'remove deleted', 'bob')`,
 		`SELECT setval('commits_sequence_seq', 4, true)`,
-		`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch)
-		 VALUES ('cccccccc-0000-0000-0000-000000000001', 1, 'hello.txt', 'aaaaaaaa-0000-0000-0000-000000000001', 'main')`,
-		`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch)
-		 VALUES ('cccccccc-0000-0000-0000-000000000002', 1, 'world.txt', 'aaaaaaaa-0000-0000-0000-000000000003', 'main')`,
-		`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch)
-		 VALUES ('cccccccc-0000-0000-0000-000000000003', 2, 'hello.txt', 'aaaaaaaa-0000-0000-0000-000000000002', 'main')`,
-		`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch)
-		 VALUES ('cccccccc-0000-0000-0000-000000000004', 3, 'deleted.txt', 'aaaaaaaa-0000-0000-0000-000000000004', 'main')`,
-		`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch)
-		 VALUES ('cccccccc-0000-0000-0000-000000000005', 4, 'deleted.txt', NULL, 'main')`,
+		`INSERT INTO file_commits (repo, commit_id, sequence, path, version_id, branch)
+		 VALUES ('default/default', 'cccccccc-0000-0000-0000-000000000001', 1, 'hello.txt', 'aaaaaaaa-0000-0000-0000-000000000001', 'main')`,
+		`INSERT INTO file_commits (repo, commit_id, sequence, path, version_id, branch)
+		 VALUES ('default/default', 'cccccccc-0000-0000-0000-000000000002', 1, 'world.txt', 'aaaaaaaa-0000-0000-0000-000000000003', 'main')`,
+		`INSERT INTO file_commits (repo, commit_id, sequence, path, version_id, branch)
+		 VALUES ('default/default', 'cccccccc-0000-0000-0000-000000000003', 2, 'hello.txt', 'aaaaaaaa-0000-0000-0000-000000000002', 'main')`,
+		`INSERT INTO file_commits (repo, commit_id, sequence, path, version_id, branch)
+		 VALUES ('default/default', 'cccccccc-0000-0000-0000-000000000004', 3, 'deleted.txt', 'aaaaaaaa-0000-0000-0000-000000000004', 'main')`,
+		`INSERT INTO file_commits (repo, commit_id, sequence, path, version_id, branch)
+		 VALUES ('default/default', 'cccccccc-0000-0000-0000-000000000005', 4, 'deleted.txt', NULL, 'main')`,
 		`UPDATE branches SET head_sequence = 4 WHERE name = 'main'`,
 	}
 
@@ -63,7 +64,7 @@ func TestIntegrationTreeEndpoint(t *testing.T) {
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/repos/default/tree")
+	resp, err := http.Get(srv.URL + "/repos/default/default/-/tree")
 	if err != nil {
 		t.Fatalf("GET /tree: %v", err)
 	}
@@ -91,7 +92,7 @@ func TestIntegrationFileEndpoint(t *testing.T) {
 	defer srv.Close()
 
 	t.Run("get file content", func(t *testing.T) {
-		resp, err := http.Get(srv.URL + "/repos/default/file/hello.txt")
+		resp, err := http.Get(srv.URL + "/repos/default/default/-/file/hello.txt")
 		if err != nil {
 			t.Fatalf("GET /file/hello.txt: %v", err)
 		}
@@ -112,7 +113,7 @@ func TestIntegrationFileEndpoint(t *testing.T) {
 	})
 
 	t.Run("file not found", func(t *testing.T) {
-		resp, err := http.Get(srv.URL + "/repos/default/file/nope.txt")
+		resp, err := http.Get(srv.URL + "/repos/default/default/-/file/nope.txt")
 		if err != nil {
 			t.Fatalf("GET /file/nope.txt: %v", err)
 		}
@@ -124,7 +125,7 @@ func TestIntegrationFileEndpoint(t *testing.T) {
 	})
 
 	t.Run("file history", func(t *testing.T) {
-		resp, err := http.Get(srv.URL + "/repos/default/file/hello.txt/history")
+		resp, err := http.Get(srv.URL + "/repos/default/default/-/file/hello.txt/history")
 		if err != nil {
 			t.Fatalf("GET /file/hello.txt/history: %v", err)
 		}
@@ -145,7 +146,7 @@ func TestIntegrationFileEndpoint(t *testing.T) {
 	})
 
 	t.Run("file at sequence", func(t *testing.T) {
-		resp, err := http.Get(srv.URL + "/repos/default/file/hello.txt?at=1")
+		resp, err := http.Get(srv.URL + "/repos/default/default/-/file/hello.txt?at=1")
 		if err != nil {
 			t.Fatalf("GET /file/hello.txt?at=1: %v", err)
 		}
@@ -182,7 +183,7 @@ func TestIntegrationBranchesEndpoint(t *testing.T) {
 	defer srv.Close()
 
 	t.Run("list all branches", func(t *testing.T) {
-		resp, err := http.Get(srv.URL + "/repos/default/branches")
+		resp, err := http.Get(srv.URL + "/repos/default/default/-/branches")
 		if err != nil {
 			t.Fatalf("GET /branches: %v", err)
 		}
@@ -202,7 +203,7 @@ func TestIntegrationBranchesEndpoint(t *testing.T) {
 	})
 
 	t.Run("filter active", func(t *testing.T) {
-		resp, err := http.Get(srv.URL + "/repos/default/branches?status=active")
+		resp, err := http.Get(srv.URL + "/repos/default/default/-/branches?status=active")
 		if err != nil {
 			t.Fatalf("GET /branches?status=active: %v", err)
 		}
@@ -229,13 +230,13 @@ func TestIntegrationDiffEndpoint(t *testing.T) {
 	// Create a branch with changes.
 	stmts := []string{
 		`INSERT INTO branches (name, head_sequence, base_sequence, status) VALUES ('feature/diff', 5, 2, 'active')`,
-		`INSERT INTO documents (version_id, path, content, content_hash, created_by)
-		 VALUES ('aaaaaaaa-0000-0000-0000-000000000010', 'new.txt', 'new file', 'hash_new', 'carol')`,
-		`INSERT INTO commits (sequence, branch, message, author) OVERRIDING SYSTEM VALUE VALUES
-		 (5, 'feature/diff', 'add new', 'carol')`,
+		`INSERT INTO documents (repo, version_id, path, content, content_hash, created_by)
+		 VALUES ('default/default', 'aaaaaaaa-0000-0000-0000-000000000010', 'new.txt', 'new file', 'hash_new', 'carol')`,
+		`INSERT INTO commits (repo, sequence, branch, message, author) OVERRIDING SYSTEM VALUE VALUES
+		 ('default/default', 5, 'feature/diff', 'add new', 'carol')`,
 		`SELECT setval('commits_sequence_seq', 5, true)`,
-		`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch)
-		 VALUES ('cccccccc-0000-0000-0000-000000000010', 5, 'new.txt', 'aaaaaaaa-0000-0000-0000-000000000010', 'feature/diff')`,
+		`INSERT INTO file_commits (repo, commit_id, sequence, path, version_id, branch)
+		 VALUES ('default/default', 'cccccccc-0000-0000-0000-000000000010', 5, 'new.txt', 'aaaaaaaa-0000-0000-0000-000000000010', 'feature/diff')`,
 	}
 	for _, stmt := range stmts {
 		if _, err := database.Exec(stmt); err != nil {
@@ -248,7 +249,7 @@ func TestIntegrationDiffEndpoint(t *testing.T) {
 	defer srv.Close()
 
 	t.Run("diff with branch", func(t *testing.T) {
-		resp, err := http.Get(srv.URL + "/repos/default/diff?branch=feature/diff")
+		resp, err := http.Get(srv.URL + "/repos/default/default/-/diff?branch=feature/diff")
 		if err != nil {
 			t.Fatalf("GET /diff: %v", err)
 		}
@@ -271,7 +272,7 @@ func TestIntegrationDiffEndpoint(t *testing.T) {
 	})
 
 	t.Run("diff missing branch param", func(t *testing.T) {
-		resp, err := http.Get(srv.URL + "/repos/default/diff")
+		resp, err := http.Get(srv.URL + "/repos/default/default/-/diff")
 		if err != nil {
 			t.Fatalf("GET /diff: %v", err)
 		}
@@ -283,7 +284,7 @@ func TestIntegrationDiffEndpoint(t *testing.T) {
 	})
 
 	t.Run("diff nonexistent branch", func(t *testing.T) {
-		resp, err := http.Get(srv.URL + "/repos/default/diff?branch=nonexistent")
+		resp, err := http.Get(srv.URL + "/repos/default/default/-/diff?branch=nonexistent")
 		if err != nil {
 			t.Fatalf("GET /diff: %v", err)
 		}
@@ -303,7 +304,7 @@ func TestIntegrationCommitEndpoint(t *testing.T) {
 	defer srv.Close()
 
 	t.Run("existing commit", func(t *testing.T) {
-		resp, err := http.Get(srv.URL + "/repos/default/commit/1")
+		resp, err := http.Get(srv.URL + "/repos/default/default/-/commit/1")
 		if err != nil {
 			t.Fatalf("GET /commit/1: %v", err)
 		}
@@ -327,7 +328,7 @@ func TestIntegrationCommitEndpoint(t *testing.T) {
 	})
 
 	t.Run("nonexistent commit", func(t *testing.T) {
-		resp, err := http.Get(srv.URL + "/repos/default/commit/999")
+		resp, err := http.Get(srv.URL + "/repos/default/default/-/commit/999")
 		if err != nil {
 			t.Fatalf("GET /commit/999: %v", err)
 		}
@@ -339,7 +340,7 @@ func TestIntegrationCommitEndpoint(t *testing.T) {
 	})
 
 	t.Run("invalid sequence", func(t *testing.T) {
-		resp, err := http.Get(srv.URL + "/repos/default/commit/abc")
+		resp, err := http.Get(srv.URL + "/repos/default/default/-/commit/abc")
 		if err != nil {
 			t.Fatalf("GET /commit/abc: %v", err)
 		}
@@ -368,7 +369,7 @@ func TestIntegrationDeleteBranch(t *testing.T) {
 	}
 
 	t.Run("delete active branch returns 204", func(t *testing.T) {
-		req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/repos/default/branch/feature/to-delete", nil)
+		req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/repos/default/default/-/branch/feature/to-delete", nil)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("DELETE /branch/feature/to-delete: %v", err)
@@ -390,7 +391,7 @@ func TestIntegrationDeleteBranch(t *testing.T) {
 	})
 
 	t.Run("delete main returns 400", func(t *testing.T) {
-		req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/repos/default/branch/main", nil)
+		req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/repos/default/default/-/branch/main", nil)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("DELETE /branch/main: %v", err)
@@ -403,7 +404,7 @@ func TestIntegrationDeleteBranch(t *testing.T) {
 	})
 
 	t.Run("delete nonexistent branch returns 404", func(t *testing.T) {
-		req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/repos/default/branch/nonexistent", nil)
+		req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/repos/default/default/-/branch/nonexistent", nil)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("DELETE /branch/nonexistent: %v", err)
@@ -416,7 +417,7 @@ func TestIntegrationDeleteBranch(t *testing.T) {
 	})
 
 	t.Run("delete abandoned branch returns 409", func(t *testing.T) {
-		req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/repos/default/branch/feature/to-delete", nil)
+		req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/repos/default/default/-/branch/feature/to-delete", nil)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("DELETE /branch/feature/to-delete: %v", err)
@@ -446,35 +447,35 @@ func TestIntegrationRebase_FullFlow(t *testing.T) {
 	}
 
 	// Step 1: Commit to main (creates seq=1).
-	r := post("/repos/default/commit", `{"branch":"main","message":"initial","author":"alice","files":[{"path":"base.txt","content":"YmFzZQ=="}]}`)
+	r := post("/repos/default/default/-/commit", `{"branch":"main","message":"initial","author":"alice","files":[{"path":"base.txt","content":"YmFzZQ=="}]}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("POST /commit to main: expected 201, got %d", r.StatusCode)
 	}
 
 	// Step 2: Create branch (base=1, head=1).
-	r = post("/repos/default/branch", `{"name":"feature/rebase-flow"}`)
+	r = post("/repos/default/default/-/branch", `{"name":"feature/rebase-flow"}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("POST /branch: expected 201, got %d", r.StatusCode)
 	}
 
 	// Step 3: Commit to branch (seq=2, adds "branch.txt").
-	r = post("/repos/default/commit", `{"branch":"feature/rebase-flow","message":"branch work","author":"bob","files":[{"path":"branch.txt","content":"YnJhbmNo"}]}`)
+	r = post("/repos/default/default/-/commit", `{"branch":"feature/rebase-flow","message":"branch work","author":"bob","files":[{"path":"branch.txt","content":"YnJhbmNo"}]}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("POST /commit to branch: expected 201, got %d", r.StatusCode)
 	}
 
 	// Step 4: Advance main (seq=3, adds "other.txt").
-	r = post("/repos/default/commit", `{"branch":"main","message":"main advance","author":"alice","files":[{"path":"other.txt","content":"b3RoZXI="}]}`)
+	r = post("/repos/default/default/-/commit", `{"branch":"main","message":"main advance","author":"alice","files":[{"path":"other.txt","content":"b3RoZXI="}]}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("POST /commit to advance main: expected 201, got %d", r.StatusCode)
 	}
 
 	// Step 5: GET /diff — should show main_changes before rebase.
-	diffResp, err := http.Get(srv.URL + "/repos/default/diff?branch=feature/rebase-flow")
+	diffResp, err := http.Get(srv.URL + "/repos/default/default/-/diff?branch=feature/rebase-flow")
 	if err != nil {
 		t.Fatalf("GET /diff: %v", err)
 	}
@@ -491,7 +492,7 @@ func TestIntegrationRebase_FullFlow(t *testing.T) {
 	}
 
 	// Step 6: POST /rebase.
-	r = post("/repos/default/rebase", `{"branch":"feature/rebase-flow","author":"bob"}`)
+	r = post("/repos/default/default/-/rebase", `{"branch":"feature/rebase-flow","author":"bob"}`)
 	defer r.Body.Close()
 	if r.StatusCode != http.StatusOK {
 		var errBody map[string]interface{}
@@ -511,7 +512,7 @@ func TestIntegrationRebase_FullFlow(t *testing.T) {
 	}
 
 	// Step 7: GET /diff — should show no main_changes after rebase.
-	diffResp2, err := http.Get(srv.URL + "/repos/default/diff?branch=feature/rebase-flow")
+	diffResp2, err := http.Get(srv.URL + "/repos/default/default/-/diff?branch=feature/rebase-flow")
 	if err != nil {
 		t.Fatalf("GET /diff after rebase: %v", err)
 	}
@@ -528,7 +529,7 @@ func TestIntegrationRebase_FullFlow(t *testing.T) {
 	}
 
 	// Step 8: POST /merge — should succeed cleanly.
-	r = post("/repos/default/merge", `{"branch":"feature/rebase-flow","author":"alice"}`)
+	r = post("/repos/default/default/-/merge", `{"branch":"feature/rebase-flow","author":"alice"}`)
 	defer r.Body.Close()
 	if r.StatusCode != http.StatusOK {
 		var errBody map[string]interface{}
@@ -545,8 +546,8 @@ func TestHTTP_AuthRequired(t *testing.T) {
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
-	// POST /repos/default/commit without X-Goog-IAP-JWT-Assertion must return 401.
-	resp, err := http.Post(srv.URL+"/repos/default/commit", "application/json",
+	// POST /repos/default/default/-/commit without X-Goog-IAP-JWT-Assertion must return 401.
+	resp, err := http.Post(srv.URL+"/repos/default/default/-/commit", "application/json",
 		strings.NewReader(`{"branch":"main","message":"m","files":[{"path":"a.txt","content":"YQ=="}]}`))
 	if err != nil {
 		t.Fatalf("POST /commit: %v", err)
@@ -576,8 +577,8 @@ func TestHTTP_AuthIdentityUsedAsAuthor(t *testing.T) {
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
-	// POST /repos/default/commit with a different author in the body — it must be ignored.
-	resp, err := http.Post(srv.URL+"/repos/default/commit", "application/json",
+	// POST /repos/default/default/-/commit with a different author in the body — it must be ignored.
+	resp, err := http.Post(srv.URL+"/repos/default/default/-/commit", "application/json",
 		strings.NewReader(`{"branch":"main","message":"test commit","author":"not-alice@example.com","files":[{"path":"hello.txt","content":"aGVsbG8="}]}`))
 	if err != nil {
 		t.Fatalf("POST /commit: %v", err)
@@ -587,8 +588,8 @@ func TestHTTP_AuthIdentityUsedAsAuthor(t *testing.T) {
 		t.Fatalf("POST /commit: expected 201, got %d", resp.StatusCode)
 	}
 
-	// GET /repos/default/commit/1 and verify the author is the identity, not the body value.
-	getResp, err := http.Get(srv.URL + "/repos/default/commit/1")
+	// GET /repos/default/default/-/commit/1 and verify the author is the identity, not the body value.
+	getResp, err := http.Get(srv.URL + "/repos/default/default/-/commit/1")
 	if err != nil {
 		t.Fatalf("GET /commit/1: %v", err)
 	}
@@ -618,7 +619,7 @@ func TestHandleCreateRepo_Success(t *testing.T) {
 	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/repos", "application/json",
-		strings.NewReader(`{"name":"myrepo"}`))
+		strings.NewReader(`{"owner":"default","name":"myrepo"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -638,7 +639,7 @@ func TestHandleCreateRepo_Duplicate(t *testing.T) {
 
 	for i, wantCode := range []int{http.StatusCreated, http.StatusConflict} {
 		resp, err := http.Post(srv.URL+"/repos", "application/json",
-			strings.NewReader(`{"name":"dup"}`))
+			strings.NewReader(`{"owner":"default","name":"dup"}`))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -658,14 +659,14 @@ func TestHandleDeleteRepo_Success(t *testing.T) {
 
 	// Create a repo first.
 	resp, err := http.Post(srv.URL+"/repos", "application/json",
-		strings.NewReader(`{"name":"todel"}`))
+		strings.NewReader(`{"owner":"default","name":"todel"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
 
 	// Delete it.
-	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/repos/todel", nil)
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/repos/default/todel", nil)
 	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -703,7 +704,7 @@ func TestHandleListRepos(t *testing.T) {
 
 	// Create a repo to add alongside the seeded 'default'.
 	resp, err := http.Post(srv.URL+"/repos", "application/json",
-		strings.NewReader(`{"name":"extra"}`))
+		strings.NewReader(`{"owner":"default","name":"extra"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -748,7 +749,7 @@ func TestIntegrationMultiRepo_FullIsolation(t *testing.T) {
 
 	// Create two repos.
 	for _, name := range []string{"alpha", "beta"} {
-		r := post("/repos", `{"name":"`+name+`"}`)
+		r := post("/repos", `{"owner":"default","name":"`+name+`"}`)
 		r.Body.Close()
 		if r.StatusCode != http.StatusCreated {
 			t.Fatalf("create repo %s: expected 201, got %d", name, r.StatusCode)
@@ -756,20 +757,20 @@ func TestIntegrationMultiRepo_FullIsolation(t *testing.T) {
 	}
 
 	// Commit unique files to each repo.
-	r := post("/repos/alpha/commit", `{"branch":"main","message":"alpha init","files":[{"path":"alpha.txt","content":"YWxwaGE="}]}`)
+	r := post("/repos/default/alpha/-/commit", `{"branch":"main","message":"alpha init","files":[{"path":"alpha.txt","content":"YWxwaGE="}]}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("commit alpha: expected 201, got %d", r.StatusCode)
 	}
 
-	r = post("/repos/beta/commit", `{"branch":"main","message":"beta init","files":[{"path":"beta.txt","content":"YmV0YQ=="}]}`)
+	r = post("/repos/default/beta/-/commit", `{"branch":"main","message":"beta init","files":[{"path":"beta.txt","content":"YmV0YQ=="}]}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("commit beta: expected 201, got %d", r.StatusCode)
 	}
 
-	// GET /repos/alpha/tree must NOT contain beta.txt.
-	resp, err := http.Get(srv.URL + "/repos/alpha/tree")
+	// GET /repos/alpha/-/tree must NOT contain beta.txt.
+	resp, err := http.Get(srv.URL + "/repos/default/alpha/-/tree")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -788,8 +789,8 @@ func TestIntegrationMultiRepo_FullIsolation(t *testing.T) {
 		t.Errorf("expected only alpha.txt in alpha tree, got %+v", alphaEntries)
 	}
 
-	// GET /repos/beta/tree must NOT contain alpha.txt.
-	resp2, err := http.Get(srv.URL + "/repos/beta/tree")
+	// GET /repos/beta/-/tree must NOT contain alpha.txt.
+	resp2, err := http.Get(srv.URL + "/repos/default/beta/-/tree")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -823,13 +824,13 @@ func TestIntegrationDeleteRepo_CleansUp(t *testing.T) {
 	}
 
 	// Create repo, add data.
-	r := post("/repos", `{"name":"cleanup-test"}`)
+	r := post("/repos", `{"owner":"default","name":"cleanup-test"}`)
 	r.Body.Close()
-	r = post("/repos/cleanup-test/commit", `{"branch":"main","message":"init","files":[{"path":"f.txt","content":"dGVzdA=="}]}`)
+	r = post("/repos/default/cleanup-test/-/commit", `{"branch":"main","message":"init","files":[{"path":"f.txt","content":"dGVzdA=="}]}`)
 	r.Body.Close()
 
 	// Verify tree is non-empty.
-	resp, err := http.Get(srv.URL + "/repos/cleanup-test/tree")
+	resp, err := http.Get(srv.URL + "/repos/default/cleanup-test/-/tree")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -839,7 +840,7 @@ func TestIntegrationDeleteRepo_CleansUp(t *testing.T) {
 	}
 
 	// Delete the repo.
-	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/repos/cleanup-test", nil)
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/repos/default/cleanup-test", nil)
 	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -850,7 +851,7 @@ func TestIntegrationDeleteRepo_CleansUp(t *testing.T) {
 	}
 
 	// Repo should no longer exist.
-	resp, err = http.Get(srv.URL + "/repos/cleanup-test")
+	resp, err = http.Get(srv.URL + "/repos/default/cleanup-test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -881,21 +882,21 @@ func TestIntegrationReviewFlow(t *testing.T) {
 	}
 
 	// Step 1: Create a branch.
-	r := post("/repos/default/branch", `{"name":"feature/rev"}`)
+	r := post("/repos/default/default/-/branch", `{"name":"feature/rev"}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("create branch: expected 201, got %d", r.StatusCode)
 	}
 
 	// Step 2: alice commits to the branch.
-	r = post("/repos/default/commit", `{"branch":"feature/rev","message":"work","files":[{"path":"f.txt","content":"dGVzdA=="}]}`)
+	r = post("/repos/default/default/-/commit", `{"branch":"feature/rev","message":"work","files":[{"path":"f.txt","content":"dGVzdA=="}]}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("commit: expected 201, got %d", r.StatusCode)
 	}
 
 	// Step 3: alice tries to approve her own commit — should get 403.
-	r = post("/repos/default/review", `{"branch":"feature/rev","status":"approved","body":"self approve"}`)
+	r = post("/repos/default/default/-/review", `{"branch":"feature/rev","status":"approved","body":"self approve"}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusForbidden {
 		t.Fatalf("self-approval: expected 403, got %d", r.StatusCode)
@@ -906,7 +907,7 @@ func TestIntegrationReviewFlow(t *testing.T) {
 	srvBob := httptest.NewServer(handlerBob)
 	defer srvBob.Close()
 
-	r, err := http.Post(srvBob.URL+"/repos/default/review", "application/json",
+	r, err := http.Post(srvBob.URL+"/repos/default/default/-/review", "application/json",
 		strings.NewReader(`{"branch":"feature/rev","status":"approved","body":"LGTM"}`))
 	if err != nil {
 		t.Fatalf("bob review: %v", err)
@@ -928,7 +929,7 @@ func TestIntegrationReviewFlow(t *testing.T) {
 	}
 
 	// Step 5: GET reviews for the branch — should return 1 review.
-	getResp, err := http.Get(srv.URL + "/repos/default/branch/feature/rev/reviews")
+	getResp, err := http.Get(srv.URL + "/repos/default/default/-/branch/feature/rev/reviews")
 	if err != nil {
 		t.Fatalf("GET reviews: %v", err)
 	}
@@ -953,7 +954,7 @@ func TestIntegrationReviewFlow(t *testing.T) {
 	}
 
 	// Step 6: alice makes another commit — the prior review becomes stale.
-	r2, err := http.Post(srv.URL+"/repos/default/commit", "application/json",
+	r2, err := http.Post(srv.URL+"/repos/default/default/-/commit", "application/json",
 		strings.NewReader(`{"branch":"feature/rev","message":"update","files":[{"path":"f.txt","content":"dXBkYXRlZA=="}]}`))
 	if err != nil {
 		t.Fatalf("second commit: %v", err)
@@ -988,7 +989,7 @@ func TestIntegrationCheckRunFlow(t *testing.T) {
 	}
 
 	// Create a check run on main.
-	r := post("/repos/default/check", `{"branch":"main","check_name":"ci/build","status":"passed"}`)
+	r := post("/repos/default/default/-/check", `{"branch":"main","check_name":"ci/build","status":"passed"}`)
 	defer r.Body.Close()
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("create check: expected 201, got %d", r.StatusCode)
@@ -1006,7 +1007,7 @@ func TestIntegrationCheckRunFlow(t *testing.T) {
 	}
 
 	// GET checks for main.
-	getResp, err := http.Get(srv.URL + "/repos/default/branch/main/checks")
+	getResp, err := http.Get(srv.URL + "/repos/default/default/-/branch/main/checks")
 	if err != nil {
 		t.Fatalf("GET checks: %v", err)
 	}
@@ -1050,7 +1051,7 @@ func TestIntegrationReviewRepoIsolation(t *testing.T) {
 
 	// Create two repos.
 	for _, name := range []string{"repo-x", "repo-y"} {
-		r := post("/repos", `{"name":"`+name+`"}`)
+		r := post("/repos", `{"owner":"default","name":"`+name+`"}`)
 		r.Body.Close()
 		if r.StatusCode != http.StatusCreated {
 			t.Fatalf("create repo %s: expected 201, got %d", name, r.StatusCode)
@@ -1058,14 +1059,14 @@ func TestIntegrationReviewRepoIsolation(t *testing.T) {
 	}
 
 	// alice leaves a review on repo-x/main
-	r := post("/repos/repo-x/review", `{"branch":"main","status":"approved"}`)
+	r := post("/repos/default/repo-x/-/review", `{"branch":"main","status":"approved"}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("review repo-x: expected 201, got %d", r.StatusCode)
 	}
 
-	// GET /repos/repo-y/branch/main/reviews must be empty.
-	getResp, err := http.Get(srv.URL + "/repos/repo-y/branch/main/reviews")
+	// GET /repos/repo-y/-/branch/main/reviews must be empty.
+	getResp, err := http.Get(srv.URL + "/repos/default/repo-y/-/branch/main/reviews")
 	if err != nil {
 		t.Fatalf("GET reviews repo-y: %v", err)
 	}
@@ -1134,34 +1135,34 @@ func TestIntegrationRBAC_FullFlow(t *testing.T) {
 
 	// Step 1: Create a repo as bootstrap admin.
 	adminSrv := makeHandler(bootstrapAdmin, bootstrapAdmin)
-	r := doPost(adminSrv, "/repos", `{"name":"rbacrepo"}`)
+	r := doPost(adminSrv, "/repos", `{"owner":"default","name":"rbacrepo"}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("create repo: expected 201, got %d", r.StatusCode)
 	}
 
 	// Step 2: Bootstrap admin assigns writer and maintainer roles.
-	r = doPut(adminSrv, "/repos/rbacrepo/roles/"+writerID, `{"role":"writer"}`)
+	r = doPut(adminSrv, "/repos/default/rbacrepo/-/roles/"+writerID, `{"role":"writer"}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusOK {
 		t.Fatalf("assign writer role: expected 200, got %d", r.StatusCode)
 	}
 
-	r = doPut(adminSrv, "/repos/rbacrepo/roles/"+maintainerID, `{"role":"maintainer"}`)
+	r = doPut(adminSrv, "/repos/default/rbacrepo/-/roles/"+maintainerID, `{"role":"maintainer"}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusOK {
 		t.Fatalf("assign maintainer role: expected 200, got %d", r.StatusCode)
 	}
 
 	// Step 3: Admin creates branch; writer commits to it.
-	r = doPost(adminSrv, "/repos/rbacrepo/branch", `{"name":"feature/rbac-test"}`)
+	r = doPost(adminSrv, "/repos/default/rbacrepo/-/branch", `{"name":"feature/rbac-test"}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("admin create branch: expected 201, got %d", r.StatusCode)
 	}
 
 	writerSrv := makeHandler(writerID, bootstrapAdmin)
-	r = doPost(writerSrv, "/repos/rbacrepo/commit",
+	r = doPost(writerSrv, "/repos/default/rbacrepo/-/commit",
 		`{"branch":"feature/rbac-test","message":"writer commit","files":[{"path":"f.txt","content":"aGVsbG8="}]}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusCreated {
@@ -1169,7 +1170,7 @@ func TestIntegrationRBAC_FullFlow(t *testing.T) {
 	}
 
 	// Step 4: Writer cannot merge (not maintainer).
-	r = doPost(writerSrv, "/repos/rbacrepo/merge", `{"branch":"feature/rbac-test"}`)
+	r = doPost(writerSrv, "/repos/default/rbacrepo/-/merge", `{"branch":"feature/rbac-test"}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusForbidden {
 		t.Fatalf("writer merge: expected 403, got %d", r.StatusCode)
@@ -1177,14 +1178,14 @@ func TestIntegrationRBAC_FullFlow(t *testing.T) {
 
 	// Step 5: Maintainer can merge.
 	maintainerSrv := makeHandler(maintainerID, bootstrapAdmin)
-	r = doPost(maintainerSrv, "/repos/rbacrepo/merge", `{"branch":"feature/rbac-test"}`)
+	r = doPost(maintainerSrv, "/repos/default/rbacrepo/-/merge", `{"branch":"feature/rbac-test"}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusOK {
 		t.Fatalf("maintainer merge: expected 200, got %d", r.StatusCode)
 	}
 
 	// Step 6: Admin can read the tree.
-	r = doGet(adminSrv, "/repos/rbacrepo/tree")
+	r = doGet(adminSrv, "/repos/default/rbacrepo/-/tree")
 	r.Body.Close()
 	if r.StatusCode != http.StatusOK {
 		t.Fatalf("admin read tree: expected 200, got %d", r.StatusCode)
@@ -1192,7 +1193,7 @@ func TestIntegrationRBAC_FullFlow(t *testing.T) {
 
 	// Step 7: Unknown identity has no access.
 	unknownSrv := makeHandler("unknown@example.com", bootstrapAdmin)
-	r = doGet(unknownSrv, "/repos/rbacrepo/tree")
+	r = doGet(unknownSrv, "/repos/default/rbacrepo/-/tree")
 	r.Body.Close()
 	if r.StatusCode != http.StatusForbidden {
 		t.Fatalf("unknown identity read: expected 403, got %d", r.StatusCode)
@@ -1222,7 +1223,7 @@ func TestIntegrationRBAC_CrossRepoIsolation(t *testing.T) {
 
 	// Create two repos.
 	for _, name := range []string{"repo-x", "repo-y"} {
-		r := doPost(adminSrv, "/repos", `{"name":"`+name+`"}`)
+		r := doPost(adminSrv, "/repos", `{"owner":"default","name":"`+name+`"}`)
 		r.Body.Close()
 		if r.StatusCode != http.StatusCreated {
 			t.Fatalf("create %s: expected 201, got %d", name, r.StatusCode)
@@ -1230,7 +1231,7 @@ func TestIntegrationRBAC_CrossRepoIsolation(t *testing.T) {
 	}
 
 	// Assign alice as admin in repo-x only.
-	req, _ := http.NewRequest(http.MethodPut, adminSrv.URL+"/repos/repo-x/roles/"+alice, strings.NewReader(`{"role":"admin"}`))
+	req, _ := http.NewRequest(http.MethodPut, adminSrv.URL+"/repos/default/repo-x/-/roles/"+alice, strings.NewReader(`{"role":"admin"}`))
 	req.Header.Set("Content-Type", "application/json")
 	r, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -1246,7 +1247,7 @@ func TestIntegrationRBAC_CrossRepoIsolation(t *testing.T) {
 	t.Cleanup(aliceSrv.Close)
 
 	// Alice can access repo-x.
-	resp, err := http.Get(aliceSrv.URL + "/repos/repo-x/tree")
+	resp, err := http.Get(aliceSrv.URL + "/repos/default/repo-x/-/tree")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1256,7 +1257,7 @@ func TestIntegrationRBAC_CrossRepoIsolation(t *testing.T) {
 	}
 
 	// Alice cannot access repo-y (no role there).
-	resp, err = http.Get(aliceSrv.URL + "/repos/repo-y/tree")
+	resp, err = http.Get(aliceSrv.URL + "/repos/default/repo-y/-/tree")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1291,35 +1292,35 @@ func TestIntegrationMerge_ConflictBody(t *testing.T) {
 	}
 
 	// Step 1: Commit to main — shared.txt (seq=1).
-	r := post("/repos/default/commit", `{"branch":"main","message":"init","files":[{"path":"shared.txt","content":"b3JpZ2luYWw="}]}`)
+	r := post("/repos/default/default/-/commit", `{"branch":"main","message":"init","files":[{"path":"shared.txt","content":"b3JpZ2luYWw="}]}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("commit to main: expected 201, got %d", r.StatusCode)
 	}
 
 	// Step 2: Create branch (base=1).
-	r = post("/repos/default/branch", `{"name":"feature/merge-conflict"}`)
+	r = post("/repos/default/default/-/branch", `{"name":"feature/merge-conflict"}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("create branch: expected 201, got %d", r.StatusCode)
 	}
 
 	// Step 3: Main modifies shared.txt (seq=2).
-	r = post("/repos/default/commit", `{"branch":"main","message":"main update","files":[{"path":"shared.txt","content":"bWFpbi11cGRhdGU="}]}`)
+	r = post("/repos/default/default/-/commit", `{"branch":"main","message":"main update","files":[{"path":"shared.txt","content":"bWFpbi11cGRhdGU="}]}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("commit to main: expected 201, got %d", r.StatusCode)
 	}
 
 	// Step 4: Branch modifies shared.txt (seq=3).
-	r = post("/repos/default/commit", `{"branch":"feature/merge-conflict","message":"branch update","files":[{"path":"shared.txt","content":"YnJhbmNoLXVwZGF0ZQ=="}]}`)
+	r = post("/repos/default/default/-/commit", `{"branch":"feature/merge-conflict","message":"branch update","files":[{"path":"shared.txt","content":"YnJhbmNoLXVwZGF0ZQ=="}]}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("commit to branch: expected 201, got %d", r.StatusCode)
 	}
 
 	// Step 5: POST /merge — must return 409 with conflict body.
-	r = post("/repos/default/merge", `{"branch":"feature/merge-conflict"}`)
+	r = post("/repos/default/default/-/merge", `{"branch":"feature/merge-conflict"}`)
 	defer r.Body.Close()
 	if r.StatusCode != http.StatusConflict {
 		var errBody map[string]interface{}
@@ -1372,35 +1373,35 @@ func TestIntegrationRebase_ConflictBody(t *testing.T) {
 	}
 
 	// Step 1: Commit to main — shared.txt (seq=1).
-	r := post("/repos/default/commit", `{"branch":"main","message":"init","files":[{"path":"shared.txt","content":"b3JpZ2luYWw="}]}`)
+	r := post("/repos/default/default/-/commit", `{"branch":"main","message":"init","files":[{"path":"shared.txt","content":"b3JpZ2luYWw="}]}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("commit to main: expected 201, got %d", r.StatusCode)
 	}
 
 	// Step 2: Create branch (base=1).
-	r = post("/repos/default/branch", `{"name":"feature/rebase-conflict"}`)
+	r = post("/repos/default/default/-/branch", `{"name":"feature/rebase-conflict"}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("create branch: expected 201, got %d", r.StatusCode)
 	}
 
 	// Step 3: Branch modifies shared.txt (seq=2).
-	r = post("/repos/default/commit", `{"branch":"feature/rebase-conflict","message":"branch update","files":[{"path":"shared.txt","content":"YnJhbmNoLXVwZGF0ZQ=="}]}`)
+	r = post("/repos/default/default/-/commit", `{"branch":"feature/rebase-conflict","message":"branch update","files":[{"path":"shared.txt","content":"YnJhbmNoLXVwZGF0ZQ=="}]}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("commit to branch: expected 201, got %d", r.StatusCode)
 	}
 
 	// Step 4: Main modifies shared.txt (seq=3).
-	r = post("/repos/default/commit", `{"branch":"main","message":"main update","files":[{"path":"shared.txt","content":"bWFpbi11cGRhdGU="}]}`)
+	r = post("/repos/default/default/-/commit", `{"branch":"main","message":"main update","files":[{"path":"shared.txt","content":"bWFpbi11cGRhdGU="}]}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("commit to main: expected 201, got %d", r.StatusCode)
 	}
 
 	// Step 5: POST /rebase — must return 409 with conflict body.
-	r = post("/repos/default/rebase", `{"branch":"feature/rebase-conflict"}`)
+	r = post("/repos/default/default/-/rebase", `{"branch":"feature/rebase-conflict"}`)
 	defer r.Body.Close()
 	if r.StatusCode != http.StatusConflict {
 		var errBody map[string]interface{}
@@ -1457,26 +1458,26 @@ func TestIntegrationBranchLifecycle_MergeAfterMerge(t *testing.T) {
 	}
 
 	// Create branch and commit to it.
-	r := post("/repos/default/branch", `{"name":"feature/once"}`)
+	r := post("/repos/default/default/-/branch", `{"name":"feature/once"}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("create branch: expected 201, got %d", r.StatusCode)
 	}
-	r = post("/repos/default/commit", `{"branch":"feature/once","message":"work","files":[{"path":"f.txt","content":"dGVzdA=="}]}`)
+	r = post("/repos/default/default/-/commit", `{"branch":"feature/once","message":"work","files":[{"path":"f.txt","content":"dGVzdA=="}]}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("commit: expected 201, got %d", r.StatusCode)
 	}
 
 	// First merge — should succeed.
-	r = post("/repos/default/merge", `{"branch":"feature/once"}`)
+	r = post("/repos/default/default/-/merge", `{"branch":"feature/once"}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusOK {
 		t.Fatalf("first merge: expected 200, got %d", r.StatusCode)
 	}
 
 	// Second merge of already-merged branch — should fail with 409.
-	r = post("/repos/default/merge", `{"branch":"feature/once"}`)
+	r = post("/repos/default/default/-/merge", `{"branch":"feature/once"}`)
 	defer r.Body.Close()
 	if r.StatusCode != http.StatusConflict {
 		t.Fatalf("second merge: expected 409, got %d", r.StatusCode)
@@ -1500,24 +1501,24 @@ func TestIntegrationBranchLifecycle_CommitAfterMerge(t *testing.T) {
 	}
 
 	// Create branch, commit, and merge it.
-	r := post("/repos/default/branch", `{"name":"feature/commit-after-merge"}`)
+	r := post("/repos/default/default/-/branch", `{"name":"feature/commit-after-merge"}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("create branch: expected 201, got %d", r.StatusCode)
 	}
-	r = post("/repos/default/commit", `{"branch":"feature/commit-after-merge","message":"initial","files":[{"path":"g.txt","content":"dGVzdA=="}]}`)
+	r = post("/repos/default/default/-/commit", `{"branch":"feature/commit-after-merge","message":"initial","files":[{"path":"g.txt","content":"dGVzdA=="}]}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("commit: expected 201, got %d", r.StatusCode)
 	}
-	r = post("/repos/default/merge", `{"branch":"feature/commit-after-merge"}`)
+	r = post("/repos/default/default/-/merge", `{"branch":"feature/commit-after-merge"}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusOK {
 		t.Fatalf("merge: expected 200, got %d", r.StatusCode)
 	}
 
 	// Commit to merged branch — must fail with 409.
-	r = post("/repos/default/commit", `{"branch":"feature/commit-after-merge","message":"post-merge","files":[{"path":"g.txt","content":"dXBkYXRlZA=="}]}`)
+	r = post("/repos/default/default/-/commit", `{"branch":"feature/commit-after-merge","message":"post-merge","files":[{"path":"g.txt","content":"dXBkYXRlZA=="}]}`)
 	defer r.Body.Close()
 	if r.StatusCode != http.StatusConflict {
 		t.Fatalf("commit after merge: expected 409, got %d", r.StatusCode)
@@ -1531,7 +1532,7 @@ func TestIntegrationBranchLifecycle_RebaseMain(t *testing.T) {
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
-	resp, err := http.Post(srv.URL+"/repos/default/rebase", "application/json",
+	resp, err := http.Post(srv.URL+"/repos/default/default/-/rebase", "application/json",
 		strings.NewReader(`{"branch":"main"}`))
 	if err != nil {
 		t.Fatalf("POST /rebase: %v", err)
@@ -1568,41 +1569,41 @@ func TestIntegrationPurge_FullFlow(t *testing.T) {
 	}
 
 	// Step 1: Commit to main.
-	r := post("/repos/default/commit", `{"branch":"main","message":"init","files":[{"path":"main.txt","content":"bWFpbg=="}]}`)
+	r := post("/repos/default/default/-/commit", `{"branch":"main","message":"init","files":[{"path":"main.txt","content":"bWFpbg=="}]}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("commit to main: expected 201, got %d", r.StatusCode)
 	}
 
 	// Step 2: Create and merge a feature branch (tests merged-branch cleanup).
-	r = post("/repos/default/branch", `{"name":"feature/merged"}`)
+	r = post("/repos/default/default/-/branch", `{"name":"feature/merged"}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("create merged branch: expected 201, got %d", r.StatusCode)
 	}
-	r = post("/repos/default/commit", `{"branch":"feature/merged","message":"work","files":[{"path":"merged.txt","content":"bWVyZ2Vk"}]}`)
+	r = post("/repos/default/default/-/commit", `{"branch":"feature/merged","message":"work","files":[{"path":"merged.txt","content":"bWVyZ2Vk"}]}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("commit to merged branch: expected 201, got %d", r.StatusCode)
 	}
-	r = post("/repos/default/merge", `{"branch":"feature/merged"}`)
+	r = post("/repos/default/default/-/merge", `{"branch":"feature/merged"}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusOK {
 		t.Fatalf("merge: expected 200, got %d", r.StatusCode)
 	}
 
 	// Step 3: Create and abandon a second branch with a unique file (orphan candidate).
-	r = post("/repos/default/branch", `{"name":"feature/abandoned"}`)
+	r = post("/repos/default/default/-/branch", `{"name":"feature/abandoned"}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("create abandoned branch: expected 201, got %d", r.StatusCode)
 	}
-	r = post("/repos/default/commit", `{"branch":"feature/abandoned","message":"abandoned work","files":[{"path":"abandoned-only.txt","content":"b3JwaGFu"}]}`)
+	r = post("/repos/default/default/-/commit", `{"branch":"feature/abandoned","message":"abandoned work","files":[{"path":"abandoned-only.txt","content":"b3JwaGFu"}]}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("commit to abandoned branch: expected 201, got %d", r.StatusCode)
 	}
-	r = del("/repos/default/branch/feature/abandoned")
+	r = del("/repos/default/default/-/branch/feature/abandoned")
 	r.Body.Close()
 	if r.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete branch: expected 204, got %d", r.StatusCode)
@@ -1610,16 +1611,16 @@ func TestIntegrationPurge_FullFlow(t *testing.T) {
 
 	// Step 4: Age both branches and their commits.
 	for _, branch := range []string{"feature/merged", "feature/abandoned"} {
-		if _, err := database.Exec(`UPDATE branches SET created_at = now() - interval '100 days' WHERE repo = 'default' AND name = $1`, branch); err != nil {
+		if _, err := database.Exec(`UPDATE branches SET created_at = now() - interval '100 days' WHERE repo = 'default/default' AND name = $1`, branch); err != nil {
 			t.Fatalf("age branch %s: %v", branch, err)
 		}
-		if _, err := database.Exec(`UPDATE commits SET created_at = now() - interval '100 days' WHERE repo = 'default' AND branch = $1`, branch); err != nil {
+		if _, err := database.Exec(`UPDATE commits SET created_at = now() - interval '100 days' WHERE repo = 'default/default' AND branch = $1`, branch); err != nil {
 			t.Fatalf("age commits %s: %v", branch, err)
 		}
 	}
 
 	// Step 5: POST /purge with 1d threshold.
-	r = post("/repos/default/purge", `{"older_than":"1d"}`)
+	r = post("/repos/default/default/-/purge", `{"older_than":"1d"}`)
 	defer r.Body.Close()
 	if r.StatusCode != http.StatusOK {
 		var errBody map[string]interface{}
@@ -1653,7 +1654,7 @@ func TestIntegrationPurge_FullFlow(t *testing.T) {
 	// Step 6: Verify both branch rows are gone.
 	for _, branch := range []string{"feature/merged", "feature/abandoned"} {
 		var count int
-		if err := database.QueryRow("SELECT count(*) FROM branches WHERE repo = 'default' AND name = $1", branch).Scan(&count); err != nil {
+		if err := database.QueryRow("SELECT count(*) FROM branches WHERE repo = 'default/default' AND name = $1", branch).Scan(&count); err != nil {
 			t.Fatalf("query branch %s: %v", branch, err)
 		}
 		if count != 0 {
@@ -1662,7 +1663,7 @@ func TestIntegrationPurge_FullFlow(t *testing.T) {
 	}
 
 	// Step 7: Verify main is unaffected — its tree has main.txt and merged.txt.
-	treeResp, err := http.Get(srv.URL + "/repos/default/tree")
+	treeResp, err := http.Get(srv.URL + "/repos/default/default/-/tree")
 	if err != nil {
 		t.Fatalf("GET /tree: %v", err)
 	}
