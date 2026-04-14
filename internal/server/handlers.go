@@ -16,6 +16,23 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
+// validateRepo checks that the named repo exists. It writes a 404 and returns
+// false when the repo is not found, so callers can do:
+//
+//	if !s.validateRepo(w, r, repo) { return }
+func (s *server) validateRepo(w http.ResponseWriter, r *http.Request, repo string) bool {
+	_, err := s.commitStore.GetRepo(r.Context(), repo)
+	if err != nil {
+		if errors.Is(err, db.ErrRepoNotFound) {
+			writeError(w, http.StatusNotFound, "repo not found")
+		} else {
+			writeError(w, http.StatusInternalServerError, "query failed")
+		}
+		return false
+	}
+	return true
+}
+
 // handleCreateRepo implements POST /repos
 func (s *server) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 	var req model.CreateRepoRequest
@@ -92,6 +109,9 @@ func (s *server) handleDeleteRepo(w http.ResponseWriter, r *http.Request) {
 // handleTree implements GET /repos/:name/tree?branch=main&at=N&limit=N&after=cursor
 func (s *server) handleTree(w http.ResponseWriter, r *http.Request) {
 	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
 	branch := r.URL.Query().Get("branch")
 	if branch == "" {
 		branch = "main"
@@ -137,6 +157,9 @@ func (s *server) handleTree(w http.ResponseWriter, r *http.Request) {
 // Query params: branch (default "main"), at (sequence), limit, after (cursor).
 func (s *server) handleFile(w http.ResponseWriter, r *http.Request) {
 	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
 	fullPath := r.PathValue("path")
 
 	// Check for /history suffix.
@@ -241,6 +264,9 @@ func (s *server) handleGetCommit(w http.ResponseWriter, r *http.Request) {
 // handleBranches implements GET /repos/:name/branches?status=active
 func (s *server) handleBranches(w http.ResponseWriter, r *http.Request) {
 	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
 	statusFilter := r.URL.Query().Get("status")
 
 	branches, err := s.readStore.ListBranches(r.Context(), repo, statusFilter)
@@ -257,6 +283,9 @@ func (s *server) handleBranches(w http.ResponseWriter, r *http.Request) {
 // handleDiff implements GET /repos/:name/diff?branch=X
 func (s *server) handleDiff(w http.ResponseWriter, r *http.Request) {
 	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
 	branch := r.URL.Query().Get("branch")
 	if branch == "" {
 		writeError(w, http.StatusBadRequest, "branch parameter is required")
@@ -320,6 +349,8 @@ func (s *server) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, db.ErrBranchExists):
 			writeError(w, http.StatusConflict, "branch already exists")
+		case errors.Is(err, db.ErrRepoNotFound):
+			writeError(w, http.StatusNotFound, "repo not found")
 		default:
 			writeError(w, http.StatusInternalServerError, "internal server error")
 		}

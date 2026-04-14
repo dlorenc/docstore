@@ -19,6 +19,8 @@ func seed(t *testing.T, db *sql.DB) {
 	t.Helper()
 
 	stmts := []string{
+		// Ensure the 'default' repo row exists so validateRepo passes.
+		`INSERT INTO repos (name) VALUES ('default') ON CONFLICT DO NOTHING`,
 		`INSERT INTO documents (version_id, path, content, content_hash, created_by)
 		 VALUES ('aaaaaaaa-0000-0000-0000-000000000001', 'hello.txt', 'hello world', 'hash_hello_v1', 'alice')`,
 		`INSERT INTO documents (version_id, path, content, content_hash, created_by)
@@ -57,7 +59,7 @@ func seed(t *testing.T, db *sql.DB) {
 func TestIntegrationTreeEndpoint(t *testing.T) {
 	db := testutil.TestDB(t, dbpkg.MigrationSQL)
 	seed(t, db)
-	handler := server.New(nil, db, "test@example.com")
+	handler := server.New(dbpkg.NewStore(db), db, "test@example.com")
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -84,7 +86,7 @@ func TestIntegrationTreeEndpoint(t *testing.T) {
 func TestIntegrationFileEndpoint(t *testing.T) {
 	db := testutil.TestDB(t, dbpkg.MigrationSQL)
 	seed(t, db)
-	handler := server.New(nil, db, "test@example.com")
+	handler := server.New(dbpkg.NewStore(db), db, "test@example.com")
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -175,7 +177,7 @@ func TestIntegrationBranchesEndpoint(t *testing.T) {
 		t.Fatalf("seed branch: %v", err)
 	}
 
-	handler := server.New(nil, database, "test@example.com")
+	handler := server.New(dbpkg.NewStore(database), database, "test@example.com")
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -241,7 +243,7 @@ func TestIntegrationDiffEndpoint(t *testing.T) {
 		}
 	}
 
-	handler := server.New(nil, database, "test@example.com")
+	handler := server.New(dbpkg.NewStore(database), database, "test@example.com")
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 

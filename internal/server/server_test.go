@@ -375,6 +375,94 @@ func TestHandleCreateBranch_AlreadyExists(t *testing.T) {
 	}
 }
 
+func TestHandleCreateBranch_RepoNotFound(t *testing.T) {
+	store := &mockStore{
+		createBranchFn: func(ctx context.Context, req model.CreateBranchRequest) (*model.CreateBranchResponse, error) {
+			return nil, db.ErrRepoNotFound
+		},
+	}
+	srv := New(store, nil, devID)
+
+	body, _ := json.Marshal(model.CreateBranchRequest{Name: "feature/x"})
+	req := httptest.NewRequest(http.MethodPost, "/repos/nonexistent/branch", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec.Code)
+	}
+}
+
+// --- validateRepo / nonexistent repo tests ---
+
+func TestHandleTree_RepoNotFound(t *testing.T) {
+	store := &mockStore{
+		getRepoFn: func(ctx context.Context, name string) (*model.Repo, error) {
+			return nil, db.ErrRepoNotFound
+		},
+	}
+	srv := New(store, nil, devID)
+
+	req := httptest.NewRequest(http.MethodGet, "/repos/ghost/tree?branch=main", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec.Code)
+	}
+}
+
+func TestHandleBranches_RepoNotFound(t *testing.T) {
+	store := &mockStore{
+		getRepoFn: func(ctx context.Context, name string) (*model.Repo, error) {
+			return nil, db.ErrRepoNotFound
+		},
+	}
+	srv := New(store, nil, devID)
+
+	req := httptest.NewRequest(http.MethodGet, "/repos/ghost/branches", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec.Code)
+	}
+}
+
+func TestHandleDiff_RepoNotFound(t *testing.T) {
+	store := &mockStore{
+		getRepoFn: func(ctx context.Context, name string) (*model.Repo, error) {
+			return nil, db.ErrRepoNotFound
+		},
+	}
+	srv := New(store, nil, devID)
+
+	req := httptest.NewRequest(http.MethodGet, "/repos/ghost/diff?branch=main", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec.Code)
+	}
+}
+
+func TestHandleFile_RepoNotFound(t *testing.T) {
+	store := &mockStore{
+		getRepoFn: func(ctx context.Context, name string) (*model.Repo, error) {
+			return nil, db.ErrRepoNotFound
+		},
+	}
+	srv := New(store, nil, devID)
+
+	req := httptest.NewRequest(http.MethodGet, "/repos/ghost/file/foo.txt", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec.Code)
+	}
+}
+
 // --- POST /repos/default/merge tests ---
 
 func TestHandleMerge_Success(t *testing.T) {
