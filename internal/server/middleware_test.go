@@ -1,6 +1,8 @@
 package server
 
 import (
+	"bytes"
+	"context"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
@@ -12,6 +14,9 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	dbpkg "github.com/dlorenc/docstore/internal/db"
+	"github.com/dlorenc/docstore/internal/model"
 )
 
 // generateTestKey generates a 2048-bit RSA key pair for tests.
@@ -191,3 +196,228 @@ func TestIAPMiddleware_IdentityInContext(t *testing.T) {
 		t.Errorf("expected identity %q in context, got %q", email, cap.identity)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// RBAC middleware tests
+// ---------------------------------------------------------------------------
+
+// mockRoleStore is a test double for RoleStore.
+type mockRoleStore struct {
+	getRoleFn  func(ctx context.Context, repo, identity string) (*model.Role, error)
+	hasAdminFn func(ctx context.Context, repo string) (bool, error)
+}
+
+func (m *mockRoleStore) GetRole(ctx context.Context, repo, identity string) (*model.Role, error) {
+	if m.getRoleFn != nil {
+		return m.getRoleFn(ctx, repo, identity)
+	}
+	return nil, dbpkg.ErrRoleNotFound
+}
+
+func (m *mockRoleStore) HasAdmin(ctx context.Context, repo string) (bool, error) {
+	if m.hasAdminFn != nil {
+		return m.hasAdminFn(ctx, repo)
+	}
+	return false, nil
+}
+
+// rbacTestServer creates a server with a fixed identity in context (simulating
+// post-IAP) and the given role store + bootstrap admin. Returns the mux handler
+// and a recorder factory.
+func rbacTestServer(store RoleStore, bootstrapAdmin, identity string) http.Handler {
+	inner := http.NewServeMux()
+	inner.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	// Inject identity into context (normally done by IAPMiddleware).
+	identityInjector := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := context.WithValue(r.Context(), identityKey, identity)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+	return identityInjector(RBACMiddleware(store, bootstrapAdmin)(inner))
+}
+
+func rbacDo(t *testing.T, handler http.Handler, method, path string, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	var reqBody *bytes.Reader
+	if body != "" {
+		reqBody = bytes.NewReader([]byte(body))
+	} else {
+		reqBody = bytes.NewReader(nil)
+	}
+	req := httptest.NewRequest(method, path, reqBody)
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestRBACMiddleware_ReaderCanGet(t *testing.T) {
+	store := &mockRoleStore{
+		getRoleFn: func(_ context.Context, repo, identity string) (*model.Role, error) {
+			return &model.Role{Identity: identity, Role: model.RoleReader}, nil
+		},
+	}
+	h := rbacTestServer(store, "", "alice@example.com")
+	rec := rbacDo(t, h, http.MethodGet, "/repos/myrepo/tree", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+}
+
+func TestRBACMiddleware_ReaderCannotPost(t *testing.T) {
+	store := &mockRoleStore{
+		getRoleFn: func(_ context.Context, repo, identity string) (*model.Role, error) {
+			return &model.Role{Identity: identity, Role: model.RoleReader}, nil
+		},
+	}
+	h := rbacTestServer(store, "", "alice@example.com")
+	rec := rbacDo(t, h, http.MethodPost, "/repos/myrepo/commit", `{"branch":"feature/x","message":"m","files":[]}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", rec.Code)
+	}
+}
+
+func TestRBACMiddleware_WriterCanCommitToBranch(t *testing.T) {
+	store := &mockRoleStore{
+		getRoleFn: func(_ context.Context, repo, identity string) (*model.Role, error) {
+			return &model.Role{Identity: identity, Role: model.RoleWriter}, nil
+		},
+	}
+	h := rbacTestServer(store, "", "bob@example.com")
+	rec := rbacDo(t, h, http.MethodPost, "/repos/myrepo/commit", `{"branch":"feature/work","message":"m","files":[]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+}
+
+func TestRBACMiddleware_WriterCannotCommitToMain(t *testing.T) {
+	store := &mockRoleStore{
+		getRoleFn: func(_ context.Context, repo, identity string) (*model.Role, error) {
+			return &model.Role{Identity: identity, Role: model.RoleWriter}, nil
+		},
+	}
+	h := rbacTestServer(store, "", "bob@example.com")
+	rec := rbacDo(t, h, http.MethodPost, "/repos/myrepo/commit", `{"branch":"main","message":"m","files":[]}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", rec.Code)
+	}
+}
+
+func TestRBACMiddleware_WriterCannotMerge(t *testing.T) {
+	store := &mockRoleStore{
+		getRoleFn: func(_ context.Context, repo, identity string) (*model.Role, error) {
+			return &model.Role{Identity: identity, Role: model.RoleWriter}, nil
+		},
+	}
+	h := rbacTestServer(store, "", "bob@example.com")
+	rec := rbacDo(t, h, http.MethodPost, "/repos/myrepo/merge", `{"branch":"feature/x"}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", rec.Code)
+	}
+}
+
+func TestRBACMiddleware_MaintainerCanMerge(t *testing.T) {
+	store := &mockRoleStore{
+		getRoleFn: func(_ context.Context, repo, identity string) (*model.Role, error) {
+			return &model.Role{Identity: identity, Role: model.RoleMaintainer}, nil
+		},
+	}
+	h := rbacTestServer(store, "", "carol@example.com")
+	rec := rbacDo(t, h, http.MethodPost, "/repos/myrepo/merge", `{"branch":"feature/x"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+}
+
+func TestRBACMiddleware_UnknownIdentity(t *testing.T) {
+	store := &mockRoleStore{
+		// getRoleFn nil → returns ErrRoleNotFound by default
+	}
+	h := rbacTestServer(store, "", "unknown@example.com")
+	rec := rbacDo(t, h, http.MethodGet, "/repos/myrepo/tree", "")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", rec.Code)
+	}
+}
+
+func TestRBACMiddleware_AdminCanManageRoles(t *testing.T) {
+	store := &mockRoleStore{
+		getRoleFn: func(_ context.Context, repo, identity string) (*model.Role, error) {
+			return &model.Role{Identity: identity, Role: model.RoleAdmin}, nil
+		},
+	}
+	h := rbacTestServer(store, "", "admin@example.com")
+
+	// Admin can list roles.
+	rec := rbacDo(t, h, http.MethodGet, "/repos/myrepo/roles", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET roles: expected 200, got %d", rec.Code)
+	}
+
+	// Admin can PUT a role.
+	rec = rbacDo(t, h, http.MethodPut, "/repos/myrepo/roles/bob@example.com", `{"role":"writer"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT role: expected 200, got %d", rec.Code)
+	}
+}
+
+func TestRBACMiddleware_BootstrapAdmin(t *testing.T) {
+	const bootstrapAdmin = "bootstrap@example.com"
+	store := &mockRoleStore{
+		// No roles set up — hasAdminFn returns false by default.
+	}
+	h := rbacTestServer(store, bootstrapAdmin, bootstrapAdmin)
+
+	// Bootstrap admin can access admin-only roles endpoint.
+	rec := rbacDo(t, h, http.MethodGet, "/repos/newrepo/roles", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bootstrap admin GET roles: expected 200, got %d", rec.Code)
+	}
+
+	// Once an admin exists, bootstrap flag is ignored and the bootstrap
+	// identity must have an explicit role.
+	storeWithAdmin := &mockRoleStore{
+		getRoleFn: func(_ context.Context, repo, identity string) (*model.Role, error) {
+			return nil, dbpkg.ErrRoleNotFound
+		},
+		hasAdminFn: func(_ context.Context, repo string) (bool, error) {
+			return true, nil // admin already exists
+		},
+	}
+	h2 := rbacTestServer(storeWithAdmin, bootstrapAdmin, bootstrapAdmin)
+	rec = rbacDo(t, h2, http.MethodGet, "/repos/newrepo/roles", "")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("bootstrap admin after admin exists: expected 403, got %d", rec.Code)
+	}
+}
+
+func TestRBACMiddleware_RepoIsolation(t *testing.T) {
+	// alice is admin in repo-a but has NO role in repo-b.
+	store := &mockRoleStore{
+		getRoleFn: func(_ context.Context, repo, identity string) (*model.Role, error) {
+			if repo == "repo-a" && identity == "alice@example.com" {
+				return &model.Role{Identity: identity, Role: model.RoleAdmin}, nil
+			}
+			return nil, dbpkg.ErrRoleNotFound
+		},
+	}
+	h := rbacTestServer(store, "", "alice@example.com")
+
+	// Alice can access repo-a.
+	rec := rbacDo(t, h, http.MethodGet, "/repos/repo-a/tree", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("repo-a GET: expected 200, got %d", rec.Code)
+	}
+
+	// Alice has no access to repo-b.
+	rec = rbacDo(t, h, http.MethodGet, "/repos/repo-b/tree", "")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("repo-b GET: expected 403, got %d", rec.Code)
+	}
+}
+
