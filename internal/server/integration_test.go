@@ -347,3 +347,81 @@ func TestIntegrationCommitEndpoint(t *testing.T) {
 		}
 	})
 }
+
+func TestIntegrationDeleteBranch(t *testing.T) {
+	database := testutil.TestDB(t, dbpkg.MigrationSQL)
+	seed(t, database)
+
+	writeStore := dbpkg.NewStore(database)
+	handler := server.New(writeStore, database)
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	// Seed a branch to delete.
+	if _, err := database.Exec(
+		"INSERT INTO branches (name, head_sequence, base_sequence, status) VALUES ('feature/to-delete', 4, 4, 'active')",
+	); err != nil {
+		t.Fatalf("seed branch: %v", err)
+	}
+
+	t.Run("delete active branch returns 204", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/branch/feature/to-delete", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("DELETE /branch/feature/to-delete: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("expected 204, got %d", resp.StatusCode)
+		}
+
+		// Verify status is 'abandoned' in DB.
+		var status string
+		if err := database.QueryRow("SELECT status FROM branches WHERE name = 'feature/to-delete'").Scan(&status); err != nil {
+			t.Fatalf("query branch: %v", err)
+		}
+		if status != "abandoned" {
+			t.Errorf("expected status 'abandoned', got %q", status)
+		}
+	})
+
+	t.Run("delete main returns 400", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/branch/main", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("DELETE /branch/main: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("delete nonexistent branch returns 404", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/branch/nonexistent", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("DELETE /branch/nonexistent: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("expected 404, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("delete abandoned branch returns 409", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/branch/feature/to-delete", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("DELETE /branch/feature/to-delete: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusConflict {
+			t.Fatalf("expected 409, got %d", resp.StatusCode)
+		}
+	})
+}

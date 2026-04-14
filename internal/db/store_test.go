@@ -523,6 +523,75 @@ func TestMerge_BranchNotActive(t *testing.T) {
 	}
 }
 
+// --- DeleteBranch tests ---
+
+func TestDeleteBranch_Success(t *testing.T) {
+	d := testutil.TestDB(t, MigrationSQL)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	_, err := s.CreateBranch(ctx, model.CreateBranchRequest{Name: "feature/delete-me"})
+	if err != nil {
+		t.Fatalf("create branch: %v", err)
+	}
+
+	if err := s.DeleteBranch(ctx, "feature/delete-me"); err != nil {
+		t.Fatalf("delete branch: %v", err)
+	}
+
+	var status string
+	err = d.QueryRow("SELECT status FROM branches WHERE name = 'feature/delete-me'").Scan(&status)
+	if err != nil {
+		t.Fatalf("query branch: %v", err)
+	}
+	if status != "abandoned" {
+		t.Errorf("expected status 'abandoned', got %q", status)
+	}
+}
+
+func TestDeleteBranch_NotFound(t *testing.T) {
+	d := testutil.TestDB(t, MigrationSQL)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	err := s.DeleteBranch(ctx, "nonexistent")
+	if err != ErrBranchNotFound {
+		t.Fatalf("expected ErrBranchNotFound, got %v", err)
+	}
+}
+
+func TestDeleteBranch_AlreadyMerged(t *testing.T) {
+	d := testutil.TestDB(t, MigrationSQL)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	_, err := d.Exec("INSERT INTO branches (name, head_sequence, base_sequence, status) VALUES ('merged-br', 0, 0, 'merged')")
+	if err != nil {
+		t.Fatalf("insert branch: %v", err)
+	}
+
+	err = s.DeleteBranch(ctx, "merged-br")
+	if err != ErrBranchNotActive {
+		t.Fatalf("expected ErrBranchNotActive, got %v", err)
+	}
+}
+
+func TestDeleteBranch_AlreadyAbandoned(t *testing.T) {
+	d := testutil.TestDB(t, MigrationSQL)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	_, err := d.Exec("INSERT INTO branches (name, head_sequence, base_sequence, status) VALUES ('abandoned-br', 0, 0, 'abandoned')")
+	if err != nil {
+		t.Fatalf("insert branch: %v", err)
+	}
+
+	err = s.DeleteBranch(ctx, "abandoned-br")
+	if err != ErrBranchNotActive {
+		t.Fatalf("expected ErrBranchNotActive, got %v", err)
+	}
+}
+
 func TestMerge_EmptyBranch(t *testing.T) {
 	d := testutil.TestDB(t, MigrationSQL)
 	s := NewStore(d)
