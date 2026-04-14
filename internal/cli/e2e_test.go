@@ -36,7 +36,7 @@ func TestFullWorkflow(t *testing.T) {
 
 	ws1, ws1Out := newTestApp(t, srv)
 
-	if err := ws1.Init(srv.URL, "alice"); err != nil {
+	if err := ws1.Init(srv.URL, "", "alice"); err != nil {
 		t.Fatalf("ws1 Init: %v", err)
 	}
 	if !strings.Contains(ws1Out.String(), "Initialized") {
@@ -67,7 +67,7 @@ func TestFullWorkflow(t *testing.T) {
 	// ── Workspace 2: init while main has README.md ────────────────────────
 
 	ws2, _ := newTestApp(t, srv)
-	if err := ws2.Init(srv.URL, "bob"); err != nil {
+	if err := ws2.Init(srv.URL, "", "bob"); err != nil {
 		t.Fatalf("ws2 Init: %v", err)
 	}
 

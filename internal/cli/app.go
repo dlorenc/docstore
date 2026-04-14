@@ -26,6 +26,7 @@ const stateFile = "state.json"
 // Config is the persistent CLI configuration stored in .docstore/config.json.
 type Config struct {
 	Remote string `json:"remote"`
+	Repo   string `json:"repo"`
 	Branch string `json:"branch"`
 	Author string `json:"author"`
 }
@@ -170,7 +171,10 @@ func (a *App) isDirty() (bool, error) {
 }
 
 // Init creates a new docstore workspace and fetches all files from the server.
-func (a *App) Init(remote, author string) error {
+// remote may include a /repos/:name suffix (e.g. https://host/repos/myrepo),
+// or repo may be provided separately via the repo parameter.
+// If repo is empty and remote doesn't contain a /repos/ segment, "default" is used.
+func (a *App) Init(remote, repo, author string) error {
 	dir := filepath.Join(a.Dir, configDir)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
@@ -185,8 +189,21 @@ func (a *App) Init(remote, author string) error {
 		}
 	}
 
+	// Extract repo from remote URL if embedded (e.g. https://host/repos/myrepo).
+	baseRemote := strings.TrimRight(remote, "/")
+	if repo == "" {
+		if idx := strings.Index(baseRemote, "/repos/"); idx >= 0 {
+			parts := strings.SplitN(baseRemote[idx+len("/repos/"):], "/", 2)
+			repo = parts[0]
+			baseRemote = baseRemote[:idx]
+		} else {
+			repo = "default"
+		}
+	}
+
 	cfg := &Config{
-		Remote: strings.TrimRight(remote, "/"),
+		Remote: baseRemote,
+		Repo:   repo,
 		Branch: "main",
 		Author: author,
 	}
@@ -328,7 +345,7 @@ func (a *App) Commit(message string) error {
 		Author:  cfg.Author,
 	}
 
-	resp, err := a.postJSON(cfg, cfg.Remote+"/commit", req)
+	resp, err := a.postJSON(cfg, repoBase(cfg)+"/commit", req)
 	if err != nil {
 		return err
 	}
@@ -364,7 +381,7 @@ func (a *App) CheckoutNew(branch string) error {
 	}
 
 	req := model.CreateBranchRequest{Name: branch}
-	resp, err := a.postJSON(cfg, cfg.Remote+"/branch", req)
+	resp, err := a.postJSON(cfg, repoBase(cfg)+"/branch", req)
 	if err != nil {
 		return err
 	}
@@ -459,7 +476,7 @@ func (a *App) syncTree(cfg *Config, branch string) error {
 		if after != "" {
 			q.Set("after", after)
 		}
-		resp, err := a.httpGet(cfg, cfg.Remote+"/tree?"+q.Encode())
+		resp, err := a.httpGet(cfg, repoBase(cfg)+"/tree?"+q.Encode())
 		if err != nil {
 			return fmt.Errorf("fetching tree: %w", err)
 		}
@@ -496,7 +513,7 @@ func (a *App) syncTree(cfg *Config, branch string) error {
 
 		q := url.Values{}
 		q.Set("branch", branch)
-		resp, err := a.httpGet(cfg, cfg.Remote+"/file/"+entry.Path+"?"+q.Encode())
+		resp, err := a.httpGet(cfg, repoBase(cfg)+"/file/"+entry.Path+"?"+q.Encode())
 		if err != nil {
 			return fmt.Errorf("fetching %s: %w", entry.Path, err)
 		}
@@ -529,7 +546,7 @@ func (a *App) syncTree(cfg *Config, branch string) error {
 	}
 
 	// Fetch the branch's current head_sequence.
-	branchesResp, err := a.httpGet(cfg, cfg.Remote+"/branches")
+	branchesResp, err := a.httpGet(cfg, repoBase(cfg)+"/branches")
 	if err != nil {
 		return fmt.Errorf("fetching branches: %w", err)
 	}
@@ -569,7 +586,7 @@ func (a *App) Merge() error {
 	}
 
 	req := model.MergeRequest{Branch: cfg.Branch}
-	resp, err := a.postJSON(cfg, cfg.Remote+"/merge", req)
+	resp, err := a.postJSON(cfg, repoBase(cfg)+"/merge", req)
 	if err != nil {
 		return err
 	}
@@ -621,7 +638,7 @@ func (a *App) Diff() error {
 
 	q := url.Values{}
 	q.Set("branch", cfg.Branch)
-	resp, err := a.httpGet(cfg, cfg.Remote+"/diff?"+q.Encode())
+	resp, err := a.httpGet(cfg, repoBase(cfg)+"/diff?"+q.Encode())
 	if err != nil {
 		return fmt.Errorf("fetching diff: %w", err)
 	}
@@ -671,6 +688,15 @@ func (a *App) Diff() error {
 	}
 
 	return nil
+}
+
+// repoBase returns the /repos/:name base URL for the configured repo.
+func repoBase(cfg *Config) string {
+	repo := cfg.Repo
+	if repo == "" {
+		repo = "default"
+	}
+	return cfg.Remote + "/repos/" + repo
 }
 
 // httpGet sends a GET request with the X-DocStore-Identity header set.

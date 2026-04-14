@@ -77,7 +77,7 @@ func TestMaterializeTree(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("head of main", func(t *testing.T) {
-		entries, err := s.MaterializeTree(ctx, "main", nil, 100, "")
+		entries, err := s.MaterializeTree(ctx, "default", "main", nil, 100, "")
 		if err != nil {
 			t.Fatalf("MaterializeTree: %v", err)
 		}
@@ -98,7 +98,7 @@ func TestMaterializeTree(t *testing.T) {
 
 	t.Run("at sequence 1", func(t *testing.T) {
 		seq := int64(1)
-		entries, err := s.MaterializeTree(ctx, "main", &seq, 100, "")
+		entries, err := s.MaterializeTree(ctx, "default", "main", &seq, 100, "")
 		if err != nil {
 			t.Fatalf("MaterializeTree: %v", err)
 		}
@@ -113,7 +113,7 @@ func TestMaterializeTree(t *testing.T) {
 
 	t.Run("at sequence 3 includes deleted file", func(t *testing.T) {
 		seq := int64(3)
-		entries, err := s.MaterializeTree(ctx, "main", &seq, 100, "")
+		entries, err := s.MaterializeTree(ctx, "default", "main", &seq, 100, "")
 		if err != nil {
 			t.Fatalf("MaterializeTree: %v", err)
 		}
@@ -124,7 +124,7 @@ func TestMaterializeTree(t *testing.T) {
 	})
 
 	t.Run("pagination", func(t *testing.T) {
-		entries, err := s.MaterializeTree(ctx, "main", nil, 1, "")
+		entries, err := s.MaterializeTree(ctx, "default", "main", nil, 1, "")
 		if err != nil {
 			t.Fatalf("MaterializeTree: %v", err)
 		}
@@ -136,7 +136,7 @@ func TestMaterializeTree(t *testing.T) {
 		}
 
 		// Second page
-		entries2, err := s.MaterializeTree(ctx, "main", nil, 1, entries[0].Path)
+		entries2, err := s.MaterializeTree(ctx, "default", "main", nil, 1, entries[0].Path)
 		if err != nil {
 			t.Fatalf("MaterializeTree page 2: %v", err)
 		}
@@ -156,7 +156,7 @@ func TestGetFile(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("current version", func(t *testing.T) {
-		fc, err := s.GetFile(ctx, "main", "hello.txt", nil)
+		fc, err := s.GetFile(ctx, "default", "main", "hello.txt", nil)
 		if err != nil {
 			t.Fatalf("GetFile: %v", err)
 		}
@@ -173,7 +173,7 @@ func TestGetFile(t *testing.T) {
 
 	t.Run("at sequence 1", func(t *testing.T) {
 		seq := int64(1)
-		fc, err := s.GetFile(ctx, "main", "hello.txt", &seq)
+		fc, err := s.GetFile(ctx, "default", "main", "hello.txt", &seq)
 		if err != nil {
 			t.Fatalf("GetFile: %v", err)
 		}
@@ -186,7 +186,7 @@ func TestGetFile(t *testing.T) {
 	})
 
 	t.Run("deleted file returns nil", func(t *testing.T) {
-		fc, err := s.GetFile(ctx, "main", "deleted.txt", nil)
+		fc, err := s.GetFile(ctx, "default", "main", "deleted.txt", nil)
 		if err != nil {
 			t.Fatalf("GetFile: %v", err)
 		}
@@ -196,7 +196,7 @@ func TestGetFile(t *testing.T) {
 	})
 
 	t.Run("nonexistent file", func(t *testing.T) {
-		fc, err := s.GetFile(ctx, "main", "nope.txt", nil)
+		fc, err := s.GetFile(ctx, "default", "main", "nope.txt", nil)
 		if err != nil {
 			t.Fatalf("GetFile: %v", err)
 		}
@@ -213,7 +213,7 @@ func TestGetFileHistory(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("hello.txt history", func(t *testing.T) {
-		entries, err := s.GetFileHistory(ctx, "main", "hello.txt", 100, nil)
+		entries, err := s.GetFileHistory(ctx, "default", "main", "hello.txt", 100, nil)
 		if err != nil {
 			t.Fatalf("GetFileHistory: %v", err)
 		}
@@ -230,7 +230,7 @@ func TestGetFileHistory(t *testing.T) {
 	})
 
 	t.Run("deleted.txt history includes delete", func(t *testing.T) {
-		entries, err := s.GetFileHistory(ctx, "main", "deleted.txt", 100, nil)
+		entries, err := s.GetFileHistory(ctx, "default", "main", "deleted.txt", 100, nil)
 		if err != nil {
 			t.Fatalf("GetFileHistory: %v", err)
 		}
@@ -248,7 +248,7 @@ func TestGetFileHistory(t *testing.T) {
 
 	t.Run("pagination with after cursor", func(t *testing.T) {
 		after := int64(2)
-		entries, err := s.GetFileHistory(ctx, "main", "hello.txt", 100, &after)
+		entries, err := s.GetFileHistory(ctx, "default", "main", "hello.txt", 100, &after)
 		if err != nil {
 			t.Fatalf("GetFileHistory: %v", err)
 		}
@@ -268,7 +268,7 @@ func TestGetCommit(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("multi-file commit", func(t *testing.T) {
-		detail, err := s.GetCommit(ctx, 1)
+		detail, err := s.GetCommit(ctx, "default", 1)
 		if err != nil {
 			t.Fatalf("GetCommit: %v", err)
 		}
@@ -297,7 +297,7 @@ func TestGetCommit(t *testing.T) {
 	})
 
 	t.Run("single-file commit", func(t *testing.T) {
-		detail, err := s.GetCommit(ctx, 2)
+		detail, err := s.GetCommit(ctx, "default", 2)
 		if err != nil {
 			t.Fatalf("GetCommit: %v", err)
 		}
@@ -310,7 +310,7 @@ func TestGetCommit(t *testing.T) {
 	})
 
 	t.Run("delete commit has nil version_id", func(t *testing.T) {
-		detail, err := s.GetCommit(ctx, 4)
+		detail, err := s.GetCommit(ctx, "default", 4)
 		if err != nil {
 			t.Fatalf("GetCommit: %v", err)
 		}
@@ -323,7 +323,7 @@ func TestGetCommit(t *testing.T) {
 	})
 
 	t.Run("nonexistent sequence", func(t *testing.T) {
-		detail, err := s.GetCommit(ctx, 999)
+		detail, err := s.GetCommit(ctx, "default", 999)
 		if err != nil {
 			t.Fatalf("GetCommit: %v", err)
 		}
@@ -351,7 +351,7 @@ func TestListBranches(t *testing.T) {
 	}
 
 	t.Run("all branches", func(t *testing.T) {
-		branches, err := s.ListBranches(ctx, "")
+		branches, err := s.ListBranches(ctx, "default", "")
 		if err != nil {
 			t.Fatalf("ListBranches: %v", err)
 		}
@@ -365,7 +365,7 @@ func TestListBranches(t *testing.T) {
 	})
 
 	t.Run("filter active", func(t *testing.T) {
-		branches, err := s.ListBranches(ctx, "active")
+		branches, err := s.ListBranches(ctx, "default", "active")
 		if err != nil {
 			t.Fatalf("ListBranches: %v", err)
 		}
@@ -375,7 +375,7 @@ func TestListBranches(t *testing.T) {
 	})
 
 	t.Run("filter merged", func(t *testing.T) {
-		branches, err := s.ListBranches(ctx, "merged")
+		branches, err := s.ListBranches(ctx, "default", "merged")
 		if err != nil {
 			t.Fatalf("ListBranches: %v", err)
 		}
@@ -419,7 +419,7 @@ func TestGetDiff(t *testing.T) {
 	}
 
 	t.Run("diff shows branch changes", func(t *testing.T) {
-		result, err := s.GetDiff(ctx, "feature/diff")
+		result, err := s.GetDiff(ctx, "default", "feature/diff")
 		if err != nil {
 			t.Fatalf("GetDiff: %v", err)
 		}
@@ -435,7 +435,7 @@ func TestGetDiff(t *testing.T) {
 		// Main also changed hello.txt at seq 3-4 (deleted.txt at seq 3, 4),
 		// but hello.txt was only changed at seq 2 on main (which is <= base_sequence=2).
 		// So no conflicts by default from the seed data because main changes at seq 3,4 are deleted.txt.
-		result, err := s.GetDiff(ctx, "feature/diff")
+		result, err := s.GetDiff(ctx, "default", "feature/diff")
 		if err != nil {
 			t.Fatalf("GetDiff: %v", err)
 		}
@@ -448,7 +448,7 @@ func TestGetDiff(t *testing.T) {
 
 	t.Run("diff includes main_changes", func(t *testing.T) {
 		// Main changed deleted.txt at seq 3 (add) and seq 4 (delete) since base=2.
-		result, err := s.GetDiff(ctx, "feature/diff")
+		result, err := s.GetDiff(ctx, "default", "feature/diff")
 		if err != nil {
 			t.Fatalf("GetDiff: %v", err)
 		}
@@ -461,7 +461,7 @@ func TestGetDiff(t *testing.T) {
 	})
 
 	t.Run("nonexistent branch", func(t *testing.T) {
-		result, err := s.GetDiff(ctx, "nonexistent")
+		result, err := s.GetDiff(ctx, "default", "nonexistent")
 		if err != nil {
 			t.Fatalf("GetDiff: %v", err)
 		}
@@ -513,7 +513,7 @@ func TestGetDiff_WithConflict(t *testing.T) {
 		}
 	}
 
-	result, err := s.GetDiff(ctx, "feature/conflict")
+	result, err := s.GetDiff(ctx, "default", "feature/conflict")
 	if err != nil {
 		t.Fatalf("GetDiff: %v", err)
 	}
@@ -553,7 +553,7 @@ func TestBranchTree(t *testing.T) {
 		}
 	}
 
-	entries, err := s.MaterializeTree(ctx, "feature/test", nil, 100, "")
+	entries, err := s.MaterializeTree(ctx, "default", "feature/test", nil, 100, "")
 	if err != nil {
 		t.Fatalf("MaterializeTree: %v", err)
 	}

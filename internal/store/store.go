@@ -59,47 +59,48 @@ type CommitFile struct {
 
 const defaultLimit = 100
 
-// MaterializeTree returns the current file tree for a branch, optionally at a
-// specific sequence. Pagination uses afterPath as the cursor.
-func (s *Store) MaterializeTree(ctx context.Context, branch string, atSequence *int64, limit int, afterPath string) ([]TreeEntry, error) {
+// MaterializeTree returns the current file tree for a branch in a repo,
+// optionally at a specific sequence. Pagination uses afterPath as the cursor.
+func (s *Store) MaterializeTree(ctx context.Context, repo, branch string, atSequence *int64, limit int, afterPath string) ([]TreeEntry, error) {
 	if limit <= 0 {
 		limit = defaultLimit
 	}
 
 	// The CTE computes the latest version of each path by combining:
-	//   - commits on the requested branch
+	//   - commits on the requested branch (within repo)
 	//   - commits on main up to the branch's base_sequence (inherited files)
 	// For main itself, base_sequence=0 so the second arm matches nothing.
 	const q = `
 WITH branch_info AS (
-    SELECT base_sequence FROM branches WHERE name = $1
+    SELECT base_sequence FROM branches WHERE repo = $1 AND name = $2
 ),
 latest AS (
     SELECT DISTINCT ON (fc.path)
         fc.path, fc.version_id
     FROM file_commits fc
     CROSS JOIN branch_info bi
-    WHERE (
-        fc.branch = $1
+    WHERE fc.repo = $1
+    AND (
+        fc.branch = $2
         OR (fc.branch = 'main' AND fc.sequence <= bi.base_sequence)
     )
-    AND ($2::bigint IS NULL OR fc.sequence <= $2)
+    AND ($3::bigint IS NULL OR fc.sequence <= $3)
     ORDER BY fc.path, fc.sequence DESC
 )
 SELECT l.path, l.version_id::text, d.content_hash
 FROM latest l
-JOIN documents d ON d.version_id = l.version_id
+JOIN documents d ON d.version_id = l.version_id AND d.repo = $1
 WHERE l.version_id IS NOT NULL
-  AND ($3::text = '' OR l.path > $3)
+  AND ($4::text = '' OR l.path > $4)
 ORDER BY l.path
-LIMIT $4`
+LIMIT $5`
 
 	var at interface{}
 	if atSequence != nil {
 		at = *atSequence
 	}
 
-	rows, err := s.db.QueryContext(ctx, q, branch, at, afterPath, limit)
+	rows, err := s.db.QueryContext(ctx, q, repo, branch, at, afterPath, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -116,23 +117,24 @@ LIMIT $4`
 	return entries, rows.Err()
 }
 
-// GetFile returns a file's content for a branch, optionally at a specific sequence.
+// GetFile returns a file's content for a branch in a repo, optionally at a specific sequence.
 // Returns nil, nil if the file does not exist or was deleted.
-func (s *Store) GetFile(ctx context.Context, branch, path string, atSequence *int64) (*FileContent, error) {
+func (s *Store) GetFile(ctx context.Context, repo, branch, path string, atSequence *int64) (*FileContent, error) {
 	const q = `
 WITH branch_info AS (
-    SELECT base_sequence FROM branches WHERE name = $1
+    SELECT base_sequence FROM branches WHERE repo = $1 AND name = $2
 )
 SELECT fc.version_id, d.content_hash, d.content
 FROM file_commits fc
 CROSS JOIN branch_info bi
-LEFT JOIN documents d ON d.version_id = fc.version_id
-WHERE (
-    fc.branch = $1
+LEFT JOIN documents d ON d.version_id = fc.version_id AND d.repo = $1
+WHERE fc.repo = $1
+AND (
+    fc.branch = $2
     OR (fc.branch = 'main' AND fc.sequence <= bi.base_sequence)
 )
-AND fc.path = $2
-AND ($3::bigint IS NULL OR fc.sequence <= $3)
+AND fc.path = $3
+AND ($4::bigint IS NULL OR fc.sequence <= $4)
 ORDER BY fc.sequence DESC
 LIMIT 1`
 
@@ -145,7 +147,7 @@ LIMIT 1`
 	var contentHash sql.NullString
 	var content []byte
 
-	err := s.db.QueryRowContext(ctx, q, branch, path, at).Scan(&versionID, &contentHash, &content)
+	err := s.db.QueryRowContext(ctx, q, repo, branch, path, at).Scan(&versionID, &contentHash, &content)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -166,36 +168,37 @@ LIMIT 1`
 	}, nil
 }
 
-// GetFileHistory returns the change history for a file on a branch.
+// GetFileHistory returns the change history for a file on a branch in a repo.
 // Pagination: afterSequence is the cursor (exclusive); pass nil for the first page.
-func (s *Store) GetFileHistory(ctx context.Context, branch, path string, limit int, afterSequence *int64) ([]FileHistoryEntry, error) {
+func (s *Store) GetFileHistory(ctx context.Context, repo, branch, path string, limit int, afterSequence *int64) ([]FileHistoryEntry, error) {
 	if limit <= 0 {
 		limit = defaultLimit
 	}
 
 	const q = `
 WITH branch_info AS (
-    SELECT base_sequence FROM branches WHERE name = $1
+    SELECT base_sequence FROM branches WHERE repo = $1 AND name = $2
 )
 SELECT fc.sequence, fc.version_id::text, c.message, c.author, c.created_at
 FROM file_commits fc
 CROSS JOIN branch_info bi
-JOIN commits c ON c.sequence = fc.sequence
-WHERE (
-    fc.branch = $1
+JOIN commits c ON c.sequence = fc.sequence AND c.repo = $1
+WHERE fc.repo = $1
+AND (
+    fc.branch = $2
     OR (fc.branch = 'main' AND fc.sequence <= bi.base_sequence)
 )
-AND fc.path = $2
-AND ($3::bigint IS NULL OR fc.sequence < $3)
+AND fc.path = $3
+AND ($4::bigint IS NULL OR fc.sequence < $4)
 ORDER BY fc.sequence DESC
-LIMIT $4`
+LIMIT $5`
 
 	var after interface{}
 	if afterSequence != nil {
 		after = *afterSequence
 	}
 
-	rows, err := s.db.QueryContext(ctx, q, branch, path, after, limit)
+	rows, err := s.db.QueryContext(ctx, q, repo, branch, path, after, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -244,19 +247,20 @@ type DiffResult struct {
 	Conflicts     []ConflictEntry `json:"conflicts,omitempty"`
 }
 
-// ListBranches returns all branches, optionally filtered by status.
-func (s *Store) ListBranches(ctx context.Context, statusFilter string) ([]BranchInfo, error) {
+// ListBranches returns all branches in a repo, optionally filtered by status.
+func (s *Store) ListBranches(ctx context.Context, repo, statusFilter string) ([]BranchInfo, error) {
 	var rows *sql.Rows
 	var err error
 
 	if statusFilter != "" {
 		rows, err = s.db.QueryContext(ctx,
-			"SELECT name, head_sequence, base_sequence, status FROM branches WHERE status = $1::branch_status ORDER BY name",
-			statusFilter,
+			"SELECT name, head_sequence, base_sequence, status FROM branches WHERE repo = $1 AND status = $2::branch_status ORDER BY name",
+			repo, statusFilter,
 		)
 	} else {
 		rows, err = s.db.QueryContext(ctx,
-			"SELECT name, head_sequence, base_sequence, status FROM branches ORDER BY name",
+			"SELECT name, head_sequence, base_sequence, status FROM branches WHERE repo = $1 ORDER BY name",
+			repo,
 		)
 	}
 	if err != nil {
@@ -277,13 +281,13 @@ func (s *Store) ListBranches(ctx context.Context, statusFilter string) ([]Branch
 
 // GetDiff returns the files changed on a branch relative to its base_sequence,
 // plus any conflicting paths that were also changed on main.
-func (s *Store) GetDiff(ctx context.Context, branch string) (*DiffResult, error) {
+func (s *Store) GetDiff(ctx context.Context, repo, branch string) (*DiffResult, error) {
 	// Get the branch's base_sequence.
 	var baseSeq int64
 	var status string
 	err := s.db.QueryRowContext(ctx,
-		"SELECT base_sequence, status FROM branches WHERE name = $1",
-		branch,
+		"SELECT base_sequence, status FROM branches WHERE repo = $1 AND name = $2",
+		repo, branch,
 	).Scan(&baseSeq, &status)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -293,13 +297,13 @@ func (s *Store) GetDiff(ctx context.Context, branch string) (*DiffResult, error)
 	}
 
 	// Branch changes: latest version of each path changed on branch since base.
-	branchChanges, err := s.latestChanges(ctx, branch, baseSeq)
+	branchChanges, err := s.latestChanges(ctx, repo, branch, baseSeq)
 	if err != nil {
 		return nil, err
 	}
 
 	// Main changes: latest version of each path changed on main since base.
-	mainChanges, err := s.latestChanges(ctx, "main", baseSeq)
+	mainChanges, err := s.latestChanges(ctx, repo, "main", baseSeq)
 	if err != nil {
 		return nil, err
 	}
@@ -341,15 +345,15 @@ func (s *Store) GetDiff(ctx context.Context, branch string) (*DiffResult, error)
 }
 
 // latestChanges returns the latest version of each path changed on a branch
-// since the given base sequence.
-func (s *Store) latestChanges(ctx context.Context, branch string, baseSeq int64) (map[string]*string, error) {
+// in a repo since the given base sequence.
+func (s *Store) latestChanges(ctx context.Context, repo, branch string, baseSeq int64) (map[string]*string, error) {
 	const q = `
 SELECT DISTINCT ON (path) path, version_id::text
 FROM file_commits
-WHERE branch = $1 AND sequence > $2
+WHERE repo = $1 AND branch = $2 AND sequence > $3
 ORDER BY path, sequence DESC`
 
-	rows, err := s.db.QueryContext(ctx, q, branch, baseSeq)
+	rows, err := s.db.QueryContext(ctx, q, repo, branch, baseSeq)
 	if err != nil {
 		return nil, err
 	}
@@ -372,17 +376,17 @@ ORDER BY path, sequence DESC`
 	return changes, rows.Err()
 }
 
-// GetCommit returns all file changes in a single atomic commit (by sequence).
-// Returns nil, nil if no commit exists with that sequence.
-func (s *Store) GetCommit(ctx context.Context, sequence int64) (*CommitDetail, error) {
+// GetCommit returns all file changes in a single atomic commit (by sequence) within a repo.
+// Returns nil, nil if no commit exists with that sequence in the repo.
+func (s *Store) GetCommit(ctx context.Context, repo string, sequence int64) (*CommitDetail, error) {
 	const q = `
 SELECT fc.commit_id::text, fc.path, fc.version_id::text, fc.branch, c.message, c.author, c.created_at
 FROM file_commits fc
-JOIN commits c ON c.sequence = fc.sequence
-WHERE fc.sequence = $1
+JOIN commits c ON c.sequence = fc.sequence AND c.repo = $1
+WHERE fc.repo = $1 AND fc.sequence = $2
 ORDER BY fc.path`
 
-	rows, err := s.db.QueryContext(ctx, q, sequence)
+	rows, err := s.db.QueryContext(ctx, q, repo, sequence)
 	if err != nil {
 		return nil, err
 	}
