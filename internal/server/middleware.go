@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/big"
 	"net/http"
 	"strings"
@@ -37,6 +38,90 @@ func IdentityFromContext(ctx context.Context) string {
 func RoleFromContext(ctx context.Context) model.RoleType {
 	v, _ := ctx.Value(roleKey).(model.RoleType)
 	return v
+}
+
+// --- Request logger ---
+
+// requestLog is a mutable capture placed in context by RequestLogger so that
+// inner middleware (IAPMiddleware) can write the authenticated identity back
+// for use in the access log.
+type requestLog struct {
+	identity string
+}
+
+type requestLogKey struct{}
+
+func requestLogFromContext(ctx context.Context) *requestLog {
+	v, _ := ctx.Value(requestLogKey{}).(*requestLog)
+	return v
+}
+
+// responseWriter wraps http.ResponseWriter to capture the status code and bytes written.
+type responseWriter struct {
+	http.ResponseWriter
+	status int
+	bytes  int
+}
+
+func (rw *responseWriter) WriteHeader(status int) {
+	rw.status = status
+	rw.ResponseWriter.WriteHeader(status)
+}
+
+func (rw *responseWriter) Write(b []byte) (int, error) {
+	n, err := rw.ResponseWriter.Write(b)
+	rw.bytes += n
+	return n, err
+}
+
+// repoFromPath extracts the repo name from any /repos/:name... URL path.
+// Returns "" for non-repo paths.
+func repoFromPath(path string) string {
+	const prefix = "/repos/"
+	if !strings.HasPrefix(path, prefix) {
+		return ""
+	}
+	rest := path[len(prefix):]
+	if slash := strings.IndexByte(rest, '/'); slash != -1 {
+		return rest[:slash]
+	}
+	return rest
+}
+
+// RequestLogger returns an HTTP middleware that logs one structured line per
+// request on completion. It uses a requestLog capture in the context so that
+// IAPMiddleware can write back the authenticated identity.
+func RequestLogger(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rl := &requestLog{}
+		r = r.WithContext(context.WithValue(r.Context(), requestLogKey{}, rl))
+		rw := &responseWriter{ResponseWriter: w, status: http.StatusOK}
+
+		next.ServeHTTP(rw, r)
+
+		durationMs := time.Since(start).Milliseconds()
+		repo := repoFromPath(r.URL.Path)
+
+		args := []any{
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", rw.status,
+			"duration_ms", durationMs,
+			"identity", rl.identity,
+			"repo", repo,
+			"bytes", rw.bytes,
+		}
+
+		switch {
+		case rw.status >= 500:
+			slog.Error("request", args...)
+		case rw.status >= 400:
+			slog.Warn("request", args...)
+		default:
+			slog.Info("request", args...)
+		}
+	})
 }
 
 // --- RBAC middleware ---
@@ -70,6 +155,7 @@ func RBACMiddleware(roles RoleStore, bootstrapAdmin string) func(http.Handler) h
 			if bootstrapAdmin != "" && identity == bootstrapAdmin {
 				hasAdmin, err := roles.HasAdmin(r.Context(), repo)
 				if err == nil && !hasAdmin {
+					slog.Info("bootstrap admin granted", "identity", identity, "repo", repo)
 					ctx := context.WithValue(r.Context(), roleKey, model.RoleAdmin)
 					next.ServeHTTP(w, r.WithContext(ctx))
 					return
@@ -79,11 +165,13 @@ func RBACMiddleware(roles RoleStore, bootstrapAdmin string) func(http.Handler) h
 
 			role, err := roles.GetRole(r.Context(), repo, identity)
 			if err != nil {
+				slog.Warn("access denied", "identity", identity, "repo", repo, "reason", "no_role", "path", r.URL.Path)
 				writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
 				return
 			}
 
 			if !roleAllows(role.Role, r.Method, subPath, r) {
+				slog.Warn("access denied", "identity", identity, "repo", repo, "role", role.Role, "method", r.Method, "sub_path", subPath, "path", r.URL.Path)
 				writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
 				return
 			}
@@ -185,6 +273,9 @@ func newMiddleware(devIdentity string, fetchKey func(kid string) (*rsa.PublicKey
 	if devIdentity != "" {
 		return func(next http.Handler) http.Handler {
 			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if rl := requestLogFromContext(r.Context()); rl != nil {
+					rl.identity = devIdentity
+				}
 				ctx := context.WithValue(r.Context(), identityKey, devIdentity)
 				next.ServeHTTP(w, r.WithContext(ctx))
 			})
@@ -194,13 +285,18 @@ func newMiddleware(devIdentity string, fetchKey func(kid string) (*rsa.PublicKey
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			token := r.Header.Get("X-Goog-IAP-JWT-Assertion")
 			if token == "" {
+				slog.Warn("auth failed", "reason", "missing_token", "path", r.URL.Path)
 				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
 				return
 			}
 			email, err := validateIAPJWT(token, fetchKey)
 			if err != nil {
+				slog.Warn("auth failed", "reason", "invalid_jwt", "path", r.URL.Path, "error", err)
 				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
 				return
+			}
+			if rl := requestLogFromContext(r.Context()); rl != nil {
+				rl.identity = email
 			}
 			ctx := context.WithValue(r.Context(), identityKey, email)
 			next.ServeHTTP(w, r.WithContext(ctx))
@@ -376,4 +472,3 @@ func jwkToRSA(nB64, eB64 string) (*rsa.PublicKey, error) {
 	}
 	return &rsa.PublicKey{N: n, E: e}, nil
 }
-
