@@ -15,10 +15,11 @@ import (
 
 // mockStore implements WriteStore for testing.
 type mockStore struct {
-	commitFn        func(ctx context.Context, req model.CommitRequest) (*model.CommitResponse, error)
-	createBranchFn  func(ctx context.Context, req model.CreateBranchRequest) (*model.CreateBranchResponse, error)
-	mergeFn         func(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error)
-	deleteBranchFn  func(ctx context.Context, name string) error
+	commitFn       func(ctx context.Context, req model.CommitRequest) (*model.CommitResponse, error)
+	createBranchFn func(ctx context.Context, req model.CreateBranchRequest) (*model.CreateBranchResponse, error)
+	mergeFn        func(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error)
+	deleteBranchFn func(ctx context.Context, name string) error
+	rebaseFn       func(ctx context.Context, req model.RebaseRequest) (*model.RebaseResponse, []db.MergeConflict, error)
 }
 
 func (m *mockStore) Commit(ctx context.Context, req model.CommitRequest) (*model.CommitResponse, error) {
@@ -44,6 +45,13 @@ func (m *mockStore) DeleteBranch(ctx context.Context, name string) error {
 		return m.deleteBranchFn(ctx, name)
 	}
 	return errors.New("not implemented")
+}
+
+func (m *mockStore) Rebase(ctx context.Context, req model.RebaseRequest) (*model.RebaseResponse, []db.MergeConflict, error) {
+	if m.rebaseFn != nil {
+		return m.rebaseFn(ctx, req)
+	}
+	return nil, nil, errors.New("not implemented")
 }
 
 func TestHealthEndpoint(t *testing.T) {
@@ -73,7 +81,6 @@ func TestNotImplementedEndpoints(t *testing.T) {
 		method string
 		path   string
 	}{
-		{"POST", "/rebase"},
 		{"POST", "/review"},
 		{"POST", "/check"},
 		{"GET", "/branch/main/status"},
@@ -591,5 +598,126 @@ func TestHandleDeleteBranch_AlreadyAbandoned(t *testing.T) {
 
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("expected 409, got %d", rec.Code)
+	}
+}
+
+// --- POST /rebase tests ---
+
+func TestHandleRebase_Success(t *testing.T) {
+	store := &mockStore{
+		rebaseFn: func(ctx context.Context, req model.RebaseRequest) (*model.RebaseResponse, []db.MergeConflict, error) {
+			if req.Branch != "feature/test" {
+				t.Errorf("expected branch feature/test, got %q", req.Branch)
+			}
+			return &model.RebaseResponse{
+				NewBaseSequence: 5,
+				NewHeadSequence: 7,
+				CommitsReplayed: 2,
+			}, nil, nil
+		},
+	}
+	srv := New(store, nil)
+
+	body, _ := json.Marshal(model.RebaseRequest{Branch: "feature/test"})
+	req := httptest.NewRequest(http.MethodPost, "/rebase", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp model.RebaseResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.NewBaseSequence != 5 {
+		t.Errorf("expected base_sequence 5, got %d", resp.NewBaseSequence)
+	}
+	if resp.NewHeadSequence != 7 {
+		t.Errorf("expected head_sequence 7, got %d", resp.NewHeadSequence)
+	}
+	if resp.CommitsReplayed != 2 {
+		t.Errorf("expected commits_replayed 2, got %d", resp.CommitsReplayed)
+	}
+}
+
+func TestHandleRebase_Conflict(t *testing.T) {
+	store := &mockStore{
+		rebaseFn: func(ctx context.Context, req model.RebaseRequest) (*model.RebaseResponse, []db.MergeConflict, error) {
+			return nil, []db.MergeConflict{
+				{Path: "conflict.txt", MainVersionID: "v1", BranchVersionID: "v2"},
+			}, db.ErrRebaseConflict
+		},
+	}
+	srv := New(store, nil)
+
+	body, _ := json.Marshal(model.RebaseRequest{Branch: "feature/conflict"})
+	req := httptest.NewRequest(http.MethodPost, "/rebase", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var errResp model.RebaseConflictError
+	if err := json.NewDecoder(rec.Body).Decode(&errResp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(errResp.Conflicts) != 1 {
+		t.Fatalf("expected 1 conflict, got %d", len(errResp.Conflicts))
+	}
+	if errResp.Conflicts[0].Path != "conflict.txt" {
+		t.Errorf("expected conflict.txt, got %q", errResp.Conflicts[0].Path)
+	}
+}
+
+func TestHandleRebase_BranchNotFound(t *testing.T) {
+	store := &mockStore{
+		rebaseFn: func(ctx context.Context, req model.RebaseRequest) (*model.RebaseResponse, []db.MergeConflict, error) {
+			return nil, nil, db.ErrBranchNotFound
+		},
+	}
+	srv := New(store, nil)
+
+	body, _ := json.Marshal(model.RebaseRequest{Branch: "nonexistent"})
+	req := httptest.NewRequest(http.MethodPost, "/rebase", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec.Code)
+	}
+}
+
+func TestHandleRebase_CannotRebaseMain(t *testing.T) {
+	srv := New(&mockStore{}, nil)
+
+	body, _ := json.Marshal(model.RebaseRequest{Branch: "main"})
+	req := httptest.NewRequest(http.MethodPost, "/rebase", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleRebase_BranchNotActive(t *testing.T) {
+	store := &mockStore{
+		rebaseFn: func(ctx context.Context, req model.RebaseRequest) (*model.RebaseResponse, []db.MergeConflict, error) {
+			return nil, nil, db.ErrBranchNotActive
+		},
+	}
+	srv := New(store, nil)
+
+	body, _ := json.Marshal(model.RebaseRequest{Branch: "merged-branch"})
+	req := httptest.NewRequest(http.MethodPost, "/rebase", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
 	}
 }
