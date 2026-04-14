@@ -205,12 +205,14 @@ type MergePolicyError struct {
 // RebaseRequest is the body for POST /rebase.
 type RebaseRequest struct {
 	Branch string `json:"branch"`
+	Author string `json:"author,omitempty"`
 }
 
 // RebaseResponse is the response for a successful POST /rebase.
 type RebaseResponse struct {
-	NewBaseSequence int64 `json:"new_base_sequence"`
-	NewHeadSequence int64 `json:"new_head_sequence"`
+	NewBaseSequence int64 `json:"base_sequence"`
+	NewHeadSequence int64 `json:"head_sequence"`
+	CommitsReplayed int64 `json:"commits_replayed"`
 }
 
 // RebaseConflictError is the error response when rebase has conflicts.

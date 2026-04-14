@@ -272,6 +272,57 @@ func (s *server) handleDeleteBranch(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleRebase implements POST /rebase
+func (s *server) handleRebase(w http.ResponseWriter, r *http.Request) {
+	var req model.RebaseRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.Branch == "" {
+		writeError(w, http.StatusBadRequest, "branch is required")
+		return
+	}
+	if req.Branch == "main" {
+		writeError(w, http.StatusBadRequest, "cannot rebase main")
+		return
+	}
+
+	// Use X-DocStore-Identity header if Author not set in body.
+	if req.Author == "" {
+		req.Author = r.Header.Get("X-DocStore-Identity")
+	}
+	if req.Author == "" {
+		req.Author = "system"
+	}
+
+	resp, conflicts, err := s.commitStore.Rebase(r.Context(), req)
+	if err != nil {
+		switch {
+		case errors.Is(err, db.ErrRebaseConflict):
+			apiConflicts := make([]model.ConflictEntry, len(conflicts))
+			for i, c := range conflicts {
+				apiConflicts[i] = model.ConflictEntry{
+					Path:            c.Path,
+					MainVersionID:   c.MainVersionID,
+					BranchVersionID: c.BranchVersionID,
+				}
+			}
+			writeJSON(w, http.StatusConflict, model.RebaseConflictError{Conflicts: apiConflicts})
+		case errors.Is(err, db.ErrBranchNotFound):
+			writeError(w, http.StatusNotFound, "branch not found")
+		case errors.Is(err, db.ErrBranchNotActive):
+			writeError(w, http.StatusBadRequest, "branch is not active")
+		default:
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
 // handleMerge implements POST /merge
 func (s *server) handleMerge(w http.ResponseWriter, r *http.Request) {
 	var req model.MergeRequest
