@@ -80,5 +80,5 @@ CREATE INDEX IF NOT EXISTS idx_check_runs_branch_seq_name ON check_runs (branch,
 
 -- Seed the main branch
 INSERT INTO branches (name, head_sequence, base_sequence, status)
-VALUES ('main', 0, 0, 'active')
-ON CONFLICT (name) DO NOTHING;
+SELECT 'main', 0, 0, 'active'
+WHERE NOT EXISTS (SELECT 1 FROM branches WHERE name = 'main');
