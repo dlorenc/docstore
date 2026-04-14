@@ -15,9 +15,34 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/dlorenc/docstore/internal/model"
 )
+
+// commitInfo is a local type for decoding GET /commit/:seq server responses.
+type commitInfo struct {
+	Sequence  int64            `json:"sequence"`
+	Branch    string           `json:"branch"`
+	Message   string           `json:"message"`
+	Author    string           `json:"author"`
+	CreatedAt time.Time        `json:"created_at"`
+	Files     []commitFileInfo `json:"files"`
+}
+
+type commitFileInfo struct {
+	Path      string  `json:"path"`
+	VersionID *string `json:"version_id"`
+}
+
+// fileHistEntry is a local type for decoding file history server responses.
+type fileHistEntry struct {
+	Sequence  int64     `json:"sequence"`
+	VersionID *string   `json:"version_id"`
+	Message   string    `json:"message"`
+	Author    string    `json:"author"`
+	CreatedAt time.Time `json:"created_at"`
+}
 
 const configDir = ".docstore"
 const configFile = "config.json"
@@ -741,4 +766,373 @@ type treeEntry struct {
 	Path        string `json:"path"`
 	VersionID   string `json:"version_id"`
 	ContentHash string `json:"content_hash"`
+}
+
+// Log shows commit history for the current branch.
+// If path is non-empty, shows file-specific history via /file/:path/history.
+// If path is empty, walks backward from the branch head sequence.
+// Results are newest-first, capped at limit (default 20).
+func (a *App) Log(path string, limit int) error {
+	cfg, err := a.loadConfig()
+	if err != nil {
+		return err
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	if path != "" {
+		return a.logFile(cfg, path, limit)
+	}
+	return a.logBranch(cfg, limit)
+}
+
+func (a *App) logBranch(cfg *Config, limit int) error {
+	resp, err := a.httpGet(cfg, repoBase(cfg)+"/branches")
+	if err != nil {
+		return fmt.Errorf("fetching branches: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var branches []model.Branch
+	if err := json.NewDecoder(resp.Body).Decode(&branches); err != nil {
+		return fmt.Errorf("decoding branches: %w", err)
+	}
+
+	var headSeq, baseSeq int64
+	found := false
+	for _, b := range branches {
+		if b.Name == cfg.Branch {
+			headSeq = b.HeadSequence
+			baseSeq = b.BaseSequence
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("branch %q not found", cfg.Branch)
+	}
+	if headSeq == 0 {
+		fmt.Fprintf(a.Out, "No commits on branch '%s'\n", cfg.Branch)
+		return nil
+	}
+
+	count := 0
+	for seq := headSeq; seq > baseSeq && count < limit; seq-- {
+		commitResp, err := a.httpGet(cfg, fmt.Sprintf("%s/commit/%d", repoBase(cfg), seq))
+		if err != nil {
+			return fmt.Errorf("fetching commit %d: %w", seq, err)
+		}
+		if commitResp.StatusCode == http.StatusNotFound {
+			commitResp.Body.Close()
+			continue
+		}
+		if commitResp.StatusCode != http.StatusOK {
+			commitResp.Body.Close()
+			continue
+		}
+		var ci commitInfo
+		if err := json.NewDecoder(commitResp.Body).Decode(&ci); err != nil {
+			commitResp.Body.Close()
+			continue
+		}
+		commitResp.Body.Close()
+
+		if ci.Branch != cfg.Branch {
+			continue
+		}
+		fmt.Fprintf(a.Out, "seq %-4d  %-12s  %s  %s\n",
+			ci.Sequence, ci.Author, ci.CreatedAt.Format("2006-01-02"), ci.Message)
+		count++
+	}
+
+	if count == 0 {
+		fmt.Fprintf(a.Out, "No commits on branch '%s'\n", cfg.Branch)
+	}
+	return nil
+}
+
+func (a *App) logFile(cfg *Config, path string, limit int) error {
+	q := url.Values{}
+	q.Set("branch", cfg.Branch)
+	q.Set("limit", fmt.Sprintf("%d", limit))
+
+	resp, err := a.httpGet(cfg, repoBase(cfg)+"/file/"+path+"/history?"+q.Encode())
+	if err != nil {
+		return fmt.Errorf("fetching history: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return a.readError(resp)
+	}
+
+	var entries []fileHistEntry
+	if err := json.NewDecoder(resp.Body).Decode(&entries); err != nil {
+		return fmt.Errorf("decoding history: %w", err)
+	}
+
+	if len(entries) == 0 {
+		fmt.Fprintf(a.Out, "No history for '%s' on branch '%s'\n", path, cfg.Branch)
+		return nil
+	}
+	for _, e := range entries {
+		fmt.Fprintf(a.Out, "seq %-4d  %-12s  %s  %s\n",
+			e.Sequence, e.Author, e.CreatedAt.Format("2006-01-02"), e.Message)
+	}
+	return nil
+}
+
+// Show inspects a specific commit or a file's content at a given sequence.
+// If path is empty, lists all files changed in that commit.
+// If path is non-empty, prints the file's content at that sequence.
+func (a *App) Show(sequence int64, path string) error {
+	cfg, err := a.loadConfig()
+	if err != nil {
+		return err
+	}
+	if path != "" {
+		return a.showFile(cfg, sequence, path)
+	}
+	return a.showCommit(cfg, sequence)
+}
+
+func (a *App) showCommit(cfg *Config, sequence int64) error {
+	resp, err := a.httpGet(cfg, fmt.Sprintf("%s/commit/%d", repoBase(cfg), sequence))
+	if err != nil {
+		return fmt.Errorf("fetching commit: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return fmt.Errorf("commit %d not found", sequence)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return a.readError(resp)
+	}
+
+	var ci commitInfo
+	if err := json.NewDecoder(resp.Body).Decode(&ci); err != nil {
+		return fmt.Errorf("decoding commit: %w", err)
+	}
+
+	fmt.Fprintf(a.Out, "commit %d\n", ci.Sequence)
+	fmt.Fprintf(a.Out, "branch:  %s\n", ci.Branch)
+	fmt.Fprintf(a.Out, "author:  %s\n", ci.Author)
+	fmt.Fprintf(a.Out, "date:    %s\n", ci.CreatedAt.Format("2006-01-02"))
+	fmt.Fprintf(a.Out, "message: %s\n", ci.Message)
+	if len(ci.Files) > 0 {
+		fmt.Fprintf(a.Out, "\nFiles:\n")
+		for _, f := range ci.Files {
+			if f.VersionID == nil {
+				fmt.Fprintf(a.Out, "  %s  (deleted)\n", f.Path)
+			} else {
+				fmt.Fprintf(a.Out, "  %s  (changed)\n", f.Path)
+			}
+		}
+	}
+	return nil
+}
+
+func (a *App) showFile(cfg *Config, sequence int64, path string) error {
+	q := url.Values{}
+	q.Set("branch", cfg.Branch)
+	q.Set("at", fmt.Sprintf("%d", sequence))
+
+	resp, err := a.httpGet(cfg, repoBase(cfg)+"/file/"+path+"?"+q.Encode())
+	if err != nil {
+		return fmt.Errorf("fetching file: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return fmt.Errorf("file %q not found at sequence %d", path, sequence)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return a.readError(resp)
+	}
+
+	var fileResp model.FileResponse
+	if err := json.NewDecoder(resp.Body).Decode(&fileResp); err != nil {
+		return fmt.Errorf("decoding file: %w", err)
+	}
+	fmt.Fprintf(a.Out, "%s", fileResp.Content)
+	if len(fileResp.Content) > 0 && fileResp.Content[len(fileResp.Content)-1] != '\n' {
+		fmt.Fprintln(a.Out)
+	}
+	return nil
+}
+
+// Rebase rebases the current branch onto main's latest head.
+// On success it updates state.json with the new head sequence.
+// On conflict it writes <path>.main and <path>.branch for each conflicting file
+// and returns a non-nil error.
+func (a *App) Rebase() error {
+	cfg, err := a.loadConfig()
+	if err != nil {
+		return err
+	}
+	if cfg.Branch == "main" {
+		return fmt.Errorf("cannot rebase main")
+	}
+
+	req := model.RebaseRequest{Branch: cfg.Branch, Author: cfg.Author}
+	resp, err := a.postJSON(cfg, repoBase(cfg)+"/rebase", req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode == http.StatusConflict {
+		var conflictErr model.RebaseConflictError
+		if err := json.Unmarshal(body, &conflictErr); err == nil && len(conflictErr.Conflicts) > 0 {
+			return a.writeRebaseConflictFiles(cfg, conflictErr.Conflicts)
+		}
+		return fmt.Errorf("server error (status %d)", resp.StatusCode)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		var errResp model.ErrorResponse
+		if err := json.Unmarshal(body, &errResp); err == nil && errResp.Error != "" {
+			return fmt.Errorf("server error: %s", errResp.Error)
+		}
+		return fmt.Errorf("server error (status %d)", resp.StatusCode)
+	}
+
+	var rebaseResp model.RebaseResponse
+	if err := json.Unmarshal(body, &rebaseResp); err != nil {
+		return fmt.Errorf("decoding response: %w", err)
+	}
+
+	st, err := a.loadState()
+	if err != nil {
+		return err
+	}
+	st.Sequence = rebaseResp.NewHeadSequence
+	if err := a.saveState(st); err != nil {
+		return err
+	}
+
+	fmt.Fprintf(a.Out, "Rebased '%s' onto main (base: %d, head: %d, %d commits replayed)\n",
+		cfg.Branch, rebaseResp.NewBaseSequence, rebaseResp.NewHeadSequence, rebaseResp.CommitsReplayed)
+	return nil
+}
+
+// writeRebaseConflictFiles fetches both the main and branch versions of each
+// conflicting file and writes them to <path>.main and <path>.branch on disk.
+func (a *App) writeRebaseConflictFiles(cfg *Config, conflicts []model.ConflictEntry) error {
+	for _, c := range conflicts {
+		mainContent, err := a.fetchFileBytesForBranch(cfg, c.Path, "main")
+		if err != nil {
+			return fmt.Errorf("fetching main version of %s: %w", c.Path, err)
+		}
+		branchContent, err := a.fetchFileBytesForBranch(cfg, c.Path, cfg.Branch)
+		if err != nil {
+			return fmt.Errorf("fetching branch version of %s: %w", c.Path, err)
+		}
+
+		mainDst := filepath.Join(a.Dir, filepath.FromSlash(c.Path+".main"))
+		branchDst := filepath.Join(a.Dir, filepath.FromSlash(c.Path+".branch"))
+		if err := os.MkdirAll(filepath.Dir(mainDst), 0755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(mainDst, mainContent, 0644); err != nil {
+			return fmt.Errorf("writing %s: %w", mainDst, err)
+		}
+		if err := os.WriteFile(branchDst, branchContent, 0644); err != nil {
+			return fmt.Errorf("writing %s: %w", branchDst, err)
+		}
+		fmt.Fprintf(a.Out, "conflict: %s (wrote %s.main, %s.branch)\n", c.Path, c.Path, c.Path)
+	}
+	return fmt.Errorf("rebase aborted due to conflicts")
+}
+
+// fetchFileBytesForBranch fetches a file's raw content bytes from the server.
+func (a *App) fetchFileBytesForBranch(cfg *Config, path, branch string) ([]byte, error) {
+	q := url.Values{}
+	q.Set("branch", branch)
+	resp, err := a.httpGet(cfg, repoBase(cfg)+"/file/"+path+"?"+q.Encode())
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return []byte{}, nil // file deleted on that side
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("server error (status %d)", resp.StatusCode)
+	}
+
+	var fileResp model.FileResponse
+	if err := json.NewDecoder(resp.Body).Decode(&fileResp); err != nil {
+		return nil, fmt.Errorf("decoding response: %w", err)
+	}
+	return fileResp.Content, nil
+}
+
+// Resolve resolves a merge/rebase conflict for path.
+// It expects <path>.main and <path>.branch to exist on disk (written by Rebase),
+// reads the resolved content from <path> itself, commits it to the current branch,
+// and removes the conflict files.
+func (a *App) Resolve(path string) error {
+	cfg, err := a.loadConfig()
+	if err != nil {
+		return err
+	}
+
+	mainConflict := filepath.Join(a.Dir, filepath.FromSlash(path+".main"))
+	branchConflict := filepath.Join(a.Dir, filepath.FromSlash(path+".branch"))
+
+	if _, err := os.Stat(mainConflict); os.IsNotExist(err) {
+		return fmt.Errorf("no conflict file found: %s.main (run 'ds rebase' first)", path)
+	}
+	if _, err := os.Stat(branchConflict); os.IsNotExist(err) {
+		return fmt.Errorf("no conflict file found: %s.branch (run 'ds rebase' first)", path)
+	}
+
+	resolvedPath := filepath.Join(a.Dir, filepath.FromSlash(path))
+	content, err := os.ReadFile(resolvedPath)
+	if err != nil {
+		return fmt.Errorf("reading resolved file %s: %w", path, err)
+	}
+
+	req := model.CommitRequest{
+		Branch:  cfg.Branch,
+		Files:   []model.FileChange{{Path: path, Content: content}},
+		Message: fmt.Sprintf("resolve conflict in %s", path),
+		Author:  cfg.Author,
+	}
+
+	resp, err := a.postJSON(cfg, repoBase(cfg)+"/commit", req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		return a.readError(resp)
+	}
+
+	var commitResp model.CommitResponse
+	if err := json.NewDecoder(resp.Body).Decode(&commitResp); err != nil {
+		return fmt.Errorf("decoding response: %w", err)
+	}
+
+	st, err := a.loadState()
+	if err != nil {
+		return err
+	}
+	st.Sequence = commitResp.Sequence
+	st.Files[path] = HashBytes(content)
+	if err := a.saveState(st); err != nil {
+		return err
+	}
+
+	os.Remove(mainConflict)
+	os.Remove(branchConflict)
+
+	fmt.Fprintf(a.Out, "resolved %s, committed as sequence %d\n", path, commitResp.Sequence)
+	return nil
 }
