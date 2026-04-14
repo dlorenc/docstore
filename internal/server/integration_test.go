@@ -57,7 +57,7 @@ func seed(t *testing.T, db *sql.DB) {
 func TestIntegrationTreeEndpoint(t *testing.T) {
 	db := testutil.TestDB(t, dbpkg.MigrationSQL)
 	seed(t, db)
-	handler := server.New(nil, db)
+	handler := server.New(nil, db, "test@example.com")
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -84,7 +84,7 @@ func TestIntegrationTreeEndpoint(t *testing.T) {
 func TestIntegrationFileEndpoint(t *testing.T) {
 	db := testutil.TestDB(t, dbpkg.MigrationSQL)
 	seed(t, db)
-	handler := server.New(nil, db)
+	handler := server.New(nil, db, "test@example.com")
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -175,7 +175,7 @@ func TestIntegrationBranchesEndpoint(t *testing.T) {
 		t.Fatalf("seed branch: %v", err)
 	}
 
-	handler := server.New(nil, database)
+	handler := server.New(nil, database, "test@example.com")
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -241,7 +241,7 @@ func TestIntegrationDiffEndpoint(t *testing.T) {
 		}
 	}
 
-	handler := server.New(nil, database)
+	handler := server.New(nil, database, "test@example.com")
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -296,7 +296,7 @@ func TestIntegrationDiffEndpoint(t *testing.T) {
 func TestIntegrationCommitEndpoint(t *testing.T) {
 	db := testutil.TestDB(t, dbpkg.MigrationSQL)
 	seed(t, db)
-	handler := server.New(nil, db)
+	handler := server.New(nil, db, "test@example.com")
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -354,7 +354,7 @@ func TestIntegrationDeleteBranch(t *testing.T) {
 	seed(t, database)
 
 	writeStore := dbpkg.NewStore(database)
-	handler := server.New(writeStore, database)
+	handler := server.New(writeStore, database, "test@example.com")
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -430,7 +430,7 @@ func TestIntegrationDeleteBranch(t *testing.T) {
 func TestIntegrationRebase_FullFlow(t *testing.T) {
 	database := testutil.TestDB(t, dbpkg.MigrationSQL)
 	writeStore := dbpkg.NewStore(database)
-	handler := server.New(writeStore, database)
+	handler := server.New(writeStore, database, "test@example.com")
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -532,5 +532,74 @@ func TestIntegrationRebase_FullFlow(t *testing.T) {
 		var errBody map[string]interface{}
 		json.NewDecoder(r.Body).Decode(&errBody)
 		t.Fatalf("POST /merge after rebase: expected 200, got %d; body: %v", r.StatusCode, errBody)
+	}
+}
+
+// TestHTTP_AuthRequired verifies that write endpoints return 401 when no IAP JWT
+// is present and the server is not in dev mode.
+func TestHTTP_AuthRequired(t *testing.T) {
+	// No devIdentity → real IAP auth enforced.
+	handler := server.New(nil, nil, "")
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	// POST /commit without X-Goog-IAP-JWT-Assertion must return 401.
+	resp, err := http.Post(srv.URL+"/commit", "application/json",
+		strings.NewReader(`{"branch":"main","message":"m","files":[{"path":"a.txt","content":"YQ=="}]}`))
+	if err != nil {
+		t.Fatalf("POST /commit: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", resp.StatusCode)
+	}
+
+	var body map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["error"] != "unauthenticated" {
+		t.Errorf("expected error=unauthenticated, got %q", body["error"])
+	}
+}
+
+// TestHTTP_AuthIdentityUsedAsAuthor verifies that the authenticated identity
+// (set via dev mode) is recorded as the commit author, not any value in the body.
+func TestHTTP_AuthIdentityUsedAsAuthor(t *testing.T) {
+	const identity = "alice@example.com"
+	database := testutil.TestDB(t, dbpkg.MigrationSQL)
+	writeStore := dbpkg.NewStore(database)
+	handler := server.New(writeStore, database, identity)
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	// POST /commit with a different author in the body — it must be ignored.
+	resp, err := http.Post(srv.URL+"/commit", "application/json",
+		strings.NewReader(`{"branch":"main","message":"test commit","author":"not-alice@example.com","files":[{"path":"hello.txt","content":"aGVsbG8="}]}`))
+	if err != nil {
+		t.Fatalf("POST /commit: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /commit: expected 201, got %d", resp.StatusCode)
+	}
+
+	// GET /commit/1 and verify the author is the identity, not the body value.
+	getResp, err := http.Get(srv.URL + "/commit/1")
+	if err != nil {
+		t.Fatalf("GET /commit/1: %v", err)
+	}
+	defer getResp.Body.Close()
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /commit/1: expected 200, got %d", getResp.StatusCode)
+	}
+
+	var detail store.CommitDetail
+	if err := json.NewDecoder(getResp.Body).Decode(&detail); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if detail.Author != identity {
+		t.Errorf("expected author %q, got %q", identity, detail.Author)
 	}
 }
