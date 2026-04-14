@@ -3,9 +3,11 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/model"
@@ -155,6 +157,64 @@ func (s *server) handleGetChecks(w http.ResponseWriter, r *http.Request, repo, b
 		checkRuns = []model.CheckRun{}
 	}
 	writeJSON(w, http.StatusOK, checkRuns)
+}
+
+// parseDayDuration parses a duration string of the form "Nd" (e.g. "7d", "30d").
+// N must be a positive integer.
+func parseDayDuration(s string) (time.Duration, error) {
+	if len(s) < 2 || s[len(s)-1] != 'd' {
+		return 0, fmt.Errorf("invalid duration %q: must be of the form \"Nd\" (e.g. \"7d\")", s)
+	}
+	n, err := strconv.ParseInt(s[:len(s)-1], 10, 64)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("invalid duration %q: must be a positive integer followed by 'd'", s)
+	}
+	return time.Duration(n) * 24 * time.Hour, nil
+}
+
+// handlePurge implements POST /repos/:name/purge
+func (s *server) handlePurge(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+
+	var req model.PurgeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.OlderThan == "" {
+		writeError(w, http.StatusBadRequest, "older_than is required")
+		return
+	}
+
+	dur, err := parseDayDuration(req.OlderThan)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	result, err := s.commitStore.Purge(r.Context(), db.PurgeRequest{
+		Repo:      repo,
+		OlderThan: dur,
+		DryRun:    req.DryRun,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, db.ErrRepoNotFound):
+			writeError(w, http.StatusNotFound, "repo not found")
+		default:
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, model.PurgeResponse{
+		BranchesPurged:     result.BranchesPurged,
+		FileCommitsDeleted: result.FileCommitsDeleted,
+		CommitsDeleted:     result.CommitsDeleted,
+		DocumentsDeleted:   result.DocumentsDeleted,
+		ReviewsDeleted:     result.ReviewsDeleted,
+		CheckRunsDeleted:   result.CheckRunsDeleted,
+	})
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {

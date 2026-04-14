@@ -298,6 +298,26 @@ type RolesResponse struct {
 }
 
 // ---------------------------------------------------------------------------
+// POST /repos/:name/purge
+// ---------------------------------------------------------------------------
+
+// PurgeRequest is the body for POST /repos/:name/purge.
+type PurgeRequest struct {
+	OlderThan string `json:"older_than"`
+	DryRun    bool   `json:"dry_run,omitempty"`
+}
+
+// PurgeResponse is the response for POST /repos/:name/purge.
+type PurgeResponse struct {
+	BranchesPurged     int64 `json:"branches_purged"`
+	FileCommitsDeleted int64 `json:"file_commits_deleted"`
+	CommitsDeleted     int64 `json:"commits_deleted"`
+	DocumentsDeleted   int64 `json:"documents_deleted"`
+	ReviewsDeleted     int64 `json:"reviews_deleted"`
+	CheckRunsDeleted   int64 `json:"check_runs_deleted"`
+}
+
+// ---------------------------------------------------------------------------
 // Error
 // ---------------------------------------------------------------------------
 
