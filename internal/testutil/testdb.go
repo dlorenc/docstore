@@ -15,17 +15,17 @@ import (
 )
 
 // TestDB starts a PostgreSQL container via testcontainers-go, creates a fresh
-// database, runs the given schema migration, and returns a connected *sql.DB.
+// database, runs the given migration function, and returns a connected *sql.DB.
 // The container is automatically terminated when the test finishes.
 //
 // If the DOCSTORE_TEST_DSN environment variable is set, it is used instead of
 // starting a container (useful for local development with an existing server).
-func TestDB(t *testing.T, migrationSQL string) *sql.DB {
+func TestDB(t *testing.T, migrate func(*sql.DB) error) *sql.DB {
 	t.Helper()
 
 	// Allow override for local dev.
 	if dsn := os.Getenv("DOCSTORE_TEST_DSN"); dsn != "" {
-		return testDBFromDSN(t, dsn, migrationSQL)
+		return testDBFromDSN(t, dsn, migrate)
 	}
 
 	ctx := context.Background()
@@ -65,7 +65,7 @@ func TestDB(t *testing.T, migrationSQL string) *sql.DB {
 	t.Cleanup(func() { testDB.Close() })
 
 	// Run schema migrations.
-	if _, err := testDB.Exec(migrationSQL); err != nil {
+	if err := migrate(testDB); err != nil {
 		t.Fatalf("run migrations: %v", err)
 	}
 
@@ -74,7 +74,7 @@ func TestDB(t *testing.T, migrationSQL string) *sql.DB {
 
 // testDBFromDSN is the legacy path: use a pre-existing PostgreSQL server via DSN.
 // It creates a unique database per test so parallel tests don't interfere.
-func testDBFromDSN(t *testing.T, dsn, migrationSQL string) *sql.DB {
+func testDBFromDSN(t *testing.T, dsn string, migrate func(*sql.DB) error) *sql.DB {
 	t.Helper()
 
 	// Connect to the server using the provided DSN (admin connection).
@@ -110,7 +110,7 @@ func testDBFromDSN(t *testing.T, dsn, migrationSQL string) *sql.DB {
 	}
 	t.Cleanup(func() { d.Close() })
 
-	if _, err := d.Exec(migrationSQL); err != nil {
+	if err := migrate(d); err != nil {
 		t.Fatalf("run migrations: %v", err)
 	}
 
