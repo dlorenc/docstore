@@ -23,6 +23,8 @@ var (
 	ErrRebaseConflict  = errors.New("rebase conflict")
 	ErrRepoNotFound    = errors.New("repo not found")
 	ErrRepoExists      = errors.New("repo already exists")
+	ErrOrgNotFound     = errors.New("org not found")
+	ErrOrgExists       = errors.New("org already exists")
 	ErrRoleNotFound    = errors.New("role not found")
 	ErrSelfApproval    = errors.New("reviewer cannot approve their own commits")
 )
@@ -56,13 +58,110 @@ func NewStore(db *sql.DB) *Store {
 	return &Store{db: db}
 }
 
+// CreateOrg creates a new org. Returns ErrOrgExists if the name is taken.
+func (s *Store) CreateOrg(ctx context.Context, name, createdBy string) (*model.Org, error) {
+	if createdBy == "" {
+		createdBy = "system"
+	}
+	var o model.Org
+	err := s.db.QueryRowContext(ctx,
+		`INSERT INTO orgs (name, created_by) VALUES ($1, $2)
+		 RETURNING name, created_at, created_by`,
+		name, createdBy,
+	).Scan(&o.Name, &o.CreatedAt, &o.CreatedBy)
+	if err != nil {
+		if isDuplicateKeyError(err) {
+			return nil, ErrOrgExists
+		}
+		return nil, fmt.Errorf("insert org: %w", err)
+	}
+	return &o, nil
+}
+
+// GetOrg returns an org by name, or ErrOrgNotFound.
+func (s *Store) GetOrg(ctx context.Context, name string) (*model.Org, error) {
+	var o model.Org
+	err := s.db.QueryRowContext(ctx,
+		"SELECT name, created_at, created_by FROM orgs WHERE name = $1",
+		name,
+	).Scan(&o.Name, &o.CreatedAt, &o.CreatedBy)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrOrgNotFound
+		}
+		return nil, err
+	}
+	return &o, nil
+}
+
+// ListOrgs returns all orgs ordered by name.
+func (s *Store) ListOrgs(ctx context.Context) ([]model.Org, error) {
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT name, created_at, created_by FROM orgs ORDER BY name",
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var orgs []model.Org
+	for rows.Next() {
+		var o model.Org
+		if err := rows.Scan(&o.Name, &o.CreatedAt, &o.CreatedBy); err != nil {
+			return nil, err
+		}
+		orgs = append(orgs, o)
+	}
+	return orgs, rows.Err()
+}
+
+// DeleteOrg hard-deletes an org. Returns ErrOrgNotFound if it doesn't exist.
+// Note: all repos (and their data) under this org must be deleted first.
+func (s *Store) DeleteOrg(ctx context.Context, name string) error {
+	result, err := s.db.ExecContext(ctx, "DELETE FROM orgs WHERE name = $1", name)
+	if err != nil {
+		return fmt.Errorf("delete org: %w", err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrOrgNotFound
+	}
+	return nil
+}
+
+// ListOrgRepos returns all repos owned by an org, ordered by name.
+func (s *Store) ListOrgRepos(ctx context.Context, owner string) ([]model.Repo, error) {
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT name, owner, created_at, created_by FROM repos WHERE owner = $1 ORDER BY name",
+		owner,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var repos []model.Repo
+	for rows.Next() {
+		var r model.Repo
+		if err := rows.Scan(&r.Name, &r.Owner, &r.CreatedAt, &r.CreatedBy); err != nil {
+			return nil, err
+		}
+		repos = append(repos, r)
+	}
+	return repos, rows.Err()
+}
+
 // CreateRepo creates a new repo and seeds its main branch in a single
 // transaction. Returns ErrRepoExists if the name is taken.
+// req.FullName() is used as the repo name; req.Owner must match the first path segment.
 func (s *Store) CreateRepo(ctx context.Context, req model.CreateRepoRequest) (*model.Repo, error) {
 	createdBy := req.CreatedBy
 	if createdBy == "" {
 		createdBy = "system"
 	}
+
+	fullName := req.FullName()
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -77,13 +176,16 @@ func (s *Store) CreateRepo(ctx context.Context, req model.CreateRepoRequest) (*m
 
 	var r model.Repo
 	err = tx.QueryRowContext(ctx,
-		`INSERT INTO repos (name, created_by) VALUES ($1, $2)
-		 RETURNING name, created_at, created_by`,
-		req.Name, createdBy,
-	).Scan(&r.Name, &r.CreatedAt, &r.CreatedBy)
+		`INSERT INTO repos (name, owner, created_by) VALUES ($1, $2, $3)
+		 RETURNING name, owner, created_at, created_by`,
+		fullName, req.Owner, createdBy,
+	).Scan(&r.Name, &r.Owner, &r.CreatedAt, &r.CreatedBy)
 	if err != nil {
 		if isDuplicateKeyError(err) {
 			return nil, ErrRepoExists
+		}
+		if isForeignKeyViolation(err) {
+			return nil, ErrOrgNotFound
 		}
 		return nil, fmt.Errorf("insert repo: %w", err)
 	}
@@ -91,7 +193,7 @@ func (s *Store) CreateRepo(ctx context.Context, req model.CreateRepoRequest) (*m
 	// Seed the main branch for the new repo.
 	_, err = tx.ExecContext(ctx,
 		"INSERT INTO branches (repo, name, head_sequence, base_sequence, status) VALUES ($1, 'main', 0, 0, 'active')",
-		req.Name,
+		fullName,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("seed main branch: %w", err)
@@ -148,7 +250,7 @@ func (s *Store) DeleteRepo(ctx context.Context, name string) error {
 // ListRepos returns all repos ordered by name.
 func (s *Store) ListRepos(ctx context.Context) ([]model.Repo, error) {
 	rows, err := s.db.QueryContext(ctx,
-		"SELECT name, created_at, created_by FROM repos ORDER BY name",
+		"SELECT name, owner, created_at, created_by FROM repos ORDER BY name",
 	)
 	if err != nil {
 		return nil, err
@@ -158,7 +260,7 @@ func (s *Store) ListRepos(ctx context.Context) ([]model.Repo, error) {
 	var repos []model.Repo
 	for rows.Next() {
 		var r model.Repo
-		if err := rows.Scan(&r.Name, &r.CreatedAt, &r.CreatedBy); err != nil {
+		if err := rows.Scan(&r.Name, &r.Owner, &r.CreatedAt, &r.CreatedBy); err != nil {
 			return nil, err
 		}
 		repos = append(repos, r)
@@ -170,9 +272,9 @@ func (s *Store) ListRepos(ctx context.Context) ([]model.Repo, error) {
 func (s *Store) GetRepo(ctx context.Context, name string) (*model.Repo, error) {
 	var r model.Repo
 	err := s.db.QueryRowContext(ctx,
-		"SELECT name, created_at, created_by FROM repos WHERE name = $1",
+		"SELECT name, owner, created_at, created_by FROM repos WHERE name = $1",
 		name,
-	).Scan(&r.Name, &r.CreatedAt, &r.CreatedBy)
+	).Scan(&r.Name, &r.Owner, &r.CreatedAt, &r.CreatedBy)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrRepoNotFound

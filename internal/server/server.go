@@ -15,6 +15,13 @@ import (
 
 // WriteStore abstracts the database write, repo management, and role operations.
 type WriteStore interface {
+	// Org management
+	CreateOrg(ctx context.Context, name, createdBy string) (*model.Org, error)
+	GetOrg(ctx context.Context, name string) (*model.Org, error)
+	ListOrgs(ctx context.Context) ([]model.Org, error)
+	DeleteOrg(ctx context.Context, name string) error
+	ListOrgRepos(ctx context.Context, owner string) ([]model.Repo, error)
+
 	// Repo management
 	CreateRepo(ctx context.Context, req model.CreateRepoRequest) (*model.Repo, error)
 	DeleteRepo(ctx context.Context, name string) error
@@ -66,37 +73,23 @@ func New(writeStore WriteStore, database *sql.DB, devIdentity, bootstrapAdmin st
 	// All other routes require IAP authentication.
 	inner := http.NewServeMux()
 
-	// Repo management endpoints
+	// Org management endpoints
+	inner.HandleFunc("POST /orgs", s.handleCreateOrg)
+	inner.HandleFunc("GET /orgs", s.handleListOrgs)
+	inner.HandleFunc("GET /orgs/{org}", s.handleGetOrg)
+	inner.HandleFunc("DELETE /orgs/{org}", s.handleDeleteOrg)
+	inner.HandleFunc("GET /orgs/{org}/repos", s.handleListOrgRepos)
+
+	// Repo list and create (no trailing slash — exact matches)
 	inner.HandleFunc("POST /repos", s.handleCreateRepo)
 	inner.HandleFunc("GET /repos", s.handleListRepos)
-	inner.HandleFunc("GET /repos/{name}", s.handleGetRepo)
-	inner.HandleFunc("DELETE /repos/{name}", s.handleDeleteRepo)
 
-	// Repo-scoped read endpoints
-	inner.HandleFunc("GET /repos/{name}/tree", s.handleTree)
-	inner.HandleFunc("GET /repos/{name}/file/{path...}", s.handleFile)
-	inner.HandleFunc("GET /repos/{name}/commit/{sequence}", s.handleGetCommit)
-	inner.HandleFunc("GET /repos/{name}/diff", s.handleDiff)
-	inner.HandleFunc("GET /repos/{name}/branches", s.handleBranches)
-	inner.HandleFunc("GET /repos/{name}/branch/{bname}/status", notImplemented)
-	// Branch sub-resource reads; {branch...} handles names that contain slashes.
-	// More-specific {bname}/status route above wins for /status paths.
-	inner.HandleFunc("GET /repos/{name}/branch/{branch...}", s.handleBranchGet)
-
-	// Repo-scoped write endpoints
-	inner.HandleFunc("POST /repos/{name}/commit", s.handleCommit)
-	inner.HandleFunc("POST /repos/{name}/branch", s.handleCreateBranch)
-	inner.HandleFunc("POST /repos/{name}/merge", s.handleMerge)
-	inner.HandleFunc("POST /repos/{name}/rebase", s.handleRebase)
-	inner.HandleFunc("POST /repos/{name}/review", s.handleReview)
-	inner.HandleFunc("POST /repos/{name}/check", s.handleCheck)
-	inner.HandleFunc("POST /repos/{name}/purge", s.handlePurge)
-	inner.HandleFunc("DELETE /repos/{name}/branch/{bname...}", s.handleDeleteBranch)
-
-	// Role management endpoints
-	inner.HandleFunc("GET /repos/{name}/roles", s.handleListRoles)
-	inner.HandleFunc("PUT /repos/{name}/roles/{identity...}", s.handleSetRole)
-	inner.HandleFunc("DELETE /repos/{name}/roles/{identity...}", s.handleDeleteRole)
+	// All repo-scoped operations use a prefix handler that dispatches via the
+	// "/-/" separator. Examples:
+	//   GET  /repos/acme/myrepo/-/tree
+	//   POST /repos/acme/myrepo/-/commit
+	//   GET  /repos/acme/myrepo          (bare: GET/DELETE a repo)
+	inner.Handle("/repos/", http.HandlerFunc(s.handleReposPrefix))
 
 	// Chain: IAPMiddleware → RBACMiddleware (when store present) → routes.
 	// IAP must run first to set identity in context before RBAC reads it.

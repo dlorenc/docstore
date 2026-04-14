@@ -15,6 +15,274 @@ import (
 	"github.com/dlorenc/docstore/internal/store"
 )
 
+// parseRepoPath parses a /repos/... URL path into the full repo name and the
+// endpoint string that follows the "/-/" separator.
+//
+//	/repos/acme/myrepo/-/tree        → ("acme/myrepo", "tree", true)
+//	/repos/acme/team/sub/-/commit    → ("acme/team/sub", "commit", true)
+//	/repos/acme/myrepo               → ("acme/myrepo", "", true)  // bare repo
+//	/something/else                  → ("", "", false)
+func parseRepoPath(path string) (repoName, endpoint string, ok bool) {
+	const prefix = "/repos/"
+	if !strings.HasPrefix(path, prefix) {
+		return "", "", false
+	}
+	rest := path[len(prefix):]
+	if rest == "" {
+		return "", "", false
+	}
+	idx := strings.Index(rest, "/-/")
+	if idx == -1 {
+		// Bare /repos/:repopath — no endpoint
+		return rest, "", true
+	}
+	return rest[:idx], rest[idx+3:], true
+}
+
+// handleReposPrefix is the catch-all handler for all /repos/... paths (except
+// the bare GET /repos and POST /repos which are registered as exact matches).
+// It parses the repo name and endpoint from the URL using the "/-/" separator,
+// sets the "name" path value so existing sub-handlers work unchanged, and
+// dispatches to the appropriate handler.
+func (s *server) handleReposPrefix(w http.ResponseWriter, r *http.Request) {
+	repoName, endpoint, ok := parseRepoPath(r.URL.Path)
+	if !ok || repoName == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+
+	r.SetPathValue("name", repoName)
+
+	if endpoint == "" {
+		// Bare /repos/:reponame
+		switch r.Method {
+		case http.MethodGet:
+			s.handleGetRepo(w, r)
+		case http.MethodDelete:
+			s.handleDeleteRepo(w, r)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+		return
+	}
+
+	switch {
+	case endpoint == "tree":
+		if r.Method == http.MethodGet {
+			s.handleTree(w, r)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+
+	case endpoint == "branches":
+		if r.Method == http.MethodGet {
+			s.handleBranches(w, r)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+
+	case endpoint == "diff":
+		if r.Method == http.MethodGet {
+			s.handleDiff(w, r)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+
+	case endpoint == "commit":
+		if r.Method == http.MethodPost {
+			s.handleCommit(w, r)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+
+	case endpoint == "branch":
+		if r.Method == http.MethodPost {
+			s.handleCreateBranch(w, r)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+
+	case endpoint == "merge":
+		if r.Method == http.MethodPost {
+			s.handleMerge(w, r)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+
+	case endpoint == "rebase":
+		if r.Method == http.MethodPost {
+			s.handleRebase(w, r)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+
+	case endpoint == "review":
+		if r.Method == http.MethodPost {
+			s.handleReview(w, r)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+
+	case endpoint == "check":
+		if r.Method == http.MethodPost {
+			s.handleCheck(w, r)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+
+	case endpoint == "purge":
+		if r.Method == http.MethodPost {
+			s.handlePurge(w, r)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+
+	case endpoint == "roles":
+		if r.Method == http.MethodGet {
+			s.handleListRoles(w, r)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+
+	case strings.HasPrefix(endpoint, "commit/"):
+		if r.Method == http.MethodGet {
+			r.SetPathValue("sequence", strings.TrimPrefix(endpoint, "commit/"))
+			s.handleGetCommit(w, r)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+
+	case strings.HasPrefix(endpoint, "file/"):
+		if r.Method == http.MethodGet {
+			r.SetPathValue("path", strings.TrimPrefix(endpoint, "file/"))
+			s.handleFile(w, r)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+
+	case strings.HasPrefix(endpoint, "roles/"):
+		identity := strings.TrimPrefix(endpoint, "roles/")
+		r.SetPathValue("identity", identity)
+		switch r.Method {
+		case http.MethodPut:
+			s.handleSetRole(w, r)
+		case http.MethodDelete:
+			s.handleDeleteRole(w, r)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+
+	case strings.HasPrefix(endpoint, "branch/"):
+		bpath := strings.TrimPrefix(endpoint, "branch/")
+		switch r.Method {
+		case http.MethodDelete:
+			r.SetPathValue("bname", bpath)
+			s.handleDeleteBranch(w, r)
+		case http.MethodGet:
+			if strings.HasSuffix(bpath, "/status") {
+				notImplemented(w, r)
+			} else {
+				r.SetPathValue("branch", bpath)
+				s.handleBranchGet(w, r)
+			}
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+
+	default:
+		writeError(w, http.StatusNotFound, "not found")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Org handlers
+// ---------------------------------------------------------------------------
+
+// handleCreateOrg implements POST /orgs
+func (s *server) handleCreateOrg(w http.ResponseWriter, r *http.Request) {
+	var req model.CreateOrgRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+
+	identity := IdentityFromContext(r.Context())
+	org, err := s.commitStore.CreateOrg(r.Context(), req.Name, identity)
+	if err != nil {
+		switch {
+		case errors.Is(err, db.ErrOrgExists):
+			writeError(w, http.StatusConflict, "org already exists")
+		default:
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+	writeJSON(w, http.StatusCreated, org)
+}
+
+// handleListOrgs implements GET /orgs
+func (s *server) handleListOrgs(w http.ResponseWriter, r *http.Request) {
+	orgs, err := s.commitStore.ListOrgs(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if orgs == nil {
+		orgs = []model.Org{}
+	}
+	writeJSON(w, http.StatusOK, model.ListOrgsResponse{Orgs: orgs})
+}
+
+// handleGetOrg implements GET /orgs/{org}
+func (s *server) handleGetOrg(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("org")
+	org, err := s.commitStore.GetOrg(r.Context(), name)
+	if err != nil {
+		switch {
+		case errors.Is(err, db.ErrOrgNotFound):
+			writeError(w, http.StatusNotFound, "org not found")
+		default:
+			writeError(w, http.StatusInternalServerError, "query failed")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, org)
+}
+
+// handleDeleteOrg implements DELETE /orgs/{org}
+func (s *server) handleDeleteOrg(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("org")
+	err := s.commitStore.DeleteOrg(r.Context(), name)
+	if err != nil {
+		switch {
+		case errors.Is(err, db.ErrOrgNotFound):
+			writeError(w, http.StatusNotFound, "org not found")
+		default:
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleListOrgRepos implements GET /orgs/{org}/repos
+func (s *server) handleListOrgRepos(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("org")
+	repos, err := s.commitStore.ListOrgRepos(r.Context(), owner)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if repos == nil {
+		repos = []model.Repo{}
+	}
+	writeJSON(w, http.StatusOK, model.ReposResponse{Repos: repos})
+}
+
 // handleReview implements POST /repos/:name/review
 func (s *server) handleReview(w http.ResponseWriter, r *http.Request) {
 	repo := r.PathValue("name")
@@ -252,12 +520,16 @@ func (s *server) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	if req.Owner == "" {
+		writeError(w, http.StatusBadRequest, "owner is required")
+		return
+	}
 	if req.Name == "" {
 		writeError(w, http.StatusBadRequest, "name is required")
 		return
 	}
 	if req.CreatedBy == "" {
-		req.CreatedBy = r.Header.Get("X-DocStore-Identity")
+		req.CreatedBy = IdentityFromContext(r.Context())
 	}
 
 	repo, err := s.commitStore.CreateRepo(r.Context(), req)
@@ -265,6 +537,8 @@ func (s *server) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, db.ErrRepoExists):
 			writeError(w, http.StatusConflict, "repo already exists")
+		case errors.Is(err, db.ErrOrgNotFound):
+			writeError(w, http.StatusNotFound, "org not found")
 		default:
 			slog.Error("internal error", "op", "create_repo", "repo", req.Name, "error", err)
 			writeError(w, http.StatusInternalServerError, "internal server error")

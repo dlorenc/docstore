@@ -4,9 +4,19 @@ package model
 
 import "time"
 
+// Org is a top-level namespace that owns one or more repos.
+type Org struct {
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+	CreatedBy string    `json:"created_by"`
+}
+
 // Repo is a named tenant that owns its own isolated set of branches and commits.
+// Name is the full path (e.g. "acme/myrepo" or "acme/team/subrepo").
+// Owner is the first path segment, i.e. the org name.
 type Repo struct {
 	Name      string    `json:"name"`
+	Owner     string    `json:"owner"`
 	CreatedAt time.Time `json:"created_at"`
 	CreatedBy string    `json:"created_by"`
 }

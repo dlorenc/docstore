@@ -214,18 +214,22 @@ func (a *App) Init(remote, repo, author string) error {
 		}
 	}
 
-	// Extract repo from remote URL if embedded (e.g. https://host/repos/myrepo).
-	// Strip the /repos/:name suffix from the base URL whether or not --repo was
-	// provided explicitly, so that we never end up with a doubled path prefix.
+	// Extract repo from remote URL if embedded.
+	// Supported forms:
+	//   https://host/repos/owner/name/-    (canonical new form with /-/)
+	//   https://host/repos/owner/name      (bare repo path)
+	//   https://host                       (no repo path; use default/default)
+	// Strip the /repos/... suffix so that we never end up with a doubled path prefix.
 	baseRemote := strings.TrimRight(remote, "/")
+	// Strip optional trailing /-
+	baseRemote = strings.TrimSuffix(baseRemote, "/-")
 	if idx := strings.Index(baseRemote, "/repos/"); idx >= 0 {
 		if repo == "" {
-			parts := strings.SplitN(baseRemote[idx+len("/repos/"):], "/", 2)
-			repo = parts[0]
+			repo = baseRemote[idx+len("/repos/"):]
 		}
 		baseRemote = baseRemote[:idx]
 	} else if repo == "" {
-		repo = "default"
+		repo = "default/default"
 	}
 
 	cfg := &Config{
@@ -717,13 +721,15 @@ func (a *App) Diff() error {
 	return nil
 }
 
-// repoBase returns the /repos/:name base URL for the configured repo.
+// repoBase returns the /repos/:name/- base URL for the configured repo.
+// All repo-scoped API endpoints are appended after this base with a "/" separator,
+// resulting in URLs like /repos/owner/name/-/commit.
 func repoBase(cfg *Config) string {
 	repo := cfg.Repo
 	if repo == "" {
-		repo = "default"
+		repo = "default/default"
 	}
-	return cfg.Remote + "/repos/" + repo
+	return cfg.Remote + "/repos/" + repo + "/-"
 }
 
 // httpGet sends a GET request with the X-DocStore-Identity header set.

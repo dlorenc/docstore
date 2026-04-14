@@ -182,20 +182,26 @@ func RBACMiddleware(roles RoleStore, bootstrapAdmin string) func(http.Handler) h
 	}
 }
 
-// repoAndSubPath extracts the repo name and sub-path from a /repos/:name/subpath URL.
-// Returns ("", "") for non-repo paths or bare /repos/:name paths with no sub-path.
+// repoAndSubPath extracts the repo name and sub-path from a /repos/.../-/subpath URL.
+// Returns ("", "") for non-repo paths or bare /repos/:repopath paths with no /-/ separator.
+//
+// Examples:
+//
+//	/repos/acme/myrepo/-/commit  →  ("acme/myrepo", "commit")
+//	/repos/acme/team/sub/-/tree  →  ("acme/team/sub", "tree")
+//	/repos/acme/myrepo            →  ("", "")  — bare repo, no RBAC check needed
 func repoAndSubPath(path string) (repo, subPath string) {
 	const prefix = "/repos/"
 	if !strings.HasPrefix(path, prefix) {
 		return "", ""
 	}
 	rest := path[len(prefix):]
-	slash := strings.IndexByte(rest, '/')
-	if slash == -1 {
-		// /repos/:name — no sub-path, no RBAC check needed.
+	idx := strings.Index(rest, "/-/")
+	if idx == -1 {
+		// /repos/:repopath with no /-/ — no sub-path, no RBAC check needed.
 		return "", ""
 	}
-	return rest[:slash], rest[slash+1:]
+	return rest[:idx], rest[idx+3:]
 }
 
 // roleAllows checks whether the given role is permitted to execute the HTTP

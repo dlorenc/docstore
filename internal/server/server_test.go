@@ -35,6 +35,11 @@ type mockStore struct {
 	listRolesFn    func(ctx context.Context, repo string) ([]model.Role, error)
 	hasAdminFn     func(ctx context.Context, repo string) (bool, error)
 	purgeFn        func(ctx context.Context, req db.PurgeRequest) (*db.PurgeResult, error)
+	createOrgFn      func(ctx context.Context, name, createdBy string) (*model.Org, error)
+	getOrgFn         func(ctx context.Context, name string) (*model.Org, error)
+	listOrgsFn       func(ctx context.Context) ([]model.Org, error)
+	deleteOrgFn      func(ctx context.Context, name string) error
+	listOrgReposFn   func(ctx context.Context, owner string) ([]model.Repo, error)
 }
 
 func (m *mockStore) Commit(ctx context.Context, req model.CommitRequest) (*model.CommitResponse, error) {
@@ -170,6 +175,41 @@ func (m *mockStore) Purge(ctx context.Context, req db.PurgeRequest) (*db.PurgeRe
 	return nil, errors.New("not implemented")
 }
 
+func (m *mockStore) CreateOrg(ctx context.Context, name, createdBy string) (*model.Org, error) {
+	if m.createOrgFn != nil {
+		return m.createOrgFn(ctx, name, createdBy)
+	}
+	return &model.Org{Name: name}, nil
+}
+
+func (m *mockStore) GetOrg(ctx context.Context, name string) (*model.Org, error) {
+	if m.getOrgFn != nil {
+		return m.getOrgFn(ctx, name)
+	}
+	return &model.Org{Name: name}, nil
+}
+
+func (m *mockStore) ListOrgs(ctx context.Context) ([]model.Org, error) {
+	if m.listOrgsFn != nil {
+		return m.listOrgsFn(ctx)
+	}
+	return []model.Org{}, nil
+}
+
+func (m *mockStore) DeleteOrg(ctx context.Context, name string) error {
+	if m.deleteOrgFn != nil {
+		return m.deleteOrgFn(ctx, name)
+	}
+	return nil
+}
+
+func (m *mockStore) ListOrgRepos(ctx context.Context, owner string) ([]model.Repo, error) {
+	if m.listOrgReposFn != nil {
+		return m.listOrgReposFn(ctx, owner)
+	}
+	return []model.Repo{}, nil
+}
+
 func TestHealthEndpoint(t *testing.T) {
 	// /healthz is exempt from IAP auth, so devIdentity="" is fine here.
 	srv := New(nil, nil, "", "")
@@ -198,7 +238,7 @@ func TestNotImplementedEndpoints(t *testing.T) {
 		method string
 		path   string
 	}{
-		{"GET", "/repos/default/branch/main/status"},
+		{"GET", "/repos/default/default/-/branch/main/status"},
 	}
 
 	for _, ep := range endpoints {
@@ -241,7 +281,7 @@ func TestHandleCommit_Success(t *testing.T) {
 		Message: "initial commit",
 	})
 
-	req := httptest.NewRequest(http.MethodPost, "/repos/default/commit", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/commit", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -282,7 +322,7 @@ func TestHandleCommit_ValidationErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			b, _ := json.Marshal(tt.body)
-			req := httptest.NewRequest(http.MethodPost, "/repos/default/commit", bytes.NewReader(b))
+			req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/commit", bytes.NewReader(b))
 			rec := httptest.NewRecorder()
 			srv.ServeHTTP(rec, req)
 
@@ -307,7 +347,7 @@ func TestHandleCommit_BranchNotFound(t *testing.T) {
 		Message: "m",
 	})
 
-	req := httptest.NewRequest(http.MethodPost, "/repos/default/commit", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/commit", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -330,7 +370,7 @@ func TestHandleCommit_BranchNotActive(t *testing.T) {
 		Message: "m",
 	})
 
-	req := httptest.NewRequest(http.MethodPost, "/repos/default/commit", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/commit", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -353,7 +393,7 @@ func TestHandleCommit_InternalError(t *testing.T) {
 		Message: "m",
 	})
 
-	req := httptest.NewRequest(http.MethodPost, "/repos/default/commit", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/commit", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -370,7 +410,7 @@ func TestHandleCommit_InvalidJSON(t *testing.T) {
 		},
 	}, nil, devID, devID)
 
-	req := httptest.NewRequest(http.MethodPost, "/repos/default/commit", bytes.NewReader([]byte("not json")))
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/commit", bytes.NewReader([]byte("not json")))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -390,7 +430,7 @@ func TestHandleCreateBranch_Success(t *testing.T) {
 	srv := New(store, nil, devID, devID)
 
 	body, _ := json.Marshal(model.CreateBranchRequest{Name: "feature/test"})
-	req := httptest.NewRequest(http.MethodPost, "/repos/default/branch", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/branch", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -414,7 +454,7 @@ func TestHandleCreateBranch_MissingName(t *testing.T) {
 	srv := New(&mockStore{}, nil, devID, devID)
 
 	body, _ := json.Marshal(model.CreateBranchRequest{Name: ""})
-	req := httptest.NewRequest(http.MethodPost, "/repos/default/branch", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/branch", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -427,7 +467,7 @@ func TestHandleCreateBranch_CannotCreateMain(t *testing.T) {
 	srv := New(&mockStore{}, nil, devID, devID)
 
 	body, _ := json.Marshal(model.CreateBranchRequest{Name: "main"})
-	req := httptest.NewRequest(http.MethodPost, "/repos/default/branch", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/branch", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -445,7 +485,7 @@ func TestHandleCreateBranch_AlreadyExists(t *testing.T) {
 	srv := New(store, nil, devID, devID)
 
 	body, _ := json.Marshal(model.CreateBranchRequest{Name: "feature/exists"})
-	req := httptest.NewRequest(http.MethodPost, "/repos/default/branch", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/branch", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -463,7 +503,7 @@ func TestHandleCreateBranch_RepoNotFound(t *testing.T) {
 	srv := New(store, nil, devID, devID)
 
 	body, _ := json.Marshal(model.CreateBranchRequest{Name: "feature/x"})
-	req := httptest.NewRequest(http.MethodPost, "/repos/nonexistent/branch", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/repos/nonexistent/nonexistent/-/branch", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -482,7 +522,7 @@ func TestHandleTree_RepoNotFound(t *testing.T) {
 	}
 	srv := New(store, nil, devID, devID)
 
-	req := httptest.NewRequest(http.MethodGet, "/repos/ghost/tree?branch=main", nil)
+	req := httptest.NewRequest(http.MethodGet, "/repos/ghost/ghost/-/tree?branch=main", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -499,7 +539,7 @@ func TestHandleBranches_RepoNotFound(t *testing.T) {
 	}
 	srv := New(store, nil, devID, devID)
 
-	req := httptest.NewRequest(http.MethodGet, "/repos/ghost/branches", nil)
+	req := httptest.NewRequest(http.MethodGet, "/repos/ghost/ghost/-/branches", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -516,7 +556,7 @@ func TestHandleDiff_RepoNotFound(t *testing.T) {
 	}
 	srv := New(store, nil, devID, devID)
 
-	req := httptest.NewRequest(http.MethodGet, "/repos/ghost/diff?branch=main", nil)
+	req := httptest.NewRequest(http.MethodGet, "/repos/ghost/ghost/-/diff?branch=main", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -533,7 +573,7 @@ func TestHandleFile_RepoNotFound(t *testing.T) {
 	}
 	srv := New(store, nil, devID, devID)
 
-	req := httptest.NewRequest(http.MethodGet, "/repos/ghost/file/foo.txt", nil)
+	req := httptest.NewRequest(http.MethodGet, "/repos/ghost/ghost/-/file/foo.txt", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -553,7 +593,7 @@ func TestHandleMerge_Success(t *testing.T) {
 	srv := New(store, nil, devID, devID)
 
 	body, _ := json.Marshal(model.MergeRequest{Branch: "feature/test"})
-	req := httptest.NewRequest(http.MethodPost, "/repos/default/merge", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/merge", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -574,7 +614,7 @@ func TestHandleMerge_MissingBranch(t *testing.T) {
 	srv := New(&mockStore{}, nil, devID, devID)
 
 	body, _ := json.Marshal(model.MergeRequest{Branch: ""})
-	req := httptest.NewRequest(http.MethodPost, "/repos/default/merge", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/merge", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -594,7 +634,7 @@ func TestHandleMerge_Conflict(t *testing.T) {
 	srv := New(store, nil, devID, devID)
 
 	body, _ := json.Marshal(model.MergeRequest{Branch: "feature/conflict"})
-	req := httptest.NewRequest(http.MethodPost, "/repos/default/merge", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/merge", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -629,7 +669,7 @@ func TestHandleMerge_BranchNotFound(t *testing.T) {
 	srv := New(store, nil, devID, devID)
 
 	body, _ := json.Marshal(model.MergeRequest{Branch: "nonexistent"})
-	req := httptest.NewRequest(http.MethodPost, "/repos/default/merge", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/merge", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -647,7 +687,7 @@ func TestHandleMerge_BranchNotActive(t *testing.T) {
 	srv := New(store, nil, devID, devID)
 
 	body, _ := json.Marshal(model.MergeRequest{Branch: "merged-branch"})
-	req := httptest.NewRequest(http.MethodPost, "/repos/default/merge", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/merge", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -660,7 +700,7 @@ func TestHandleMerge_CannotMergeMain(t *testing.T) {
 	srv := New(&mockStore{}, nil, devID, devID)
 
 	body, _ := json.Marshal(model.MergeRequest{Branch: "main"})
-	req := httptest.NewRequest(http.MethodPost, "/repos/default/merge", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/merge", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -684,7 +724,7 @@ func TestHandleMerge_AuthorFromIdentity(t *testing.T) {
 
 	// Send a different author in the body — it must be overridden by the identity.
 	body, _ := json.Marshal(model.MergeRequest{Branch: "feature/test", Author: "ignored@example.com"})
-	req := httptest.NewRequest(http.MethodPost, "/repos/default/merge", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/merge", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -709,7 +749,7 @@ func TestHandleDeleteBranch_Success(t *testing.T) {
 	}
 	srv := New(store, nil, devID, devID)
 
-	req := httptest.NewRequest(http.MethodDelete, "/repos/default/branch/feature/delete-me", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/repos/default/default/-/branch/feature/delete-me", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -721,7 +761,7 @@ func TestHandleDeleteBranch_Success(t *testing.T) {
 func TestHandleDeleteBranch_CannotDeleteMain(t *testing.T) {
 	srv := New(&mockStore{}, nil, devID, devID)
 
-	req := httptest.NewRequest(http.MethodDelete, "/repos/default/branch/main", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/repos/default/default/-/branch/main", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -738,7 +778,7 @@ func TestHandleDeleteBranch_NotFound(t *testing.T) {
 	}
 	srv := New(store, nil, devID, devID)
 
-	req := httptest.NewRequest(http.MethodDelete, "/repos/default/branch/nonexistent", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/repos/default/default/-/branch/nonexistent", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -755,7 +795,7 @@ func TestHandleDeleteBranch_AlreadyMerged(t *testing.T) {
 	}
 	srv := New(store, nil, devID, devID)
 
-	req := httptest.NewRequest(http.MethodDelete, "/repos/default/branch/merged-branch", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/repos/default/default/-/branch/merged-branch", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -772,7 +812,7 @@ func TestHandleDeleteBranch_AlreadyAbandoned(t *testing.T) {
 	}
 	srv := New(store, nil, devID, devID)
 
-	req := httptest.NewRequest(http.MethodDelete, "/repos/default/branch/abandoned-branch", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/repos/default/default/-/branch/abandoned-branch", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -799,7 +839,7 @@ func TestHandleRebase_Success(t *testing.T) {
 	srv := New(store, nil, devID, devID)
 
 	body, _ := json.Marshal(model.RebaseRequest{Branch: "feature/test"})
-	req := httptest.NewRequest(http.MethodPost, "/repos/default/rebase", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/rebase", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -833,7 +873,7 @@ func TestHandleRebase_Conflict(t *testing.T) {
 	srv := New(store, nil, devID, devID)
 
 	body, _ := json.Marshal(model.RebaseRequest{Branch: "feature/conflict"})
-	req := httptest.NewRequest(http.MethodPost, "/repos/default/rebase", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/rebase", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -868,7 +908,7 @@ func TestHandleRebase_BranchNotFound(t *testing.T) {
 	srv := New(store, nil, devID, devID)
 
 	body, _ := json.Marshal(model.RebaseRequest{Branch: "nonexistent"})
-	req := httptest.NewRequest(http.MethodPost, "/repos/default/rebase", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/rebase", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -881,7 +921,7 @@ func TestHandleRebase_CannotRebaseMain(t *testing.T) {
 	srv := New(&mockStore{}, nil, devID, devID)
 
 	body, _ := json.Marshal(model.RebaseRequest{Branch: "main"})
-	req := httptest.NewRequest(http.MethodPost, "/repos/default/rebase", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/rebase", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -899,7 +939,7 @@ func TestHandleRebase_BranchNotActive(t *testing.T) {
 	srv := New(store, nil, devID, devID)
 
 	body, _ := json.Marshal(model.RebaseRequest{Branch: "merged-branch"})
-	req := httptest.NewRequest(http.MethodPost, "/repos/default/rebase", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/rebase", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -925,7 +965,7 @@ func TestHandleCommit_RepoNotFound(t *testing.T) {
 		Files:   []model.FileChange{{Path: "a.txt", Content: []byte("x")}},
 		Message: "m",
 	})
-	req := httptest.NewRequest(http.MethodPost, "/repos/ghost/commit", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/repos/ghost/ghost/-/commit", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -947,7 +987,7 @@ func TestHandleMerge_RepoNotFound(t *testing.T) {
 	srv := New(store, nil, devID, devID)
 
 	body, _ := json.Marshal(model.MergeRequest{Branch: "feature/test"})
-	req := httptest.NewRequest(http.MethodPost, "/repos/ghost/merge", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/repos/ghost/ghost/-/merge", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -969,7 +1009,7 @@ func TestHandleRebase_RepoNotFound(t *testing.T) {
 	srv := New(store, nil, devID, devID)
 
 	body, _ := json.Marshal(model.RebaseRequest{Branch: "feature/test"})
-	req := httptest.NewRequest(http.MethodPost, "/repos/ghost/rebase", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/repos/ghost/ghost/-/rebase", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -986,7 +1026,7 @@ func TestHandleReview_Success(t *testing.T) {
 	const identity = "reviewer@example.com"
 	store := &mockStore{
 		createReviewFn: func(ctx context.Context, repo, branch, reviewer string, status model.ReviewStatus, body string) (*model.Review, error) {
-			if repo != "default" {
+			if repo != "default/default" {
 				t.Errorf("expected repo default, got %q", repo)
 			}
 			if branch != "feature/x" {
@@ -1007,7 +1047,7 @@ func TestHandleReview_Success(t *testing.T) {
 	srv := New(store, nil, identity, identity)
 
 	b, _ := json.Marshal(model.CreateReviewRequest{Branch: "feature/x", Status: model.ReviewApproved, Body: "LGTM"})
-	req := httptest.NewRequest(http.MethodPost, "/repos/default/review", bytes.NewReader(b))
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/review", bytes.NewReader(b))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -1035,7 +1075,7 @@ func TestHandleReview_SelfApproval(t *testing.T) {
 	srv := New(store, nil, devID, devID)
 
 	b, _ := json.Marshal(model.CreateReviewRequest{Branch: "feature/x", Status: model.ReviewApproved})
-	req := httptest.NewRequest(http.MethodPost, "/repos/default/review", bytes.NewReader(b))
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/review", bytes.NewReader(b))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -1053,7 +1093,7 @@ func TestHandleReview_BranchNotFound(t *testing.T) {
 	srv := New(store, nil, devID, devID)
 
 	b, _ := json.Marshal(model.CreateReviewRequest{Branch: "nonexistent", Status: model.ReviewApproved})
-	req := httptest.NewRequest(http.MethodPost, "/repos/default/review", bytes.NewReader(b))
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/review", bytes.NewReader(b))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -1070,7 +1110,7 @@ func TestHandleCheck_Success(t *testing.T) {
 	const identity = "ci-bot@example.com"
 	store := &mockStore{
 		createCheckRunFn: func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string) (*model.CheckRun, error) {
-			if repo != "default" {
+			if repo != "default/default" {
 				t.Errorf("expected repo default, got %q", repo)
 			}
 			if branch != "feature/x" {
@@ -1091,7 +1131,7 @@ func TestHandleCheck_Success(t *testing.T) {
 	srv := New(store, nil, identity, identity)
 
 	b, _ := json.Marshal(model.CreateCheckRunRequest{Branch: "feature/x", CheckName: "ci/build", Status: model.CheckRunPassed})
-	req := httptest.NewRequest(http.MethodPost, "/repos/default/check", bytes.NewReader(b))
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/check", bytes.NewReader(b))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -1119,7 +1159,7 @@ func TestHandleCheck_BranchNotFound(t *testing.T) {
 	srv := New(store, nil, devID, devID)
 
 	b, _ := json.Marshal(model.CreateCheckRunRequest{Branch: "nonexistent", CheckName: "ci/build", Status: model.CheckRunPassed})
-	req := httptest.NewRequest(http.MethodPost, "/repos/default/check", bytes.NewReader(b))
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/check", bytes.NewReader(b))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -1135,7 +1175,7 @@ func TestHandleCheck_BranchNotFound(t *testing.T) {
 func TestHandleGetReviews(t *testing.T) {
 	store := &mockStore{
 		listReviewsFn: func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.Review, error) {
-			if repo != "default" {
+			if repo != "default/default" {
 				t.Errorf("expected repo default, got %q", repo)
 			}
 			if branch != "feature/x" {
@@ -1148,7 +1188,7 @@ func TestHandleGetReviews(t *testing.T) {
 	}
 	srv := New(store, nil, devID, devID)
 
-	req := httptest.NewRequest(http.MethodGet, "/repos/default/branch/feature/x/reviews", nil)
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/default/-/branch/feature/x/reviews", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -1170,7 +1210,7 @@ func TestHandleGetReviews(t *testing.T) {
 func TestHandleGetChecks(t *testing.T) {
 	store := &mockStore{
 		listCheckRunsFn: func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.CheckRun, error) {
-			if repo != "default" {
+			if repo != "default/default" {
 				t.Errorf("expected repo default, got %q", repo)
 			}
 			if branch != "feature/x" {
@@ -1183,7 +1223,7 @@ func TestHandleGetChecks(t *testing.T) {
 	}
 	srv := New(store, nil, devID, devID)
 
-	req := httptest.NewRequest(http.MethodGet, "/repos/default/branch/feature/x/checks", nil)
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/default/-/branch/feature/x/checks", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -1205,7 +1245,7 @@ func TestHandleGetChecks(t *testing.T) {
 func TestHandlePurge_Success(t *testing.T) {
 	ms := &mockStore{
 		purgeFn: func(ctx context.Context, req db.PurgeRequest) (*db.PurgeResult, error) {
-			if req.Repo != "default" {
+			if req.Repo != "default/default" {
 				t.Errorf("expected repo 'default', got %q", req.Repo)
 			}
 			if req.OlderThan != 30*24*time.Hour {
@@ -1227,7 +1267,7 @@ func TestHandlePurge_Success(t *testing.T) {
 	srv := New(ms, nil, devID, devID)
 
 	body, _ := json.Marshal(map[string]interface{}{"older_than": "30d"})
-	req := httptest.NewRequest(http.MethodPost, "/repos/default/purge", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/purge", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -1258,7 +1298,7 @@ func TestHandlePurge_DryRun(t *testing.T) {
 	srv := New(ms, nil, devID, devID)
 
 	body, _ := json.Marshal(map[string]interface{}{"older_than": "7d", "dry_run": true})
-	req := httptest.NewRequest(http.MethodPost, "/repos/default/purge", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/purge", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
@@ -1290,7 +1330,7 @@ func TestHandlePurge_InvalidDuration(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, "/repos/default/purge", bytes.NewReader([]byte(tt.payload)))
+			req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/purge", bytes.NewReader([]byte(tt.payload)))
 			rec := httptest.NewRecorder()
 			srv.ServeHTTP(rec, req)
 
@@ -1310,7 +1350,7 @@ func TestHandlePurge_RepoNotFound(t *testing.T) {
 	srv := New(ms, nil, devID, devID)
 
 	body, _ := json.Marshal(map[string]interface{}{"older_than": "30d"})
-	req := httptest.NewRequest(http.MethodPost, "/repos/noexist/purge", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/repos/noexist/noexist/-/purge", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
