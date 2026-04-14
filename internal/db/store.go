@@ -25,6 +25,7 @@ var (
 	ErrRepoExists      = errors.New("repo already exists")
 	ErrOrgNotFound     = errors.New("org not found")
 	ErrOrgExists       = errors.New("org already exists")
+	ErrOrgHasRepos     = errors.New("org has repos")
 	ErrRoleNotFound    = errors.New("role not found")
 	ErrSelfApproval    = errors.New("reviewer cannot approve their own commits")
 )
@@ -114,11 +115,14 @@ func (s *Store) ListOrgs(ctx context.Context) ([]model.Org, error) {
 	return orgs, rows.Err()
 }
 
-// DeleteOrg hard-deletes an org. Returns ErrOrgNotFound if it doesn't exist.
-// Note: all repos (and their data) under this org must be deleted first.
+// DeleteOrg hard-deletes an org. Returns ErrOrgNotFound if it doesn't exist
+// and ErrOrgHasRepos if there are repos still owned by this org.
 func (s *Store) DeleteOrg(ctx context.Context, name string) error {
 	result, err := s.db.ExecContext(ctx, "DELETE FROM orgs WHERE name = $1", name)
 	if err != nil {
+		if isForeignKeyViolation(err) {
+			return ErrOrgHasRepos
+		}
 		return fmt.Errorf("delete org: %w", err)
 	}
 	n, err := result.RowsAffected()

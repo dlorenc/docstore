@@ -398,10 +398,10 @@ func TestRBACMiddleware_BootstrapAdmin(t *testing.T) {
 }
 
 func TestRBACMiddleware_RepoIsolation(t *testing.T) {
-	// alice is admin in repo-a but has NO role in repo-b.
+	// alice is admin in orgA/myrepo but has NO role in orgB/myrepo.
 	store := &mockRoleStore{
 		getRoleFn: func(_ context.Context, repo, identity string) (*model.Role, error) {
-			if repo == "repo-a/repo-a" && identity == "alice@example.com" {
+			if repo == "orgA/myrepo" && identity == "alice@example.com" {
 				return &model.Role{Identity: identity, Role: model.RoleAdmin}, nil
 			}
 			return nil, dbpkg.ErrRoleNotFound
@@ -409,16 +409,16 @@ func TestRBACMiddleware_RepoIsolation(t *testing.T) {
 	}
 	h := rbacTestServer(store, "", "alice@example.com")
 
-	// Alice can access repo-a.
-	rec := rbacDo(t, h, http.MethodGet, "/repos/repo-a/repo-a/-/tree", "")
+	// Alice can access orgA/myrepo.
+	rec := rbacDo(t, h, http.MethodGet, "/repos/orgA/myrepo/-/tree", "")
 	if rec.Code != http.StatusOK {
-		t.Fatalf("repo-a GET: expected 200, got %d", rec.Code)
+		t.Fatalf("orgA/myrepo GET: expected 200, got %d", rec.Code)
 	}
 
-	// Alice has no access to repo-b.
-	rec = rbacDo(t, h, http.MethodGet, "/repos/repo-b/repo-b/-/tree", "")
+	// Alice has no access to orgB/myrepo.
+	rec = rbacDo(t, h, http.MethodGet, "/repos/orgB/myrepo/-/tree", "")
 	if rec.Code != http.StatusForbidden {
-		t.Fatalf("repo-b GET: expected 403, got %d", rec.Code)
+		t.Fatalf("orgB/myrepo GET: expected 403, got %d", rec.Code)
 	}
 }
 

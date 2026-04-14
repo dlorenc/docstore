@@ -1392,3 +1392,84 @@ func TestParseDayDuration(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Org handler tests
+// ---------------------------------------------------------------------------
+
+func TestHandleDeleteOrg_OrgHasRepos(t *testing.T) {
+	ms := &mockStore{
+		deleteOrgFn: func(ctx context.Context, name string) error {
+			return db.ErrOrgHasRepos
+		},
+	}
+	srv := New(ms, nil, devID, devID)
+	req := httptest.NewRequest(http.MethodDelete, "/orgs/acme", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Errorf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleDeleteOrg_NotFound(t *testing.T) {
+	ms := &mockStore{
+		deleteOrgFn: func(ctx context.Context, name string) error {
+			return db.ErrOrgNotFound
+		},
+	}
+	srv := New(ms, nil, devID, devID)
+	req := httptest.NewRequest(http.MethodDelete, "/orgs/noexist", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleListOrgRepos_OrgNotFound(t *testing.T) {
+	ms := &mockStore{
+		getOrgFn: func(ctx context.Context, name string) (*model.Org, error) {
+			return nil, db.ErrOrgNotFound
+		},
+	}
+	srv := New(ms, nil, devID, devID)
+	req := httptest.NewRequest(http.MethodGet, "/orgs/noexist/repos", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleCreateOrg_SlashInName(t *testing.T) {
+	ms := &mockStore{}
+	srv := New(ms, nil, devID, devID)
+	body, _ := json.Marshal(map[string]string{"name": "bad/name"})
+	req := httptest.NewRequest(http.MethodPost, "/orgs", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleCreateRepo_OwnerSlashMismatch(t *testing.T) {
+	ms := &mockStore{}
+	srv := New(ms, nil, devID, devID)
+	// Owner contains a slash — first segment "acme" != "acme/team"
+	body, _ := json.Marshal(map[string]string{"owner": "acme/team", "name": "myrepo"})
+	req := httptest.NewRequest(http.MethodPost, "/repos", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
