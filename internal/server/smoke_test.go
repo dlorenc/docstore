@@ -123,7 +123,7 @@ func TestDockerSmoke(t *testing.T) {
 	baseURL := fmt.Sprintf("http://%s:%s", host, port.Port())
 
 	// GET /tree?branch=main must return 200 with an empty JSON array on a fresh DB.
-	resp, err := http.Get(baseURL + "/tree?branch=main")
+	resp, err := http.Get(baseURL + "/repos/default/tree?branch=main")
 	if err != nil {
 		t.Fatalf("GET /tree: %v", err)
 	}

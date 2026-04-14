@@ -138,8 +138,9 @@ type FileChange struct {
 	Content []byte `json:"content,omitempty"`
 }
 
-// CommitRequest is the body for POST /commit.
+// CommitRequest is the body for POST /repos/:name/commit.
 type CommitRequest struct {
+	Repo    string       `json:"repo,omitempty"`
 	Branch  string       `json:"branch"`
 	Files   []FileChange `json:"files"`
 	Message string       `json:"message"`
@@ -162,8 +163,9 @@ type CommitResponse struct {
 // POST /branch
 // ---------------------------------------------------------------------------
 
-// CreateBranchRequest is the body for POST /branch.
+// CreateBranchRequest is the body for POST /repos/:name/branch.
 type CreateBranchRequest struct {
+	Repo string `json:"repo,omitempty"`
 	Name string `json:"name"`
 }
 
@@ -177,8 +179,9 @@ type CreateBranchResponse struct {
 // POST /merge
 // ---------------------------------------------------------------------------
 
-// MergeRequest is the body for POST /merge.
+// MergeRequest is the body for POST /repos/:name/merge.
 type MergeRequest struct {
+	Repo   string `json:"repo,omitempty"`
 	Branch string `json:"branch"`
 	Author string `json:"author,omitempty"`
 }
@@ -202,8 +205,9 @@ type MergePolicyError struct {
 // POST /rebase
 // ---------------------------------------------------------------------------
 
-// RebaseRequest is the body for POST /rebase.
+// RebaseRequest is the body for POST /repos/:name/rebase.
 type RebaseRequest struct {
+	Repo   string `json:"repo,omitempty"`
 	Branch string `json:"branch"`
 	Author string `json:"author,omitempty"`
 }
@@ -261,6 +265,21 @@ type CreateCheckRunResponse struct {
 type DeleteBranchResponse struct {
 	Name   string       `json:"name"`
 	Status BranchStatus `json:"status"`
+}
+
+// ---------------------------------------------------------------------------
+// POST /repos / GET /repos / GET /repos/:name / DELETE /repos/:name
+// ---------------------------------------------------------------------------
+
+// CreateRepoRequest is the body for POST /repos.
+type CreateRepoRequest struct {
+	Name      string `json:"name"`
+	CreatedBy string `json:"created_by,omitempty"`
+}
+
+// ReposResponse is the response for GET /repos.
+type ReposResponse struct {
+	Repos []Repo `json:"repos"`
 }
 
 // ---------------------------------------------------------------------------

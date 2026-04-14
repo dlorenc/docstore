@@ -16,6 +16,7 @@ func TestCommit_SingleFile(t *testing.T) {
 	ctx := context.Background()
 
 	resp, err := s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
 		Branch:  "main",
 		Files:   []model.FileChange{{Path: "hello.txt", Content: []byte("hello world")}},
 		Message: "first commit",
@@ -55,6 +56,7 @@ func TestCommit_MultipleFiles(t *testing.T) {
 	ctx := context.Background()
 
 	resp, err := s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
 		Branch: "main",
 		Files: []model.FileChange{
 			{Path: "a.txt", Content: []byte("aaa")},
@@ -95,6 +97,7 @@ func TestCommit_ContentDedup(t *testing.T) {
 
 	// Commit the same content as two different files.
 	resp, err := s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
 		Branch: "main",
 		Files: []model.FileChange{
 			{Path: "file1.txt", Content: content},
@@ -134,6 +137,7 @@ func TestCommit_ContentDedupAcrossCommits(t *testing.T) {
 	content := []byte("shared content")
 
 	resp1, err := s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
 		Branch:  "main",
 		Files:   []model.FileChange{{Path: "first.txt", Content: content}},
 		Message: "commit 1",
@@ -144,6 +148,7 @@ func TestCommit_ContentDedupAcrossCommits(t *testing.T) {
 	}
 
 	resp2, err := s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
 		Branch:  "main",
 		Files:   []model.FileChange{{Path: "second.txt", Content: content}},
 		Message: "commit 2",
@@ -172,6 +177,7 @@ func TestCommit_SequenceIncrementsPerCommit(t *testing.T) {
 
 	for i := 1; i <= 3; i++ {
 		resp, err := s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
 			Branch:  "main",
 			Files:   []model.FileChange{{Path: "file.txt", Content: []byte("v" + string(rune('0'+i)))}},
 			Message: "commit",
@@ -193,6 +199,7 @@ func TestCommit_DeleteFile(t *testing.T) {
 
 	// First, create a file.
 	_, err := s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
 		Branch:  "main",
 		Files:   []model.FileChange{{Path: "doomed.txt", Content: []byte("will be deleted")}},
 		Message: "create file",
@@ -204,6 +211,7 @@ func TestCommit_DeleteFile(t *testing.T) {
 
 	// Delete the file (nil content).
 	resp, err := s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
 		Branch:  "main",
 		Files:   []model.FileChange{{Path: "doomed.txt", Content: nil}},
 		Message: "delete file",
@@ -240,6 +248,7 @@ func TestCommit_BranchNotFound(t *testing.T) {
 	ctx := context.Background()
 
 	_, err := s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
 		Branch:  "nonexistent",
 		Files:   []model.FileChange{{Path: "a.txt", Content: []byte("x")}},
 		Message: "m",
@@ -257,13 +266,14 @@ func TestCommit_BranchNotActive(t *testing.T) {
 
 	// Create a branch and mark it as merged.
 	_, err := d.Exec(
-		"INSERT INTO branches (name, head_sequence, base_sequence, status) VALUES ('merged-br', 0, 0, 'merged')",
+		"INSERT INTO branches (repo, name, head_sequence, base_sequence, status) VALUES ('default', 'merged-br', 0, 0, 'merged')",
 	)
 	if err != nil {
 		t.Fatalf("insert branch: %v", err)
 	}
 
 	_, err = s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
 		Branch:  "merged-br",
 		Files:   []model.FileChange{{Path: "a.txt", Content: []byte("x")}},
 		Message: "m",
@@ -283,6 +293,7 @@ func TestCreateBranch_Success(t *testing.T) {
 
 	// First commit to main to advance head.
 	_, err := s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
 		Branch:  "main",
 		Files:   []model.FileChange{{Path: "file.txt", Content: []byte("hello")}},
 		Message: "initial",
@@ -292,7 +303,7 @@ func TestCreateBranch_Success(t *testing.T) {
 		t.Fatalf("commit: %v", err)
 	}
 
-	resp, err := s.CreateBranch(ctx, model.CreateBranchRequest{Name: "feature/test"})
+	resp, err := s.CreateBranch(ctx, model.CreateBranchRequest{Repo: "default", Name: "feature/test"})
 	if err != nil {
 		t.Fatalf("create branch: %v", err)
 	}
@@ -324,12 +335,12 @@ func TestCreateBranch_Duplicate(t *testing.T) {
 	s := NewStore(d)
 	ctx := context.Background()
 
-	_, err := s.CreateBranch(ctx, model.CreateBranchRequest{Name: "feature/dup"})
+	_, err := s.CreateBranch(ctx, model.CreateBranchRequest{Repo: "default", Name: "feature/dup"})
 	if err != nil {
 		t.Fatalf("first create: %v", err)
 	}
 
-	_, err = s.CreateBranch(ctx, model.CreateBranchRequest{Name: "feature/dup"})
+	_, err = s.CreateBranch(ctx, model.CreateBranchRequest{Repo: "default", Name: "feature/dup"})
 	if err != ErrBranchExists {
 		t.Fatalf("expected ErrBranchExists, got %v", err)
 	}
@@ -344,6 +355,7 @@ func TestMerge_Success(t *testing.T) {
 
 	// Commit to main.
 	_, err := s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
 		Branch:  "main",
 		Files:   []model.FileChange{{Path: "base.txt", Content: []byte("base")}},
 		Message: "initial",
@@ -354,13 +366,14 @@ func TestMerge_Success(t *testing.T) {
 	}
 
 	// Create branch.
-	_, err = s.CreateBranch(ctx, model.CreateBranchRequest{Name: "feature/merge"})
+	_, err = s.CreateBranch(ctx, model.CreateBranchRequest{Repo: "default", Name: "feature/merge"})
 	if err != nil {
 		t.Fatalf("create branch: %v", err)
 	}
 
 	// Commit to branch.
 	_, err = s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
 		Branch:  "feature/merge",
 		Files:   []model.FileChange{{Path: "new.txt", Content: []byte("new file")}},
 		Message: "add new file",
@@ -371,7 +384,7 @@ func TestMerge_Success(t *testing.T) {
 	}
 
 	// Merge.
-	resp, conflicts, err := s.Merge(ctx, model.MergeRequest{Branch: "feature/merge", Author: "carol"})
+	resp, conflicts, err := s.Merge(ctx, model.MergeRequest{Repo: "default", Branch: "feature/merge", Author: "carol"})
 	if err != nil {
 		t.Fatalf("merge: %v", err)
 	}
@@ -436,6 +449,7 @@ func TestMerge_Conflict(t *testing.T) {
 
 	// Commit to main.
 	_, err := s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
 		Branch:  "main",
 		Files:   []model.FileChange{{Path: "shared.txt", Content: []byte("original")}},
 		Message: "initial",
@@ -446,13 +460,14 @@ func TestMerge_Conflict(t *testing.T) {
 	}
 
 	// Create branch.
-	_, err = s.CreateBranch(ctx, model.CreateBranchRequest{Name: "feature/conflict"})
+	_, err = s.CreateBranch(ctx, model.CreateBranchRequest{Repo: "default", Name: "feature/conflict"})
 	if err != nil {
 		t.Fatalf("create branch: %v", err)
 	}
 
 	// Change shared.txt on both main and branch.
 	_, err = s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
 		Branch:  "main",
 		Files:   []model.FileChange{{Path: "shared.txt", Content: []byte("main version")}},
 		Message: "main edit",
@@ -463,6 +478,7 @@ func TestMerge_Conflict(t *testing.T) {
 	}
 
 	_, err = s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
 		Branch:  "feature/conflict",
 		Files:   []model.FileChange{{Path: "shared.txt", Content: []byte("branch version")}},
 		Message: "branch edit",
@@ -473,7 +489,7 @@ func TestMerge_Conflict(t *testing.T) {
 	}
 
 	// Merge should fail with conflict.
-	_, conflicts, err := s.Merge(ctx, model.MergeRequest{Branch: "feature/conflict"})
+	_, conflicts, err := s.Merge(ctx, model.MergeRequest{Repo: "default", Branch: "feature/conflict"})
 	if err != ErrMergeConflict {
 		t.Fatalf("expected ErrMergeConflict, got %v", err)
 	}
@@ -500,7 +516,7 @@ func TestMerge_BranchNotFound(t *testing.T) {
 	s := NewStore(d)
 	ctx := context.Background()
 
-	_, _, err := s.Merge(ctx, model.MergeRequest{Branch: "nonexistent"})
+	_, _, err := s.Merge(ctx, model.MergeRequest{Repo: "default", Branch: "nonexistent"})
 	if err != ErrBranchNotFound {
 		t.Fatalf("expected ErrBranchNotFound, got %v", err)
 	}
@@ -512,12 +528,12 @@ func TestMerge_BranchNotActive(t *testing.T) {
 	ctx := context.Background()
 
 	// Create and immediately mark merged.
-	_, err := d.Exec("INSERT INTO branches (name, head_sequence, base_sequence, status) VALUES ('already-merged', 0, 0, 'merged')")
+	_, err := d.Exec("INSERT INTO branches (repo, name, head_sequence, base_sequence, status) VALUES ('default', 'already-merged', 0, 0, 'merged')")
 	if err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 
-	_, _, err = s.Merge(ctx, model.MergeRequest{Branch: "already-merged"})
+	_, _, err = s.Merge(ctx, model.MergeRequest{Repo: "default", Branch: "already-merged"})
 	if err != ErrBranchNotActive {
 		t.Fatalf("expected ErrBranchNotActive, got %v", err)
 	}
@@ -530,12 +546,12 @@ func TestDeleteBranch_Success(t *testing.T) {
 	s := NewStore(d)
 	ctx := context.Background()
 
-	_, err := s.CreateBranch(ctx, model.CreateBranchRequest{Name: "feature/delete-me"})
+	_, err := s.CreateBranch(ctx, model.CreateBranchRequest{Repo: "default", Name: "feature/delete-me"})
 	if err != nil {
 		t.Fatalf("create branch: %v", err)
 	}
 
-	if err := s.DeleteBranch(ctx, "feature/delete-me"); err != nil {
+	if err := s.DeleteBranch(ctx, "default", "feature/delete-me"); err != nil {
 		t.Fatalf("delete branch: %v", err)
 	}
 
@@ -554,7 +570,7 @@ func TestDeleteBranch_NotFound(t *testing.T) {
 	s := NewStore(d)
 	ctx := context.Background()
 
-	err := s.DeleteBranch(ctx, "nonexistent")
+	err := s.DeleteBranch(ctx, "default", "nonexistent")
 	if err != ErrBranchNotFound {
 		t.Fatalf("expected ErrBranchNotFound, got %v", err)
 	}
@@ -565,12 +581,12 @@ func TestDeleteBranch_AlreadyMerged(t *testing.T) {
 	s := NewStore(d)
 	ctx := context.Background()
 
-	_, err := d.Exec("INSERT INTO branches (name, head_sequence, base_sequence, status) VALUES ('merged-br', 0, 0, 'merged')")
+	_, err := d.Exec("INSERT INTO branches (repo, name, head_sequence, base_sequence, status) VALUES ('default', 'merged-br', 0, 0, 'merged')")
 	if err != nil {
 		t.Fatalf("insert branch: %v", err)
 	}
 
-	err = s.DeleteBranch(ctx, "merged-br")
+	err = s.DeleteBranch(ctx, "default", "merged-br")
 	if err != ErrBranchNotActive {
 		t.Fatalf("expected ErrBranchNotActive, got %v", err)
 	}
@@ -581,12 +597,12 @@ func TestDeleteBranch_AlreadyAbandoned(t *testing.T) {
 	s := NewStore(d)
 	ctx := context.Background()
 
-	_, err := d.Exec("INSERT INTO branches (name, head_sequence, base_sequence, status) VALUES ('abandoned-br', 0, 0, 'abandoned')")
+	_, err := d.Exec("INSERT INTO branches (repo, name, head_sequence, base_sequence, status) VALUES ('default', 'abandoned-br', 0, 0, 'abandoned')")
 	if err != nil {
 		t.Fatalf("insert branch: %v", err)
 	}
 
-	err = s.DeleteBranch(ctx, "abandoned-br")
+	err = s.DeleteBranch(ctx, "default", "abandoned-br")
 	if err != ErrBranchNotActive {
 		t.Fatalf("expected ErrBranchNotActive, got %v", err)
 	}
@@ -598,12 +614,12 @@ func TestMerge_EmptyBranch(t *testing.T) {
 	ctx := context.Background()
 
 	// Create branch with no commits.
-	_, err := s.CreateBranch(ctx, model.CreateBranchRequest{Name: "feature/empty"})
+	_, err := s.CreateBranch(ctx, model.CreateBranchRequest{Repo: "default", Name: "feature/empty"})
 	if err != nil {
 		t.Fatalf("create branch: %v", err)
 	}
 
-	resp, conflicts, err := s.Merge(ctx, model.MergeRequest{Branch: "feature/empty"})
+	resp, conflicts, err := s.Merge(ctx, model.MergeRequest{Repo: "default", Branch: "feature/empty"})
 	if err != nil {
 		t.Fatalf("merge: %v", err)
 	}
@@ -634,6 +650,7 @@ func TestRebase_CleanNoConflict(t *testing.T) {
 
 	// Commit to main (seq=1).
 	_, err := s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
 		Branch:  "main",
 		Files:   []model.FileChange{{Path: "base.txt", Content: []byte("base")}},
 		Message: "initial",
@@ -644,13 +661,14 @@ func TestRebase_CleanNoConflict(t *testing.T) {
 	}
 
 	// Create branch (base=1, head=1).
-	_, err = s.CreateBranch(ctx, model.CreateBranchRequest{Name: "feature/rebase"})
+	_, err = s.CreateBranch(ctx, model.CreateBranchRequest{Repo: "default", Name: "feature/rebase"})
 	if err != nil {
 		t.Fatalf("create branch: %v", err)
 	}
 
 	// Commit to branch (seq=2, adds "branch.txt").
 	_, err = s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
 		Branch:  "feature/rebase",
 		Files:   []model.FileChange{{Path: "branch.txt", Content: []byte("branch work")}},
 		Message: "branch commit",
@@ -662,6 +680,7 @@ func TestRebase_CleanNoConflict(t *testing.T) {
 
 	// Advance main (seq=3, adds "main.txt").
 	_, err = s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
 		Branch:  "main",
 		Files:   []model.FileChange{{Path: "main.txt", Content: []byte("main work")}},
 		Message: "main advance",
@@ -672,7 +691,7 @@ func TestRebase_CleanNoConflict(t *testing.T) {
 	}
 
 	// Rebase.
-	resp, conflicts, err := s.Rebase(ctx, model.RebaseRequest{Branch: "feature/rebase", Author: "bob"})
+	resp, conflicts, err := s.Rebase(ctx, model.RebaseRequest{Repo: "default", Branch: "feature/rebase", Author: "bob"})
 	if err != nil {
 		t.Fatalf("rebase: %v", err)
 	}
@@ -699,6 +718,7 @@ func TestRebase_UpdatesBaseSequence(t *testing.T) {
 	ctx := context.Background()
 
 	_, err := s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
 		Branch:  "main",
 		Files:   []model.FileChange{{Path: "a.txt", Content: []byte("a")}},
 		Message: "initial",
@@ -708,12 +728,13 @@ func TestRebase_UpdatesBaseSequence(t *testing.T) {
 		t.Fatalf("commit: %v", err)
 	}
 
-	_, err = s.CreateBranch(ctx, model.CreateBranchRequest{Name: "feature/base"})
+	_, err = s.CreateBranch(ctx, model.CreateBranchRequest{Repo: "default", Name: "feature/base"})
 	if err != nil {
 		t.Fatalf("create branch: %v", err)
 	}
 
 	_, err = s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
 		Branch:  "feature/base",
 		Files:   []model.FileChange{{Path: "b.txt", Content: []byte("b")}},
 		Message: "branch commit",
@@ -724,6 +745,7 @@ func TestRebase_UpdatesBaseSequence(t *testing.T) {
 	}
 
 	_, err = s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
 		Branch:  "main",
 		Files:   []model.FileChange{{Path: "c.txt", Content: []byte("c")}},
 		Message: "main advance",
@@ -743,7 +765,7 @@ func TestRebase_UpdatesBaseSequence(t *testing.T) {
 		t.Fatalf("expected main head 3, got %d", mainHead)
 	}
 
-	resp, _, err := s.Rebase(ctx, model.RebaseRequest{Branch: "feature/base"})
+	resp, _, err := s.Rebase(ctx, model.RebaseRequest{Repo: "default", Branch: "feature/base"})
 	if err != nil {
 		t.Fatalf("rebase: %v", err)
 	}
@@ -771,6 +793,7 @@ func TestRebase_ReplaysAllCommits(t *testing.T) {
 
 	// Commit to main (seq=1).
 	_, err := s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
 		Branch:  "main",
 		Files:   []model.FileChange{{Path: "a.txt", Content: []byte("a")}},
 		Message: "initial",
@@ -781,7 +804,7 @@ func TestRebase_ReplaysAllCommits(t *testing.T) {
 	}
 
 	// Create branch (base=1).
-	_, err = s.CreateBranch(ctx, model.CreateBranchRequest{Name: "feature/multi"})
+	_, err = s.CreateBranch(ctx, model.CreateBranchRequest{Repo: "default", Name: "feature/multi"})
 	if err != nil {
 		t.Fatalf("create branch: %v", err)
 	}
@@ -789,6 +812,7 @@ func TestRebase_ReplaysAllCommits(t *testing.T) {
 	// Three commits on branch: seq=2, 3, 4.
 	for i, file := range []string{"x.txt", "y.txt", "z.txt"} {
 		_, err = s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
 			Branch:  "feature/multi",
 			Files:   []model.FileChange{{Path: file, Content: []byte("content")}},
 			Message: "branch commit",
@@ -801,6 +825,7 @@ func TestRebase_ReplaysAllCommits(t *testing.T) {
 
 	// Advance main (seq=5).
 	_, err = s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
 		Branch:  "main",
 		Files:   []model.FileChange{{Path: "main.txt", Content: []byte("m")}},
 		Message: "main advance",
@@ -810,7 +835,7 @@ func TestRebase_ReplaysAllCommits(t *testing.T) {
 		t.Fatalf("main advance: %v", err)
 	}
 
-	resp, conflicts, err := s.Rebase(ctx, model.RebaseRequest{Branch: "feature/multi"})
+	resp, conflicts, err := s.Rebase(ctx, model.RebaseRequest{Repo: "default", Branch: "feature/multi"})
 	if err != nil {
 		t.Fatalf("rebase: %v", err)
 	}
@@ -849,6 +874,7 @@ func TestRebase_EmptyBranch(t *testing.T) {
 
 	// Commit to main (seq=1).
 	_, err := s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
 		Branch:  "main",
 		Files:   []model.FileChange{{Path: "a.txt", Content: []byte("a")}},
 		Message: "initial",
@@ -859,13 +885,14 @@ func TestRebase_EmptyBranch(t *testing.T) {
 	}
 
 	// Create branch (base=head=1, no commits on branch).
-	_, err = s.CreateBranch(ctx, model.CreateBranchRequest{Name: "feature/empty"})
+	_, err = s.CreateBranch(ctx, model.CreateBranchRequest{Repo: "default", Name: "feature/empty"})
 	if err != nil {
 		t.Fatalf("create branch: %v", err)
 	}
 
 	// Advance main (seq=2).
 	_, err = s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
 		Branch:  "main",
 		Files:   []model.FileChange{{Path: "b.txt", Content: []byte("b")}},
 		Message: "main advance",
@@ -875,7 +902,7 @@ func TestRebase_EmptyBranch(t *testing.T) {
 		t.Fatalf("main advance: %v", err)
 	}
 
-	resp, conflicts, err := s.Rebase(ctx, model.RebaseRequest{Branch: "feature/empty"})
+	resp, conflicts, err := s.Rebase(ctx, model.RebaseRequest{Repo: "default", Branch: "feature/empty"})
 	if err != nil {
 		t.Fatalf("rebase empty branch: %v", err)
 	}
@@ -907,6 +934,7 @@ func TestRebase_Conflict(t *testing.T) {
 
 	// Commit to main (seq=1).
 	_, err := s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
 		Branch:  "main",
 		Files:   []model.FileChange{{Path: "shared.txt", Content: []byte("original")}},
 		Message: "initial",
@@ -917,13 +945,14 @@ func TestRebase_Conflict(t *testing.T) {
 	}
 
 	// Create branch (base=1).
-	_, err = s.CreateBranch(ctx, model.CreateBranchRequest{Name: "feature/conflict"})
+	_, err = s.CreateBranch(ctx, model.CreateBranchRequest{Repo: "default", Name: "feature/conflict"})
 	if err != nil {
 		t.Fatalf("create branch: %v", err)
 	}
 
 	// Branch modifies shared.txt (seq=2).
 	_, err = s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
 		Branch:  "feature/conflict",
 		Files:   []model.FileChange{{Path: "shared.txt", Content: []byte("branch version")}},
 		Message: "branch edit",
@@ -935,6 +964,7 @@ func TestRebase_Conflict(t *testing.T) {
 
 	// Main also modifies shared.txt (seq=3).
 	_, err = s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
 		Branch:  "main",
 		Files:   []model.FileChange{{Path: "shared.txt", Content: []byte("main version")}},
 		Message: "main edit",
@@ -944,7 +974,7 @@ func TestRebase_Conflict(t *testing.T) {
 		t.Fatalf("main commit: %v", err)
 	}
 
-	_, conflicts, err := s.Rebase(ctx, model.RebaseRequest{Branch: "feature/conflict"})
+	_, conflicts, err := s.Rebase(ctx, model.RebaseRequest{Repo: "default", Branch: "feature/conflict"})
 	if err != ErrRebaseConflict {
 		t.Fatalf("expected ErrRebaseConflict, got %v", err)
 	}
@@ -963,6 +993,7 @@ func TestRebase_ConflictIsAtomic(t *testing.T) {
 
 	// Commit to main (seq=1).
 	_, err := s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
 		Branch:  "main",
 		Files:   []model.FileChange{{Path: "shared.txt", Content: []byte("original")}},
 		Message: "initial",
@@ -973,13 +1004,14 @@ func TestRebase_ConflictIsAtomic(t *testing.T) {
 	}
 
 	// Create branch (base=1).
-	_, err = s.CreateBranch(ctx, model.CreateBranchRequest{Name: "feature/atomic"})
+	_, err = s.CreateBranch(ctx, model.CreateBranchRequest{Repo: "default", Name: "feature/atomic"})
 	if err != nil {
 		t.Fatalf("create branch: %v", err)
 	}
 
 	// Two commits on branch: shared.txt (seq=2) and other.txt (seq=3).
 	_, err = s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
 		Branch:  "feature/atomic",
 		Files:   []model.FileChange{{Path: "shared.txt", Content: []byte("branch shared")}},
 		Message: "edit shared",
@@ -989,6 +1021,7 @@ func TestRebase_ConflictIsAtomic(t *testing.T) {
 		t.Fatalf("branch commit 1: %v", err)
 	}
 	_, err = s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
 		Branch:  "feature/atomic",
 		Files:   []model.FileChange{{Path: "other.txt", Content: []byte("other")}},
 		Message: "add other",
@@ -1000,6 +1033,7 @@ func TestRebase_ConflictIsAtomic(t *testing.T) {
 
 	// Main modifies shared.txt (seq=4).
 	_, err = s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
 		Branch:  "main",
 		Files:   []model.FileChange{{Path: "shared.txt", Content: []byte("main shared")}},
 		Message: "main edit",
@@ -1010,7 +1044,7 @@ func TestRebase_ConflictIsAtomic(t *testing.T) {
 	}
 
 	// Rebase should fail with conflict and branch should be unchanged.
-	_, _, err = s.Rebase(ctx, model.RebaseRequest{Branch: "feature/atomic"})
+	_, _, err = s.Rebase(ctx, model.RebaseRequest{Repo: "default", Branch: "feature/atomic"})
 	if err != ErrRebaseConflict {
 		t.Fatalf("expected ErrRebaseConflict, got %v", err)
 	}
@@ -1044,7 +1078,7 @@ func TestRebase_BranchNotFound(t *testing.T) {
 	s := NewStore(d)
 	ctx := context.Background()
 
-	_, _, err := s.Rebase(ctx, model.RebaseRequest{Branch: "nonexistent"})
+	_, _, err := s.Rebase(ctx, model.RebaseRequest{Repo: "default", Branch: "nonexistent"})
 	if err != ErrBranchNotFound {
 		t.Fatalf("expected ErrBranchNotFound, got %v", err)
 	}
@@ -1055,12 +1089,12 @@ func TestRebase_AlreadyMerged(t *testing.T) {
 	s := NewStore(d)
 	ctx := context.Background()
 
-	_, err := d.Exec("INSERT INTO branches (name, head_sequence, base_sequence, status) VALUES ('already-merged', 0, 0, 'merged')")
+	_, err := d.Exec("INSERT INTO branches (repo, name, head_sequence, base_sequence, status) VALUES ('default', 'already-merged', 0, 0, 'merged')")
 	if err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 
-	_, _, err = s.Rebase(ctx, model.RebaseRequest{Branch: "already-merged"})
+	_, _, err = s.Rebase(ctx, model.RebaseRequest{Repo: "default", Branch: "already-merged"})
 	if err != ErrBranchNotActive {
 		t.Fatalf("expected ErrBranchNotActive, got %v", err)
 	}
@@ -1071,7 +1105,7 @@ func TestRebase_MainBranch(t *testing.T) {
 	s := NewStore(d)
 	ctx := context.Background()
 
-	_, _, err := s.Rebase(ctx, model.RebaseRequest{Branch: "main"})
+	_, _, err := s.Rebase(ctx, model.RebaseRequest{Repo: "default", Branch: "main"})
 	if err != ErrBranchNotActive {
 		t.Fatalf("expected ErrBranchNotActive, got %v", err)
 	}
@@ -1084,6 +1118,7 @@ func TestRebase_ThenMerge(t *testing.T) {
 
 	// Commit to main (seq=1).
 	_, err := s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
 		Branch:  "main",
 		Files:   []model.FileChange{{Path: "base.txt", Content: []byte("base")}},
 		Message: "initial",
@@ -1094,13 +1129,14 @@ func TestRebase_ThenMerge(t *testing.T) {
 	}
 
 	// Create branch (base=1, head=1).
-	_, err = s.CreateBranch(ctx, model.CreateBranchRequest{Name: "feature/rebase-merge"})
+	_, err = s.CreateBranch(ctx, model.CreateBranchRequest{Repo: "default", Name: "feature/rebase-merge"})
 	if err != nil {
 		t.Fatalf("create branch: %v", err)
 	}
 
 	// Commit to branch (seq=2, adds "new.txt").
 	_, err = s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
 		Branch:  "feature/rebase-merge",
 		Files:   []model.FileChange{{Path: "new.txt", Content: []byte("new")}},
 		Message: "add new",
@@ -1112,6 +1148,7 @@ func TestRebase_ThenMerge(t *testing.T) {
 
 	// Advance main (seq=3, adds "other.txt" — no conflict with branch).
 	_, err = s.Commit(ctx, model.CommitRequest{
+		Repo:    "default",
 		Branch:  "main",
 		Files:   []model.FileChange{{Path: "other.txt", Content: []byte("other")}},
 		Message: "main advance",
@@ -1122,7 +1159,7 @@ func TestRebase_ThenMerge(t *testing.T) {
 	}
 
 	// Rebase (seq=4 for replayed branch commit).
-	rebaseResp, conflicts, err := s.Rebase(ctx, model.RebaseRequest{Branch: "feature/rebase-merge", Author: "bob"})
+	rebaseResp, conflicts, err := s.Rebase(ctx, model.RebaseRequest{Repo: "default", Branch: "feature/rebase-merge", Author: "bob"})
 	if err != nil {
 		t.Fatalf("rebase: %v", err)
 	}
@@ -1134,7 +1171,7 @@ func TestRebase_ThenMerge(t *testing.T) {
 	}
 
 	// Merge should now succeed cleanly (seq=5).
-	mergeResp, mergeConflicts, err := s.Merge(ctx, model.MergeRequest{Branch: "feature/rebase-merge", Author: "alice"})
+	mergeResp, mergeConflicts, err := s.Merge(ctx, model.MergeRequest{Repo: "default", Branch: "feature/rebase-merge", Author: "alice"})
 	if err != nil {
 		t.Fatalf("merge after rebase: %v", err)
 	}
@@ -1154,4 +1191,306 @@ func TestRebase_ThenMerge(t *testing.T) {
 	if count != 1 {
 		t.Errorf("expected new.txt on main after merge, got %d file_commits", count)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Repo CRUD tests
+// ---------------------------------------------------------------------------
+
+func TestCreateRepo_Success(t *testing.T) {
+	d := testutil.TestDB(t, MigrationSQL)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	r, err := s.CreateRepo(ctx, model.CreateRepoRequest{Name: "myrepo", CreatedBy: "alice"})
+	if err != nil {
+		t.Fatalf("CreateRepo: %v", err)
+	}
+	if r.Name != "myrepo" {
+		t.Errorf("expected name myrepo, got %q", r.Name)
+	}
+	if r.CreatedBy != "alice" {
+		t.Errorf("expected created_by alice, got %q", r.CreatedBy)
+	}
+
+	// main branch should exist for the new repo.
+	var status string
+	err = d.QueryRow("SELECT status FROM branches WHERE repo = 'myrepo' AND name = 'main'").Scan(&status)
+	if err != nil {
+		t.Fatalf("query main branch: %v", err)
+	}
+	if status != "active" {
+		t.Errorf("expected main branch to be active, got %q", status)
+	}
+}
+
+func TestCreateRepo_Duplicate(t *testing.T) {
+	d := testutil.TestDB(t, MigrationSQL)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	_, err := s.CreateRepo(ctx, model.CreateRepoRequest{Name: "dup"})
+	if err != nil {
+		t.Fatalf("first create: %v", err)
+	}
+
+	_, err = s.CreateRepo(ctx, model.CreateRepoRequest{Name: "dup"})
+	if err != ErrRepoExists {
+		t.Fatalf("expected ErrRepoExists, got %v", err)
+	}
+}
+
+func TestDeleteRepo_RemovesAllData(t *testing.T) {
+	d := testutil.TestDB(t, MigrationSQL)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	// Create a repo and add some data.
+	_, err := s.CreateRepo(ctx, model.CreateRepoRequest{Name: "todelete"})
+	if err != nil {
+		t.Fatalf("CreateRepo: %v", err)
+	}
+
+	_, err = s.Commit(ctx, model.CommitRequest{
+		Repo:    "todelete",
+		Branch:  "main",
+		Files:   []model.FileChange{{Path: "hello.txt", Content: []byte("hello")}},
+		Message: "initial",
+		Author:  "alice",
+	})
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	// Delete the repo.
+	if err := s.DeleteRepo(ctx, "todelete"); err != nil {
+		t.Fatalf("DeleteRepo: %v", err)
+	}
+
+	// All data should be gone.
+	for _, table := range []string{"branches", "commits", "file_commits", "documents"} {
+		var count int
+		err = d.QueryRow("SELECT count(*) FROM "+table+" WHERE repo = 'todelete'").Scan(&count)
+		if err != nil {
+			t.Fatalf("query %s: %v", table, err)
+		}
+		if count != 0 {
+			t.Errorf("expected 0 rows in %s for deleted repo, got %d", table, count)
+		}
+	}
+
+	// Repo row itself gone.
+	var exists bool
+	err = d.QueryRow("SELECT EXISTS(SELECT 1 FROM repos WHERE name = 'todelete')").Scan(&exists)
+	if err != nil {
+		t.Fatalf("query repos: %v", err)
+	}
+	if exists {
+		t.Error("expected repo row to be deleted")
+	}
+}
+
+func TestDeleteRepo_DoesNotAffectOtherRepo(t *testing.T) {
+	d := testutil.TestDB(t, MigrationSQL)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	// Create two repos and commit data to each.
+	for _, repo := range []string{"repo-a", "repo-b"} {
+		_, err := s.CreateRepo(ctx, model.CreateRepoRequest{Name: repo})
+		if err != nil {
+			t.Fatalf("CreateRepo %s: %v", repo, err)
+		}
+		_, err = s.Commit(ctx, model.CommitRequest{
+			Repo:    repo,
+			Branch:  "main",
+			Files:   []model.FileChange{{Path: "f.txt", Content: []byte(repo)}},
+			Message: "init",
+			Author:  "alice",
+		})
+		if err != nil {
+			t.Fatalf("Commit %s: %v", repo, err)
+		}
+	}
+
+	// Delete repo-a.
+	if err := s.DeleteRepo(ctx, "repo-a"); err != nil {
+		t.Fatalf("DeleteRepo: %v", err)
+	}
+
+	// repo-b's data should be intact.
+	var count int
+	err := d.QueryRow("SELECT count(*) FROM file_commits WHERE repo = 'repo-b'").Scan(&count)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 file_commit in repo-b, got %d", count)
+	}
+}
+
+func TestDeleteRepo_NotFound(t *testing.T) {
+	d := testutil.TestDB(t, MigrationSQL)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	err := s.DeleteRepo(ctx, "nonexistent")
+	if err != ErrRepoNotFound {
+		t.Fatalf("expected ErrRepoNotFound, got %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Repo isolation tests
+// ---------------------------------------------------------------------------
+
+func TestRepoIsolation_Branches(t *testing.T) {
+	d := testutil.TestDB(t, MigrationSQL)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	// Create two repos.
+	for _, repo := range []string{"repo-x", "repo-y"} {
+		if _, err := s.CreateRepo(ctx, model.CreateRepoRequest{Name: repo}); err != nil {
+			t.Fatalf("CreateRepo %s: %v", repo, err)
+		}
+	}
+
+	// Both repos can have a branch named "feature/shared".
+	for _, repo := range []string{"repo-x", "repo-y"} {
+		_, err := s.CreateBranch(ctx, model.CreateBranchRequest{Repo: repo, Name: "feature/shared"})
+		if err != nil {
+			t.Fatalf("CreateBranch %s: %v", repo, err)
+		}
+	}
+
+	// Commit to one repo's branch.
+	_, err := s.Commit(ctx, model.CommitRequest{
+		Repo:    "repo-x",
+		Branch:  "feature/shared",
+		Files:   []model.FileChange{{Path: "x-only.txt", Content: []byte("x")}},
+		Message: "x commit",
+		Author:  "alice",
+	})
+	if err != nil {
+		t.Fatalf("Commit repo-x: %v", err)
+	}
+
+	// The other repo's branch should have no commits.
+	var count int
+	err = d.QueryRow("SELECT count(*) FROM file_commits WHERE repo = 'repo-y' AND branch = 'feature/shared'").Scan(&count)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected 0 file_commits in repo-y/feature/shared, got %d", count)
+	}
+}
+
+func TestRepoIsolation_Commits(t *testing.T) {
+	d := testutil.TestDB(t, MigrationSQL)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	for _, repo := range []string{"iso-a", "iso-b"} {
+		if _, err := s.CreateRepo(ctx, model.CreateRepoRequest{Name: repo}); err != nil {
+			t.Fatalf("CreateRepo %s: %v", repo, err)
+		}
+	}
+
+	// Commit unique content to each repo.
+	_, err := s.Commit(ctx, model.CommitRequest{
+		Repo:    "iso-a",
+		Branch:  "main",
+		Files:   []model.FileChange{{Path: "a.txt", Content: []byte("a only")}},
+		Message: "a init",
+		Author:  "alice",
+	})
+	if err != nil {
+		t.Fatalf("Commit iso-a: %v", err)
+	}
+
+	_, err = s.Commit(ctx, model.CommitRequest{
+		Repo:    "iso-b",
+		Branch:  "main",
+		Files:   []model.FileChange{{Path: "b.txt", Content: []byte("b only")}},
+		Message: "b init",
+		Author:  "bob",
+	})
+	if err != nil {
+		t.Fatalf("Commit iso-b: %v", err)
+	}
+
+	// repo-a should only see a.txt, not b.txt.
+	var aCount, bCount int
+	if err := d.QueryRow("SELECT count(*) FROM file_commits WHERE repo = 'iso-a' AND path = 'b.txt'").Scan(&bCount); err != nil {
+		t.Fatal(err)
+	}
+	if bCount != 0 {
+		t.Errorf("expected b.txt absent in iso-a, got %d rows", bCount)
+	}
+
+	if err := d.QueryRow("SELECT count(*) FROM file_commits WHERE repo = 'iso-b' AND path = 'a.txt'").Scan(&aCount); err != nil {
+		t.Fatal(err)
+	}
+	if aCount != 0 {
+		t.Errorf("expected a.txt absent in iso-b, got %d rows", aCount)
+	}
+}
+
+func TestRepoIsolation_Merge(t *testing.T) {
+	d := testutil.TestDB(t, MigrationSQL)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	for _, repo := range []string{"merge-a", "merge-b"} {
+		if _, err := s.CreateRepo(ctx, model.CreateRepoRequest{Name: repo}); err != nil {
+			t.Fatalf("CreateRepo %s: %v", repo, err)
+		}
+	}
+
+	// Set up a branch with a change in merge-a only.
+	_, err := s.CreateBranch(ctx, model.CreateBranchRequest{Repo: "merge-a", Name: "feature/x"})
+	if err != nil {
+		t.Fatalf("CreateBranch: %v", err)
+	}
+	_, err = s.Commit(ctx, model.CommitRequest{
+		Repo:    "merge-a",
+		Branch:  "feature/x",
+		Files:   []model.FileChange{{Path: "new.txt", Content: []byte("new")}},
+		Message: "add new",
+		Author:  "alice",
+	})
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	// Merge in merge-a.
+	resp, conflicts, err := s.Merge(ctx, model.MergeRequest{Repo: "merge-a", Branch: "feature/x", Author: "alice"})
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	if conflicts != nil {
+		t.Fatalf("unexpected conflicts: %v", conflicts)
+	}
+
+	// merge-b's main should have no file_commits from the merge.
+	var bMainCount int
+	if err := d.QueryRow("SELECT count(*) FROM file_commits WHERE repo = 'merge-b' AND branch = 'main'").Scan(&bMainCount); err != nil {
+		t.Fatal(err)
+	}
+	if bMainCount != 0 {
+		t.Errorf("expected 0 file_commits on merge-b main, got %d", bMainCount)
+	}
+
+	// merge-a's main should have the merged file.
+	var aMainCount int
+	if err := d.QueryRow("SELECT count(*) FROM file_commits WHERE repo = 'merge-a' AND branch = 'main' AND path = 'new.txt'").Scan(&aMainCount); err != nil {
+		t.Fatal(err)
+	}
+	if aMainCount != 1 {
+		t.Errorf("expected 1 file_commit for new.txt on merge-a main, got %d", aMainCount)
+	}
+
+	_ = resp
 }
