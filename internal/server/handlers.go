@@ -289,13 +289,8 @@ func (s *server) handleRebase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Use X-DocStore-Identity header if Author not set in body.
-	if req.Author == "" {
-		req.Author = r.Header.Get("X-DocStore-Identity")
-	}
-	if req.Author == "" {
-		req.Author = "system"
-	}
+	// Author always comes from the authenticated identity; body value is ignored.
+	req.Author = IdentityFromContext(r.Context())
 
 	resp, conflicts, err := s.commitStore.Rebase(r.Context(), req)
 	if err != nil {
@@ -340,13 +335,8 @@ func (s *server) handleMerge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Use X-DocStore-Identity header if Author not set in body.
-	if req.Author == "" {
-		req.Author = r.Header.Get("X-DocStore-Identity")
-	}
-	if req.Author == "" {
-		req.Author = "system"
-	}
+	// Author always comes from the authenticated identity; body value is ignored.
+	req.Author = IdentityFromContext(r.Context())
 
 	resp, conflicts, err := s.commitStore.Merge(r.Context(), req)
 	if err != nil {

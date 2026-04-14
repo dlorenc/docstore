@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log"
 	"net/http"
 	"os"
@@ -16,6 +17,18 @@ import (
 )
 
 func main() {
+	devIdentity := flag.String("dev-identity", "", "bypass IAP JWT validation and use this identity (local dev/testing only)")
+	flag.Parse()
+
+	// Also accept DEV_IDENTITY env var for container-based testing (e.g. smoke tests).
+	if *devIdentity == "" {
+		*devIdentity = os.Getenv("DEV_IDENTITY")
+	}
+
+	if *devIdentity != "" {
+		log.Printf("WARNING: IAP JWT validation disabled; using dev identity %q", *devIdentity)
+	}
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
@@ -37,7 +50,7 @@ func main() {
 	}
 
 	commitStore := db.NewStore(database)
-	srv := server.New(commitStore, database)
+	srv := server.New(commitStore, database, *devIdentity)
 
 	httpServer := &http.Server{
 		Addr:         ":" + port,
