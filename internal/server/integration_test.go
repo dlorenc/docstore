@@ -26,16 +26,23 @@ func seed(t *testing.T, db *sql.DB) {
 		 VALUES ('aaaaaaaa-0000-0000-0000-000000000003', 'world.txt', 'the world', 'hash_world_v1', 'bob')`,
 		`INSERT INTO documents (version_id, path, content, content_hash, created_by)
 		 VALUES ('aaaaaaaa-0000-0000-0000-000000000004', 'deleted.txt', 'gone soon', 'hash_deleted_v1', 'alice')`,
-		`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch, message, author)
-		 VALUES ('cccccccc-0000-0000-0000-000000000001', 1, 'hello.txt', 'aaaaaaaa-0000-0000-0000-000000000001', 'main', 'initial commit', 'alice')`,
-		`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch, message, author)
-		 VALUES ('cccccccc-0000-0000-0000-000000000002', 1, 'world.txt', 'aaaaaaaa-0000-0000-0000-000000000003', 'main', 'initial commit', 'alice')`,
-		`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch, message, author)
-		 VALUES ('cccccccc-0000-0000-0000-000000000003', 2, 'hello.txt', 'aaaaaaaa-0000-0000-0000-000000000002', 'main', 'update hello', 'alice')`,
-		`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch, message, author)
-		 VALUES ('cccccccc-0000-0000-0000-000000000004', 3, 'deleted.txt', 'aaaaaaaa-0000-0000-0000-000000000004', 'main', 'add deleted', 'bob')`,
-		`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch, message, author)
-		 VALUES ('cccccccc-0000-0000-0000-000000000005', 4, 'deleted.txt', NULL, 'main', 'remove deleted', 'bob')`,
+		// Insert commits rows for global sequence allocation.
+		`INSERT INTO commits (sequence, branch, message, author) OVERRIDING SYSTEM VALUE VALUES
+		 (1, 'main', 'initial commit', 'alice'),
+		 (2, 'main', 'update hello',   'alice'),
+		 (3, 'main', 'add deleted',    'bob'),
+		 (4, 'main', 'remove deleted', 'bob')`,
+		`SELECT setval('commits_sequence_seq', 4, true)`,
+		`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch)
+		 VALUES ('cccccccc-0000-0000-0000-000000000001', 1, 'hello.txt', 'aaaaaaaa-0000-0000-0000-000000000001', 'main')`,
+		`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch)
+		 VALUES ('cccccccc-0000-0000-0000-000000000002', 1, 'world.txt', 'aaaaaaaa-0000-0000-0000-000000000003', 'main')`,
+		`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch)
+		 VALUES ('cccccccc-0000-0000-0000-000000000003', 2, 'hello.txt', 'aaaaaaaa-0000-0000-0000-000000000002', 'main')`,
+		`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch)
+		 VALUES ('cccccccc-0000-0000-0000-000000000004', 3, 'deleted.txt', 'aaaaaaaa-0000-0000-0000-000000000004', 'main')`,
+		`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch)
+		 VALUES ('cccccccc-0000-0000-0000-000000000005', 4, 'deleted.txt', NULL, 'main')`,
 		`UPDATE branches SET head_sequence = 4 WHERE name = 'main'`,
 	}
 
@@ -221,8 +228,11 @@ func TestIntegrationDiffEndpoint(t *testing.T) {
 		`INSERT INTO branches (name, head_sequence, base_sequence, status) VALUES ('feature/diff', 5, 2, 'active')`,
 		`INSERT INTO documents (version_id, path, content, content_hash, created_by)
 		 VALUES ('aaaaaaaa-0000-0000-0000-000000000010', 'new.txt', 'new file', 'hash_new', 'carol')`,
-		`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch, message, author)
-		 VALUES ('cccccccc-0000-0000-0000-000000000010', 5, 'new.txt', 'aaaaaaaa-0000-0000-0000-000000000010', 'feature/diff', 'add new', 'carol')`,
+		`INSERT INTO commits (sequence, branch, message, author) OVERRIDING SYSTEM VALUE VALUES
+		 (5, 'feature/diff', 'add new', 'carol')`,
+		`SELECT setval('commits_sequence_seq', 5, true)`,
+		`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch)
+		 VALUES ('cccccccc-0000-0000-0000-000000000010', 5, 'new.txt', 'aaaaaaaa-0000-0000-0000-000000000010', 'feature/diff')`,
 	}
 	for _, stmt := range stmts {
 		if _, err := database.Exec(stmt); err != nil {

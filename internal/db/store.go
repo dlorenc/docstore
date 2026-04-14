@@ -66,7 +66,16 @@ func (s *Store) Commit(ctx context.Context, req model.CommitRequest) (*model.Com
 		return nil, ErrBranchNotActive
 	}
 
-	newSeq := headSeq + 1
+	// Allocate a globally monotonic sequence by inserting into commits.
+	var newSeq int64
+	err = tx.QueryRowContext(ctx,
+		`INSERT INTO commits (branch, message, author) VALUES ($1, $2, $3) RETURNING sequence`,
+		req.Branch, req.Message, req.Author,
+	).Scan(&newSeq)
+	if err != nil {
+		return nil, fmt.Errorf("insert commit: %w", err)
+	}
+
 	results := make([]model.CommitFileResult, 0, len(req.Files))
 
 	for _, f := range req.Files {
@@ -105,9 +114,9 @@ func (s *Store) Commit(ctx context.Context, req model.CommitRequest) (*model.Com
 
 		commitID := uuid.New().String()
 		_, err = tx.ExecContext(ctx,
-			`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch, message, author, created_at)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, now())`,
-			commitID, newSeq, f.Path, versionIDPtr, req.Branch, req.Message, req.Author,
+			`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch)
+			 VALUES ($1, $2, $3, $4, $5)`,
+			commitID, newSeq, f.Path, versionIDPtr, req.Branch,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("insert file_commit: %w", err)
@@ -259,19 +268,26 @@ func (s *Store) Merge(ctx context.Context, req model.MergeRequest) (*model.Merge
 		return nil, conflicts, ErrMergeConflict
 	}
 
-	// Step 4: No conflicts — insert new file_commits on main for each branch-changed path.
-	newSeq := mainHead + 1
+	// Step 4: No conflicts — allocate a global sequence for the merge commit,
+	// then insert file_commits rows on main for each branch-changed path.
+	var newSeq int64
+	err = tx.QueryRowContext(ctx,
+		`INSERT INTO commits (branch, message, author) VALUES ('main', $1, $2) RETURNING sequence`,
+		fmt.Sprintf("merge branch '%s'", req.Branch), req.Author,
+	).Scan(&newSeq)
+	if err != nil {
+		return nil, nil, fmt.Errorf("insert merge commit: %w", err)
+	}
 
 	for path, versionID := range branchChanges {
 		commitID := uuid.New().String()
 		_, err = tx.ExecContext(ctx,
-			`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch, message, author, created_at)
-			 VALUES ($1, $2, $3, $4, 'main', $5, $6, now())`,
+			`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch)
+			 VALUES ($1, $2, $3, $4, 'main')`,
 			commitID, newSeq, path, versionID,
-			fmt.Sprintf("merge branch '%s'", req.Branch), req.Author,
 		)
 		if err != nil {
-			return nil, nil, fmt.Errorf("insert merge commit: %w", err)
+			return nil, nil, fmt.Errorf("insert file_commit: %w", err)
 		}
 	}
 
