@@ -18,7 +18,7 @@ func newRealServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	database := testutil.TestDB(t, dbpkg.MigrationSQL)
 	writeStore := dbpkg.NewStore(database)
-	handler := server.New(writeStore, database)
+	handler := server.New(writeStore, database, "test@example.com")
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 	return srv

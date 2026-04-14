@@ -54,8 +54,12 @@ func (m *mockStore) Rebase(ctx context.Context, req model.RebaseRequest) (*model
 	return nil, nil, errors.New("not implemented")
 }
 
+// devID is the dev identity used in handler unit tests.
+const devID = "test@example.com"
+
 func TestHealthEndpoint(t *testing.T) {
-	srv := New(nil, nil)
+	// /healthz is exempt from IAP auth, so devIdentity="" is fine here.
+	srv := New(nil, nil, "")
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
@@ -75,7 +79,7 @@ func TestHealthEndpoint(t *testing.T) {
 }
 
 func TestNotImplementedEndpoints(t *testing.T) {
-	srv := New(nil, nil)
+	srv := New(nil, nil, devID)
 
 	endpoints := []struct {
 		method string
@@ -109,19 +113,21 @@ func TestHandleCommit_Success(t *testing.T) {
 			if len(req.Files) != 1 {
 				t.Errorf("expected 1 file, got %d", len(req.Files))
 			}
+			if req.Author != devID {
+				t.Errorf("expected author %q from context, got %q", devID, req.Author)
+			}
 			return &model.CommitResponse{
 				Sequence: 1,
 				Files:    []model.CommitFileResult{{Path: "hello.txt", VersionID: &vid}},
 			}, nil
 		},
 	}
-	srv := New(store, nil)
+	srv := New(store, nil, devID)
 
 	body, _ := json.Marshal(model.CommitRequest{
 		Branch:  "main",
 		Files:   []model.FileChange{{Path: "hello.txt", Content: []byte("hello")}},
 		Message: "initial commit",
-		Author:  "alice@example.com",
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/commit", bytes.NewReader(body))
@@ -150,17 +156,16 @@ func TestHandleCommit_ValidationErrors(t *testing.T) {
 			t.Fatal("store should not be called on validation error")
 			return nil, nil
 		},
-	}, nil)
+	}, nil, devID)
 
 	tests := []struct {
 		name string
 		body model.CommitRequest
 	}{
-		{"missing branch", model.CommitRequest{Files: []model.FileChange{{Path: "a.txt", Content: []byte("x")}}, Message: "m", Author: "a"}},
-		{"missing files", model.CommitRequest{Branch: "main", Message: "m", Author: "a"}},
-		{"missing message", model.CommitRequest{Branch: "main", Files: []model.FileChange{{Path: "a.txt", Content: []byte("x")}}, Author: "a"}},
-		{"missing author", model.CommitRequest{Branch: "main", Files: []model.FileChange{{Path: "a.txt", Content: []byte("x")}}, Message: "m"}},
-		{"empty file path", model.CommitRequest{Branch: "main", Files: []model.FileChange{{Path: "", Content: []byte("x")}}, Message: "m", Author: "a"}},
+		{"missing branch", model.CommitRequest{Files: []model.FileChange{{Path: "a.txt", Content: []byte("x")}}, Message: "m"}},
+		{"missing files", model.CommitRequest{Branch: "main", Message: "m"}},
+		{"missing message", model.CommitRequest{Branch: "main", Files: []model.FileChange{{Path: "a.txt", Content: []byte("x")}}}},
+		{"empty file path", model.CommitRequest{Branch: "main", Files: []model.FileChange{{Path: "", Content: []byte("x")}}, Message: "m"}},
 	}
 
 	for _, tt := range tests {
@@ -183,13 +188,12 @@ func TestHandleCommit_BranchNotFound(t *testing.T) {
 			return nil, db.ErrBranchNotFound
 		},
 	}
-	srv := New(store, nil)
+	srv := New(store, nil, devID)
 
 	body, _ := json.Marshal(model.CommitRequest{
 		Branch:  "nonexistent",
 		Files:   []model.FileChange{{Path: "a.txt", Content: []byte("x")}},
 		Message: "m",
-		Author:  "a",
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/commit", bytes.NewReader(body))
@@ -207,13 +211,12 @@ func TestHandleCommit_BranchNotActive(t *testing.T) {
 			return nil, db.ErrBranchNotActive
 		},
 	}
-	srv := New(store, nil)
+	srv := New(store, nil, devID)
 
 	body, _ := json.Marshal(model.CommitRequest{
 		Branch:  "merged-branch",
 		Files:   []model.FileChange{{Path: "a.txt", Content: []byte("x")}},
 		Message: "m",
-		Author:  "a",
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/commit", bytes.NewReader(body))
@@ -231,13 +234,12 @@ func TestHandleCommit_InternalError(t *testing.T) {
 			return nil, errors.New("something went wrong")
 		},
 	}
-	srv := New(store, nil)
+	srv := New(store, nil, devID)
 
 	body, _ := json.Marshal(model.CommitRequest{
 		Branch:  "main",
 		Files:   []model.FileChange{{Path: "a.txt", Content: []byte("x")}},
 		Message: "m",
-		Author:  "a",
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/commit", bytes.NewReader(body))
@@ -255,7 +257,7 @@ func TestHandleCommit_InvalidJSON(t *testing.T) {
 			t.Fatal("store should not be called on invalid JSON")
 			return nil, nil
 		},
-	}, nil)
+	}, nil, devID)
 
 	req := httptest.NewRequest(http.MethodPost, "/commit", bytes.NewReader([]byte("not json")))
 	rec := httptest.NewRecorder()
@@ -274,7 +276,7 @@ func TestHandleCreateBranch_Success(t *testing.T) {
 			return &model.CreateBranchResponse{Name: req.Name, BaseSequence: 5}, nil
 		},
 	}
-	srv := New(store, nil)
+	srv := New(store, nil, devID)
 
 	body, _ := json.Marshal(model.CreateBranchRequest{Name: "feature/test"})
 	req := httptest.NewRequest(http.MethodPost, "/branch", bytes.NewReader(body))
@@ -298,7 +300,7 @@ func TestHandleCreateBranch_Success(t *testing.T) {
 }
 
 func TestHandleCreateBranch_MissingName(t *testing.T) {
-	srv := New(&mockStore{}, nil)
+	srv := New(&mockStore{}, nil, devID)
 
 	body, _ := json.Marshal(model.CreateBranchRequest{Name: ""})
 	req := httptest.NewRequest(http.MethodPost, "/branch", bytes.NewReader(body))
@@ -311,7 +313,7 @@ func TestHandleCreateBranch_MissingName(t *testing.T) {
 }
 
 func TestHandleCreateBranch_CannotCreateMain(t *testing.T) {
-	srv := New(&mockStore{}, nil)
+	srv := New(&mockStore{}, nil, devID)
 
 	body, _ := json.Marshal(model.CreateBranchRequest{Name: "main"})
 	req := httptest.NewRequest(http.MethodPost, "/branch", bytes.NewReader(body))
@@ -329,7 +331,7 @@ func TestHandleCreateBranch_AlreadyExists(t *testing.T) {
 			return nil, db.ErrBranchExists
 		},
 	}
-	srv := New(store, nil)
+	srv := New(store, nil, devID)
 
 	body, _ := json.Marshal(model.CreateBranchRequest{Name: "feature/exists"})
 	req := httptest.NewRequest(http.MethodPost, "/branch", bytes.NewReader(body))
@@ -349,7 +351,7 @@ func TestHandleMerge_Success(t *testing.T) {
 			return &model.MergeResponse{Sequence: 10}, nil, nil
 		},
 	}
-	srv := New(store, nil)
+	srv := New(store, nil, devID)
 
 	body, _ := json.Marshal(model.MergeRequest{Branch: "feature/test"})
 	req := httptest.NewRequest(http.MethodPost, "/merge", bytes.NewReader(body))
@@ -370,7 +372,7 @@ func TestHandleMerge_Success(t *testing.T) {
 }
 
 func TestHandleMerge_MissingBranch(t *testing.T) {
-	srv := New(&mockStore{}, nil)
+	srv := New(&mockStore{}, nil, devID)
 
 	body, _ := json.Marshal(model.MergeRequest{Branch: ""})
 	req := httptest.NewRequest(http.MethodPost, "/merge", bytes.NewReader(body))
@@ -390,7 +392,7 @@ func TestHandleMerge_Conflict(t *testing.T) {
 			}, db.ErrMergeConflict
 		},
 	}
-	srv := New(store, nil)
+	srv := New(store, nil, devID)
 
 	body, _ := json.Marshal(model.MergeRequest{Branch: "feature/conflict"})
 	req := httptest.NewRequest(http.MethodPost, "/merge", bytes.NewReader(body))
@@ -419,7 +421,7 @@ func TestHandleMerge_BranchNotFound(t *testing.T) {
 			return nil, nil, db.ErrBranchNotFound
 		},
 	}
-	srv := New(store, nil)
+	srv := New(store, nil, devID)
 
 	body, _ := json.Marshal(model.MergeRequest{Branch: "nonexistent"})
 	req := httptest.NewRequest(http.MethodPost, "/merge", bytes.NewReader(body))
@@ -432,7 +434,7 @@ func TestHandleMerge_BranchNotFound(t *testing.T) {
 }
 
 func TestHandleMerge_CannotMergeMain(t *testing.T) {
-	srv := New(&mockStore{}, nil)
+	srv := New(&mockStore{}, nil, devID)
 
 	body, _ := json.Marshal(model.MergeRequest{Branch: "main"})
 	req := httptest.NewRequest(http.MethodPost, "/merge", bytes.NewReader(body))
@@ -444,7 +446,10 @@ func TestHandleMerge_CannotMergeMain(t *testing.T) {
 	}
 }
 
-func TestHandleMerge_AuthorFromHeader(t *testing.T) {
+// TestHandleMerge_AuthorFromIdentity verifies that the authenticated identity
+// is always used as the merge author, regardless of what is in the request body.
+func TestHandleMerge_AuthorFromIdentity(t *testing.T) {
+	const identity = "alice@example.com"
 	var capturedAuthor string
 	store := &mockStore{
 		mergeFn: func(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error) {
@@ -452,58 +457,10 @@ func TestHandleMerge_AuthorFromHeader(t *testing.T) {
 			return &model.MergeResponse{Sequence: 1}, nil, nil
 		},
 	}
-	srv := New(store, nil)
+	srv := New(store, nil, identity)
 
-	body, _ := json.Marshal(model.MergeRequest{Branch: "feature/test"})
-	req := httptest.NewRequest(http.MethodPost, "/merge", bytes.NewReader(body))
-	req.Header.Set("X-DocStore-Identity", "alice@example.com")
-	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
-	}
-	if capturedAuthor != "alice@example.com" {
-		t.Errorf("expected author alice@example.com, got %q", capturedAuthor)
-	}
-}
-
-func TestHandleMerge_AuthorFromBody(t *testing.T) {
-	var capturedAuthor string
-	store := &mockStore{
-		mergeFn: func(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error) {
-			capturedAuthor = req.Author
-			return &model.MergeResponse{Sequence: 1}, nil, nil
-		},
-	}
-	srv := New(store, nil)
-
-	body, _ := json.Marshal(model.MergeRequest{Branch: "feature/test", Author: "bob@example.com"})
-	req := httptest.NewRequest(http.MethodPost, "/merge", bytes.NewReader(body))
-	req.Header.Set("X-DocStore-Identity", "alice@example.com")
-	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
-	}
-	// Body author takes precedence over header.
-	if capturedAuthor != "bob@example.com" {
-		t.Errorf("expected author bob@example.com, got %q", capturedAuthor)
-	}
-}
-
-func TestHandleMerge_DefaultAuthorSystem(t *testing.T) {
-	var capturedAuthor string
-	store := &mockStore{
-		mergeFn: func(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error) {
-			capturedAuthor = req.Author
-			return &model.MergeResponse{Sequence: 1}, nil, nil
-		},
-	}
-	srv := New(store, nil)
-
-	body, _ := json.Marshal(model.MergeRequest{Branch: "feature/test"})
+	// Send a different author in the body — it must be overridden by the identity.
+	body, _ := json.Marshal(model.MergeRequest{Branch: "feature/test", Author: "ignored@example.com"})
 	req := httptest.NewRequest(http.MethodPost, "/merge", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
@@ -511,8 +468,8 @@ func TestHandleMerge_DefaultAuthorSystem(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
 	}
-	if capturedAuthor != "system" {
-		t.Errorf("expected default author 'system', got %q", capturedAuthor)
+	if capturedAuthor != identity {
+		t.Errorf("expected author %q from identity, got %q", identity, capturedAuthor)
 	}
 }
 
@@ -527,7 +484,7 @@ func TestHandleDeleteBranch_Success(t *testing.T) {
 			return nil
 		},
 	}
-	srv := New(store, nil)
+	srv := New(store, nil, devID)
 
 	req := httptest.NewRequest(http.MethodDelete, "/branch/feature/delete-me", nil)
 	rec := httptest.NewRecorder()
@@ -539,7 +496,7 @@ func TestHandleDeleteBranch_Success(t *testing.T) {
 }
 
 func TestHandleDeleteBranch_CannotDeleteMain(t *testing.T) {
-	srv := New(&mockStore{}, nil)
+	srv := New(&mockStore{}, nil, devID)
 
 	req := httptest.NewRequest(http.MethodDelete, "/branch/main", nil)
 	rec := httptest.NewRecorder()
@@ -556,7 +513,7 @@ func TestHandleDeleteBranch_NotFound(t *testing.T) {
 			return db.ErrBranchNotFound
 		},
 	}
-	srv := New(store, nil)
+	srv := New(store, nil, devID)
 
 	req := httptest.NewRequest(http.MethodDelete, "/branch/nonexistent", nil)
 	rec := httptest.NewRecorder()
@@ -573,7 +530,7 @@ func TestHandleDeleteBranch_AlreadyMerged(t *testing.T) {
 			return db.ErrBranchNotActive
 		},
 	}
-	srv := New(store, nil)
+	srv := New(store, nil, devID)
 
 	req := httptest.NewRequest(http.MethodDelete, "/branch/merged-branch", nil)
 	rec := httptest.NewRecorder()
@@ -590,7 +547,7 @@ func TestHandleDeleteBranch_AlreadyAbandoned(t *testing.T) {
 			return db.ErrBranchNotActive
 		},
 	}
-	srv := New(store, nil)
+	srv := New(store, nil, devID)
 
 	req := httptest.NewRequest(http.MethodDelete, "/branch/abandoned-branch", nil)
 	rec := httptest.NewRecorder()
@@ -616,7 +573,7 @@ func TestHandleRebase_Success(t *testing.T) {
 			}, nil, nil
 		},
 	}
-	srv := New(store, nil)
+	srv := New(store, nil, devID)
 
 	body, _ := json.Marshal(model.RebaseRequest{Branch: "feature/test"})
 	req := httptest.NewRequest(http.MethodPost, "/rebase", bytes.NewReader(body))
@@ -650,7 +607,7 @@ func TestHandleRebase_Conflict(t *testing.T) {
 			}, db.ErrRebaseConflict
 		},
 	}
-	srv := New(store, nil)
+	srv := New(store, nil, devID)
 
 	body, _ := json.Marshal(model.RebaseRequest{Branch: "feature/conflict"})
 	req := httptest.NewRequest(http.MethodPost, "/rebase", bytes.NewReader(body))
@@ -679,7 +636,7 @@ func TestHandleRebase_BranchNotFound(t *testing.T) {
 			return nil, nil, db.ErrBranchNotFound
 		},
 	}
-	srv := New(store, nil)
+	srv := New(store, nil, devID)
 
 	body, _ := json.Marshal(model.RebaseRequest{Branch: "nonexistent"})
 	req := httptest.NewRequest(http.MethodPost, "/rebase", bytes.NewReader(body))
@@ -692,7 +649,7 @@ func TestHandleRebase_BranchNotFound(t *testing.T) {
 }
 
 func TestHandleRebase_CannotRebaseMain(t *testing.T) {
-	srv := New(&mockStore{}, nil)
+	srv := New(&mockStore{}, nil, devID)
 
 	body, _ := json.Marshal(model.RebaseRequest{Branch: "main"})
 	req := httptest.NewRequest(http.MethodPost, "/rebase", bytes.NewReader(body))
@@ -710,7 +667,7 @@ func TestHandleRebase_BranchNotActive(t *testing.T) {
 			return nil, nil, db.ErrBranchNotActive
 		},
 	}
-	srv := New(store, nil)
+	srv := New(store, nil, devID)
 
 	body, _ := json.Marshal(model.RebaseRequest{Branch: "merged-branch"})
 	req := httptest.NewRequest(http.MethodPost, "/rebase", bytes.NewReader(body))
