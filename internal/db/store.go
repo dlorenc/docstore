@@ -10,6 +10,7 @@ import (
 
 	"github.com/dlorenc/docstore/internal/model"
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 var (
@@ -190,6 +191,15 @@ func (s *Store) Merge(ctx context.Context, req model.MergeRequest) (*model.Merge
 	}
 	defer tx.Rollback()
 
+	// Lock main first, then source branch — consistent ordering prevents deadlocks.
+	var mainHead int64
+	err = tx.QueryRowContext(ctx,
+		"SELECT head_sequence FROM branches WHERE name = 'main' FOR UPDATE",
+	).Scan(&mainHead)
+	if err != nil {
+		return nil, nil, fmt.Errorf("lock main: %w", err)
+	}
+
 	// Lock the source branch.
 	var branchHead, baseSeq int64
 	var branchStatus string
@@ -205,15 +215,6 @@ func (s *Store) Merge(ctx context.Context, req model.MergeRequest) (*model.Merge
 	}
 	if branchStatus != "active" {
 		return nil, nil, ErrBranchNotActive
-	}
-
-	// Lock main.
-	var mainHead int64
-	err = tx.QueryRowContext(ctx,
-		"SELECT head_sequence FROM branches WHERE name = 'main' FOR UPDATE",
-	).Scan(&mainHead)
-	if err != nil {
-		return nil, nil, fmt.Errorf("lock main: %w", err)
 	}
 
 	// Step 1: Find the latest version of each path changed on the branch since base_sequence.
@@ -267,7 +268,7 @@ func (s *Store) Merge(ctx context.Context, req model.MergeRequest) (*model.Merge
 			`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch, message, author, created_at)
 			 VALUES ($1, $2, $3, $4, 'main', $5, $6, now())`,
 			commitID, newSeq, path, versionID,
-			fmt.Sprintf("merge branch '%s'", req.Branch), "system",
+			fmt.Sprintf("merge branch '%s'", req.Branch), req.Author,
 		)
 		if err != nil {
 			return nil, nil, fmt.Errorf("insert merge commit: %w", err)
@@ -340,22 +341,9 @@ func nullStr(s *string) string {
 
 // isDuplicateKeyError checks if a PostgreSQL error is a unique violation (23505).
 func isDuplicateKeyError(err error) bool {
-	if err == nil {
-		return false
-	}
-	// pq library returns *pq.Error with Code "23505" for unique_violation.
-	return fmt.Sprintf("%v", err) != "" && contains23505(err.Error())
-}
-
-func contains23505(s string) bool {
-	return len(s) > 0 && containsStr(s, "23505")
-}
-
-func containsStr(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) {
+		return pqErr.Code == "23505"
 	}
 	return false
 }

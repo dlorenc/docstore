@@ -195,7 +195,26 @@ func (s *server) handleDiff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, result)
+	// Convert to API response type.
+	resp := model.DiffResponse{
+		BranchChanges: make([]model.DiffEntry, len(result.BranchChanges)),
+		MainChanges:   make([]model.DiffEntry, len(result.MainChanges)),
+	}
+	for i, e := range result.BranchChanges {
+		resp.BranchChanges[i] = model.DiffEntry{Path: e.Path, VersionID: e.VersionID}
+	}
+	for i, e := range result.MainChanges {
+		resp.MainChanges[i] = model.DiffEntry{Path: e.Path, VersionID: e.VersionID}
+	}
+	for _, c := range result.Conflicts {
+		resp.Conflicts = append(resp.Conflicts, model.ConflictEntry{
+			Path:            c.Path,
+			MainVersionID:   c.MainVersionID,
+			BranchVersionID: c.BranchVersionID,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleCreateBranch implements POST /branch
@@ -240,6 +259,18 @@ func (s *server) handleMerge(w http.ResponseWriter, r *http.Request) {
 	if req.Branch == "" {
 		writeError(w, http.StatusBadRequest, "branch is required")
 		return
+	}
+	if req.Branch == "main" {
+		writeError(w, http.StatusBadRequest, "cannot merge main into itself")
+		return
+	}
+
+	// Use X-DocStore-Identity header if Author not set in body.
+	if req.Author == "" {
+		req.Author = r.Header.Get("X-DocStore-Identity")
+	}
+	if req.Author == "" {
+		req.Author = "system"
 	}
 
 	resp, conflicts, err := s.commitStore.Merge(r.Context(), req)

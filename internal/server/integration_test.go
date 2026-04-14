@@ -249,11 +249,11 @@ func TestIntegrationDiffEndpoint(t *testing.T) {
 		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 			t.Fatalf("decode: %v", err)
 		}
-		if len(result.Changed) != 1 {
-			t.Fatalf("expected 1 changed file, got %d", len(result.Changed))
+		if len(result.BranchChanges) != 1 {
+			t.Fatalf("expected 1 changed file, got %d", len(result.BranchChanges))
 		}
-		if result.Changed[0].Path != "new.txt" {
-			t.Errorf("expected new.txt, got %s", result.Changed[0].Path)
+		if result.BranchChanges[0].Path != "new.txt" {
+			t.Errorf("expected new.txt, got %s", result.BranchChanges[0].Path)
 		}
 	})
 
