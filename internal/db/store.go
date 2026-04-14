@@ -52,14 +52,22 @@ func NewStore(db *sql.DB) *Store {
 	return &Store{db: db}
 }
 
-// CreateRepo creates a new repo. Returns ErrRepoExists if the name is taken.
+// CreateRepo creates a new repo and seeds its main branch in a single
+// transaction. Returns ErrRepoExists if the name is taken.
 func (s *Store) CreateRepo(ctx context.Context, req model.CreateRepoRequest) (*model.Repo, error) {
 	createdBy := req.CreatedBy
 	if createdBy == "" {
 		createdBy = "system"
 	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
 	var r model.Repo
-	err := s.db.QueryRowContext(ctx,
+	err = tx.QueryRowContext(ctx,
 		`INSERT INTO repos (name, created_by) VALUES ($1, $2)
 		 RETURNING name, created_at, created_by`,
 		req.Name, createdBy,
@@ -72,12 +80,16 @@ func (s *Store) CreateRepo(ctx context.Context, req model.CreateRepoRequest) (*m
 	}
 
 	// Seed the main branch for the new repo.
-	_, err = s.db.ExecContext(ctx,
+	_, err = tx.ExecContext(ctx,
 		"INSERT INTO branches (repo, name, head_sequence, base_sequence, status) VALUES ($1, 'main', 0, 0, 'active')",
 		req.Name,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("seed main branch: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit tx: %w", err)
 	}
 
 	return &r, nil
@@ -276,12 +288,16 @@ func (s *Store) CreateBranch(ctx context.Context, req model.CreateBranchRequest)
 	defer tx.Rollback()
 
 	// Read main's head to set as the base_sequence.
+	// If main doesn't exist the repo itself doesn't exist.
 	var mainHead int64
 	err = tx.QueryRowContext(ctx,
 		"SELECT head_sequence FROM branches WHERE repo = $1 AND name = 'main' FOR UPDATE",
 		req.Repo,
 	).Scan(&mainHead)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrRepoNotFound
+		}
 		return nil, fmt.Errorf("read main head: %w", err)
 	}
 
@@ -293,6 +309,9 @@ func (s *Store) CreateBranch(ctx context.Context, req model.CreateBranchRequest)
 	if err != nil {
 		if isDuplicateKeyError(err) {
 			return nil, ErrBranchExists
+		}
+		if isForeignKeyViolation(err) {
+			return nil, ErrRepoNotFound
 		}
 		return nil, fmt.Errorf("insert branch: %w", err)
 	}
@@ -701,6 +720,15 @@ func isDuplicateKeyError(err error) bool {
 	var pqErr *pq.Error
 	if errors.As(err, &pqErr) {
 		return pqErr.Code == "23505"
+	}
+	return false
+}
+
+// isForeignKeyViolation checks if a PostgreSQL error is a FK violation (23503).
+func isForeignKeyViolation(err error) bool {
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) {
+		return pqErr.Code == "23503"
 	}
 	return false
 }

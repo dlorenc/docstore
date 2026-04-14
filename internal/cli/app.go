@@ -190,15 +190,17 @@ func (a *App) Init(remote, repo, author string) error {
 	}
 
 	// Extract repo from remote URL if embedded (e.g. https://host/repos/myrepo).
+	// Strip the /repos/:name suffix from the base URL whether or not --repo was
+	// provided explicitly, so that we never end up with a doubled path prefix.
 	baseRemote := strings.TrimRight(remote, "/")
-	if repo == "" {
-		if idx := strings.Index(baseRemote, "/repos/"); idx >= 0 {
+	if idx := strings.Index(baseRemote, "/repos/"); idx >= 0 {
+		if repo == "" {
 			parts := strings.SplitN(baseRemote[idx+len("/repos/"):], "/", 2)
 			repo = parts[0]
-			baseRemote = baseRemote[:idx]
-		} else {
-			repo = "default"
 		}
+		baseRemote = baseRemote[:idx]
+	} else if repo == "" {
+		repo = "default"
 	}
 
 	cfg := &Config{

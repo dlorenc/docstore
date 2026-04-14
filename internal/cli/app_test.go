@@ -132,6 +132,48 @@ func TestInitTrimsTrailingSlash(t *testing.T) {
 	}
 }
 
+// TestInitRepoFlagStripsURLSuffix verifies that when --repo is passed explicitly
+// alongside a URL that already contains /repos/:name, the /repos/:name suffix is
+// still stripped from baseRemote.  Without the fix this produced doubled paths
+// like .../repos/myrepo/repos/myrepo/...
+func TestInitRepoFlagStripsURLSuffix(t *testing.T) {
+	// The mock server registers the /repos/myrepo/* paths that Init will call.
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/myrepo/tree":
+			json.NewEncoder(w).Encode([]treeEntry{})
+		case r.Method == "GET" && r.URL.Path == "/repos/myrepo/branches":
+			json.NewEncoder(w).Encode([]model.Branch{{Name: "main", HeadSequence: 0}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	app, _ := newTestApp(t, srv)
+
+	// Pass a URL that already embeds the /repos/myrepo suffix AND an explicit
+	// --repo flag with the same name.
+	embeddedURL := srv.URL + "/repos/myrepo"
+	if err := app.Init(embeddedURL, "myrepo", "carol"); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	cfg, err := app.loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Remote must be the bare host, not .../repos/myrepo.
+	if cfg.Remote != srv.URL {
+		t.Errorf("remote = %q, want %q (suffix must be stripped)", cfg.Remote, srv.URL)
+	}
+	if cfg.Repo != "myrepo" {
+		t.Errorf("repo = %q, want %q", cfg.Repo, "myrepo")
+	}
+}
+
 func TestInitDefaultAuthor(t *testing.T) {
 	srv := newEmptyRepoServer(t)
 	defer srv.Close()
