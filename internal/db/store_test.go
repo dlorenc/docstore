@@ -3,9 +3,11 @@ package db
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/dlorenc/docstore/internal/model"
 	"github.com/dlorenc/docstore/internal/testutil"
@@ -2010,5 +2012,456 @@ func TestRoleIsolation(t *testing.T) {
 	hasAdmin, err = s.HasAdmin(ctx, "repo-b")
 	if err != nil || hasAdmin {
 		t.Errorf("expected HasAdmin false for repo-b, got %v %v", hasAdmin, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Purge tests
+// ---------------------------------------------------------------------------
+
+// makeOld ages a branch and all its commits to 100 days ago so it is eligible
+// for purge with any threshold less than 100 days.
+func makeOld(t *testing.T, db *sql.DB, repo, branch string) {
+	t.Helper()
+	_, err := db.Exec(`UPDATE branches SET created_at = now() - interval '100 days' WHERE repo = $1 AND name = $2`, repo, branch)
+	if err != nil {
+		t.Fatalf("makeOld branches: %v", err)
+	}
+	_, err = db.Exec(`UPDATE commits SET created_at = now() - interval '100 days' WHERE repo = $1 AND branch = $2`, repo, branch)
+	if err != nil {
+		t.Fatalf("makeOld commits: %v", err)
+	}
+}
+
+func TestPurge_DeletesMergedBranches(t *testing.T) {
+	d := testutil.TestDB(t, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	// Commit something to main so the branch has a non-zero base.
+	_, err := s.Commit(ctx, model.CommitRequest{
+		Repo: "default", Branch: "main",
+		Files:   []model.FileChange{{Path: "base.txt", Content: []byte("base")}},
+		Message: "base", Author: "alice",
+	})
+	if err != nil {
+		t.Fatalf("commit to main: %v", err)
+	}
+
+	// Create a branch, commit to it, then merge.
+	_, err = s.CreateBranch(ctx, model.CreateBranchRequest{Repo: "default", Name: "feature/merged"})
+	if err != nil {
+		t.Fatalf("create branch: %v", err)
+	}
+	_, err = s.Commit(ctx, model.CommitRequest{
+		Repo: "default", Branch: "feature/merged",
+		Files:   []model.FileChange{{Path: "f.txt", Content: []byte("branch work")}},
+		Message: "work", Author: "alice",
+	})
+	if err != nil {
+		t.Fatalf("commit to branch: %v", err)
+	}
+	_, _, err = s.Merge(ctx, model.MergeRequest{Repo: "default", Branch: "feature/merged", Author: "alice"})
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+
+	// Make the branch and its commits appear old.
+	makeOld(t, d, "default", "feature/merged")
+
+	result, err := s.Purge(ctx, PurgeRequest{Repo: "default", OlderThan: 24 * time.Hour})
+	if err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+
+	if result.BranchesPurged != 1 {
+		t.Errorf("expected 1 branch purged, got %d", result.BranchesPurged)
+	}
+	if result.FileCommitsDeleted < 1 {
+		t.Errorf("expected at least 1 file_commit deleted, got %d", result.FileCommitsDeleted)
+	}
+	if result.CommitsDeleted < 1 {
+		t.Errorf("expected at least 1 commit deleted, got %d", result.CommitsDeleted)
+	}
+
+	// The branch row must be gone.
+	var count int
+	d.QueryRow("SELECT count(*) FROM branches WHERE repo = 'default' AND name = 'feature/merged'").Scan(&count)
+	if count != 0 {
+		t.Errorf("expected branch to be deleted, found %d rows", count)
+	}
+}
+
+func TestPurge_DeletesAbandonedBranches(t *testing.T) {
+	d := testutil.TestDB(t, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	_, err := s.CreateBranch(ctx, model.CreateBranchRequest{Repo: "default", Name: "feature/abandoned"})
+	if err != nil {
+		t.Fatalf("create branch: %v", err)
+	}
+	_, err = s.Commit(ctx, model.CommitRequest{
+		Repo: "default", Branch: "feature/abandoned",
+		Files:   []model.FileChange{{Path: "x.txt", Content: []byte("x")}},
+		Message: "x", Author: "alice",
+	})
+	if err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if err := s.DeleteBranch(ctx, "default", "feature/abandoned"); err != nil {
+		t.Fatalf("delete branch: %v", err)
+	}
+
+	makeOld(t, d, "default", "feature/abandoned")
+
+	result, err := s.Purge(ctx, PurgeRequest{Repo: "default", OlderThan: 24 * time.Hour})
+	if err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	if result.BranchesPurged != 1 {
+		t.Errorf("expected 1 branch purged, got %d", result.BranchesPurged)
+	}
+
+	var count int
+	d.QueryRow("SELECT count(*) FROM branches WHERE repo = 'default' AND name = 'feature/abandoned'").Scan(&count)
+	if count != 0 {
+		t.Errorf("expected abandoned branch to be deleted, found %d rows", count)
+	}
+}
+
+func TestPurge_RespectsOlderThan(t *testing.T) {
+	d := testutil.TestDB(t, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	// Create a branch and merge it — timestamps are current (now), not old.
+	_, err := s.CreateBranch(ctx, model.CreateBranchRequest{Repo: "default", Name: "feature/recent"})
+	if err != nil {
+		t.Fatalf("create branch: %v", err)
+	}
+	_, _, err = s.Merge(ctx, model.MergeRequest{Repo: "default", Branch: "feature/recent", Author: "alice"})
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+
+	// Purge with 1-day threshold — recently merged branch must NOT be purged.
+	result, err := s.Purge(ctx, PurgeRequest{Repo: "default", OlderThan: 24 * time.Hour})
+	if err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	if result.BranchesPurged != 0 {
+		t.Errorf("expected 0 branches purged, got %d", result.BranchesPurged)
+	}
+
+	var count int
+	d.QueryRow("SELECT count(*) FROM branches WHERE repo = 'default' AND name = 'feature/recent'").Scan(&count)
+	if count != 1 {
+		t.Errorf("expected recent branch to still exist, got count=%d", count)
+	}
+}
+
+func TestPurge_DoesNotTouchActiveBranches(t *testing.T) {
+	d := testutil.TestDB(t, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	_, err := s.CreateBranch(ctx, model.CreateBranchRequest{Repo: "default", Name: "feature/active"})
+	if err != nil {
+		t.Fatalf("create branch: %v", err)
+	}
+	// Age the branch row so it would be eligible if it were merged/abandoned.
+	makeOld(t, d, "default", "feature/active")
+
+	result, err := s.Purge(ctx, PurgeRequest{Repo: "default", OlderThan: 24 * time.Hour})
+	if err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	if result.BranchesPurged != 0 {
+		t.Errorf("expected 0 branches purged (active branch must be skipped), got %d", result.BranchesPurged)
+	}
+}
+
+func TestPurge_DoesNotTouchMain(t *testing.T) {
+	d := testutil.TestDB(t, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	_, err := s.Commit(ctx, model.CommitRequest{
+		Repo: "default", Branch: "main",
+		Files:   []model.FileChange{{Path: "m.txt", Content: []byte("main")}},
+		Message: "m", Author: "alice",
+	})
+	if err != nil {
+		t.Fatalf("commit to main: %v", err)
+	}
+	// Force main's created_at to be very old (should never be eligible due to name filter).
+	d.Exec(`UPDATE branches SET created_at = now() - interval '100 days' WHERE repo = 'default' AND name = 'main'`)
+	d.Exec(`UPDATE commits SET created_at = now() - interval '100 days' WHERE repo = 'default' AND branch = 'main'`)
+
+	result, err := s.Purge(ctx, PurgeRequest{Repo: "default", OlderThan: 24 * time.Hour})
+	if err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	if result.BranchesPurged != 0 {
+		t.Errorf("expected main to be untouched, but %d branches purged", result.BranchesPurged)
+	}
+
+	// main must still exist.
+	var count int
+	d.QueryRow("SELECT count(*) FROM branches WHERE repo = 'default' AND name = 'main'").Scan(&count)
+	if count != 1 {
+		t.Errorf("expected main branch to still exist")
+	}
+}
+
+func TestPurge_OrphanedDocumentsDeleted(t *testing.T) {
+	d := testutil.TestDB(t, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	// Create a branch, commit a file, then abandon it without merging.
+	_, err := s.CreateBranch(ctx, model.CreateBranchRequest{Repo: "default", Name: "feature/orphan"})
+	if err != nil {
+		t.Fatalf("create branch: %v", err)
+	}
+	commitResp, err := s.Commit(ctx, model.CommitRequest{
+		Repo: "default", Branch: "feature/orphan",
+		Files:   []model.FileChange{{Path: "orphan.txt", Content: []byte("unique orphan content")}},
+		Message: "orphan", Author: "alice",
+	})
+	if err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	// Record the version_id of the orphaned doc.
+	orphanVersionID := ""
+	if len(commitResp.Files) > 0 && commitResp.Files[0].VersionID != nil {
+		orphanVersionID = *commitResp.Files[0].VersionID
+	}
+
+	if err := s.DeleteBranch(ctx, "default", "feature/orphan"); err != nil {
+		t.Fatalf("delete branch: %v", err)
+	}
+	makeOld(t, d, "default", "feature/orphan")
+
+	result, err := s.Purge(ctx, PurgeRequest{Repo: "default", OlderThan: 24 * time.Hour})
+	if err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	if result.DocumentsDeleted < 1 {
+		t.Errorf("expected at least 1 orphaned document deleted, got %d", result.DocumentsDeleted)
+	}
+
+	// The orphaned document must no longer exist.
+	if orphanVersionID != "" {
+		var count int
+		d.QueryRow("SELECT count(*) FROM documents WHERE version_id = $1", orphanVersionID).Scan(&count)
+		if count != 0 {
+			t.Errorf("orphaned document %s should have been deleted", orphanVersionID)
+		}
+	}
+}
+
+func TestPurge_SharedDocumentRetained(t *testing.T) {
+	d := testutil.TestDB(t, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	// Commit a file to main first.
+	mainResp, err := s.Commit(ctx, model.CommitRequest{
+		Repo: "default", Branch: "main",
+		Files:   []model.FileChange{{Path: "shared.txt", Content: []byte("shared content")}},
+		Message: "main", Author: "alice",
+	})
+	if err != nil {
+		t.Fatalf("commit to main: %v", err)
+	}
+	sharedVersionID := ""
+	if len(mainResp.Files) > 0 && mainResp.Files[0].VersionID != nil {
+		sharedVersionID = *mainResp.Files[0].VersionID
+	}
+
+	// Create a branch with the same content (will dedup to same version_id).
+	_, err = s.CreateBranch(ctx, model.CreateBranchRequest{Repo: "default", Name: "feature/shared"})
+	if err != nil {
+		t.Fatalf("create branch: %v", err)
+	}
+	_, err = s.Commit(ctx, model.CommitRequest{
+		Repo: "default", Branch: "feature/shared",
+		Files:   []model.FileChange{{Path: "shared.txt", Content: []byte("shared content")}},
+		Message: "branch", Author: "alice",
+	})
+	if err != nil {
+		t.Fatalf("commit to branch: %v", err)
+	}
+	if err := s.DeleteBranch(ctx, "default", "feature/shared"); err != nil {
+		t.Fatalf("delete branch: %v", err)
+	}
+	makeOld(t, d, "default", "feature/shared")
+
+	result, err := s.Purge(ctx, PurgeRequest{Repo: "default", OlderThan: 24 * time.Hour})
+	if err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	// The shared document is still referenced by main's file_commits → must not be deleted.
+	if result.DocumentsDeleted != 0 {
+		t.Errorf("expected 0 documents deleted (shared with main), got %d", result.DocumentsDeleted)
+	}
+
+	if sharedVersionID != "" {
+		var count int
+		d.QueryRow("SELECT count(*) FROM documents WHERE version_id = $1", sharedVersionID).Scan(&count)
+		if count != 1 {
+			t.Errorf("shared document %s should still exist", sharedVersionID)
+		}
+	}
+}
+
+func TestPurge_DeletesReviewsAndChecks(t *testing.T) {
+	d := testutil.TestDB(t, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	_, err := s.CreateBranch(ctx, model.CreateBranchRequest{Repo: "default", Name: "feature/rev"})
+	if err != nil {
+		t.Fatalf("create branch: %v", err)
+	}
+	_, err = s.Commit(ctx, model.CommitRequest{
+		Repo: "default", Branch: "feature/rev",
+		Files:   []model.FileChange{{Path: "r.txt", Content: []byte("r")}},
+		Message: "r", Author: "alice",
+	})
+	if err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	// Add a review and a check_run for the branch.
+	_, err = s.CreateReview(ctx, "default", "feature/rev", "bob", model.ReviewApproved, "LGTM")
+	if err != nil {
+		t.Fatalf("create review: %v", err)
+	}
+	_, err = s.CreateCheckRun(ctx, "default", "feature/rev", "ci/build", model.CheckRunPassed, "ci-bot")
+	if err != nil {
+		t.Fatalf("create check_run: %v", err)
+	}
+
+	if err := s.DeleteBranch(ctx, "default", "feature/rev"); err != nil {
+		t.Fatalf("delete branch: %v", err)
+	}
+	makeOld(t, d, "default", "feature/rev")
+
+	result, err := s.Purge(ctx, PurgeRequest{Repo: "default", OlderThan: 24 * time.Hour})
+	if err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	if result.ReviewsDeleted != 1 {
+		t.Errorf("expected 1 review deleted, got %d", result.ReviewsDeleted)
+	}
+	if result.CheckRunsDeleted != 1 {
+		t.Errorf("expected 1 check_run deleted, got %d", result.CheckRunsDeleted)
+	}
+}
+
+func TestPurge_DryRun(t *testing.T) {
+	d := testutil.TestDB(t, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	_, err := s.CreateBranch(ctx, model.CreateBranchRequest{Repo: "default", Name: "feature/dry"})
+	if err != nil {
+		t.Fatalf("create branch: %v", err)
+	}
+	_, err = s.Commit(ctx, model.CommitRequest{
+		Repo: "default", Branch: "feature/dry",
+		Files:   []model.FileChange{{Path: "d.txt", Content: []byte("dry run content")}},
+		Message: "dry", Author: "alice",
+	})
+	if err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if err := s.DeleteBranch(ctx, "default", "feature/dry"); err != nil {
+		t.Fatalf("delete branch: %v", err)
+	}
+	makeOld(t, d, "default", "feature/dry")
+
+	// Count before dry run.
+	var branchBefore, fcBefore int
+	d.QueryRow("SELECT count(*) FROM branches WHERE repo = 'default' AND name = 'feature/dry'").Scan(&branchBefore)
+	d.QueryRow("SELECT count(*) FROM file_commits WHERE repo = 'default' AND branch = 'feature/dry'").Scan(&fcBefore)
+
+	result, err := s.Purge(ctx, PurgeRequest{Repo: "default", OlderThan: 24 * time.Hour, DryRun: true})
+	if err != nil {
+		t.Fatalf("purge dry run: %v", err)
+	}
+
+	// Counts must be non-zero (something would be deleted).
+	if result.BranchesPurged != 1 {
+		t.Errorf("dry run: expected 1 branch, got %d", result.BranchesPurged)
+	}
+	if result.FileCommitsDeleted < 1 {
+		t.Errorf("dry run: expected file_commits > 0, got %d", result.FileCommitsDeleted)
+	}
+
+	// But no rows must actually have been deleted.
+	var branchAfter, fcAfter int
+	d.QueryRow("SELECT count(*) FROM branches WHERE repo = 'default' AND name = 'feature/dry'").Scan(&branchAfter)
+	d.QueryRow("SELECT count(*) FROM file_commits WHERE repo = 'default' AND branch = 'feature/dry'").Scan(&fcAfter)
+
+	if branchAfter != branchBefore {
+		t.Errorf("dry run must not delete branches: before=%d after=%d", branchBefore, branchAfter)
+	}
+	if fcAfter != fcBefore {
+		t.Errorf("dry run must not delete file_commits: before=%d after=%d", fcBefore, fcAfter)
+	}
+}
+
+func TestPurge_IsAtomic(t *testing.T) {
+	// Demonstrates that all deletes are committed together (or not at all).
+	// We use a pre-cancelled context so BeginTx fails before any deletions occur,
+	// verifying that no partial state is left behind.
+	d := testutil.TestDB(t, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	_, err := s.CreateBranch(ctx, model.CreateBranchRequest{Repo: "default", Name: "feature/atomic"})
+	if err != nil {
+		t.Fatalf("create branch: %v", err)
+	}
+	_, err = s.Commit(ctx, model.CommitRequest{
+		Repo: "default", Branch: "feature/atomic",
+		Files:   []model.FileChange{{Path: "a.txt", Content: []byte("atomic")}},
+		Message: "atomic", Author: "alice",
+	})
+	if err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if err := s.DeleteBranch(ctx, "default", "feature/atomic"); err != nil {
+		t.Fatalf("delete branch: %v", err)
+	}
+	makeOld(t, d, "default", "feature/atomic")
+
+	var fcBefore int
+	d.QueryRow("SELECT count(*) FROM file_commits WHERE repo = 'default' AND branch = 'feature/atomic'").Scan(&fcBefore)
+
+	// Use a cancelled context — BeginTx will fail immediately.
+	cancelCtx, cancel := context.WithCancel(ctx)
+	cancel()
+
+	_, err = s.Purge(cancelCtx, PurgeRequest{Repo: "default", OlderThan: 24 * time.Hour})
+	if err == nil {
+		t.Fatal("expected error from cancelled context")
+	}
+
+	// Verify no data was changed.
+	var fcAfter int
+	d.QueryRow("SELECT count(*) FROM file_commits WHERE repo = 'default' AND branch = 'feature/atomic'").Scan(&fcAfter)
+	if fcAfter != fcBefore {
+		t.Errorf("partial deletion occurred: before=%d after=%d file_commits", fcBefore, fcAfter)
+	}
+
+	var branchCount int
+	d.QueryRow("SELECT count(*) FROM branches WHERE repo = 'default' AND name = 'feature/atomic'").Scan(&branchCount)
+	if branchCount != 1 {
+		t.Errorf("branch should still exist after failed purge, count=%d", branchCount)
 	}
 }

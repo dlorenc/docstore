@@ -980,6 +980,161 @@ func (s *Store) HasAdmin(ctx context.Context, repo string) (bool, error) {
 }
 
 
+// PurgeRequest contains the parameters for a purge operation.
+type PurgeRequest struct {
+	Repo      string
+	OlderThan time.Duration
+	DryRun    bool
+}
+
+// PurgeResult contains the counts of rows affected (or that would be affected) by a purge.
+type PurgeResult struct {
+	BranchesPurged     int64
+	FileCommitsDeleted int64
+	CommitsDeleted     int64
+	DocumentsDeleted   int64
+	ReviewsDeleted     int64
+	CheckRunsDeleted   int64
+}
+
+// Purge deletes file_commits, commits, orphaned documents, reviews, check_runs,
+// and branch rows for merged/abandoned branches whose last activity is older than
+// req.OlderThan. If req.DryRun is true, counts are returned without any rows being
+// deleted. All deletes happen within a single transaction.
+func (s *Store) Purge(ctx context.Context, req PurgeRequest) (*PurgeResult, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Verify repo exists.
+	var exists bool
+	if err := tx.QueryRowContext(ctx,
+		"SELECT EXISTS(SELECT 1 FROM repos WHERE name = $1)", req.Repo,
+	).Scan(&exists); err != nil {
+		return nil, fmt.Errorf("check repo: %w", err)
+	}
+	if !exists {
+		return nil, ErrRepoNotFound
+	}
+
+	threshold := time.Now().Add(-req.OlderThan)
+
+	// Find eligible branches: merged or abandoned, last activity older than threshold, not main.
+	rows, err := tx.QueryContext(ctx, `
+		SELECT b.name
+		FROM branches b
+		LEFT JOIN commits c ON c.repo = b.repo AND c.sequence = b.head_sequence
+		WHERE b.repo = $1
+		  AND b.status IN ('merged', 'abandoned')
+		  AND b.name != 'main'
+		  AND COALESCE(c.created_at, b.created_at) < $2
+	`, req.Repo, threshold)
+	if err != nil {
+		return nil, fmt.Errorf("find eligible branches: %w", err)
+	}
+	var branches []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan branch: %w", err)
+		}
+		branches = append(branches, name)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate branches: %w", err)
+	}
+
+	// Nothing to purge — return early (defer will rollback the empty transaction).
+	if len(branches) == 0 {
+		return &PurgeResult{}, nil
+	}
+
+	var result PurgeResult
+	result.BranchesPurged = int64(len(branches))
+
+	// 1. Delete file_commits for the eligible branches.
+	res, err := tx.ExecContext(ctx,
+		`DELETE FROM file_commits WHERE repo = $1 AND branch = ANY($2)`,
+		req.Repo, pq.Array(branches),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("delete file_commits: %w", err)
+	}
+	result.FileCommitsDeleted, _ = res.RowsAffected()
+
+	// 2. Delete commits for those branches not referenced by any remaining file_commits.
+	res, err = tx.ExecContext(ctx,
+		`DELETE FROM commits
+		 WHERE repo = $1 AND branch = ANY($2)
+		   AND sequence NOT IN (
+		       SELECT DISTINCT sequence FROM file_commits WHERE repo = $1
+		   )`,
+		req.Repo, pq.Array(branches),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("delete commits: %w", err)
+	}
+	result.CommitsDeleted, _ = res.RowsAffected()
+
+	// 3. Delete reviews for the eligible branches.
+	res, err = tx.ExecContext(ctx,
+		`DELETE FROM reviews WHERE repo = $1 AND branch = ANY($2)`,
+		req.Repo, pq.Array(branches),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("delete reviews: %w", err)
+	}
+	result.ReviewsDeleted, _ = res.RowsAffected()
+
+	// 4. Delete check_runs for the eligible branches.
+	res, err = tx.ExecContext(ctx,
+		`DELETE FROM check_runs WHERE repo = $1 AND branch = ANY($2)`,
+		req.Repo, pq.Array(branches),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("delete check_runs: %w", err)
+	}
+	result.CheckRunsDeleted, _ = res.RowsAffected()
+
+	// 5. Delete orphaned documents (not referenced by any remaining file_commits in the repo).
+	res, err = tx.ExecContext(ctx,
+		`DELETE FROM documents
+		 WHERE repo = $1
+		   AND version_id NOT IN (
+		       SELECT DISTINCT version_id FROM file_commits
+		       WHERE repo = $1 AND version_id IS NOT NULL
+		   )`,
+		req.Repo,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("delete documents: %w", err)
+	}
+	result.DocumentsDeleted, _ = res.RowsAffected()
+
+	// 6. Delete the branch rows themselves.
+	_, err = tx.ExecContext(ctx,
+		`DELETE FROM branches WHERE repo = $1 AND name = ANY($2)`,
+		req.Repo, pq.Array(branches),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("delete branches: %w", err)
+	}
+
+	// For dry_run, return counts without committing (defer will rollback).
+	if req.DryRun {
+		return &result, nil
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit tx: %w", err)
+	}
+	return &result, nil
+}
+
 // isDuplicateKeyError checks if a PostgreSQL error is a unique violation (23505).
 func isDuplicateKeyError(err error) bool {
 	var pqErr *pq.Error

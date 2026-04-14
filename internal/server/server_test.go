@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/model"
@@ -33,6 +34,7 @@ type mockStore struct {
 	deleteRoleFn   func(ctx context.Context, repo, identity string) error
 	listRolesFn    func(ctx context.Context, repo string) ([]model.Role, error)
 	hasAdminFn     func(ctx context.Context, repo string) (bool, error)
+	purgeFn        func(ctx context.Context, req db.PurgeRequest) (*db.PurgeResult, error)
 }
 
 func (m *mockStore) Commit(ctx context.Context, req model.CommitRequest) (*model.CommitResponse, error) {
@@ -159,6 +161,13 @@ func (m *mockStore) HasAdmin(ctx context.Context, repo string) (bool, error) {
 		return m.hasAdminFn(ctx, repo)
 	}
 	return false, nil
+}
+
+func (m *mockStore) Purge(ctx context.Context, req db.PurgeRequest) (*db.PurgeResult, error) {
+	if m.purgeFn != nil {
+		return m.purgeFn(ctx, req)
+	}
+	return nil, errors.New("not implemented")
 }
 
 func TestHealthEndpoint(t *testing.T) {
@@ -1160,5 +1169,122 @@ func TestHandleGetChecks(t *testing.T) {
 	}
 	if checkRuns[0].ID != "cr1" {
 		t.Errorf("expected id cr1, got %q", checkRuns[0].ID)
+	}
+}
+
+func TestHandlePurge_Success(t *testing.T) {
+	ms := &mockStore{
+		purgeFn: func(ctx context.Context, req db.PurgeRequest) (*db.PurgeResult, error) {
+			if req.Repo != "default" {
+				t.Errorf("expected repo 'default', got %q", req.Repo)
+			}
+			if req.OlderThan != 30*24*time.Hour {
+				t.Errorf("expected 30d duration, got %v", req.OlderThan)
+			}
+			if req.DryRun {
+				t.Error("expected dry_run=false")
+			}
+			return &db.PurgeResult{
+				BranchesPurged:     3,
+				FileCommitsDeleted: 12,
+				CommitsDeleted:     4,
+				DocumentsDeleted:   2,
+				ReviewsDeleted:     1,
+				CheckRunsDeleted:   1,
+			}, nil
+		},
+	}
+	srv := New(ms, nil, devID, devID)
+
+	body, _ := json.Marshal(map[string]interface{}{"older_than": "30d"})
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/purge", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	var resp model.PurgeResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.BranchesPurged != 3 {
+		t.Errorf("expected 3 branches_purged, got %d", resp.BranchesPurged)
+	}
+	if resp.FileCommitsDeleted != 12 {
+		t.Errorf("expected 12 file_commits_deleted, got %d", resp.FileCommitsDeleted)
+	}
+}
+
+func TestHandlePurge_DryRun(t *testing.T) {
+	ms := &mockStore{
+		purgeFn: func(ctx context.Context, req db.PurgeRequest) (*db.PurgeResult, error) {
+			if !req.DryRun {
+				t.Error("expected dry_run=true")
+			}
+			return &db.PurgeResult{BranchesPurged: 2, CommitsDeleted: 5}, nil
+		},
+	}
+	srv := New(ms, nil, devID, devID)
+
+	body, _ := json.Marshal(map[string]interface{}{"older_than": "7d", "dry_run": true})
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/purge", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	var resp model.PurgeResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.BranchesPurged != 2 {
+		t.Errorf("expected 2 branches_purged, got %d", resp.BranchesPurged)
+	}
+}
+
+func TestHandlePurge_InvalidDuration(t *testing.T) {
+	srv := New(&mockStore{}, nil, devID, devID)
+
+	tests := []struct {
+		name    string
+		payload string
+	}{
+		{"missing older_than", `{}`},
+		{"not a day format", `{"older_than":"90h"}`},
+		{"zero days", `{"older_than":"0d"}`},
+		{"negative days", `{"older_than":"-1d"}`},
+		{"non-numeric", `{"older_than":"abcd"}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/repos/default/purge", bytes.NewReader([]byte(tt.payload)))
+			rec := httptest.NewRecorder()
+			srv.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d; body: %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandlePurge_RepoNotFound(t *testing.T) {
+	ms := &mockStore{
+		purgeFn: func(ctx context.Context, req db.PurgeRequest) (*db.PurgeResult, error) {
+			return nil, db.ErrRepoNotFound
+		},
+	}
+	srv := New(ms, nil, devID, devID)
+
+	body, _ := json.Marshal(map[string]interface{}{"older_than": "30d"})
+	req := httptest.NewRequest(http.MethodPost, "/repos/noexist/purge", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d; body: %s", rec.Code, rec.Body.String())
 	}
 }
