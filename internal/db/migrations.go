@@ -1,6 +1,10 @@
 package db
 
-import _ "embed"
+import (
+	"database/sql"
+	"fmt"
+	_ "embed"
+)
 
 //go:embed migrations/000001_initial_schema.up.sql
 var migration001 string
@@ -13,3 +17,11 @@ var MigrationSQL = migration001 + "\n" + migration002
 
 //go:embed migrations/000001_initial_schema.down.sql
 var MigrationDownSQL string
+
+// RunMigrations executes all migrations against the given database.
+func RunMigrations(database *sql.DB) error {
+	if _, err := database.Exec(MigrationSQL); err != nil {
+		return fmt.Errorf("run migrations: %w", err)
+	}
+	return nil
+}
