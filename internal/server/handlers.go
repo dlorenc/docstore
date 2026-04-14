@@ -388,6 +388,9 @@ func (s *server) handleDeleteBranch(w http.ResponseWriter, r *http.Request) {
 // handleRebase implements POST /repos/:name/rebase
 func (s *server) handleRebase(w http.ResponseWriter, r *http.Request) {
 	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
 
 	var req model.RebaseRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -437,6 +440,9 @@ func (s *server) handleRebase(w http.ResponseWriter, r *http.Request) {
 // handleMerge implements POST /repos/:name/merge
 func (s *server) handleMerge(w http.ResponseWriter, r *http.Request) {
 	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
 
 	var req model.MergeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

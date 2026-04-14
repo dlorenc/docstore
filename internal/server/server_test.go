@@ -86,7 +86,7 @@ func (m *mockStore) GetRepo(ctx context.Context, name string) (*model.Repo, erro
 	if m.getRepoFn != nil {
 		return m.getRepoFn(ctx, name)
 	}
-	return nil, errors.New("not implemented")
+	return &model.Repo{Name: name}, nil
 }
 
 func TestHealthEndpoint(t *testing.T) {
@@ -796,5 +796,75 @@ func TestHandleRebase_BranchNotActive(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestHandleCommit_RepoNotFound(t *testing.T) {
+	store := &mockStore{
+		getRepoFn: func(ctx context.Context, name string) (*model.Repo, error) {
+			return nil, db.ErrRepoNotFound
+		},
+		commitFn: func(ctx context.Context, req model.CommitRequest) (*model.CommitResponse, error) {
+			t.Fatal("store.Commit should not be called when repo does not exist")
+			return nil, nil
+		},
+	}
+	srv := New(store, nil, devID)
+
+	body, _ := json.Marshal(model.CommitRequest{
+		Branch:  "main",
+		Files:   []model.FileChange{{Path: "a.txt", Content: []byte("x")}},
+		Message: "m",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/repos/ghost/commit", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleMerge_RepoNotFound(t *testing.T) {
+	store := &mockStore{
+		getRepoFn: func(ctx context.Context, name string) (*model.Repo, error) {
+			return nil, db.ErrRepoNotFound
+		},
+		mergeFn: func(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error) {
+			t.Fatal("store.Merge should not be called when repo does not exist")
+			return nil, nil, nil
+		},
+	}
+	srv := New(store, nil, devID)
+
+	body, _ := json.Marshal(model.MergeRequest{Branch: "feature/test"})
+	req := httptest.NewRequest(http.MethodPost, "/repos/ghost/merge", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleRebase_RepoNotFound(t *testing.T) {
+	store := &mockStore{
+		getRepoFn: func(ctx context.Context, name string) (*model.Repo, error) {
+			return nil, db.ErrRepoNotFound
+		},
+		rebaseFn: func(ctx context.Context, req model.RebaseRequest) (*model.RebaseResponse, []db.MergeConflict, error) {
+			t.Fatal("store.Rebase should not be called when repo does not exist")
+			return nil, nil, nil
+		},
+	}
+	srv := New(store, nil, devID)
+
+	body, _ := json.Marshal(model.RebaseRequest{Branch: "feature/test"})
+	req := httptest.NewRequest(http.MethodPost, "/repos/ghost/rebase", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d; body: %s", rec.Code, rec.Body.String())
 	}
 }
