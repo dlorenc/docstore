@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -418,6 +419,349 @@ func TestRBACMiddleware_RepoIsolation(t *testing.T) {
 	rec = rbacDo(t, h, http.MethodGet, "/repos/repo-b/tree", "")
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("repo-b GET: expected 403, got %d", rec.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// JWT edge case tests
+// ---------------------------------------------------------------------------
+
+// buildJWT constructs a JWT with the given header and payload maps, signed
+// with key. The helper exists to produce tokens with non-standard fields
+// (wrong alg, missing kid, missing email, etc.) without going through makeTestJWT.
+func buildJWT(t *testing.T, key *rsa.PrivateKey, header, payload map[string]interface{}) string {
+	t.Helper()
+	headerJSON, _ := json.Marshal(header)
+	payloadJSON, _ := json.Marshal(payload)
+	headerB64 := base64.RawURLEncoding.EncodeToString(headerJSON)
+	payloadB64 := base64.RawURLEncoding.EncodeToString(payloadJSON)
+	signingInput := headerB64 + "." + payloadB64
+	digest := sha256.Sum256([]byte(signingInput))
+	sig, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, digest[:])
+	if err != nil {
+		t.Fatalf("sign JWT: %v", err)
+	}
+	return signingInput + "." + base64.RawURLEncoding.EncodeToString(sig)
+}
+
+func TestIAPMiddleware_MalformedToken(t *testing.T) {
+	mw := newMiddleware("", func(kid string) (*rsa.PublicKey, error) {
+		return nil, fmt.Errorf("should not be reached")
+	})
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	for _, token := range []string{"notajwt", "only.two"} {
+		req := httptest.NewRequest(http.MethodGet, "/tree", nil)
+		req.Header.Set("X-Goog-IAP-JWT-Assertion", token)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("token=%q: expected 401, got %d", token, rec.Code)
+		}
+	}
+}
+
+func TestIAPMiddleware_WrongAlgorithm(t *testing.T) {
+	key := generateTestKey(t)
+	kid := "test-key-1"
+	token := buildJWT(t, key,
+		map[string]interface{}{"alg": "HS256", "kid": kid, "typ": "JWT"},
+		map[string]interface{}{"email": "alice@example.com", "exp": time.Now().Add(time.Hour).Unix()},
+	)
+
+	mw := newMiddleware("", staticKeyFetcher(kid, &key.PublicKey))
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/tree", nil)
+	req.Header.Set("X-Goog-IAP-JWT-Assertion", token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+}
+
+func TestIAPMiddleware_MissingKid(t *testing.T) {
+	key := generateTestKey(t)
+	token := buildJWT(t, key,
+		map[string]interface{}{"alg": "RS256", "typ": "JWT"}, // no kid
+		map[string]interface{}{"email": "alice@example.com", "exp": time.Now().Add(time.Hour).Unix()},
+	)
+
+	mw := newMiddleware("", func(kid string) (*rsa.PublicKey, error) {
+		return nil, fmt.Errorf("should not be reached")
+	})
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/tree", nil)
+	req.Header.Set("X-Goog-IAP-JWT-Assertion", token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+}
+
+func TestIAPMiddleware_UnknownKid(t *testing.T) {
+	key := generateTestKey(t)
+
+	mw := newMiddleware("", func(kid string) (*rsa.PublicKey, error) {
+		return nil, fmt.Errorf("key %q not found", kid)
+	})
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	token := makeTestJWT(t, key, "unknown-kid", "alice@example.com", time.Now().Add(time.Hour))
+	req := httptest.NewRequest(http.MethodGet, "/tree", nil)
+	req.Header.Set("X-Goog-IAP-JWT-Assertion", token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+}
+
+func TestIAPMiddleware_MissingEmailClaim(t *testing.T) {
+	key := generateTestKey(t)
+	kid := "test-key-1"
+	token := buildJWT(t, key,
+		map[string]interface{}{"alg": "RS256", "kid": kid, "typ": "JWT"},
+		map[string]interface{}{"exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Unix()}, // no email
+	)
+
+	mw := newMiddleware("", staticKeyFetcher(kid, &key.PublicKey))
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/tree", nil)
+	req.Header.Set("X-Goog-IAP-JWT-Assertion", token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+}
+
+func TestIAPMiddleware_EmptyEmailClaim(t *testing.T) {
+	key := generateTestKey(t)
+	kid := "test-key-1"
+	token := buildJWT(t, key,
+		map[string]interface{}{"alg": "RS256", "kid": kid, "typ": "JWT"},
+		map[string]interface{}{"email": "", "exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Unix()},
+	)
+
+	mw := newMiddleware("", staticKeyFetcher(kid, &key.PublicKey))
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/tree", nil)
+	req.Header.Set("X-Goog-IAP-JWT-Assertion", token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for empty email, got %d", rec.Code)
+	}
+}
+
+func TestIAPMiddleware_MissingExpClaim(t *testing.T) {
+	// A JWT with no exp defaults to zero (epoch), which is in the past.
+	key := generateTestKey(t)
+	kid := "test-key-1"
+	token := buildJWT(t, key,
+		map[string]interface{}{"alg": "RS256", "kid": kid, "typ": "JWT"},
+		map[string]interface{}{"email": "alice@example.com", "iat": time.Now().Unix()}, // no exp
+	)
+
+	mw := newMiddleware("", staticKeyFetcher(kid, &key.PublicKey))
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/tree", nil)
+	req.Header.Set("X-Goog-IAP-JWT-Assertion", token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	// exp=0 (epoch) is in the past → token expired → 401.
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for missing exp, got %d", rec.Code)
+	}
+}
+
+func TestIAPMiddleware_FutureIatIsAccepted(t *testing.T) {
+	// A token with future iat is still valid: the implementation checks only exp.
+	key := generateTestKey(t)
+	kid := "test-key-1"
+	token := buildJWT(t, key,
+		map[string]interface{}{"alg": "RS256", "kid": kid, "typ": "JWT"},
+		map[string]interface{}{
+			"email": "alice@example.com",
+			"exp":   time.Now().Add(time.Hour).Unix(),
+			"iat":   time.Now().Add(time.Hour).Unix(), // future iat
+		},
+	)
+
+	mw := newMiddleware("", staticKeyFetcher(kid, &key.PublicKey))
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/tree", nil)
+	req.Header.Set("X-Goog-IAP-JWT-Assertion", token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for future iat with valid exp, got %d", rec.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// commitTargetsMain tests
+// ---------------------------------------------------------------------------
+
+func TestCommitTargetsMain_NilBody(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/commit", nil)
+	req.Body = nil
+	if commitTargetsMain(req) {
+		t.Error("nil body should return false")
+	}
+}
+
+func TestCommitTargetsMain_EmptyBranchField(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/commit", bytes.NewReader([]byte(`{}`)))
+	if commitTargetsMain(req) {
+		t.Error("missing branch field should return false")
+	}
+}
+
+func TestCommitTargetsMain_MalformedJSON(t *testing.T) {
+	bodies := []string{
+		`{"branch": `, // truncated
+		`not json at all`,
+		`{"branch":`,
+	}
+	for _, body := range bodies {
+		req := httptest.NewRequest(http.MethodPost, "/commit", bytes.NewReader([]byte(body)))
+		if commitTargetsMain(req) {
+			t.Errorf("body=%q: malformed JSON should return false", body)
+		}
+	}
+}
+
+func TestCommitTargetsMain_NonMainBranch(t *testing.T) {
+	bodies := []string{
+		`{"branch":"feature/work"}`,
+		`{"branch":""}`,
+		`{"branch":"Main"}`, // case-sensitive
+		`{}`,
+	}
+	for _, body := range bodies {
+		req := httptest.NewRequest(http.MethodPost, "/commit", bytes.NewReader([]byte(body)))
+		if commitTargetsMain(req) {
+			t.Errorf("body=%q: should return false for non-main branch", body)
+		}
+	}
+}
+
+func TestCommitTargetsMain_MainBranch(t *testing.T) {
+	body := `{"branch":"main","message":"m","files":[]}`
+	req := httptest.NewRequest(http.MethodPost, "/commit", bytes.NewReader([]byte(body)))
+	if !commitTargetsMain(req) {
+		t.Error("expected true for branch=main")
+	}
+}
+
+func TestCommitTargetsMain_BodyRestoredAfterRead(t *testing.T) {
+	// Verify that commitTargetsMain restores the body so downstream handlers
+	// can still read the full original content.
+	originalBody := `{"branch":"main","message":"a commit","files":[]}`
+	req := httptest.NewRequest(http.MethodPost, "/commit", bytes.NewReader([]byte(originalBody)))
+
+	if !commitTargetsMain(req) {
+		t.Error("expected true for branch=main")
+	}
+
+	remaining, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatalf("read body after commitTargetsMain: %v", err)
+	}
+	if string(remaining) != originalBody {
+		t.Errorf("body not restored: got %q, want %q", string(remaining), originalBody)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// repoAndSubPath tests
+// ---------------------------------------------------------------------------
+
+func TestRepoAndSubPath(t *testing.T) {
+	tests := []struct {
+		path        string
+		wantRepo    string
+		wantSubPath string
+	}{
+		{"/repos", "", ""},
+		{"/repos/", "", ""},
+		{"/repos/myrepo", "", ""},
+		{"/repos/myrepo/", "myrepo", ""},
+		{"/repos/myrepo/branches", "myrepo", "branches"},
+		{"/repos/myrepo/commit", "myrepo", "commit"},
+		{"/repos/myrepo/branch/feature/with/slashes", "myrepo", "branch/feature/with/slashes"},
+		{"/healthz", "", ""},
+		{"", "", ""},
+	}
+	for _, tc := range tests {
+		repo, sub := repoAndSubPath(tc.path)
+		if repo != tc.wantRepo || sub != tc.wantSubPath {
+			t.Errorf("repoAndSubPath(%q) = (%q, %q), want (%q, %q)",
+				tc.path, repo, sub, tc.wantRepo, tc.wantSubPath)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Role transition tests
+// ---------------------------------------------------------------------------
+
+func TestRBACMiddleware_ReaderUpgradedToWriter(t *testing.T) {
+	var currentRole model.RoleType = model.RoleReader
+	store := &mockRoleStore{
+		getRoleFn: func(_ context.Context, repo, identity string) (*model.Role, error) {
+			return &model.Role{Identity: identity, Role: currentRole}, nil
+		},
+	}
+	h := rbacTestServer(store, "", "bob@example.com")
+
+	// As reader, POST /commit to a branch → 403.
+	rec := rbacDo(t, h, http.MethodPost, "/repos/myrepo/commit",
+		`{"branch":"feature/x","message":"m","files":[]}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("reader POST commit: expected 403, got %d", rec.Code)
+	}
+
+	// Upgrade role to writer.
+	currentRole = model.RoleWriter
+
+	// Writer can now commit to a feature branch → 200.
+	rec = rbacDo(t, h, http.MethodPost, "/repos/myrepo/commit",
+		`{"branch":"feature/x","message":"m","files":[]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("writer POST commit: expected 200, got %d", rec.Code)
 	}
 }
 
