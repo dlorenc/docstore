@@ -1270,6 +1270,278 @@ func TestIntegrationRBAC_CrossRepoIsolation(t *testing.T) {
 // Purge integration tests
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Merge/rebase conflict body assertions (HTTP-level)
+// ---------------------------------------------------------------------------
+
+func TestIntegrationMerge_ConflictBody(t *testing.T) {
+	database := testutil.TestDB(t, dbpkg.RunMigrations)
+	writeStore := dbpkg.NewStore(database)
+	handler := server.New(writeStore, database, "test@example.com", "test@example.com")
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	post := func(path, body string) *http.Response {
+		t.Helper()
+		resp, err := http.Post(srv.URL+path, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST %s: %v", path, err)
+		}
+		return resp
+	}
+
+	// Step 1: Commit to main — shared.txt (seq=1).
+	r := post("/repos/default/commit", `{"branch":"main","message":"init","files":[{"path":"shared.txt","content":"b3JpZ2luYWw="}]}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("commit to main: expected 201, got %d", r.StatusCode)
+	}
+
+	// Step 2: Create branch (base=1).
+	r = post("/repos/default/branch", `{"name":"feature/merge-conflict"}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("create branch: expected 201, got %d", r.StatusCode)
+	}
+
+	// Step 3: Main modifies shared.txt (seq=2).
+	r = post("/repos/default/commit", `{"branch":"main","message":"main update","files":[{"path":"shared.txt","content":"bWFpbi11cGRhdGU="}]}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("commit to main: expected 201, got %d", r.StatusCode)
+	}
+
+	// Step 4: Branch modifies shared.txt (seq=3).
+	r = post("/repos/default/commit", `{"branch":"feature/merge-conflict","message":"branch update","files":[{"path":"shared.txt","content":"YnJhbmNoLXVwZGF0ZQ=="}]}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("commit to branch: expected 201, got %d", r.StatusCode)
+	}
+
+	// Step 5: POST /merge — must return 409 with conflict body.
+	r = post("/repos/default/merge", `{"branch":"feature/merge-conflict"}`)
+	defer r.Body.Close()
+	if r.StatusCode != http.StatusConflict {
+		var errBody map[string]interface{}
+		json.NewDecoder(r.Body).Decode(&errBody)
+		t.Fatalf("POST /merge: expected 409, got %d; body: %v", r.StatusCode, errBody)
+	}
+
+	var conflictResp struct {
+		Conflicts []struct {
+			Path            string `json:"path"`
+			MainVersionID   string `json:"main_version_id"`
+			BranchVersionID string `json:"branch_version_id"`
+		} `json:"conflicts"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&conflictResp); err != nil {
+		t.Fatalf("decode conflict response: %v", err)
+	}
+	if len(conflictResp.Conflicts) != 1 {
+		t.Fatalf("expected 1 conflict, got %d", len(conflictResp.Conflicts))
+	}
+	c := conflictResp.Conflicts[0]
+	if c.Path != "shared.txt" {
+		t.Errorf("expected conflict path shared.txt, got %q", c.Path)
+	}
+	if c.MainVersionID == "" {
+		t.Error("expected non-empty main_version_id")
+	}
+	if c.BranchVersionID == "" {
+		t.Error("expected non-empty branch_version_id")
+	}
+	if c.MainVersionID == c.BranchVersionID {
+		t.Error("main_version_id and branch_version_id must differ")
+	}
+}
+
+func TestIntegrationRebase_ConflictBody(t *testing.T) {
+	database := testutil.TestDB(t, dbpkg.RunMigrations)
+	writeStore := dbpkg.NewStore(database)
+	handler := server.New(writeStore, database, "test@example.com", "test@example.com")
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	post := func(path, body string) *http.Response {
+		t.Helper()
+		resp, err := http.Post(srv.URL+path, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST %s: %v", path, err)
+		}
+		return resp
+	}
+
+	// Step 1: Commit to main — shared.txt (seq=1).
+	r := post("/repos/default/commit", `{"branch":"main","message":"init","files":[{"path":"shared.txt","content":"b3JpZ2luYWw="}]}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("commit to main: expected 201, got %d", r.StatusCode)
+	}
+
+	// Step 2: Create branch (base=1).
+	r = post("/repos/default/branch", `{"name":"feature/rebase-conflict"}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("create branch: expected 201, got %d", r.StatusCode)
+	}
+
+	// Step 3: Branch modifies shared.txt (seq=2).
+	r = post("/repos/default/commit", `{"branch":"feature/rebase-conflict","message":"branch update","files":[{"path":"shared.txt","content":"YnJhbmNoLXVwZGF0ZQ=="}]}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("commit to branch: expected 201, got %d", r.StatusCode)
+	}
+
+	// Step 4: Main modifies shared.txt (seq=3).
+	r = post("/repos/default/commit", `{"branch":"main","message":"main update","files":[{"path":"shared.txt","content":"bWFpbi11cGRhdGU="}]}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("commit to main: expected 201, got %d", r.StatusCode)
+	}
+
+	// Step 5: POST /rebase — must return 409 with conflict body.
+	r = post("/repos/default/rebase", `{"branch":"feature/rebase-conflict"}`)
+	defer r.Body.Close()
+	if r.StatusCode != http.StatusConflict {
+		var errBody map[string]interface{}
+		json.NewDecoder(r.Body).Decode(&errBody)
+		t.Fatalf("POST /rebase: expected 409, got %d; body: %v", r.StatusCode, errBody)
+	}
+
+	var conflictResp struct {
+		Conflicts []struct {
+			Path            string `json:"path"`
+			MainVersionID   string `json:"main_version_id"`
+			BranchVersionID string `json:"branch_version_id"`
+		} `json:"conflicts"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&conflictResp); err != nil {
+		t.Fatalf("decode conflict response: %v", err)
+	}
+	if len(conflictResp.Conflicts) != 1 {
+		t.Fatalf("expected 1 conflict, got %d", len(conflictResp.Conflicts))
+	}
+	c := conflictResp.Conflicts[0]
+	if c.Path != "shared.txt" {
+		t.Errorf("expected conflict path shared.txt, got %q", c.Path)
+	}
+	if c.MainVersionID == "" {
+		t.Error("expected non-empty main_version_id")
+	}
+	if c.BranchVersionID == "" {
+		t.Error("expected non-empty branch_version_id")
+	}
+	if c.MainVersionID == c.BranchVersionID {
+		t.Error("main_version_id and branch_version_id must differ")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Branch lifecycle edge cases (HTTP-level)
+// ---------------------------------------------------------------------------
+
+func TestIntegrationBranchLifecycle_MergeAfterMerge(t *testing.T) {
+	database := testutil.TestDB(t, dbpkg.RunMigrations)
+	writeStore := dbpkg.NewStore(database)
+	handler := server.New(writeStore, database, "test@example.com", "test@example.com")
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	post := func(path, body string) *http.Response {
+		t.Helper()
+		resp, err := http.Post(srv.URL+path, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST %s: %v", path, err)
+		}
+		return resp
+	}
+
+	// Create branch and commit to it.
+	r := post("/repos/default/branch", `{"name":"feature/once"}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("create branch: expected 201, got %d", r.StatusCode)
+	}
+	r = post("/repos/default/commit", `{"branch":"feature/once","message":"work","files":[{"path":"f.txt","content":"dGVzdA=="}]}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("commit: expected 201, got %d", r.StatusCode)
+	}
+
+	// First merge — should succeed.
+	r = post("/repos/default/merge", `{"branch":"feature/once"}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("first merge: expected 200, got %d", r.StatusCode)
+	}
+
+	// Second merge of already-merged branch — should fail with 409.
+	r = post("/repos/default/merge", `{"branch":"feature/once"}`)
+	defer r.Body.Close()
+	if r.StatusCode != http.StatusConflict {
+		t.Fatalf("second merge: expected 409, got %d", r.StatusCode)
+	}
+}
+
+func TestIntegrationBranchLifecycle_CommitAfterMerge(t *testing.T) {
+	database := testutil.TestDB(t, dbpkg.RunMigrations)
+	writeStore := dbpkg.NewStore(database)
+	handler := server.New(writeStore, database, "test@example.com", "test@example.com")
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	post := func(path, body string) *http.Response {
+		t.Helper()
+		resp, err := http.Post(srv.URL+path, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST %s: %v", path, err)
+		}
+		return resp
+	}
+
+	// Create branch, commit, and merge it.
+	r := post("/repos/default/branch", `{"name":"feature/commit-after-merge"}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("create branch: expected 201, got %d", r.StatusCode)
+	}
+	r = post("/repos/default/commit", `{"branch":"feature/commit-after-merge","message":"initial","files":[{"path":"g.txt","content":"dGVzdA=="}]}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("commit: expected 201, got %d", r.StatusCode)
+	}
+	r = post("/repos/default/merge", `{"branch":"feature/commit-after-merge"}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("merge: expected 200, got %d", r.StatusCode)
+	}
+
+	// Commit to merged branch — must fail with 409.
+	r = post("/repos/default/commit", `{"branch":"feature/commit-after-merge","message":"post-merge","files":[{"path":"g.txt","content":"dXBkYXRlZA=="}]}`)
+	defer r.Body.Close()
+	if r.StatusCode != http.StatusConflict {
+		t.Fatalf("commit after merge: expected 409, got %d", r.StatusCode)
+	}
+}
+
+func TestIntegrationBranchLifecycle_RebaseMain(t *testing.T) {
+	database := testutil.TestDB(t, dbpkg.RunMigrations)
+	writeStore := dbpkg.NewStore(database)
+	handler := server.New(writeStore, database, "test@example.com", "test@example.com")
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/repos/default/rebase", "application/json",
+		strings.NewReader(`{"branch":"main"}`))
+	if err != nil {
+		t.Fatalf("POST /rebase: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("rebase main: expected 400, got %d", resp.StatusCode)
+	}
+}
+
 func TestIntegrationPurge_FullFlow(t *testing.T) {
 	database := testutil.TestDB(t, dbpkg.RunMigrations)
 	writeStore := dbpkg.NewStore(database)
