@@ -92,7 +92,7 @@ ko build ./cmd/docstore
 | `--dev-identity`    | Same as `DEV_IDENTITY` env var; bypasses IAP JWT validation              |
 | `--bootstrap-admin` | Same as `BOOTSTRAP_ADMIN` env var; grants bootstrap admin access         |
 
-Environment variables take precedence over omitted flags. If both the flag and the env var are set, the flag wins (the env var is only read when the flag is empty string).
+The flag takes precedence over the env var; the env var is only used as a fallback when the flag is not set (empty string).
 
 ### Example Cloud Run deployment
 
@@ -921,14 +921,17 @@ The server uses the standard `log` package. All startup events, migration status
 8. Create your first repo:
    ```bash
    curl -X POST https://<url>/repos \
-     -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
      -H "Content-Type: application/json" \
      -d '{"name": "myrepo"}'
    ```
+   > **Note:** When IAP is enabled, the proxy automatically injects the
+   > `X-Goog-IAP-JWT-Assertion` header — clients never set it directly.
+   > The examples above work as-is when the request passes through IAP.
+   > For local testing with `--dev-identity`, no auth header is needed since
+   > IAP validation is bypassed entirely.
 9. Grant yourself admin:
    ```bash
    curl -X PUT https://<url>/repos/myrepo/roles/you@example.com \
-     -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
      -H "Content-Type: application/json" \
      -d '{"role": "admin"}'
    ```
