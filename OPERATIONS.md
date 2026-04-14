@@ -20,6 +20,7 @@ This document covers deployment, configuration, API reference, database schema, 
                        ▼
              Cloud SQL (PostgreSQL)
              ┌─────────────────────┐
+             │ orgs                │
              │ repos               │
              │ branches            │
              │ commits             │
@@ -179,13 +180,17 @@ The `--bootstrap-admin` flag (or `BOOTSTRAP_ADMIN` env var) grants a specified i
 
 ```bash
 # 1. Deploy with --bootstrap-admin set to your identity
-# 2. Create the first repo
+# 2. Create an org and repo (the default org + repo are seeded by migration)
+curl -X POST https://docstore.example.com/orgs \
+  -H "Content-Type: application/json" \
+  -d '{"name": "acme"}'
+
 curl -X POST https://docstore.example.com/repos \
   -H "Content-Type: application/json" \
-  -d '{"name": "myrepo"}'
+  -d '{"owner": "acme", "name": "myrepo"}'
 
 # 3. Grant yourself (or someone) admin access
-curl -X PUT https://docstore.example.com/repos/myrepo/roles/alice@example.com \
+curl -X PUT https://docstore.example.com/repos/acme/myrepo/-/roles/alice@example.com \
   -H "Content-Type: application/json" \
   -d '{"role": "admin"}'
 
@@ -203,7 +208,25 @@ All endpoints (except `/healthz`) require authentication. Errors are returned as
 {"error": "human-readable message"}
 ```
 
-Base path for repo-scoped operations: `/repos/{name}`
+### URL structure
+
+Org and repo management are at the top level. All repo-scoped operations use the `/-/` separator to unambiguously separate the full repo name (which may contain slashes) from the endpoint:
+
+```
+POST   /orgs                             create an org
+GET    /orgs                             list orgs
+GET    /orgs/{org}                       get an org
+DELETE /orgs/{org}                       delete an org
+GET    /orgs/{org}/repos                 list repos in an org
+
+POST   /repos                            create a repo
+GET    /repos                            list all repos
+GET    /repos/{full-name}                get a repo (full-name may contain slashes)
+DELETE /repos/{full-name}                delete a repo
+
+GET    /repos/acme/myrepo/-/tree         example repo-scoped endpoint
+POST   /repos/acme/myrepo/-/commit       example repo-scoped endpoint
+```
 
 ---
 
@@ -219,29 +242,109 @@ No authentication required. Returns `200 OK` when the server is running.
 
 ---
 
-### Repo Management
+### Org Management
 
-#### `POST /repos`
+#### `POST /orgs`
 
-Create a new repository.
+Create a new org.
 
 **Request body:**
 ```json
-{
-  "name": "myrepo"
-}
+{"name": "acme"}
 ```
 
 **Response `201 Created`:**
 ```json
 {
-  "name": "myrepo",
+  "name": "acme",
   "created_at": "2024-01-15T12:00:00Z",
   "created_by": "alice@example.com"
 }
 ```
 
-**Errors:** `409 Conflict` if repo already exists.
+**Errors:** `409 Conflict` if org already exists.
+
+---
+
+#### `GET /orgs`
+
+List all orgs.
+
+**Response `200 OK`:**
+```json
+{
+  "orgs": [
+    {"name": "acme", "created_at": "...", "created_by": "..."}
+  ]
+}
+```
+
+---
+
+#### `GET /orgs/{org}`
+
+Get a single org.
+
+**Response `200 OK`:** same shape as an element of `GET /orgs`.
+
+**Errors:** `404 Not Found`.
+
+---
+
+#### `DELETE /orgs/{org}`
+
+Delete an org. Fails if the org still has repos.
+
+**Response:** `204 No Content`
+
+**Errors:** `404 Not Found`; `409 Conflict` if org has repos.
+
+---
+
+#### `GET /orgs/{org}/repos`
+
+List all repos owned by an org.
+
+**Response `200 OK`:**
+```json
+{
+  "repos": [
+    {"name": "acme/myrepo", "owner": "acme", "created_at": "...", "created_by": "..."}
+  ]
+}
+```
+
+---
+
+### Repo Management
+
+#### `POST /repos`
+
+Create a new repository. The repo is owned by an existing org.
+
+**Request body:**
+```json
+{
+  "owner": "acme",
+  "name": "myrepo"
+}
+```
+
+- `owner` — the org name (must already exist)
+- `name` — the repo path within the org (may contain slashes for subgroup nesting, e.g. `team/subrepo`)
+- The full repo identifier is `owner/name` (e.g. `acme/myrepo` or `acme/team/subrepo`)
+
+**Response `201 Created`:**
+```json
+{
+  "name": "acme/myrepo",
+  "owner": "acme",
+  "created_at": "2024-01-15T12:00:00Z",
+  "created_by": "alice@example.com"
+}
+```
+
+**Errors:** `409 Conflict` if repo already exists; `404 Not Found` if org does not exist.
 
 ---
 
@@ -253,7 +356,7 @@ List all repositories.
 ```json
 {
   "repos": [
-    {"name": "myrepo", "created_at": "...", "created_by": "..."}
+    {"name": "acme/myrepo", "owner": "acme", "created_at": "...", "created_by": "..."}
   ]
 }
 ```
@@ -262,7 +365,7 @@ List all repositories.
 
 #### `GET /repos/{name}`
 
-Get a single repository by name.
+Get a single repository by its full name (e.g. `acme/myrepo`).
 
 **Response `200 OK`:** same shape as an element of the `GET /repos` list.
 
@@ -282,7 +385,9 @@ Hard-delete a repository (all branches, commits, documents, and roles).
 
 ### Branches
 
-#### `GET /repos/{name}/branches`
+All branch endpoints use the `/-/` separator. For a repo named `acme/myrepo`, the URL is `/repos/acme/myrepo/-/branches`.
+
+#### `GET /repos/{name}/-/branches`
 
 List all branches in the repo.
 
@@ -309,7 +414,7 @@ List all branches in the repo.
 
 ---
 
-#### `POST /repos/{name}/branch`
+#### `POST /repos/{name}/-/branch`
 
 Create a new branch from the current `main` head. Branch names may contain slashes.
 
@@ -332,7 +437,7 @@ Create a new branch from the current `main` head. Branch names may contain slash
 
 ---
 
-#### `DELETE /repos/{name}/branch/{bname}`
+#### `DELETE /repos/{name}/-/branch/{bname}`
 
 Delete a branch. `main` cannot be deleted. Branch names may contain slashes.
 
@@ -346,7 +451,7 @@ Delete a branch. `main` cannot be deleted. Branch names may contain slashes.
 
 ### Commits
 
-#### `POST /repos/{name}/commit`
+#### `POST /repos/{name}/-/commit`
 
 Commit one or more file changes to a branch.
 
@@ -383,7 +488,7 @@ Commit one or more file changes to a branch.
 
 ---
 
-#### `GET /repos/{name}/commit/{sequence}`
+#### `GET /repos/{name}/-/commit/{sequence}`
 
 Get commit metadata and the list of files changed.
 
@@ -407,7 +512,7 @@ Get commit metadata and the list of files changed.
 
 ### Tree and File Content
 
-#### `GET /repos/{name}/tree`
+#### `GET /repos/{name}/-/tree`
 
 Materialize the full file tree for a branch at an optional sequence number. Supports cursor-based pagination.
 
@@ -432,7 +537,7 @@ Returns an empty array `[]` for empty trees.
 
 ---
 
-#### `GET /repos/{name}/file/{path...}`
+#### `GET /repos/{name}/-/file/{path...}`
 
 Get the content of a file on a branch at an optional sequence.
 
@@ -454,7 +559,7 @@ Get the content of a file on a branch at an optional sequence.
 
 ---
 
-#### `GET /repos/{name}/file/{path...}/history`
+#### `GET /repos/{name}/-/file/{path...}/history`
 
 Get the commit history for a file on a branch.
 
@@ -480,7 +585,7 @@ Get the commit history for a file on a branch.
 
 ### Diff
 
-#### `GET /repos/{name}/diff`
+#### `GET /repos/{name}/-/diff`
 
 Compare a branch against its base sequence on `main`, showing what changed on each side and any conflicts.
 
@@ -516,7 +621,7 @@ Compare a branch against its base sequence on `main`, showing what changed on ea
 
 ### Merge
 
-#### `POST /repos/{name}/merge`
+#### `POST /repos/{name}/-/merge`
 
 Merge a branch into `main`. Cannot merge `main` into itself.
 
@@ -553,7 +658,7 @@ Merge a branch into `main`. Cannot merge `main` into itself.
 
 ### Rebase
 
-#### `POST /repos/{name}/rebase`
+#### `POST /repos/{name}/-/rebase`
 
 Replay branch commits on top of the current `main` head. Updates the branch's `base_sequence` and `head_sequence`. Cannot rebase `main`.
 
@@ -594,7 +699,7 @@ Replay branch commits on top of the current `main` head. Updates the branch's `b
 
 ### Reviews
 
-#### `POST /repos/{name}/review`
+#### `POST /repos/{name}/-/review`
 
 Submit a review (approval, rejection, or dismissal) for a branch.
 
@@ -624,7 +729,7 @@ Status values: `approved`, `rejected`, `dismissed`.
 
 ---
 
-#### `GET /repos/{name}/branch/{branch}/reviews`
+#### `GET /repos/{name}/-/branch/{branch}/reviews`
 
 List reviews for a branch, optionally scoped to a specific head sequence.
 
@@ -650,7 +755,7 @@ List reviews for a branch, optionally scoped to a specific head sequence.
 
 ### Check Runs
 
-#### `POST /repos/{name}/check`
+#### `POST /repos/{name}/-/check`
 
 Report an external CI check run result for a branch.
 
@@ -677,7 +782,7 @@ Status values: `pending`, `passed`, `failed`.
 
 ---
 
-#### `GET /repos/{name}/branch/{branch}/checks`
+#### `GET /repos/{name}/-/branch/{branch}/checks`
 
 List check runs for a branch, optionally scoped to a specific head sequence.
 
@@ -705,7 +810,7 @@ List check runs for a branch, optionally scoped to a specific head sequence.
 
 All role endpoints require `admin` role.
 
-#### `GET /repos/{name}/roles`
+#### `GET /repos/{name}/-/roles`
 
 List all roles in the repo.
 
@@ -721,7 +826,7 @@ List all roles in the repo.
 
 ---
 
-#### `PUT /repos/{name}/roles/{identity}`
+#### `PUT /repos/{name}/-/roles/{identity}`
 
 Set or update the role for an identity. Identity may contain slashes (e.g. email addresses are routed correctly).
 
@@ -739,7 +844,7 @@ Valid roles: `reader`, `writer`, `maintainer`, `admin`.
 
 ---
 
-#### `DELETE /repos/{name}/roles/{identity}`
+#### `DELETE /repos/{name}/-/roles/{identity}`
 
 Remove an identity's role from the repo.
 
@@ -751,7 +856,7 @@ Remove an identity's role from the repo.
 
 ### Branch Status (Not Implemented)
 
-#### `GET /repos/{name}/branch/{bname}/status`
+#### `GET /repos/{name}/-/branch/{bname}/status`
 
 Returns `501 Not Implemented`. Intended for future policy evaluation (OPA integration).
 
@@ -759,19 +864,34 @@ Returns `501 Not Implemented`. Intended for future policy evaluation (OPA integr
 
 ## Database Schema
 
-All tables are scoped to a `repo` column (foreign key to `repos.name`). The schema is defined in `internal/db/migrations/000001_initial_schema.up.sql`.
+All data tables are scoped to a `repo` column (foreign key to `repos.name`). The schema is defined in `internal/db/migrations/000001_initial_schema.up.sql`.
+
+### `orgs`
+
+Top-level namespace. Every repo must belong to an org.
+
+| Column       | Type          | Description                        |
+|-------------|--------------|-------------------------------------|
+| `name`       | `TEXT PK`     | Unique org name (e.g. `acme`)      |
+| `created_at` | `TIMESTAMPTZ` | Creation timestamp                 |
+| `created_by` | `TEXT`        | Identity that created the org      |
+
+Seeded with a `default` org on migration.
+
+---
 
 ### `repos`
 
-Top-level namespace for multi-tenancy.
+Named tenants owned by an org. The full repo identifier is the `name` (e.g. `acme/myrepo`); `owner` is the first path segment and must match an existing org.
 
-| Column       | Type         | Description                        |
-|-------------|-------------|-------------------------------------|
-| `name`       | `TEXT PK`    | Unique repo name                   |
-| `created_at` | `TIMESTAMPTZ`| Creation timestamp                 |
-| `created_by` | `TEXT`       | Identity that created the repo     |
+| Column       | Type          | Description                                                    |
+|-------------|--------------|----------------------------------------------------------------|
+| `name`       | `TEXT PK`     | Full path, e.g. `acme/myrepo` or `acme/team/subrepo`         |
+| `owner`      | `TEXT`        | FK → `orgs.name`; must equal `split_part(name, '/', 1)`      |
+| `created_at` | `TIMESTAMPTZ` | Creation timestamp                                             |
+| `created_by` | `TEXT`        | Identity that created the repo                                 |
 
-Seeded with a `default` repo on migration.
+Seeded with a `default/default` repo (owned by org `default`) on migration.
 
 ---
 
@@ -905,7 +1025,7 @@ Index: `(repo, branch, sequence, check_name)`.
 
 ### Logging
 
-The server uses the standard `log` package. All startup events, migration status, and fatal errors are written to stderr. There is no structured logging; log aggregation relies on Cloud Run's default log collection.
+The server uses the standard `log/slog` package for structured JSON logging. All startup events, migration status, request details, and errors are written to stderr as JSON. Cloud Run's log collection will parse this automatically.
 
 ---
 
@@ -918,11 +1038,15 @@ The server uses the standard `log` package. All startup events, migration status
 5. Deploy to Cloud Run with `DATABASE_URL` and `BOOTSTRAP_ADMIN` set
 6. Enable IAP on the Cloud Run service
 7. Verify: `curl https://<url>/healthz` → `{"status":"ok"}`
-8. Create your first repo:
+8. Create an org and your first repo (migration seeds `default` org and `default/default` repo; skip if those are sufficient):
    ```bash
+   curl -X POST https://<url>/orgs \
+     -H "Content-Type: application/json" \
+     -d '{"name": "acme"}'
+
    curl -X POST https://<url>/repos \
      -H "Content-Type: application/json" \
-     -d '{"name": "myrepo"}'
+     -d '{"owner": "acme", "name": "myrepo"}'
    ```
    > **Note:** When IAP is enabled, the proxy automatically injects the
    > `X-Goog-IAP-JWT-Assertion` header — clients never set it directly.
@@ -931,8 +1055,8 @@ The server uses the standard `log` package. All startup events, migration status
    > IAP validation is bypassed entirely.
 9. Grant yourself admin:
    ```bash
-   curl -X PUT https://<url>/repos/myrepo/roles/you@example.com \
+   curl -X PUT https://<url>/repos/acme/myrepo/-/roles/you@example.com \
      -H "Content-Type: application/json" \
      -d '{"role": "admin"}'
    ```
-10. Initialize a local workspace: `ds init https://<url>/repos/myrepo`
+10. Initialize a local workspace: `ds init https://<url>/repos/acme/myrepo`
