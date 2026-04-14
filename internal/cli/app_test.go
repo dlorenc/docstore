@@ -35,7 +35,7 @@ func initWorkspace(t *testing.T, app *App, remote, branch, author string) {
 	if err := os.MkdirAll(filepath.Join(app.Dir, configDir), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.saveConfig(&Config{Remote: remote, Repo: "default", Branch: branch, Author: author}); err != nil {
+	if err := app.saveConfig(&Config{Remote: remote, Repo: "default/default", Branch: branch, Author: author}); err != nil {
 		t.Fatal(err)
 	}
 	if err := app.saveState(&State{Branch: branch, Files: make(map[string]string)}); err != nil {
@@ -64,9 +64,9 @@ func newEmptyRepoServer(t *testing.T) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case r.Method == "GET" && r.URL.Path == "/repos/default/tree":
+		case r.Method == "GET" && r.URL.Path == "/repos/default/default/-/tree":
 			json.NewEncoder(w).Encode([]treeEntry{})
-		case r.Method == "GET" && r.URL.Path == "/repos/default/branches":
+		case r.Method == "GET" && r.URL.Path == "/repos/default/default/-/branches":
 			json.NewEncoder(w).Encode([]model.Branch{{Name: "main", HeadSequence: 0}})
 		default:
 			http.NotFound(w, r)
@@ -135,18 +135,17 @@ func TestInitTrimsTrailingSlash(t *testing.T) {
 }
 
 // TestInitRepoFlagStripsURLSuffix verifies that when --repo is passed explicitly
-// alongside a URL that already contains /repos/:name, the /repos/:name suffix is
-// still stripped from baseRemote.  Without the fix this produced doubled paths
-// like .../repos/myrepo/repos/myrepo/...
+// alongside a URL that already contains /repos/:owner/:name, the /repos/... suffix is
+// still stripped from baseRemote.  Without the fix this produced doubled paths.
 func TestInitRepoFlagStripsURLSuffix(t *testing.T) {
-	// The mock server registers the /repos/myrepo/* paths that Init will call.
+	// The mock server registers the /repos/default/myrepo/-/* paths that Init will call.
 	var srv *httptest.Server
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case r.Method == "GET" && r.URL.Path == "/repos/myrepo/tree":
+		case r.Method == "GET" && r.URL.Path == "/repos/default/myrepo/-/tree":
 			json.NewEncoder(w).Encode([]treeEntry{})
-		case r.Method == "GET" && r.URL.Path == "/repos/myrepo/branches":
+		case r.Method == "GET" && r.URL.Path == "/repos/default/myrepo/-/branches":
 			json.NewEncoder(w).Encode([]model.Branch{{Name: "main", HeadSequence: 0}})
 		default:
 			http.NotFound(w, r)
@@ -156,10 +155,10 @@ func TestInitRepoFlagStripsURLSuffix(t *testing.T) {
 
 	app, _ := newTestApp(t, srv)
 
-	// Pass a URL that already embeds the /repos/myrepo suffix AND an explicit
-	// --repo flag with the same name.
-	embeddedURL := srv.URL + "/repos/myrepo"
-	if err := app.Init(embeddedURL, "myrepo", "carol"); err != nil {
+	// Pass a URL that already embeds the /repos/default/myrepo suffix AND an explicit
+	// --repo flag with the same full path.
+	embeddedURL := srv.URL + "/repos/default/myrepo"
+	if err := app.Init(embeddedURL, "default/myrepo", "carol"); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 
@@ -167,12 +166,12 @@ func TestInitRepoFlagStripsURLSuffix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Remote must be the bare host, not .../repos/myrepo.
+	// Remote must be the bare host, not .../repos/default/myrepo.
 	if cfg.Remote != srv.URL {
 		t.Errorf("remote = %q, want %q (suffix must be stripped)", cfg.Remote, srv.URL)
 	}
-	if cfg.Repo != "myrepo" {
-		t.Errorf("repo = %q, want %q", cfg.Repo, "myrepo")
+	if cfg.Repo != "default/myrepo" {
+		t.Errorf("repo = %q, want %q", cfg.Repo, "default/myrepo")
 	}
 }
 
@@ -196,16 +195,16 @@ func TestInitFetchesFiles(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case r.Method == "GET" && r.URL.Path == "/repos/default/tree":
+		case r.Method == "GET" && r.URL.Path == "/repos/default/default/-/tree":
 			json.NewEncoder(w).Encode([]treeEntry{
 				{Path: "README.md", VersionID: "v1", ContentHash: HashBytes([]byte("hello"))},
 				{Path: "src/main.go", VersionID: "v2", ContentHash: HashBytes([]byte("package main"))},
 			})
-		case r.Method == "GET" && r.URL.Path == "/repos/default/file/README.md":
+		case r.Method == "GET" && r.URL.Path == "/repos/default/default/-/file/README.md":
 			json.NewEncoder(w).Encode(model.FileResponse{Path: "README.md", Content: []byte("hello")})
-		case r.Method == "GET" && r.URL.Path == "/repos/default/file/src/main.go":
+		case r.Method == "GET" && r.URL.Path == "/repos/default/default/-/file/src/main.go":
 			json.NewEncoder(w).Encode(model.FileResponse{Path: "src/main.go", Content: []byte("package main")})
-		case r.Method == "GET" && r.URL.Path == "/repos/default/branches":
+		case r.Method == "GET" && r.URL.Path == "/repos/default/default/-/branches":
 			json.NewEncoder(w).Encode([]model.Branch{{Name: "main", HeadSequence: 7}})
 		default:
 			http.NotFound(w, r)
@@ -358,7 +357,7 @@ func TestStatusNoWorkspace(t *testing.T) {
 func TestCommit(t *testing.T) {
 	var receivedReq model.CommitRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "POST" && r.URL.Path == "/repos/default/commit" {
+		if r.Method == "POST" && r.URL.Path == "/repos/default/default/-/commit" {
 			json.NewDecoder(r.Body).Decode(&receivedReq)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
@@ -427,7 +426,7 @@ func TestCommitNoChanges(t *testing.T) {
 func TestCommitWithDelete(t *testing.T) {
 	var receivedReq model.CommitRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "POST" && r.URL.Path == "/repos/default/commit" {
+		if r.Method == "POST" && r.URL.Path == "/repos/default/default/-/commit" {
 			json.NewDecoder(r.Body).Decode(&receivedReq)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
@@ -488,7 +487,7 @@ func TestCommitServerError(t *testing.T) {
 func TestCommitMultipleFiles(t *testing.T) {
 	var receivedReq model.CommitRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "POST" && r.URL.Path == "/repos/default/commit" {
+		if r.Method == "POST" && r.URL.Path == "/repos/default/default/-/commit" {
 			json.NewDecoder(r.Body).Decode(&receivedReq)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
@@ -531,7 +530,7 @@ func TestCommitMultipleFiles(t *testing.T) {
 
 func TestCheckoutNew(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "POST" && r.URL.Path == "/repos/default/branch" {
+		if r.Method == "POST" && r.URL.Path == "/repos/default/default/-/branch" {
 			var req model.CreateBranchRequest
 			json.NewDecoder(r.Body).Decode(&req)
 			w.Header().Set("Content-Type", "application/json")
@@ -604,13 +603,13 @@ func TestCheckout(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case r.Method == "GET" && r.URL.Path == "/repos/default/tree":
+		case r.Method == "GET" && r.URL.Path == "/repos/default/default/-/tree":
 			json.NewEncoder(w).Encode([]treeEntry{
 				{Path: "main.go", VersionID: "v1", ContentHash: "hash1"},
 				{Path: "README.md", VersionID: "v2", ContentHash: "hash2"},
 			})
-		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/default/file/"):
-			path := strings.TrimPrefix(r.URL.Path, "/repos/default/file/")
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/default/default/-/file/"):
+			path := strings.TrimPrefix(r.URL.Path, "/repos/default/default/-/file/")
 			content := map[string]string{
 				"main.go":   "package main",
 				"README.md": "# Hello",
@@ -619,7 +618,7 @@ func TestCheckout(t *testing.T) {
 				Path:    path,
 				Content: []byte(content[path]),
 			})
-		case r.Method == "GET" && r.URL.Path == "/repos/default/branches":
+		case r.Method == "GET" && r.URL.Path == "/repos/default/default/-/branches":
 			json.NewEncoder(w).Encode([]model.Branch{{Name: "main", HeadSequence: 3}})
 		default:
 			http.NotFound(w, r)
@@ -675,9 +674,9 @@ func TestCheckoutRemovesDeletedFiles(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case r.Method == "GET" && r.URL.Path == "/repos/default/tree":
+		case r.Method == "GET" && r.URL.Path == "/repos/default/default/-/tree":
 			json.NewEncoder(w).Encode([]treeEntry{})
-		case r.Method == "GET" && r.URL.Path == "/repos/default/branches":
+		case r.Method == "GET" && r.URL.Path == "/repos/default/default/-/branches":
 			json.NewEncoder(w).Encode([]model.Branch{{Name: "feature/new", HeadSequence: 0}})
 		default:
 			http.NotFound(w, r)
@@ -730,20 +729,20 @@ func TestPull(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case r.Method == "GET" && r.URL.Path == "/repos/default/tree":
+		case r.Method == "GET" && r.URL.Path == "/repos/default/default/-/tree":
 			if r.URL.Query().Get("branch") != "feature/x" {
 				t.Errorf("expected branch=feature/x, got %q", r.URL.Query().Get("branch"))
 			}
 			json.NewEncoder(w).Encode([]treeEntry{
 				{Path: "updated.txt", VersionID: "v3", ContentHash: "newhash"},
 			})
-		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/default/file/"):
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/default/default/-/file/"):
 			callCount++
 			json.NewEncoder(w).Encode(model.FileResponse{
 				Path:    "updated.txt",
 				Content: []byte("updated content"),
 			})
-		case r.Method == "GET" && r.URL.Path == "/repos/default/branches":
+		case r.Method == "GET" && r.URL.Path == "/repos/default/default/-/branches":
 			json.NewEncoder(w).Encode([]model.Branch{{Name: "feature/x", HeadSequence: 5}})
 		default:
 			http.NotFound(w, r)
@@ -794,14 +793,14 @@ func TestPullSkipsUnchanged(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case r.Method == "GET" && r.URL.Path == "/repos/default/tree":
+		case r.Method == "GET" && r.URL.Path == "/repos/default/default/-/tree":
 			json.NewEncoder(w).Encode([]treeEntry{
 				{Path: "same.txt", VersionID: "v1", ContentHash: sameHash},
 			})
-		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/default/file/"):
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/default/default/-/file/"):
 			fileDownloads++
 			json.NewEncoder(w).Encode(model.FileResponse{Path: "same.txt", Content: []byte(sameContent)})
-		case r.Method == "GET" && r.URL.Path == "/repos/default/branches":
+		case r.Method == "GET" && r.URL.Path == "/repos/default/default/-/branches":
 			json.NewEncoder(w).Encode([]model.Branch{{Name: "main", HeadSequence: 1}})
 		default:
 			http.NotFound(w, r)
@@ -846,9 +845,9 @@ func TestSyncTreeUpdatesSequence(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case r.Method == "GET" && r.URL.Path == "/repos/default/tree":
+		case r.Method == "GET" && r.URL.Path == "/repos/default/default/-/tree":
 			json.NewEncoder(w).Encode([]treeEntry{})
-		case r.Method == "GET" && r.URL.Path == "/repos/default/branches":
+		case r.Method == "GET" && r.URL.Path == "/repos/default/default/-/branches":
 			json.NewEncoder(w).Encode([]model.Branch{{Name: "main", HeadSequence: 42}})
 		default:
 			http.NotFound(w, r)
@@ -877,7 +876,7 @@ func TestMerge(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case r.Method == "POST" && r.URL.Path == "/repos/default/merge":
+		case r.Method == "POST" && r.URL.Path == "/repos/default/default/-/merge":
 			var req model.MergeRequest
 			json.NewDecoder(r.Body).Decode(&req)
 			if req.Branch != "feature/done" {
@@ -885,9 +884,9 @@ func TestMerge(t *testing.T) {
 			}
 			w.WriteHeader(http.StatusOK)
 			json.NewEncoder(w).Encode(model.MergeResponse{Sequence: 10})
-		case r.Method == "GET" && r.URL.Path == "/repos/default/tree":
+		case r.Method == "GET" && r.URL.Path == "/repos/default/default/-/tree":
 			json.NewEncoder(w).Encode([]treeEntry{})
-		case r.Method == "GET" && r.URL.Path == "/repos/default/branches":
+		case r.Method == "GET" && r.URL.Path == "/repos/default/default/-/branches":
 			json.NewEncoder(w).Encode([]model.Branch{{Name: "main", HeadSequence: 10}})
 		default:
 			http.NotFound(w, r)
@@ -954,7 +953,7 @@ func TestMergeConflict(t *testing.T) {
 
 func TestDiff(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "GET" && r.URL.Path == "/repos/default/diff" {
+		if r.Method == "GET" && r.URL.Path == "/repos/default/default/-/diff" {
 			if r.URL.Query().Get("branch") != "feature/x" {
 				t.Errorf("diff branch = %q, want %q", r.URL.Query().Get("branch"), "feature/x")
 			}
@@ -1140,22 +1139,22 @@ func TestLog_FullHistory(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case r.Method == "GET" && r.URL.Path == "/repos/default/branches":
+		case r.Method == "GET" && r.URL.Path == "/repos/default/default/-/branches":
 			json.NewEncoder(w).Encode([]model.Branch{
 				{Name: "feature/x", HeadSequence: 3, BaseSequence: 0},
 			})
-		case r.Method == "GET" && r.URL.Path == "/repos/default/commit/3":
+		case r.Method == "GET" && r.URL.Path == "/repos/default/default/-/commit/3":
 			json.NewEncoder(w).Encode(commitInfo{
 				Sequence: 3, Branch: "feature/x", Author: "alice",
 				CreatedAt: mustParseTime("2026-04-14"), Message: "add tests",
 			})
-		case r.Method == "GET" && r.URL.Path == "/repos/default/commit/2":
+		case r.Method == "GET" && r.URL.Path == "/repos/default/default/-/commit/2":
 			// commit 2 is on main — should be skipped
 			json.NewEncoder(w).Encode(commitInfo{
 				Sequence: 2, Branch: "main", Author: "bob",
 				CreatedAt: mustParseTime("2026-04-14"), Message: "main commit",
 			})
-		case r.Method == "GET" && r.URL.Path == "/repos/default/commit/1":
+		case r.Method == "GET" && r.URL.Path == "/repos/default/default/-/commit/1":
 			json.NewEncoder(w).Encode(commitInfo{
 				Sequence: 1, Branch: "feature/x", Author: "alice",
 				CreatedAt: mustParseTime("2026-04-14"), Message: "initial",
@@ -1195,7 +1194,7 @@ func TestLog_FullHistory(t *testing.T) {
 func TestLog_FileHistory(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if r.Method == "GET" && r.URL.Path == "/repos/default/file/README.md/history" {
+		if r.Method == "GET" && r.URL.Path == "/repos/default/default/-/file/README.md/history" {
 			if r.URL.Query().Get("branch") != "main" {
 				t.Errorf("expected branch=main, got %q", r.URL.Query().Get("branch"))
 			}
@@ -1233,14 +1232,14 @@ func TestLog_Limit(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case r.Method == "GET" && r.URL.Path == "/repos/default/branches":
+		case r.Method == "GET" && r.URL.Path == "/repos/default/default/-/branches":
 			json.NewEncoder(w).Encode([]model.Branch{
 				{Name: "main", HeadSequence: 3, BaseSequence: 0},
 			})
-		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/default/commit/"):
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/default/default/-/commit/"):
 			callCount++
 			seq := int64(0)
-			fmt.Sscanf(r.URL.Path, "/repos/default/commit/%d", &seq)
+			fmt.Sscanf(r.URL.Path, "/repos/default/default/-/commit/%d", &seq)
 			json.NewEncoder(w).Encode(commitInfo{
 				Sequence: seq, Branch: "main", Author: "alice",
 				CreatedAt: mustParseTime("2026-04-14"), Message: fmt.Sprintf("commit %d", seq),
@@ -1274,7 +1273,7 @@ func TestLog_Limit(t *testing.T) {
 
 func TestShow_Commit(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "GET" && r.URL.Path == "/repos/default/commit/5" {
+		if r.Method == "GET" && r.URL.Path == "/repos/default/default/-/commit/5" {
 			w.Header().Set("Content-Type", "application/json")
 			vid := "v1"
 			json.NewEncoder(w).Encode(commitInfo{
@@ -1318,7 +1317,7 @@ func TestShow_Commit(t *testing.T) {
 
 func TestShow_FileAtSequence(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "GET" && r.URL.Path == "/repos/default/file/README.md" {
+		if r.Method == "GET" && r.URL.Path == "/repos/default/default/-/file/README.md" {
 			if r.URL.Query().Get("at") != "5" {
 				t.Errorf("expected at=5, got %q", r.URL.Query().Get("at"))
 			}
@@ -1369,7 +1368,7 @@ func TestShow_NotFound(t *testing.T) {
 func TestRebase_Success(t *testing.T) {
 	var gotReq model.RebaseRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "POST" && r.URL.Path == "/repos/default/rebase" {
+		if r.Method == "POST" && r.URL.Path == "/repos/default/default/-/rebase" {
 			json.NewDecoder(r.Body).Decode(&gotReq)
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(model.RebaseResponse{
@@ -1416,14 +1415,14 @@ func TestRebase_Conflict(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case r.Method == "POST" && r.URL.Path == "/repos/default/rebase":
+		case r.Method == "POST" && r.URL.Path == "/repos/default/default/-/rebase":
 			w.WriteHeader(http.StatusConflict)
 			json.NewEncoder(w).Encode(model.RebaseConflictError{
 				Conflicts: []model.ConflictEntry{
 					{Path: "README.md", MainVersionID: "v-main", BranchVersionID: "v-branch"},
 				},
 			})
-		case r.Method == "GET" && r.URL.Path == "/repos/default/file/README.md":
+		case r.Method == "GET" && r.URL.Path == "/repos/default/default/-/file/README.md":
 			branch := r.URL.Query().Get("branch")
 			if branch == "main" {
 				json.NewEncoder(w).Encode(model.FileResponse{Path: "README.md", Content: []byte("main version")})
@@ -1483,7 +1482,7 @@ func TestRebase_OnMain(t *testing.T) {
 func TestResolve_CommitsResolvedFile(t *testing.T) {
 	var gotReq model.CommitRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "POST" && r.URL.Path == "/repos/default/commit" {
+		if r.Method == "POST" && r.URL.Path == "/repos/default/default/-/commit" {
 			json.NewDecoder(r.Body).Decode(&gotReq)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)

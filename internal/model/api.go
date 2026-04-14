@@ -269,14 +269,37 @@ type DeleteBranchResponse struct {
 }
 
 // ---------------------------------------------------------------------------
+// POST /orgs / GET /orgs / GET /orgs/:name / DELETE /orgs/:name
+// ---------------------------------------------------------------------------
+
+// CreateOrgRequest is the body for POST /orgs.
+type CreateOrgRequest struct {
+	Name string `json:"name"`
+}
+
+// CreateOrgResponse is the response for POST /orgs (same fields as Org).
+type CreateOrgResponse = Org
+
+// ListOrgsResponse is the response for GET /orgs.
+type ListOrgsResponse struct {
+	Orgs []Org `json:"orgs"`
+}
+
+// ---------------------------------------------------------------------------
 // POST /repos / GET /repos / GET /repos/:name / DELETE /repos/:name
 // ---------------------------------------------------------------------------
 
 // CreateRepoRequest is the body for POST /repos.
+// Owner is the org name; Name is the repo path within the org (may contain slashes).
+// The full repo identifier is Owner + "/" + Name.
 type CreateRepoRequest struct {
+	Owner     string `json:"owner"`
 	Name      string `json:"name"`
 	CreatedBy string `json:"created_by,omitempty"`
 }
+
+// FullName returns the full repo path: owner + "/" + name.
+func (r CreateRepoRequest) FullName() string { return r.Owner + "/" + r.Name }
 
 // ReposResponse is the response for GET /repos.
 type ReposResponse struct {

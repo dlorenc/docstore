@@ -22,42 +22,42 @@ func seed(t *testing.T, db *sql.DB) {
 
 	stmts := []string{
 		// Documents
-		`INSERT INTO documents (version_id, path, content, content_hash, created_by)
-		 VALUES ('aaaaaaaa-0000-0000-0000-000000000001', 'hello.txt', 'hello world', 'hash_hello_v1', 'alice')`,
-		`INSERT INTO documents (version_id, path, content, content_hash, created_by)
-		 VALUES ('aaaaaaaa-0000-0000-0000-000000000002', 'hello.txt', 'hello world v2', 'hash_hello_v2', 'alice')`,
-		`INSERT INTO documents (version_id, path, content, content_hash, created_by)
-		 VALUES ('aaaaaaaa-0000-0000-0000-000000000003', 'world.txt', 'the world', 'hash_world_v1', 'bob')`,
-		`INSERT INTO documents (version_id, path, content, content_hash, created_by)
-		 VALUES ('aaaaaaaa-0000-0000-0000-000000000004', 'deleted.txt', 'gone soon', 'hash_deleted_v1', 'alice')`,
+		`INSERT INTO documents (repo, version_id, path, content, content_hash, created_by)
+		 VALUES ('default/default', 'aaaaaaaa-0000-0000-0000-000000000001', 'hello.txt', 'hello world', 'hash_hello_v1', 'alice')`,
+		`INSERT INTO documents (repo, version_id, path, content, content_hash, created_by)
+		 VALUES ('default/default', 'aaaaaaaa-0000-0000-0000-000000000002', 'hello.txt', 'hello world v2', 'hash_hello_v2', 'alice')`,
+		`INSERT INTO documents (repo, version_id, path, content, content_hash, created_by)
+		 VALUES ('default/default', 'aaaaaaaa-0000-0000-0000-000000000003', 'world.txt', 'the world', 'hash_world_v1', 'bob')`,
+		`INSERT INTO documents (repo, version_id, path, content, content_hash, created_by)
+		 VALUES ('default/default', 'aaaaaaaa-0000-0000-0000-000000000004', 'deleted.txt', 'gone soon', 'hash_deleted_v1', 'alice')`,
 
 		// Commits rows — use OVERRIDING SYSTEM VALUE to insert specific sequence numbers.
-		`INSERT INTO commits (sequence, branch, message, author) OVERRIDING SYSTEM VALUE VALUES
-		 (1, 'main', 'initial commit', 'alice'),
-		 (2, 'main', 'update hello',   'alice'),
-		 (3, 'main', 'add deleted',    'bob'),
-		 (4, 'main', 'remove deleted', 'bob')`,
+		`INSERT INTO commits (repo, sequence, branch, message, author) OVERRIDING SYSTEM VALUE VALUES
+		 ('default/default', 1, 'main', 'initial commit', 'alice'),
+		 ('default/default', 2, 'main', 'update hello',   'alice'),
+		 ('default/default', 3, 'main', 'add deleted',    'bob'),
+		 ('default/default', 4, 'main', 'remove deleted', 'bob')`,
 
 		// Advance the BIGSERIAL sequence past the manually-inserted values.
 		`SELECT setval('commits_sequence_seq', 4, true)`,
 
 		// Sequence 1: initial commit of hello.txt and world.txt
-		`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch)
-		 VALUES ('cccccccc-0000-0000-0000-000000000001', 1, 'hello.txt', 'aaaaaaaa-0000-0000-0000-000000000001', 'main')`,
-		`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch)
-		 VALUES ('cccccccc-0000-0000-0000-000000000002', 1, 'world.txt', 'aaaaaaaa-0000-0000-0000-000000000003', 'main')`,
+		`INSERT INTO file_commits (repo, commit_id, sequence, path, version_id, branch)
+		 VALUES ('default/default', 'cccccccc-0000-0000-0000-000000000001', 1, 'hello.txt', 'aaaaaaaa-0000-0000-0000-000000000001', 'main')`,
+		`INSERT INTO file_commits (repo, commit_id, sequence, path, version_id, branch)
+		 VALUES ('default/default', 'cccccccc-0000-0000-0000-000000000002', 1, 'world.txt', 'aaaaaaaa-0000-0000-0000-000000000003', 'main')`,
 
 		// Sequence 2: update hello.txt
-		`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch)
-		 VALUES ('cccccccc-0000-0000-0000-000000000003', 2, 'hello.txt', 'aaaaaaaa-0000-0000-0000-000000000002', 'main')`,
+		`INSERT INTO file_commits (repo, commit_id, sequence, path, version_id, branch)
+		 VALUES ('default/default', 'cccccccc-0000-0000-0000-000000000003', 2, 'hello.txt', 'aaaaaaaa-0000-0000-0000-000000000002', 'main')`,
 
 		// Sequence 3: add deleted.txt
-		`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch)
-		 VALUES ('cccccccc-0000-0000-0000-000000000004', 3, 'deleted.txt', 'aaaaaaaa-0000-0000-0000-000000000004', 'main')`,
+		`INSERT INTO file_commits (repo, commit_id, sequence, path, version_id, branch)
+		 VALUES ('default/default', 'cccccccc-0000-0000-0000-000000000004', 3, 'deleted.txt', 'aaaaaaaa-0000-0000-0000-000000000004', 'main')`,
 
 		// Sequence 4: delete deleted.txt (version_id = NULL)
-		`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch)
-		 VALUES ('cccccccc-0000-0000-0000-000000000005', 4, 'deleted.txt', NULL, 'main')`,
+		`INSERT INTO file_commits (repo, commit_id, sequence, path, version_id, branch)
+		 VALUES ('default/default', 'cccccccc-0000-0000-0000-000000000005', 4, 'deleted.txt', NULL, 'main')`,
 
 		// Update main head
 		`UPDATE branches SET head_sequence = 4 WHERE name = 'main'`,
@@ -77,7 +77,7 @@ func TestMaterializeTree(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("head of main", func(t *testing.T) {
-		entries, err := s.MaterializeTree(ctx, "default", "main", nil, 100, "")
+		entries, err := s.MaterializeTree(ctx, "default/default", "main", nil, 100, "")
 		if err != nil {
 			t.Fatalf("MaterializeTree: %v", err)
 		}
@@ -98,7 +98,7 @@ func TestMaterializeTree(t *testing.T) {
 
 	t.Run("at sequence 1", func(t *testing.T) {
 		seq := int64(1)
-		entries, err := s.MaterializeTree(ctx, "default", "main", &seq, 100, "")
+		entries, err := s.MaterializeTree(ctx, "default/default", "main", &seq, 100, "")
 		if err != nil {
 			t.Fatalf("MaterializeTree: %v", err)
 		}
@@ -113,7 +113,7 @@ func TestMaterializeTree(t *testing.T) {
 
 	t.Run("at sequence 3 includes deleted file", func(t *testing.T) {
 		seq := int64(3)
-		entries, err := s.MaterializeTree(ctx, "default", "main", &seq, 100, "")
+		entries, err := s.MaterializeTree(ctx, "default/default", "main", &seq, 100, "")
 		if err != nil {
 			t.Fatalf("MaterializeTree: %v", err)
 		}
@@ -124,7 +124,7 @@ func TestMaterializeTree(t *testing.T) {
 	})
 
 	t.Run("pagination", func(t *testing.T) {
-		entries, err := s.MaterializeTree(ctx, "default", "main", nil, 1, "")
+		entries, err := s.MaterializeTree(ctx, "default/default", "main", nil, 1, "")
 		if err != nil {
 			t.Fatalf("MaterializeTree: %v", err)
 		}
@@ -136,7 +136,7 @@ func TestMaterializeTree(t *testing.T) {
 		}
 
 		// Second page
-		entries2, err := s.MaterializeTree(ctx, "default", "main", nil, 1, entries[0].Path)
+		entries2, err := s.MaterializeTree(ctx, "default/default", "main", nil, 1, entries[0].Path)
 		if err != nil {
 			t.Fatalf("MaterializeTree page 2: %v", err)
 		}
@@ -150,7 +150,7 @@ func TestMaterializeTree(t *testing.T) {
 
 	t.Run("pagination empty after last page", func(t *testing.T) {
 		// Using the last path as cursor should return empty.
-		entries, err := s.MaterializeTree(ctx, "default", "main", nil, 100, "world.txt")
+		entries, err := s.MaterializeTree(ctx, "default/default", "main", nil, 100, "world.txt")
 		if err != nil {
 			t.Fatalf("MaterializeTree: %v", err)
 		}
@@ -161,7 +161,7 @@ func TestMaterializeTree(t *testing.T) {
 
 	t.Run("pagination cursor past all entries", func(t *testing.T) {
 		// A cursor lexicographically beyond all paths yields empty.
-		entries, err := s.MaterializeTree(ctx, "default", "main", nil, 100, "zzz.txt")
+		entries, err := s.MaterializeTree(ctx, "default/default", "main", nil, 100, "zzz.txt")
 		if err != nil {
 			t.Fatalf("MaterializeTree: %v", err)
 		}
@@ -172,7 +172,7 @@ func TestMaterializeTree(t *testing.T) {
 
 	t.Run("pagination limit zero uses default", func(t *testing.T) {
 		// limit=0 should fall back to defaultLimit (100) and return all entries.
-		entries, err := s.MaterializeTree(ctx, "default", "main", nil, 0, "")
+		entries, err := s.MaterializeTree(ctx, "default/default", "main", nil, 0, "")
 		if err != nil {
 			t.Fatalf("MaterializeTree: %v", err)
 		}
@@ -183,7 +183,7 @@ func TestMaterializeTree(t *testing.T) {
 
 	t.Run("pagination limit exactly equals result count", func(t *testing.T) {
 		// Limit equals the number of files; no truncation should occur.
-		entries, err := s.MaterializeTree(ctx, "default", "main", nil, 2, "")
+		entries, err := s.MaterializeTree(ctx, "default/default", "main", nil, 2, "")
 		if err != nil {
 			t.Fatalf("MaterializeTree: %v", err)
 		}
@@ -200,7 +200,7 @@ func TestGetFile(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("current version", func(t *testing.T) {
-		fc, err := s.GetFile(ctx, "default", "main", "hello.txt", nil)
+		fc, err := s.GetFile(ctx, "default/default", "main", "hello.txt", nil)
 		if err != nil {
 			t.Fatalf("GetFile: %v", err)
 		}
@@ -217,7 +217,7 @@ func TestGetFile(t *testing.T) {
 
 	t.Run("at sequence 1", func(t *testing.T) {
 		seq := int64(1)
-		fc, err := s.GetFile(ctx, "default", "main", "hello.txt", &seq)
+		fc, err := s.GetFile(ctx, "default/default", "main", "hello.txt", &seq)
 		if err != nil {
 			t.Fatalf("GetFile: %v", err)
 		}
@@ -230,7 +230,7 @@ func TestGetFile(t *testing.T) {
 	})
 
 	t.Run("deleted file returns nil", func(t *testing.T) {
-		fc, err := s.GetFile(ctx, "default", "main", "deleted.txt", nil)
+		fc, err := s.GetFile(ctx, "default/default", "main", "deleted.txt", nil)
 		if err != nil {
 			t.Fatalf("GetFile: %v", err)
 		}
@@ -240,7 +240,7 @@ func TestGetFile(t *testing.T) {
 	})
 
 	t.Run("nonexistent file", func(t *testing.T) {
-		fc, err := s.GetFile(ctx, "default", "main", "nope.txt", nil)
+		fc, err := s.GetFile(ctx, "default/default", "main", "nope.txt", nil)
 		if err != nil {
 			t.Fatalf("GetFile: %v", err)
 		}
@@ -257,7 +257,7 @@ func TestGetFileHistory(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("hello.txt history", func(t *testing.T) {
-		entries, err := s.GetFileHistory(ctx, "default", "main", "hello.txt", 100, nil)
+		entries, err := s.GetFileHistory(ctx, "default/default", "main", "hello.txt", 100, nil)
 		if err != nil {
 			t.Fatalf("GetFileHistory: %v", err)
 		}
@@ -274,7 +274,7 @@ func TestGetFileHistory(t *testing.T) {
 	})
 
 	t.Run("deleted.txt history includes delete", func(t *testing.T) {
-		entries, err := s.GetFileHistory(ctx, "default", "main", "deleted.txt", 100, nil)
+		entries, err := s.GetFileHistory(ctx, "default/default", "main", "deleted.txt", 100, nil)
 		if err != nil {
 			t.Fatalf("GetFileHistory: %v", err)
 		}
@@ -292,7 +292,7 @@ func TestGetFileHistory(t *testing.T) {
 
 	t.Run("pagination with after cursor", func(t *testing.T) {
 		after := int64(2)
-		entries, err := s.GetFileHistory(ctx, "default", "main", "hello.txt", 100, &after)
+		entries, err := s.GetFileHistory(ctx, "default/default", "main", "hello.txt", 100, &after)
 		if err != nil {
 			t.Fatalf("GetFileHistory: %v", err)
 		}
@@ -307,7 +307,7 @@ func TestGetFileHistory(t *testing.T) {
 	t.Run("pagination empty after oldest entry", func(t *testing.T) {
 		// Cursor at the oldest sequence means nothing older exists.
 		after := int64(1)
-		entries, err := s.GetFileHistory(ctx, "default", "main", "hello.txt", 100, &after)
+		entries, err := s.GetFileHistory(ctx, "default/default", "main", "hello.txt", 100, &after)
 		if err != nil {
 			t.Fatalf("GetFileHistory: %v", err)
 		}
@@ -318,7 +318,7 @@ func TestGetFileHistory(t *testing.T) {
 
 	t.Run("pagination limit zero uses default", func(t *testing.T) {
 		// limit=0 should fall back to defaultLimit (100) and return all entries.
-		entries, err := s.GetFileHistory(ctx, "default", "main", "hello.txt", 0, nil)
+		entries, err := s.GetFileHistory(ctx, "default/default", "main", "hello.txt", 0, nil)
 		if err != nil {
 			t.Fatalf("GetFileHistory: %v", err)
 		}
@@ -329,7 +329,7 @@ func TestGetFileHistory(t *testing.T) {
 
 	t.Run("pagination multi-page traversal", func(t *testing.T) {
 		// Page through hello.txt history one entry at a time.
-		page1, err := s.GetFileHistory(ctx, "default", "main", "hello.txt", 1, nil)
+		page1, err := s.GetFileHistory(ctx, "default/default", "main", "hello.txt", 1, nil)
 		if err != nil {
 			t.Fatalf("GetFileHistory page 1: %v", err)
 		}
@@ -342,7 +342,7 @@ func TestGetFileHistory(t *testing.T) {
 
 		// Cursor at sequence 2 → page 2 should return sequence 1.
 		cursor := page1[0].Sequence
-		page2, err := s.GetFileHistory(ctx, "default", "main", "hello.txt", 1, &cursor)
+		page2, err := s.GetFileHistory(ctx, "default/default", "main", "hello.txt", 1, &cursor)
 		if err != nil {
 			t.Fatalf("GetFileHistory page 2: %v", err)
 		}
@@ -355,7 +355,7 @@ func TestGetFileHistory(t *testing.T) {
 
 		// Cursor at sequence 1 → page 3 should be empty.
 		cursor = page2[0].Sequence
-		page3, err := s.GetFileHistory(ctx, "default", "main", "hello.txt", 1, &cursor)
+		page3, err := s.GetFileHistory(ctx, "default/default", "main", "hello.txt", 1, &cursor)
 		if err != nil {
 			t.Fatalf("GetFileHistory page 3: %v", err)
 		}
@@ -372,7 +372,7 @@ func TestGetCommit(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("multi-file commit", func(t *testing.T) {
-		detail, err := s.GetCommit(ctx, "default", 1)
+		detail, err := s.GetCommit(ctx, "default/default", 1)
 		if err != nil {
 			t.Fatalf("GetCommit: %v", err)
 		}
@@ -401,7 +401,7 @@ func TestGetCommit(t *testing.T) {
 	})
 
 	t.Run("single-file commit", func(t *testing.T) {
-		detail, err := s.GetCommit(ctx, "default", 2)
+		detail, err := s.GetCommit(ctx, "default/default", 2)
 		if err != nil {
 			t.Fatalf("GetCommit: %v", err)
 		}
@@ -414,7 +414,7 @@ func TestGetCommit(t *testing.T) {
 	})
 
 	t.Run("delete commit has nil version_id", func(t *testing.T) {
-		detail, err := s.GetCommit(ctx, "default", 4)
+		detail, err := s.GetCommit(ctx, "default/default", 4)
 		if err != nil {
 			t.Fatalf("GetCommit: %v", err)
 		}
@@ -427,7 +427,7 @@ func TestGetCommit(t *testing.T) {
 	})
 
 	t.Run("nonexistent sequence", func(t *testing.T) {
-		detail, err := s.GetCommit(ctx, "default", 999)
+		detail, err := s.GetCommit(ctx, "default/default", 999)
 		if err != nil {
 			t.Fatalf("GetCommit: %v", err)
 		}
@@ -445,8 +445,8 @@ func TestListBranches(t *testing.T) {
 
 	// Add a feature branch.
 	stmts := []string{
-		`INSERT INTO branches (name, head_sequence, base_sequence, status) VALUES ('feature/a', 5, 2, 'active')`,
-		`INSERT INTO branches (name, head_sequence, base_sequence, status) VALUES ('feature/merged', 3, 1, 'merged')`,
+		`INSERT INTO branches (repo, name, head_sequence, base_sequence, status) VALUES ('default/default', 'feature/a', 5, 2, 'active')`,
+		`INSERT INTO branches (repo, name, head_sequence, base_sequence, status) VALUES ('default/default', 'feature/merged', 3, 1, 'merged')`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -455,7 +455,7 @@ func TestListBranches(t *testing.T) {
 	}
 
 	t.Run("all branches", func(t *testing.T) {
-		branches, err := s.ListBranches(ctx, "default", "")
+		branches, err := s.ListBranches(ctx, "default/default", "")
 		if err != nil {
 			t.Fatalf("ListBranches: %v", err)
 		}
@@ -469,7 +469,7 @@ func TestListBranches(t *testing.T) {
 	})
 
 	t.Run("filter active", func(t *testing.T) {
-		branches, err := s.ListBranches(ctx, "default", "active")
+		branches, err := s.ListBranches(ctx, "default/default", "active")
 		if err != nil {
 			t.Fatalf("ListBranches: %v", err)
 		}
@@ -479,7 +479,7 @@ func TestListBranches(t *testing.T) {
 	})
 
 	t.Run("filter merged", func(t *testing.T) {
-		branches, err := s.ListBranches(ctx, "default", "merged")
+		branches, err := s.ListBranches(ctx, "default/default", "merged")
 		if err != nil {
 			t.Fatalf("ListBranches: %v", err)
 		}
@@ -500,21 +500,21 @@ func TestGetDiff(t *testing.T) {
 
 	// Create a feature branch forked at sequence 2.
 	stmts := []string{
-		`INSERT INTO branches (name, head_sequence, base_sequence, status) VALUES ('feature/diff', 6, 2, 'active')`,
+		`INSERT INTO branches (repo, name, head_sequence, base_sequence, status) VALUES ('default/default', 'feature/diff', 6, 2, 'active')`,
 		// Branch changes: add new.txt, modify hello.txt
-		`INSERT INTO documents (version_id, path, content, content_hash, created_by)
-		 VALUES ('aaaaaaaa-0000-0000-0000-000000000020', 'new.txt', 'new file', 'hash_new', 'carol')`,
-		`INSERT INTO documents (version_id, path, content, content_hash, created_by)
-		 VALUES ('aaaaaaaa-0000-0000-0000-000000000021', 'hello.txt', 'hello v3 branch', 'hash_hello_v3', 'carol')`,
+		`INSERT INTO documents (repo, version_id, path, content, content_hash, created_by)
+		 VALUES ('default/default', 'aaaaaaaa-0000-0000-0000-000000000020', 'new.txt', 'new file', 'hash_new', 'carol')`,
+		`INSERT INTO documents (repo, version_id, path, content, content_hash, created_by)
+		 VALUES ('default/default', 'aaaaaaaa-0000-0000-0000-000000000021', 'hello.txt', 'hello v3 branch', 'hash_hello_v3', 'carol')`,
 		// Insert commits rows for sequences 5 and 6.
-		`INSERT INTO commits (sequence, branch, message, author) OVERRIDING SYSTEM VALUE VALUES
-		 (5, 'feature/diff', 'add new',      'carol'),
-		 (6, 'feature/diff', 'update hello', 'carol')`,
+		`INSERT INTO commits (repo, sequence, branch, message, author) OVERRIDING SYSTEM VALUE VALUES
+		 ('default/default', 5, 'feature/diff', 'add new',      'carol'),
+		 ('default/default', 6, 'feature/diff', 'update hello', 'carol')`,
 		`SELECT setval('commits_sequence_seq', 6, true)`,
-		`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch)
-		 VALUES ('cccccccc-0000-0000-0000-000000000020', 5, 'new.txt', 'aaaaaaaa-0000-0000-0000-000000000020', 'feature/diff')`,
-		`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch)
-		 VALUES ('cccccccc-0000-0000-0000-000000000021', 6, 'hello.txt', 'aaaaaaaa-0000-0000-0000-000000000021', 'feature/diff')`,
+		`INSERT INTO file_commits (repo, commit_id, sequence, path, version_id, branch)
+		 VALUES ('default/default', 'cccccccc-0000-0000-0000-000000000020', 5, 'new.txt', 'aaaaaaaa-0000-0000-0000-000000000020', 'feature/diff')`,
+		`INSERT INTO file_commits (repo, commit_id, sequence, path, version_id, branch)
+		 VALUES ('default/default', 'cccccccc-0000-0000-0000-000000000021', 6, 'hello.txt', 'aaaaaaaa-0000-0000-0000-000000000021', 'feature/diff')`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -523,7 +523,7 @@ func TestGetDiff(t *testing.T) {
 	}
 
 	t.Run("diff shows branch changes", func(t *testing.T) {
-		result, err := s.GetDiff(ctx, "default", "feature/diff")
+		result, err := s.GetDiff(ctx, "default/default", "feature/diff")
 		if err != nil {
 			t.Fatalf("GetDiff: %v", err)
 		}
@@ -539,7 +539,7 @@ func TestGetDiff(t *testing.T) {
 		// Main also changed hello.txt at seq 3-4 (deleted.txt at seq 3, 4),
 		// but hello.txt was only changed at seq 2 on main (which is <= base_sequence=2).
 		// So no conflicts by default from the seed data because main changes at seq 3,4 are deleted.txt.
-		result, err := s.GetDiff(ctx, "default", "feature/diff")
+		result, err := s.GetDiff(ctx, "default/default", "feature/diff")
 		if err != nil {
 			t.Fatalf("GetDiff: %v", err)
 		}
@@ -552,7 +552,7 @@ func TestGetDiff(t *testing.T) {
 
 	t.Run("diff includes main_changes", func(t *testing.T) {
 		// Main changed deleted.txt at seq 3 (add) and seq 4 (delete) since base=2.
-		result, err := s.GetDiff(ctx, "default", "feature/diff")
+		result, err := s.GetDiff(ctx, "default/default", "feature/diff")
 		if err != nil {
 			t.Fatalf("GetDiff: %v", err)
 		}
@@ -565,7 +565,7 @@ func TestGetDiff(t *testing.T) {
 	})
 
 	t.Run("nonexistent branch", func(t *testing.T) {
-		result, err := s.GetDiff(ctx, "default", "nonexistent")
+		result, err := s.GetDiff(ctx, "default/default", "nonexistent")
 		if err != nil {
 			t.Fatalf("GetDiff: %v", err)
 		}
@@ -583,33 +583,33 @@ func TestGetDiff_WithConflict(t *testing.T) {
 	// Minimal setup: commit to main, create branch, change same file on both.
 	stmts := []string{
 		// Commits rows for sequences 1, 2, 3.
-		`INSERT INTO commits (sequence, branch, message, author) OVERRIDING SYSTEM VALUE VALUES
-		 (1, 'main',             'init',        'alice'),
-		 (2, 'main',             'main edit',   'alice'),
-		 (3, 'feature/conflict', 'branch edit', 'bob')`,
+		`INSERT INTO commits (repo, sequence, branch, message, author) OVERRIDING SYSTEM VALUE VALUES
+		 ('default/default', 1, 'main',             'init',        'alice'),
+		 ('default/default', 2, 'main',             'main edit',   'alice'),
+		 ('default/default', 3, 'feature/conflict', 'branch edit', 'bob')`,
 		`SELECT setval('commits_sequence_seq', 3, true)`,
 
 		// Initial main commit
-		`INSERT INTO documents (version_id, path, content, content_hash, created_by)
-		 VALUES ('dddddddd-0000-0000-0000-000000000001', 'shared.txt', 'original', 'hash_orig', 'alice')`,
-		`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch)
-		 VALUES ('eeeeeeee-0000-0000-0000-000000000001', 1, 'shared.txt', 'dddddddd-0000-0000-0000-000000000001', 'main')`,
+		`INSERT INTO documents (repo, version_id, path, content, content_hash, created_by)
+		 VALUES ('default/default', 'dddddddd-0000-0000-0000-000000000001', 'shared.txt', 'original', 'hash_orig', 'alice')`,
+		`INSERT INTO file_commits (repo, commit_id, sequence, path, version_id, branch)
+		 VALUES ('default/default', 'eeeeeeee-0000-0000-0000-000000000001', 1, 'shared.txt', 'dddddddd-0000-0000-0000-000000000001', 'main')`,
 		`UPDATE branches SET head_sequence = 1 WHERE name = 'main'`,
 
 		// Branch at base=1
-		`INSERT INTO branches (name, head_sequence, base_sequence, status) VALUES ('feature/conflict', 3, 1, 'active')`,
+		`INSERT INTO branches (repo, name, head_sequence, base_sequence, status) VALUES ('default/default', 'feature/conflict', 3, 1, 'active')`,
 
 		// Main changes shared.txt after branch point
-		`INSERT INTO documents (version_id, path, content, content_hash, created_by)
-		 VALUES ('dddddddd-0000-0000-0000-000000000002', 'shared.txt', 'main edit', 'hash_main', 'alice')`,
-		`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch)
-		 VALUES ('eeeeeeee-0000-0000-0000-000000000002', 2, 'shared.txt', 'dddddddd-0000-0000-0000-000000000002', 'main')`,
+		`INSERT INTO documents (repo, version_id, path, content, content_hash, created_by)
+		 VALUES ('default/default', 'dddddddd-0000-0000-0000-000000000002', 'shared.txt', 'main edit', 'hash_main', 'alice')`,
+		`INSERT INTO file_commits (repo, commit_id, sequence, path, version_id, branch)
+		 VALUES ('default/default', 'eeeeeeee-0000-0000-0000-000000000002', 2, 'shared.txt', 'dddddddd-0000-0000-0000-000000000002', 'main')`,
 
 		// Branch also changes shared.txt
-		`INSERT INTO documents (version_id, path, content, content_hash, created_by)
-		 VALUES ('dddddddd-0000-0000-0000-000000000003', 'shared.txt', 'branch edit', 'hash_branch', 'bob')`,
-		`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch)
-		 VALUES ('eeeeeeee-0000-0000-0000-000000000003', 3, 'shared.txt', 'dddddddd-0000-0000-0000-000000000003', 'feature/conflict')`,
+		`INSERT INTO documents (repo, version_id, path, content, content_hash, created_by)
+		 VALUES ('default/default', 'dddddddd-0000-0000-0000-000000000003', 'shared.txt', 'branch edit', 'hash_branch', 'bob')`,
+		`INSERT INTO file_commits (repo, commit_id, sequence, path, version_id, branch)
+		 VALUES ('default/default', 'eeeeeeee-0000-0000-0000-000000000003', 3, 'shared.txt', 'dddddddd-0000-0000-0000-000000000003', 'feature/conflict')`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -617,7 +617,7 @@ func TestGetDiff_WithConflict(t *testing.T) {
 		}
 	}
 
-	result, err := s.GetDiff(ctx, "default", "feature/conflict")
+	result, err := s.GetDiff(ctx, "default/default", "feature/conflict")
 	if err != nil {
 		t.Fatalf("GetDiff: %v", err)
 	}
@@ -640,16 +640,16 @@ func TestBranchTree(t *testing.T) {
 
 	// Create a feature branch forked from main at sequence 2
 	stmts := []string{
-		`INSERT INTO branches (name, head_sequence, base_sequence, status) VALUES ('feature/test', 5, 2, 'active')`,
+		`INSERT INTO branches (repo, name, head_sequence, base_sequence, status) VALUES ('default/default', 'feature/test', 5, 2, 'active')`,
 		// Add a new file on the branch
-		`INSERT INTO documents (version_id, path, content, content_hash, created_by)
-		 VALUES ('aaaaaaaa-0000-0000-0000-000000000010', 'new.txt', 'new file', 'hash_new', 'carol')`,
+		`INSERT INTO documents (repo, version_id, path, content, content_hash, created_by)
+		 VALUES ('default/default', 'aaaaaaaa-0000-0000-0000-000000000010', 'new.txt', 'new file', 'hash_new', 'carol')`,
 		// Insert a commits row for sequence 5.
-		`INSERT INTO commits (sequence, branch, message, author) OVERRIDING SYSTEM VALUE VALUES
-		 (5, 'feature/test', 'add new file', 'carol')`,
+		`INSERT INTO commits (repo, sequence, branch, message, author) OVERRIDING SYSTEM VALUE VALUES
+		 ('default/default', 5, 'feature/test', 'add new file', 'carol')`,
 		`SELECT setval('commits_sequence_seq', 5, true)`,
-		`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch)
-		 VALUES ('cccccccc-0000-0000-0000-000000000010', 5, 'new.txt', 'aaaaaaaa-0000-0000-0000-000000000010', 'feature/test')`,
+		`INSERT INTO file_commits (repo, commit_id, sequence, path, version_id, branch)
+		 VALUES ('default/default', 'cccccccc-0000-0000-0000-000000000010', 5, 'new.txt', 'aaaaaaaa-0000-0000-0000-000000000010', 'feature/test')`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -657,7 +657,7 @@ func TestBranchTree(t *testing.T) {
 		}
 	}
 
-	entries, err := s.MaterializeTree(ctx, "default", "feature/test", nil, 100, "")
+	entries, err := s.MaterializeTree(ctx, "default/default", "feature/test", nil, 100, "")
 	if err != nil {
 		t.Fatalf("MaterializeTree: %v", err)
 	}

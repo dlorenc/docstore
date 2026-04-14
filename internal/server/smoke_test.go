@@ -18,7 +18,7 @@ import (
 
 // TestDockerSmoke builds the Docker image from the repo root, starts it
 // alongside a Postgres testcontainer on a shared network, and verifies that
-// GET /tree?branch=main returns 200 with an empty array.
+// GET /repos/default/default/-/tree returns 200 with an empty array.
 func TestDockerSmoke(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping Docker smoke test in short mode")
@@ -123,8 +123,8 @@ func TestDockerSmoke(t *testing.T) {
 
 	baseURL := fmt.Sprintf("http://%s:%s", host, port.Port())
 
-	// GET /tree?branch=main must return 200 with an empty JSON array on a fresh DB.
-	resp, err := http.Get(baseURL + "/repos/default/tree?branch=main")
+	// GET /repos/default/default/-/tree must return 200 with an empty JSON array on a fresh DB.
+	resp, err := http.Get(baseURL + "/repos/default/default/-/tree?branch=main")
 	if err != nil {
 		t.Fatalf("GET /tree: %v", err)
 	}
