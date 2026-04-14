@@ -177,9 +177,10 @@ func (s *Store) GetFileHistory(ctx context.Context, branch, path string, limit i
 WITH branch_info AS (
     SELECT base_sequence FROM branches WHERE name = $1
 )
-SELECT fc.sequence, fc.version_id::text, fc.message, fc.author, fc.created_at
+SELECT fc.sequence, fc.version_id::text, c.message, c.author, c.created_at
 FROM file_commits fc
 CROSS JOIN branch_info bi
+JOIN commits c ON c.sequence = fc.sequence
 WHERE (
     fc.branch = $1
     OR (fc.branch = 'main' AND fc.sequence <= bi.base_sequence)
@@ -375,8 +376,9 @@ ORDER BY path, sequence DESC`
 // Returns nil, nil if no commit exists with that sequence.
 func (s *Store) GetCommit(ctx context.Context, sequence int64) (*CommitDetail, error) {
 	const q = `
-SELECT fc.commit_id::text, fc.path, fc.version_id::text, fc.branch, fc.message, fc.author, fc.created_at
+SELECT fc.commit_id::text, fc.path, fc.version_id::text, fc.branch, c.message, c.author, c.created_at
 FROM file_commits fc
+JOIN commits c ON c.sequence = fc.sequence
 WHERE fc.sequence = $1
 ORDER BY fc.path`
 

@@ -378,9 +378,9 @@ func TestMerge_Success(t *testing.T) {
 	if conflicts != nil {
 		t.Fatalf("expected no conflicts, got %v", conflicts)
 	}
-	// mainHead was 1 before merge, so merge commit is at seq 2.
-	if resp.Sequence != 2 {
-		t.Errorf("expected merge sequence 2, got %d", resp.Sequence)
+	// With global BIGSERIAL sequences: commit-to-main=1, commit-to-branch=2, merge=3.
+	if resp.Sequence != 3 {
+		t.Errorf("expected merge sequence 3, got %d", resp.Sequence)
 	}
 
 	// Verify main head advanced.
@@ -389,8 +389,8 @@ func TestMerge_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query main: %v", err)
 	}
-	if mainHead != 2 {
-		t.Errorf("expected main head 2, got %d", mainHead)
+	if mainHead != 3 {
+		t.Errorf("expected main head 3, got %d", mainHead)
 	}
 
 	// Verify branch is marked as merged.
@@ -414,8 +414,13 @@ func TestMerge_Success(t *testing.T) {
 	}
 
 	// Verify merge commit author is the one passed in the request.
+	// After schema change, author lives in commits, not file_commits.
 	var author string
-	err = d.QueryRow("SELECT author FROM file_commits WHERE branch = 'main' AND path = 'new.txt' AND sequence = $1", resp.Sequence).Scan(&author)
+	err = d.QueryRow(`
+		SELECT c.author FROM file_commits fc
+		JOIN commits c ON c.sequence = fc.sequence
+		WHERE fc.branch = 'main' AND fc.path = 'new.txt' AND fc.sequence = $1`,
+		resp.Sequence).Scan(&author)
 	if err != nil {
 		t.Fatalf("query author: %v", err)
 	}
