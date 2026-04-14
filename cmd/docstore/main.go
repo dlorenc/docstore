@@ -18,15 +18,22 @@ import (
 
 func main() {
 	devIdentity := flag.String("dev-identity", "", "bypass IAP JWT validation and use this identity (local dev/testing only)")
+	bootstrapAdmin := flag.String("bootstrap-admin", "", "identity granted admin access to repos with no admin assigned yet")
 	flag.Parse()
 
-	// Also accept DEV_IDENTITY env var for container-based testing (e.g. smoke tests).
+	// Also accept DEV_IDENTITY and BOOTSTRAP_ADMIN env vars for container-based testing.
 	if *devIdentity == "" {
 		*devIdentity = os.Getenv("DEV_IDENTITY")
+	}
+	if *bootstrapAdmin == "" {
+		*bootstrapAdmin = os.Getenv("BOOTSTRAP_ADMIN")
 	}
 
 	if *devIdentity != "" {
 		log.Printf("WARNING: IAP JWT validation disabled; using dev identity %q", *devIdentity)
+	}
+	if *bootstrapAdmin != "" {
+		log.Printf("bootstrap admin: %q (has admin access to repos with no admin)", *bootstrapAdmin)
 	}
 
 	port := os.Getenv("PORT")
@@ -50,7 +57,7 @@ func main() {
 	}
 
 	commitStore := db.NewStore(database)
-	srv := server.New(commitStore, database, *devIdentity)
+	srv := server.New(commitStore, database, *devIdentity, *bootstrapAdmin)
 
 	httpServer := &http.Server{
 		Addr:         ":" + port,

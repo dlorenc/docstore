@@ -90,9 +90,10 @@ func TestDockerSmoke(t *testing.T) {
 			},
 			Networks: []string{networkName},
 			Env: map[string]string{
-				"DATABASE_URL": dbURL,
-				"PORT":         "8080",
-				"DEV_IDENTITY": "smoke-test@example.com",
+				"DATABASE_URL":    dbURL,
+				"PORT":            "8080",
+				"DEV_IDENTITY":    "smoke-test@example.com",
+				"BOOTSTRAP_ADMIN": "smoke-test@example.com",
 			},
 			ExposedPorts: []string{"8080/tcp"},
 			WaitingFor: wait.ForHTTP("/healthz").

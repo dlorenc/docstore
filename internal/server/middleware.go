@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/rsa"
@@ -8,23 +9,166 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/dlorenc/docstore/internal/model"
 )
 
 // contextKey is the type for context keys in this package.
 type contextKey string
 
 const identityKey contextKey = "identity"
+const roleKey contextKey = "role"
 
 // IdentityFromContext returns the authenticated identity stored in the context
 // by the IAP middleware. Returns empty string if not set.
 func IdentityFromContext(ctx context.Context) string {
 	v, _ := ctx.Value(identityKey).(string)
 	return v
+}
+
+// RoleFromContext returns the RBAC role stored in context by RBACMiddleware.
+// Returns empty string if not set (RBAC not active).
+func RoleFromContext(ctx context.Context) model.RoleType {
+	v, _ := ctx.Value(roleKey).(model.RoleType)
+	return v
+}
+
+// --- RBAC middleware ---
+
+// RoleStore is the minimal interface the RBAC middleware requires.
+type RoleStore interface {
+	GetRole(ctx context.Context, repo, identity string) (*model.Role, error)
+	HasAdmin(ctx context.Context, repo string) (bool, error)
+}
+
+// RBACMiddleware returns an HTTP middleware that enforces role-based access
+// control for repo-scoped routes. It must run after IAPMiddleware so that
+// the identity is already in context.
+//
+// bootstrapAdmin, if non-empty, is granted full admin access for any repo
+// that has no admin assigned yet. Once a repo has an admin, the bootstrap
+// flag is ignored for that repo.
+func RBACMiddleware(roles RoleStore, bootstrapAdmin string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			repo, subPath := repoAndSubPath(r.URL.Path)
+			// Non-repo-scoped paths (e.g. /repos, /healthz) skip RBAC.
+			if repo == "" || subPath == "" {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			identity := IdentityFromContext(r.Context())
+
+			// Bootstrap admin: bypass when no admin exists for this repo.
+			if bootstrapAdmin != "" && identity == bootstrapAdmin {
+				hasAdmin, err := roles.HasAdmin(r.Context(), repo)
+				if err == nil && !hasAdmin {
+					ctx := context.WithValue(r.Context(), roleKey, model.RoleAdmin)
+					next.ServeHTTP(w, r.WithContext(ctx))
+					return
+				}
+				// An admin already exists — fall through to normal role check.
+			}
+
+			role, err := roles.GetRole(r.Context(), repo, identity)
+			if err != nil {
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+				return
+			}
+
+			if !roleAllows(role.Role, r.Method, subPath, r) {
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+				return
+			}
+
+			ctx := context.WithValue(r.Context(), roleKey, role.Role)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+// repoAndSubPath extracts the repo name and sub-path from a /repos/:name/subpath URL.
+// Returns ("", "") for non-repo paths or bare /repos/:name paths with no sub-path.
+func repoAndSubPath(path string) (repo, subPath string) {
+	const prefix = "/repos/"
+	if !strings.HasPrefix(path, prefix) {
+		return "", ""
+	}
+	rest := path[len(prefix):]
+	slash := strings.IndexByte(rest, '/')
+	if slash == -1 {
+		// /repos/:name — no sub-path, no RBAC check needed.
+		return "", ""
+	}
+	return rest[:slash], rest[slash+1:]
+}
+
+// roleAllows checks whether the given role is permitted to execute the HTTP
+// method on subPath. For writer+POST /commit, it peeks at the request body
+// to enforce the "no direct commits to main" rule.
+func roleAllows(role model.RoleType, method, subPath string, r *http.Request) bool {
+	// Roles management endpoints — admin only.
+	if subPath == "roles" || strings.HasPrefix(subPath, "roles/") {
+		return role == model.RoleAdmin
+	}
+
+	// All other GET endpoints — reader+.
+	if method == http.MethodGet {
+		return true
+	}
+
+	// POST /commit — writer+.
+	if method == http.MethodPost && subPath == "commit" {
+		if role != model.RoleWriter && role != model.RoleMaintainer && role != model.RoleAdmin {
+			return false
+		}
+		// Writers may not commit directly to main.
+		if role == model.RoleWriter && commitTargetsMain(r) {
+			return false
+		}
+		return true
+	}
+
+	// POST /branch, /merge, /rebase — maintainer+.
+	if method == http.MethodPost && (subPath == "branch" || subPath == "merge" || subPath == "rebase") {
+		return role == model.RoleMaintainer || role == model.RoleAdmin
+	}
+
+	// DELETE /branch/* — maintainer+.
+	if method == http.MethodDelete && strings.HasPrefix(subPath, "branch/") {
+		return role == model.RoleMaintainer || role == model.RoleAdmin
+	}
+
+	return false
+}
+
+// commitTargetsMain peeks at the JSON request body to see whether the commit
+// is targeting the "main" branch. It replaces r.Body so the handler can still
+// read it.
+func commitTargetsMain(r *http.Request) bool {
+	if r.Body == nil {
+		return false
+	}
+	raw, err := io.ReadAll(r.Body)
+	r.Body.Close()
+	r.Body = io.NopCloser(bytes.NewReader(raw))
+	if err != nil {
+		return false
+	}
+	var req struct {
+		Branch string `json:"branch"`
+	}
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return false
+	}
+	return req.Branch == "main"
 }
 
 // IAPMiddleware returns an HTTP middleware that validates GCP IAP JWTs from the
