@@ -100,3 +100,4 @@ type CheckRun struct {
 	Reporter  string         `json:"reporter"`
 	CreatedAt time.Time      `json:"created_at"`
 }
+

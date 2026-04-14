@@ -91,8 +91,8 @@ type CommitDetail struct {
 	VersionID *string `json:"version_id"` // nil means delete
 }
 
-// CommitResponse is the response for GET /commit/:sequence.
-type CommitResponse struct {
+// GetCommitResponse is the response for GET /commit/:sequence.
+type GetCommitResponse struct {
 	Sequence  int64          `json:"sequence"`
 	Message   string         `json:"message"`
 	Author    string         `json:"author"`
@@ -130,22 +130,31 @@ type BranchStatusResponse struct {
 // POST /commit
 // ---------------------------------------------------------------------------
 
-// CommitFileInput is one file in a commit request.
-type CommitFileInput struct {
+// FileChange is one file in a commit request.
+// A nil Content means delete.
+type FileChange struct {
 	Path    string `json:"path"`
-	Content []byte `json:"content"`
+	Content []byte `json:"content,omitempty"`
 }
 
 // CommitRequest is the body for POST /commit.
 type CommitRequest struct {
-	Branch  string            `json:"branch"`
-	Files   []CommitFileInput `json:"files"`
-	Message string            `json:"message"`
+	Branch  string       `json:"branch"`
+	Files   []FileChange `json:"files"`
+	Message string       `json:"message"`
+	Author  string       `json:"author"`
 }
 
-// CommitResult is the response for POST /commit.
-type CommitResult struct {
-	Sequence int64 `json:"sequence"`
+// CommitFileResult describes one file outcome in a commit response.
+type CommitFileResult struct {
+	Path      string  `json:"path"`
+	VersionID *string `json:"version_id"` // nil for deletes
+}
+
+// CommitResponse is the response for POST /commit.
+type CommitResponse struct {
+	Sequence int64              `json:"sequence"`
+	Files    []CommitFileResult `json:"files"`
 }
 
 // ---------------------------------------------------------------------------
