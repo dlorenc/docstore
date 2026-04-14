@@ -18,7 +18,20 @@ var (
 	ErrBranchNotActive = errors.New("branch is not active")
 	ErrBranchExists    = errors.New("branch already exists")
 	ErrMergeConflict   = errors.New("merge conflict")
+	ErrRebaseConflict  = errors.New("rebase conflict")
 )
+
+// rebaseFile is one file within a replayed commit group.
+type rebaseFile struct {
+	path      string
+	versionID *string
+}
+
+// rebaseGroup is one original commit's worth of file changes to be replayed.
+type rebaseGroup struct {
+	seq   int64
+	files []rebaseFile
+}
 
 // MergeConflict holds details about a conflicting path during merge.
 type MergeConflict struct {
@@ -314,6 +327,189 @@ func (s *Store) Merge(ctx context.Context, req model.MergeRequest) (*model.Merge
 	}
 
 	return &model.MergeResponse{Sequence: newSeq}, nil, nil
+}
+
+// Rebase replays a branch's file_commits onto main's current head.
+// It locks main first, then the source branch. All replayed groups get new global
+// sequences. On conflict, the entire transaction is rolled back.
+func (s *Store) Rebase(ctx context.Context, req model.RebaseRequest) (*model.RebaseResponse, []MergeConflict, error) {
+	if req.Branch == "main" {
+		return nil, nil, ErrBranchNotActive
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Lock main first, then source branch — consistent ordering prevents deadlocks.
+	var mainHead int64
+	err = tx.QueryRowContext(ctx,
+		"SELECT head_sequence FROM branches WHERE name = 'main' FOR UPDATE",
+	).Scan(&mainHead)
+	if err != nil {
+		return nil, nil, fmt.Errorf("lock main: %w", err)
+	}
+
+	// Lock the source branch.
+	var branchHead, baseSeq int64
+	var branchStatus string
+	err = tx.QueryRowContext(ctx,
+		"SELECT head_sequence, base_sequence, status FROM branches WHERE name = $1 FOR UPDATE",
+		req.Branch,
+	).Scan(&branchHead, &baseSeq, &branchStatus)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil, ErrBranchNotFound
+		}
+		return nil, nil, fmt.Errorf("lock branch: %w", err)
+	}
+	if branchStatus != "active" {
+		return nil, nil, ErrBranchNotActive
+	}
+
+	// Get all paths changed on branch since baseSeq.
+	branchChanges, err := latestChanges(ctx, tx, req.Branch, baseSeq)
+	if err != nil {
+		return nil, nil, fmt.Errorf("branch changes: %w", err)
+	}
+
+	// Empty branch — just update base_sequence and head_sequence (no-op rebase).
+	if len(branchChanges) == 0 {
+		_, err = tx.ExecContext(ctx,
+			"UPDATE branches SET base_sequence = $1, head_sequence = $2 WHERE name = $3",
+			mainHead, mainHead, req.Branch,
+		)
+		if err != nil {
+			return nil, nil, fmt.Errorf("update branch: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, nil, fmt.Errorf("commit tx: %w", err)
+		}
+		return &model.RebaseResponse{
+			NewBaseSequence: mainHead,
+			NewHeadSequence: mainHead,
+			CommitsReplayed: 0,
+		}, nil, nil
+	}
+
+	// Get all paths changed on main since baseSeq.
+	mainChanges, err := latestChanges(ctx, tx, "main", baseSeq)
+	if err != nil {
+		return nil, nil, fmt.Errorf("main changes: %w", err)
+	}
+
+	// Conflict detection — any path changed on both is a conflict.
+	var conflicts []MergeConflict
+	for path, branchVID := range branchChanges {
+		if mainVID, ok := mainChanges[path]; ok {
+			conflicts = append(conflicts, MergeConflict{
+				Path:            path,
+				MainVersionID:   nullStr(mainVID),
+				BranchVersionID: nullStr(branchVID),
+			})
+		}
+	}
+	if len(conflicts) > 0 {
+		return nil, conflicts, ErrRebaseConflict
+	}
+
+	// Collect original commit groups ordered by sequence.
+	groups, err := branchCommitGroups(ctx, tx, req.Branch, baseSeq)
+	if err != nil {
+		return nil, nil, fmt.Errorf("branch commit groups: %w", err)
+	}
+
+	// Replay each group as a new global sequence on the branch.
+	author := req.Author
+	if author == "" {
+		author = "system"
+	}
+	var lastSeq int64
+	for _, g := range groups {
+		var newSeq int64
+		err = tx.QueryRowContext(ctx,
+			`INSERT INTO commits (branch, message, author) VALUES ($1, $2, $3) RETURNING sequence`,
+			req.Branch, fmt.Sprintf("rebase: replay sequence %d", g.seq), author,
+		).Scan(&newSeq)
+		if err != nil {
+			return nil, nil, fmt.Errorf("insert rebase commit: %w", err)
+		}
+
+		for _, f := range g.files {
+			commitID := uuid.New().String()
+			_, err = tx.ExecContext(ctx,
+				`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch)
+				 VALUES ($1, $2, $3, $4, $5)`,
+				commitID, newSeq, f.path, f.versionID, req.Branch,
+			)
+			if err != nil {
+				return nil, nil, fmt.Errorf("insert file_commit: %w", err)
+			}
+		}
+		lastSeq = newSeq
+	}
+
+	// Update branch: base_sequence = mainHead, head_sequence = lastSeq.
+	_, err = tx.ExecContext(ctx,
+		"UPDATE branches SET base_sequence = $1, head_sequence = $2 WHERE name = $3",
+		mainHead, lastSeq, req.Branch,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("update branch: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, nil, fmt.Errorf("commit tx: %w", err)
+	}
+
+	return &model.RebaseResponse{
+		NewBaseSequence: mainHead,
+		NewHeadSequence: lastSeq,
+		CommitsReplayed: int64(len(groups)),
+	}, nil, nil
+}
+
+// branchCommitGroups returns the file_commits on a branch since baseSeq,
+// grouped by original sequence in ascending order.
+func branchCommitGroups(ctx context.Context, tx *sql.Tx, branch string, baseSeq int64) ([]rebaseGroup, error) {
+	const q = `
+SELECT sequence, path, version_id::text
+FROM file_commits
+WHERE branch = $1 AND sequence > $2
+ORDER BY sequence ASC, path ASC`
+
+	rows, err := tx.QueryContext(ctx, q, branch, baseSeq)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var groups []rebaseGroup
+	for rows.Next() {
+		var seq int64
+		var path string
+		var vid sql.NullString
+		if err := rows.Scan(&seq, &path, &vid); err != nil {
+			return nil, err
+		}
+
+		var versionID *string
+		if vid.Valid {
+			v := vid.String
+			versionID = &v
+		}
+
+		if len(groups) == 0 || groups[len(groups)-1].seq != seq {
+			groups = append(groups, rebaseGroup{seq: seq})
+		}
+		groups[len(groups)-1].files = append(groups[len(groups)-1].files, rebaseFile{
+			path:      path,
+			versionID: versionID,
+		})
+	}
+	return groups, rows.Err()
 }
 
 // latestChanges returns a map of path → *version_id for the latest version of
