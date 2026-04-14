@@ -190,6 +190,9 @@ func RBACMiddleware(roles RoleStore, bootstrapAdmin string) func(http.Handler) h
 //	/repos/acme/myrepo/-/commit  →  ("acme/myrepo", "commit")
 //	/repos/acme/team/sub/-/tree  →  ("acme/team/sub", "tree")
 //	/repos/acme/myrepo            →  ("", "")  — bare repo, no RBAC check needed
+//
+// NOTE: parseRepoPath in handlers.go parses the same "/-/" URL format for routing.
+// Both functions must be kept in sync if the URL structure changes.
 func repoAndSubPath(path string) (repo, subPath string) {
 	const prefix = "/repos/"
 	if !strings.HasPrefix(path, prefix) {
