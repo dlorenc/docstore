@@ -560,14 +560,25 @@ func (a *App) Diff() error {
 		return fmt.Errorf("decoding diff: %w", err)
 	}
 
-	if len(diffResp.Changed) == 0 && len(diffResp.Conflicts) == 0 {
+	if len(diffResp.BranchChanges) == 0 && len(diffResp.MainChanges) == 0 && len(diffResp.Conflicts) == 0 {
 		fmt.Fprintf(a.Out, "No changes on branch '%s'\n", cfg.Branch)
 		return nil
 	}
 
-	if len(diffResp.Changed) > 0 {
+	if len(diffResp.BranchChanges) > 0 {
 		fmt.Fprintf(a.Out, "Changed files on '%s':\n", cfg.Branch)
-		for _, d := range diffResp.Changed {
+		for _, d := range diffResp.BranchChanges {
+			if d.VersionID == nil {
+				fmt.Fprintf(a.Out, "  deleted: %s\n", d.Path)
+			} else {
+				fmt.Fprintf(a.Out, "  changed: %s\n", d.Path)
+			}
+		}
+	}
+
+	if len(diffResp.MainChanges) > 0 {
+		fmt.Fprintf(a.Out, "Changed files on main:\n")
+		for _, d := range diffResp.MainChanges {
 			if d.VersionID == nil {
 				fmt.Fprintf(a.Out, "  deleted: %s\n", d.Path)
 			} else {

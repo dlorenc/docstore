@@ -411,8 +411,8 @@ func TestGetDiff(t *testing.T) {
 		if result == nil {
 			t.Fatal("expected diff result, got nil")
 		}
-		if len(result.Changed) != 2 {
-			t.Fatalf("expected 2 changed files, got %d: %+v", len(result.Changed), result.Changed)
+		if len(result.BranchChanges) != 2 {
+			t.Fatalf("expected 2 changed files, got %d: %+v", len(result.BranchChanges), result.BranchChanges)
 		}
 	})
 
@@ -428,6 +428,20 @@ func TestGetDiff(t *testing.T) {
 		// deleted.txt changed on main at seq 3,4 but not on branch. Not a conflict.
 		if len(result.Conflicts) != 0 {
 			t.Errorf("expected 0 conflicts, got %d: %+v", len(result.Conflicts), result.Conflicts)
+		}
+	})
+
+	t.Run("diff includes main_changes", func(t *testing.T) {
+		// Main changed deleted.txt at seq 3 (add) and seq 4 (delete) since base=2.
+		result, err := s.GetDiff(ctx, "feature/diff")
+		if err != nil {
+			t.Fatalf("GetDiff: %v", err)
+		}
+		if len(result.MainChanges) != 1 {
+			t.Fatalf("expected 1 main change (deleted.txt), got %d: %+v", len(result.MainChanges), result.MainChanges)
+		}
+		if result.MainChanges[0].Path != "deleted.txt" {
+			t.Errorf("expected main change on deleted.txt, got %q", result.MainChanges[0].Path)
 		}
 	})
 
@@ -481,8 +495,8 @@ func TestGetDiff_WithConflict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetDiff: %v", err)
 	}
-	if len(result.Changed) != 1 {
-		t.Fatalf("expected 1 changed, got %d", len(result.Changed))
+	if len(result.BranchChanges) != 1 {
+		t.Fatalf("expected 1 changed, got %d", len(result.BranchChanges))
 	}
 	if len(result.Conflicts) != 1 {
 		t.Fatalf("expected 1 conflict, got %d", len(result.Conflicts))
