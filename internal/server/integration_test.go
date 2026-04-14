@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	dbpkg "github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/server"
 	"github.com/dlorenc/docstore/internal/store"
 	"github.com/dlorenc/docstore/internal/testutil"
@@ -46,7 +47,7 @@ func seed(t *testing.T, db *sql.DB) {
 }
 
 func TestIntegrationTreeEndpoint(t *testing.T) {
-	db := testutil.TestDB(t)
+	db := testutil.TestDB(t, dbpkg.MigrationSQL)
 	seed(t, db)
 	handler := server.New(nil, db)
 	srv := httptest.NewServer(handler)
@@ -73,7 +74,7 @@ func TestIntegrationTreeEndpoint(t *testing.T) {
 }
 
 func TestIntegrationFileEndpoint(t *testing.T) {
-	db := testutil.TestDB(t)
+	db := testutil.TestDB(t, dbpkg.MigrationSQL)
 	seed(t, db)
 	handler := server.New(nil, db)
 	srv := httptest.NewServer(handler)
@@ -282,7 +283,7 @@ func TestIntegrationDiffEndpoint(t *testing.T) {
 }
 
 func TestIntegrationCommitEndpoint(t *testing.T) {
-	db := testutil.TestDB(t)
+	db := testutil.TestDB(t, dbpkg.MigrationSQL)
 	seed(t, db)
 	handler := server.New(nil, db)
 	srv := httptest.NewServer(handler)
