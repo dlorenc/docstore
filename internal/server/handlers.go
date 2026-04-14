@@ -22,6 +22,9 @@ import (
 //	/repos/acme/team/sub/-/commit    → ("acme/team/sub", "commit", true)
 //	/repos/acme/myrepo               → ("acme/myrepo", "", true)  // bare repo
 //	/something/else                  → ("", "", false)
+//
+// NOTE: repoAndSubPath in middleware.go parses the same "/-/" URL format for
+// RBAC purposes. Both functions must be kept in sync if the URL structure changes.
 func parseRepoPath(path string) (repoName, endpoint string, ok bool) {
 	const prefix = "/repos/"
 	if !strings.HasPrefix(path, prefix) {
@@ -209,6 +212,10 @@ func (s *server) handleCreateOrg(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "name is required")
 		return
 	}
+	if strings.ContainsRune(req.Name, '/') {
+		writeError(w, http.StatusBadRequest, "org name may not contain '/'")
+		return
+	}
 
 	identity := IdentityFromContext(r.Context())
 	org, err := s.commitStore.CreateOrg(r.Context(), req.Name, identity)
@@ -261,6 +268,8 @@ func (s *server) handleDeleteOrg(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, db.ErrOrgNotFound):
 			writeError(w, http.StatusNotFound, "org not found")
+		case errors.Is(err, db.ErrOrgHasRepos):
+			writeError(w, http.StatusConflict, "org has repos; delete them first")
 		default:
 			writeError(w, http.StatusInternalServerError, "internal server error")
 		}
@@ -272,6 +281,14 @@ func (s *server) handleDeleteOrg(w http.ResponseWriter, r *http.Request) {
 // handleListOrgRepos implements GET /orgs/{org}/repos
 func (s *server) handleListOrgRepos(w http.ResponseWriter, r *http.Request) {
 	owner := r.PathValue("org")
+	if _, err := s.commitStore.GetOrg(r.Context(), owner); err != nil {
+		if errors.Is(err, db.ErrOrgNotFound) {
+			writeError(w, http.StatusNotFound, "org not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
 	repos, err := s.commitStore.ListOrgRepos(r.Context(), owner)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
@@ -526,6 +543,11 @@ func (s *server) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Name == "" {
 		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	fullName := req.FullName()
+	if strings.SplitN(fullName, "/", 2)[0] != req.Owner {
+		writeError(w, http.StatusBadRequest, "owner must match first segment of repo name")
 		return
 	}
 	if req.CreatedBy == "" {

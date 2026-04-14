@@ -175,6 +175,45 @@ func TestInitRepoFlagStripsURLSuffix(t *testing.T) {
 	}
 }
 
+// TestInitCanonicalTrailingDash verifies that Init strips the trailing "/-"
+// from the canonical URL form (e.g. https://host/repos/owner/name/-).
+func TestInitCanonicalTrailingDash(t *testing.T) {
+	// The mock server registers the /repos/default/myrepo/-/* paths that Init will call.
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/default/myrepo/-/tree":
+			json.NewEncoder(w).Encode([]treeEntry{})
+		case r.Method == "GET" && r.URL.Path == "/repos/default/myrepo/-/branches":
+			json.NewEncoder(w).Encode([]model.Branch{{Name: "main", HeadSequence: 0}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	app, _ := newTestApp(t, srv)
+
+	// Pass the canonical trailing-/- URL form with no explicit --repo flag.
+	canonicalURL := srv.URL + "/repos/default/myrepo/-"
+	if err := app.Init(canonicalURL, "", "carol"); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	cfg, err := app.loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Remote must be the bare host.
+	if cfg.Remote != srv.URL {
+		t.Errorf("remote = %q, want %q (trailing /- must be stripped)", cfg.Remote, srv.URL)
+	}
+	if cfg.Repo != "default/myrepo" {
+		t.Errorf("repo = %q, want %q", cfg.Repo, "default/myrepo")
+	}
+}
+
 func TestInitDefaultAuthor(t *testing.T) {
 	srv := newEmptyRepoServer(t)
 	defer srv.Close()
