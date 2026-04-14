@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/dlorenc/docstore/internal/model"
 	"github.com/google/uuid"
@@ -21,6 +22,7 @@ var (
 	ErrRebaseConflict  = errors.New("rebase conflict")
 	ErrRepoNotFound    = errors.New("repo not found")
 	ErrRepoExists      = errors.New("repo already exists")
+	ErrSelfApproval    = errors.New("reviewer cannot approve their own commits")
 )
 
 // rebaseFile is one file within a replayed commit group.
@@ -713,6 +715,191 @@ func (s *Store) DeleteBranch(ctx context.Context, repo, name string) error {
 	}
 
 	return tx.Commit()
+}
+
+// CreateReview records a review for a branch at its current head_sequence.
+// Returns ErrBranchNotFound if the branch doesn't exist.
+// Returns ErrSelfApproval if the reviewer authored any commits on the branch and
+// is attempting to approve (status == ReviewApproved).
+func (s *Store) CreateReview(ctx context.Context, repo, branch, reviewer string, status model.ReviewStatus, body string) (*model.Review, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var headSeq, baseSeq int64
+	err = tx.QueryRowContext(ctx,
+		"SELECT head_sequence, base_sequence FROM branches WHERE repo = $1 AND name = $2 FOR UPDATE",
+		repo, branch,
+	).Scan(&headSeq, &baseSeq)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrBranchNotFound
+		}
+		return nil, fmt.Errorf("lock branch: %w", err)
+	}
+
+	// Self-approval: reviewer cannot approve if they authored any branch commits.
+	if status == model.ReviewApproved {
+		var count int
+		err = tx.QueryRowContext(ctx,
+			"SELECT count(*) FROM commits WHERE repo = $1 AND branch = $2 AND sequence > $3 AND author = $4",
+			repo, branch, baseSeq, reviewer,
+		).Scan(&count)
+		if err != nil {
+			return nil, fmt.Errorf("check self-approval: %w", err)
+		}
+		if count > 0 {
+			return nil, ErrSelfApproval
+		}
+	}
+
+	id := uuid.New().String()
+	var createdAt time.Time
+	var nullBody sql.NullString
+	if body != "" {
+		nullBody = sql.NullString{String: body, Valid: true}
+	}
+	err = tx.QueryRowContext(ctx,
+		`INSERT INTO reviews (id, repo, branch, reviewer, sequence, status, body)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)
+		 RETURNING created_at`,
+		id, repo, branch, reviewer, headSeq, string(status), nullBody,
+	).Scan(&createdAt)
+	if err != nil {
+		return nil, fmt.Errorf("insert review: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit tx: %w", err)
+	}
+
+	return &model.Review{
+		ID:        id,
+		Branch:    branch,
+		Reviewer:  reviewer,
+		Sequence:  headSeq,
+		Status:    status,
+		Body:      body,
+		CreatedAt: createdAt,
+	}, nil
+}
+
+// ListReviews returns reviews for a branch in the given repo, ordered by
+// created_at DESC. If atSeq is non-nil, only reviews at that sequence are
+// returned.
+func (s *Store) ListReviews(ctx context.Context, repo, branch string, atSeq *int64) ([]model.Review, error) {
+	q := `SELECT id, reviewer, sequence, status, COALESCE(body, ''), created_at
+	      FROM reviews
+	      WHERE repo = $1 AND branch = $2`
+	args := []interface{}{repo, branch}
+	if atSeq != nil {
+		q += " AND sequence = $3"
+		args = append(args, *atSeq)
+	}
+	q += " ORDER BY created_at DESC"
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var reviews []model.Review
+	for rows.Next() {
+		var rev model.Review
+		rev.Branch = branch
+		var statusStr string
+		if err := rows.Scan(&rev.ID, &rev.Reviewer, &rev.Sequence, &statusStr, &rev.Body, &rev.CreatedAt); err != nil {
+			return nil, err
+		}
+		rev.Status = model.ReviewStatus(statusStr)
+		reviews = append(reviews, rev)
+	}
+	return reviews, rows.Err()
+}
+
+// CreateCheckRun records a CI check run for a branch at its current
+// head_sequence. Returns ErrBranchNotFound if the branch doesn't exist.
+func (s *Store) CreateCheckRun(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string) (*model.CheckRun, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var headSeq int64
+	err = tx.QueryRowContext(ctx,
+		"SELECT head_sequence FROM branches WHERE repo = $1 AND name = $2 FOR UPDATE",
+		repo, branch,
+	).Scan(&headSeq)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrBranchNotFound
+		}
+		return nil, fmt.Errorf("lock branch: %w", err)
+	}
+
+	id := uuid.New().String()
+	var createdAt time.Time
+	err = tx.QueryRowContext(ctx,
+		`INSERT INTO check_runs (id, repo, branch, sequence, check_name, status, reporter)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)
+		 RETURNING created_at`,
+		id, repo, branch, headSeq, checkName, string(status), reporter,
+	).Scan(&createdAt)
+	if err != nil {
+		return nil, fmt.Errorf("insert check_run: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit tx: %w", err)
+	}
+
+	return &model.CheckRun{
+		ID:        id,
+		Branch:    branch,
+		Sequence:  headSeq,
+		CheckName: checkName,
+		Status:    status,
+		Reporter:  reporter,
+		CreatedAt: createdAt,
+	}, nil
+}
+
+// ListCheckRuns returns check runs for a branch in the given repo, ordered by
+// created_at DESC. If atSeq is non-nil, only check runs at that sequence are
+// returned.
+func (s *Store) ListCheckRuns(ctx context.Context, repo, branch string, atSeq *int64) ([]model.CheckRun, error) {
+	q := `SELECT id, sequence, check_name, status, reporter, created_at
+	      FROM check_runs
+	      WHERE repo = $1 AND branch = $2`
+	args := []interface{}{repo, branch}
+	if atSeq != nil {
+		q += " AND sequence = $3"
+		args = append(args, *atSeq)
+	}
+	q += " ORDER BY created_at DESC"
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var checkRuns []model.CheckRun
+	for rows.Next() {
+		var cr model.CheckRun
+		cr.Branch = branch
+		var statusStr string
+		if err := rows.Scan(&cr.ID, &cr.Sequence, &cr.CheckName, &statusStr, &cr.Reporter, &cr.CreatedAt); err != nil {
+			return nil, err
+		}
+		cr.Status = model.CheckRunStatus(statusStr)
+		checkRuns = append(checkRuns, cr)
+	}
+	return checkRuns, rows.Err()
 }
 
 // isDuplicateKeyError checks if a PostgreSQL error is a unique violation (23505).
