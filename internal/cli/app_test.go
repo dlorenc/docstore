@@ -762,7 +762,7 @@ func TestDiff(t *testing.T) {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(model.DiffResponse{
-				Changed: []model.DiffEntry{
+				BranchChanges: []model.DiffEntry{
 					{Path: "new.go", VersionID: strPtr("v1")},
 					{Path: "removed.go", VersionID: nil},
 				},
@@ -812,7 +812,7 @@ func TestDiffWithConflicts(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(model.DiffResponse{
-			Changed: []model.DiffEntry{{Path: "a.txt", VersionID: strPtr("v1")}},
+			BranchChanges: []model.DiffEntry{{Path: "a.txt", VersionID: strPtr("v1")}},
 			Conflicts: []model.ConflictEntry{
 				{Path: "shared.txt", MainVersionID: "m1", BranchVersionID: "b1"},
 			},

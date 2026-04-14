@@ -238,8 +238,9 @@ type ConflictEntry struct {
 
 // DiffResult contains the diff between a branch and main.
 type DiffResult struct {
-	Changed   []DiffEntry     `json:"changed"`
-	Conflicts []ConflictEntry `json:"conflicts,omitempty"`
+	BranchChanges []DiffEntry     `json:"branch_changes"`
+	MainChanges   []DiffEntry     `json:"main_changes"`
+	Conflicts     []ConflictEntry `json:"conflicts,omitempty"`
 }
 
 // ListBranches returns all branches, optionally filtered by status.
@@ -305,7 +306,7 @@ func (s *Store) GetDiff(ctx context.Context, branch string) (*DiffResult, error)
 	result := &DiffResult{}
 
 	for path, vid := range branchChanges {
-		result.Changed = append(result.Changed, DiffEntry{
+		result.BranchChanges = append(result.BranchChanges, DiffEntry{
 			Path:      path,
 			VersionID: vid,
 		})
@@ -326,6 +327,13 @@ func (s *Store) GetDiff(ctx context.Context, branch string) (*DiffResult, error)
 				BranchVersionID: branchV,
 			})
 		}
+	}
+
+	for path, vid := range mainChanges {
+		result.MainChanges = append(result.MainChanges, DiffEntry{
+			Path:      path,
+			VersionID: vid,
+		})
 	}
 
 	return result, nil
