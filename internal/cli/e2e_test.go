@@ -16,7 +16,7 @@ import (
 // instance running the full server handler with a real database.
 func newRealServer(t *testing.T) *httptest.Server {
 	t.Helper()
-	database := testutil.TestDB(t, dbpkg.MigrationSQL)
+	database := testutil.TestDB(t, dbpkg.RunMigrations)
 	writeStore := dbpkg.NewStore(database)
 	handler := server.New(writeStore, database, "test@example.com", "test@example.com")
 	srv := httptest.NewServer(handler)
