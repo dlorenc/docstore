@@ -215,6 +215,154 @@ LIMIT $4`
 	return entries, rows.Err()
 }
 
+// BranchInfo describes a branch for listing.
+type BranchInfo struct {
+	Name         string `json:"name"`
+	HeadSequence int64  `json:"head_sequence"`
+	BaseSequence int64  `json:"base_sequence"`
+	Status       string `json:"status"`
+}
+
+// DiffEntry represents a file changed on a branch relative to its base.
+type DiffEntry struct {
+	Path      string  `json:"path"`
+	VersionID *string `json:"version_id"`
+}
+
+// ConflictEntry represents a file changed on both main and the branch.
+type ConflictEntry struct {
+	Path            string `json:"path"`
+	MainVersionID   string `json:"main_version_id"`
+	BranchVersionID string `json:"branch_version_id"`
+}
+
+// DiffResult contains the diff between a branch and main.
+type DiffResult struct {
+	Changed   []DiffEntry     `json:"changed"`
+	Conflicts []ConflictEntry `json:"conflicts,omitempty"`
+}
+
+// ListBranches returns all branches, optionally filtered by status.
+func (s *Store) ListBranches(ctx context.Context, statusFilter string) ([]BranchInfo, error) {
+	var rows *sql.Rows
+	var err error
+
+	if statusFilter != "" {
+		rows, err = s.db.QueryContext(ctx,
+			"SELECT name, head_sequence, base_sequence, status FROM branches WHERE status = $1::branch_status ORDER BY name",
+			statusFilter,
+		)
+	} else {
+		rows, err = s.db.QueryContext(ctx,
+			"SELECT name, head_sequence, base_sequence, status FROM branches ORDER BY name",
+		)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var branches []BranchInfo
+	for rows.Next() {
+		var b BranchInfo
+		if err := rows.Scan(&b.Name, &b.HeadSequence, &b.BaseSequence, &b.Status); err != nil {
+			return nil, err
+		}
+		branches = append(branches, b)
+	}
+	return branches, rows.Err()
+}
+
+// GetDiff returns the files changed on a branch relative to its base_sequence,
+// plus any conflicting paths that were also changed on main.
+func (s *Store) GetDiff(ctx context.Context, branch string) (*DiffResult, error) {
+	// Get the branch's base_sequence.
+	var baseSeq int64
+	var status string
+	err := s.db.QueryRowContext(ctx,
+		"SELECT base_sequence, status FROM branches WHERE name = $1",
+		branch,
+	).Scan(&baseSeq, &status)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil // branch not found
+		}
+		return nil, err
+	}
+
+	// Branch changes: latest version of each path changed on branch since base.
+	branchChanges, err := s.latestChanges(ctx, branch, baseSeq)
+	if err != nil {
+		return nil, err
+	}
+
+	// Main changes: latest version of each path changed on main since base.
+	mainChanges, err := s.latestChanges(ctx, "main", baseSeq)
+	if err != nil {
+		return nil, err
+	}
+
+	result := &DiffResult{}
+
+	for path, vid := range branchChanges {
+		result.Changed = append(result.Changed, DiffEntry{
+			Path:      path,
+			VersionID: vid,
+		})
+
+		// Check for conflicts.
+		if mainVID, ok := mainChanges[path]; ok {
+			mainV := ""
+			if mainVID != nil {
+				mainV = *mainVID
+			}
+			branchV := ""
+			if vid != nil {
+				branchV = *vid
+			}
+			result.Conflicts = append(result.Conflicts, ConflictEntry{
+				Path:            path,
+				MainVersionID:   mainV,
+				BranchVersionID: branchV,
+			})
+		}
+	}
+
+	return result, nil
+}
+
+// latestChanges returns the latest version of each path changed on a branch
+// since the given base sequence.
+func (s *Store) latestChanges(ctx context.Context, branch string, baseSeq int64) (map[string]*string, error) {
+	const q = `
+SELECT DISTINCT ON (path) path, version_id::text
+FROM file_commits
+WHERE branch = $1 AND sequence > $2
+ORDER BY path, sequence DESC`
+
+	rows, err := s.db.QueryContext(ctx, q, branch, baseSeq)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	changes := make(map[string]*string)
+	for rows.Next() {
+		var path string
+		var vid sql.NullString
+		if err := rows.Scan(&path, &vid); err != nil {
+			return nil, err
+		}
+		if vid.Valid {
+			v := vid.String
+			changes[path] = &v
+		} else {
+			changes[path] = nil
+		}
+	}
+	return changes, rows.Err()
+}
+
 // GetCommit returns all file changes in a single atomic commit (by sequence).
 // Returns nil, nil if no commit exists with that sequence.
 func (s *Store) GetCommit(ctx context.Context, sequence int64) (*CommitDetail, error) {

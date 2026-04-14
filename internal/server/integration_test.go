@@ -155,6 +155,132 @@ func TestIntegrationFileEndpoint(t *testing.T) {
 	})
 }
 
+func TestIntegrationBranchesEndpoint(t *testing.T) {
+	database := testutil.TestDB(t)
+	seed(t, database)
+
+	// Add feature branch.
+	if _, err := database.Exec(
+		"INSERT INTO branches (name, head_sequence, base_sequence, status) VALUES ('feature/a', 5, 2, 'active')",
+	); err != nil {
+		t.Fatalf("seed branch: %v", err)
+	}
+
+	handler := server.New(nil, database)
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	t.Run("list all branches", func(t *testing.T) {
+		resp, err := http.Get(srv.URL + "/branches")
+		if err != nil {
+			t.Fatalf("GET /branches: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200, got %d", resp.StatusCode)
+		}
+
+		var branches []store.BranchInfo
+		if err := json.NewDecoder(resp.Body).Decode(&branches); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(branches) != 2 {
+			t.Fatalf("expected 2 branches, got %d", len(branches))
+		}
+	})
+
+	t.Run("filter active", func(t *testing.T) {
+		resp, err := http.Get(srv.URL + "/branches?status=active")
+		if err != nil {
+			t.Fatalf("GET /branches?status=active: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200, got %d", resp.StatusCode)
+		}
+
+		var branches []store.BranchInfo
+		if err := json.NewDecoder(resp.Body).Decode(&branches); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(branches) != 2 {
+			t.Fatalf("expected 2 active branches, got %d", len(branches))
+		}
+	})
+}
+
+func TestIntegrationDiffEndpoint(t *testing.T) {
+	database := testutil.TestDB(t)
+	seed(t, database)
+
+	// Create a branch with changes.
+	stmts := []string{
+		`INSERT INTO branches (name, head_sequence, base_sequence, status) VALUES ('feature/diff', 5, 2, 'active')`,
+		`INSERT INTO documents (version_id, path, content, content_hash, created_by)
+		 VALUES ('aaaaaaaa-0000-0000-0000-000000000010', 'new.txt', 'new file', 'hash_new', 'carol')`,
+		`INSERT INTO file_commits (commit_id, sequence, path, version_id, branch, message, author)
+		 VALUES ('cccccccc-0000-0000-0000-000000000010', 5, 'new.txt', 'aaaaaaaa-0000-0000-0000-000000000010', 'feature/diff', 'add new', 'carol')`,
+	}
+	for _, stmt := range stmts {
+		if _, err := database.Exec(stmt); err != nil {
+			t.Fatalf("seed: %v\n%s", err, stmt)
+		}
+	}
+
+	handler := server.New(nil, database)
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	t.Run("diff with branch", func(t *testing.T) {
+		resp, err := http.Get(srv.URL + "/diff?branch=feature/diff")
+		if err != nil {
+			t.Fatalf("GET /diff: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200, got %d", resp.StatusCode)
+		}
+
+		var result store.DiffResult
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(result.Changed) != 1 {
+			t.Fatalf("expected 1 changed file, got %d", len(result.Changed))
+		}
+		if result.Changed[0].Path != "new.txt" {
+			t.Errorf("expected new.txt, got %s", result.Changed[0].Path)
+		}
+	})
+
+	t.Run("diff missing branch param", func(t *testing.T) {
+		resp, err := http.Get(srv.URL + "/diff")
+		if err != nil {
+			t.Fatalf("GET /diff: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("diff nonexistent branch", func(t *testing.T) {
+		resp, err := http.Get(srv.URL + "/diff?branch=nonexistent")
+		if err != nil {
+			t.Fatalf("GET /diff: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("expected 404, got %d", resp.StatusCode)
+		}
+	})
+}
+
 func TestIntegrationCommitEndpoint(t *testing.T) {
 	db := testutil.TestDB(t)
 	seed(t, db)

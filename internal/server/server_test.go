@@ -13,13 +13,29 @@ import (
 	"github.com/dlorenc/docstore/internal/model"
 )
 
-// mockStore implements CommitStore for testing.
+// mockStore implements WriteStore for testing.
 type mockStore struct {
-	commitFn func(ctx context.Context, req model.CommitRequest) (*model.CommitResponse, error)
+	commitFn       func(ctx context.Context, req model.CommitRequest) (*model.CommitResponse, error)
+	createBranchFn func(ctx context.Context, req model.CreateBranchRequest) (*model.CreateBranchResponse, error)
+	mergeFn        func(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error)
 }
 
 func (m *mockStore) Commit(ctx context.Context, req model.CommitRequest) (*model.CommitResponse, error) {
 	return m.commitFn(ctx, req)
+}
+
+func (m *mockStore) CreateBranch(ctx context.Context, req model.CreateBranchRequest) (*model.CreateBranchResponse, error) {
+	if m.createBranchFn != nil {
+		return m.createBranchFn(ctx, req)
+	}
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockStore) Merge(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error) {
+	if m.mergeFn != nil {
+		return m.mergeFn(ctx, req)
+	}
+	return nil, nil, errors.New("not implemented")
 }
 
 func TestHealthEndpoint(t *testing.T) {
@@ -49,10 +65,6 @@ func TestNotImplementedEndpoints(t *testing.T) {
 		method string
 		path   string
 	}{
-		{"GET", "/diff"},
-		{"GET", "/branches"},
-		{"POST", "/branch"},
-		{"POST", "/merge"},
 		{"POST", "/rebase"},
 		{"POST", "/review"},
 		{"POST", "/check"},
@@ -235,5 +247,170 @@ func TestHandleCommit_InvalidJSON(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+// --- POST /branch tests ---
+
+func TestHandleCreateBranch_Success(t *testing.T) {
+	store := &mockStore{
+		createBranchFn: func(ctx context.Context, req model.CreateBranchRequest) (*model.CreateBranchResponse, error) {
+			return &model.CreateBranchResponse{Name: req.Name, BaseSequence: 5}, nil
+		},
+	}
+	srv := New(store, nil)
+
+	body, _ := json.Marshal(model.CreateBranchRequest{Name: "feature/test"})
+	req := httptest.NewRequest(http.MethodPost, "/branch", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp model.CreateBranchResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Name != "feature/test" {
+		t.Errorf("expected name feature/test, got %q", resp.Name)
+	}
+	if resp.BaseSequence != 5 {
+		t.Errorf("expected base_sequence 5, got %d", resp.BaseSequence)
+	}
+}
+
+func TestHandleCreateBranch_MissingName(t *testing.T) {
+	srv := New(&mockStore{}, nil)
+
+	body, _ := json.Marshal(model.CreateBranchRequest{Name: ""})
+	req := httptest.NewRequest(http.MethodPost, "/branch", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestHandleCreateBranch_CannotCreateMain(t *testing.T) {
+	srv := New(&mockStore{}, nil)
+
+	body, _ := json.Marshal(model.CreateBranchRequest{Name: "main"})
+	req := httptest.NewRequest(http.MethodPost, "/branch", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestHandleCreateBranch_AlreadyExists(t *testing.T) {
+	store := &mockStore{
+		createBranchFn: func(ctx context.Context, req model.CreateBranchRequest) (*model.CreateBranchResponse, error) {
+			return nil, db.ErrBranchExists
+		},
+	}
+	srv := New(store, nil)
+
+	body, _ := json.Marshal(model.CreateBranchRequest{Name: "feature/exists"})
+	req := httptest.NewRequest(http.MethodPost, "/branch", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", rec.Code)
+	}
+}
+
+// --- POST /merge tests ---
+
+func TestHandleMerge_Success(t *testing.T) {
+	store := &mockStore{
+		mergeFn: func(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error) {
+			return &model.MergeResponse{Sequence: 10}, nil, nil
+		},
+	}
+	srv := New(store, nil)
+
+	body, _ := json.Marshal(model.MergeRequest{Branch: "feature/test"})
+	req := httptest.NewRequest(http.MethodPost, "/merge", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp model.MergeResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Sequence != 10 {
+		t.Errorf("expected sequence 10, got %d", resp.Sequence)
+	}
+}
+
+func TestHandleMerge_MissingBranch(t *testing.T) {
+	srv := New(&mockStore{}, nil)
+
+	body, _ := json.Marshal(model.MergeRequest{Branch: ""})
+	req := httptest.NewRequest(http.MethodPost, "/merge", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestHandleMerge_Conflict(t *testing.T) {
+	store := &mockStore{
+		mergeFn: func(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error) {
+			return nil, []db.MergeConflict{
+				{Path: "conflict.txt", MainVersionID: "v1", BranchVersionID: "v2"},
+			}, db.ErrMergeConflict
+		},
+	}
+	srv := New(store, nil)
+
+	body, _ := json.Marshal(model.MergeRequest{Branch: "feature/conflict"})
+	req := httptest.NewRequest(http.MethodPost, "/merge", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var errResp model.MergeConflictError
+	if err := json.NewDecoder(rec.Body).Decode(&errResp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(errResp.Conflicts) != 1 {
+		t.Fatalf("expected 1 conflict, got %d", len(errResp.Conflicts))
+	}
+	if errResp.Conflicts[0].Path != "conflict.txt" {
+		t.Errorf("expected conflict.txt, got %q", errResp.Conflicts[0].Path)
+	}
+}
+
+func TestHandleMerge_BranchNotFound(t *testing.T) {
+	store := &mockStore{
+		mergeFn: func(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error) {
+			return nil, nil, db.ErrBranchNotFound
+		},
+	}
+	srv := New(store, nil)
+
+	body, _ := json.Marshal(model.MergeRequest{Branch: "nonexistent"})
+	req := httptest.NewRequest(http.MethodPost, "/merge", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec.Code)
 	}
 }
