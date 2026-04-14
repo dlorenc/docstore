@@ -2,12 +2,14 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dlorenc/docstore/internal/model"
 )
@@ -1128,4 +1130,453 @@ func TestHashBytes(t *testing.T) {
 	if h != want {
 		t.Errorf("hash = %q, want %q", h, want)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Log
+// ---------------------------------------------------------------------------
+
+func TestLog_FullHistory(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/default/branches":
+			json.NewEncoder(w).Encode([]model.Branch{
+				{Name: "feature/x", HeadSequence: 3, BaseSequence: 0},
+			})
+		case r.Method == "GET" && r.URL.Path == "/repos/default/commit/3":
+			json.NewEncoder(w).Encode(commitInfo{
+				Sequence: 3, Branch: "feature/x", Author: "alice",
+				CreatedAt: mustParseTime("2026-04-14"), Message: "add tests",
+			})
+		case r.Method == "GET" && r.URL.Path == "/repos/default/commit/2":
+			// commit 2 is on main — should be skipped
+			json.NewEncoder(w).Encode(commitInfo{
+				Sequence: 2, Branch: "main", Author: "bob",
+				CreatedAt: mustParseTime("2026-04-14"), Message: "main commit",
+			})
+		case r.Method == "GET" && r.URL.Path == "/repos/default/commit/1":
+			json.NewEncoder(w).Encode(commitInfo{
+				Sequence: 1, Branch: "feature/x", Author: "alice",
+				CreatedAt: mustParseTime("2026-04-14"), Message: "initial",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	app, out := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "feature/x", "alice")
+
+	if err := app.Log("", 20); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "seq 3") {
+		t.Errorf("expected seq 3 in output:\n%s", output)
+	}
+	if !strings.Contains(output, "add tests") {
+		t.Errorf("expected message 'add tests' in output:\n%s", output)
+	}
+	if !strings.Contains(output, "seq 1") {
+		t.Errorf("expected seq 1 in output:\n%s", output)
+	}
+	if strings.Contains(output, "main commit") {
+		t.Errorf("main commits should not appear:\n%s", output)
+	}
+	// newest first: seq 3 before seq 1
+	if strings.Index(output, "seq 3") > strings.Index(output, "seq 1") {
+		t.Errorf("expected seq 3 before seq 1 (newest first):\n%s", output)
+	}
+}
+
+func TestLog_FileHistory(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == "GET" && r.URL.Path == "/repos/default/file/README.md/history" {
+			if r.URL.Query().Get("branch") != "main" {
+				t.Errorf("expected branch=main, got %q", r.URL.Query().Get("branch"))
+			}
+			json.NewEncoder(w).Encode([]fileHistEntry{
+				{Sequence: 5, Author: "alice", CreatedAt: mustParseTime("2026-04-14"), Message: "update readme"},
+				{Sequence: 1, Author: "alice", CreatedAt: mustParseTime("2026-04-13"), Message: "add readme"},
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	app, out := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "main", "alice")
+
+	if err := app.Log("README.md", 20); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "seq 5") {
+		t.Errorf("expected seq 5 in output:\n%s", output)
+	}
+	if !strings.Contains(output, "update readme") {
+		t.Errorf("expected 'update readme' in output:\n%s", output)
+	}
+	if !strings.Contains(output, "seq 1") {
+		t.Errorf("expected seq 1 in output:\n%s", output)
+	}
+}
+
+func TestLog_Limit(t *testing.T) {
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/default/branches":
+			json.NewEncoder(w).Encode([]model.Branch{
+				{Name: "main", HeadSequence: 3, BaseSequence: 0},
+			})
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/default/commit/"):
+			callCount++
+			seq := int64(0)
+			fmt.Sscanf(r.URL.Path, "/repos/default/commit/%d", &seq)
+			json.NewEncoder(w).Encode(commitInfo{
+				Sequence: seq, Branch: "main", Author: "alice",
+				CreatedAt: mustParseTime("2026-04-14"), Message: fmt.Sprintf("commit %d", seq),
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	app, out := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "main", "alice")
+
+	if err := app.Log("", 1); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	// Should only show seq 3 (limit=1, newest first)
+	if !strings.Contains(output, "seq 3") {
+		t.Errorf("expected seq 3 in output:\n%s", output)
+	}
+	if strings.Contains(output, "seq 2") || strings.Contains(output, "seq 1") {
+		t.Errorf("limit=1 should only show 1 entry:\n%s", output)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Show
+// ---------------------------------------------------------------------------
+
+func TestShow_Commit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && r.URL.Path == "/repos/default/commit/5" {
+			w.Header().Set("Content-Type", "application/json")
+			vid := "v1"
+			json.NewEncoder(w).Encode(commitInfo{
+				Sequence:  5,
+				Branch:    "feature/x",
+				Author:    "alice",
+				CreatedAt: mustParseTime("2026-04-14"),
+				Message:   "add test file",
+				Files: []commitFileInfo{
+					{Path: "src/main_test.go", VersionID: &vid},
+					{Path: "removed.go", VersionID: nil},
+				},
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	app, out := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "feature/x", "alice")
+
+	if err := app.Show(5, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "commit 5") {
+		t.Errorf("expected 'commit 5' in output:\n%s", output)
+	}
+	if !strings.Contains(output, "src/main_test.go") {
+		t.Errorf("expected file path in output:\n%s", output)
+	}
+	if !strings.Contains(output, "removed.go") {
+		t.Errorf("expected deleted file in output:\n%s", output)
+	}
+	if !strings.Contains(output, "deleted") {
+		t.Errorf("expected 'deleted' label in output:\n%s", output)
+	}
+}
+
+func TestShow_FileAtSequence(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && r.URL.Path == "/repos/default/file/README.md" {
+			if r.URL.Query().Get("at") != "5" {
+				t.Errorf("expected at=5, got %q", r.URL.Query().Get("at"))
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(model.FileResponse{
+				Path:    "README.md",
+				Content: []byte("hello world"),
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	app, out := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "main", "alice")
+
+	if err := app.Show(5, "README.md"); err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(out.String(), "hello world") {
+		t.Errorf("expected file content in output:\n%s", out.String())
+	}
+}
+
+func TestShow_NotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(model.ErrorResponse{Error: "commit not found"})
+	}))
+	defer srv.Close()
+
+	app, _ := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "main", "alice")
+
+	err := app.Show(99, "")
+	if err == nil || !strings.Contains(err.Error(), "99") {
+		t.Errorf("expected error mentioning sequence 99, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Rebase
+// ---------------------------------------------------------------------------
+
+func TestRebase_Success(t *testing.T) {
+	var gotReq model.RebaseRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && r.URL.Path == "/repos/default/rebase" {
+			json.NewDecoder(r.Body).Decode(&gotReq)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(model.RebaseResponse{
+				NewBaseSequence: 5,
+				NewHeadSequence: 7,
+				CommitsReplayed: 2,
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	app, out := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "feature/x", "alice")
+
+	if err := app.Rebase(); err != nil {
+		t.Fatal(err)
+	}
+
+	if gotReq.Branch != "feature/x" {
+		t.Errorf("rebase branch = %q, want %q", gotReq.Branch, "feature/x")
+	}
+
+	// state.json should have updated head sequence.
+	st, _ := app.loadState()
+	if st.Sequence != 7 {
+		t.Errorf("state.sequence = %d, want 7", st.Sequence)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "Rebased") {
+		t.Errorf("expected 'Rebased' in output:\n%s", output)
+	}
+	if !strings.Contains(output, "feature/x") {
+		t.Errorf("expected branch name in output:\n%s", output)
+	}
+	if !strings.Contains(output, "2 commits replayed") {
+		t.Errorf("expected commit count in output:\n%s", output)
+	}
+}
+
+func TestRebase_Conflict(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == "POST" && r.URL.Path == "/repos/default/rebase":
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(model.RebaseConflictError{
+				Conflicts: []model.ConflictEntry{
+					{Path: "README.md", MainVersionID: "v-main", BranchVersionID: "v-branch"},
+				},
+			})
+		case r.Method == "GET" && r.URL.Path == "/repos/default/file/README.md":
+			branch := r.URL.Query().Get("branch")
+			if branch == "main" {
+				json.NewEncoder(w).Encode(model.FileResponse{Path: "README.md", Content: []byte("main version")})
+			} else {
+				json.NewEncoder(w).Encode(model.FileResponse{Path: "README.md", Content: []byte("branch version")})
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	app, out := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "feature/x", "alice")
+
+	err := app.Rebase()
+	if err == nil || !strings.Contains(err.Error(), "conflict") {
+		t.Errorf("expected conflict error, got: %v", err)
+	}
+
+	// Conflict files should be written to disk.
+	mainContent, readErr := os.ReadFile(filepath.Join(app.Dir, "README.md.main"))
+	if readErr != nil {
+		t.Fatalf("expected README.md.main to be written: %v", readErr)
+	}
+	if string(mainContent) != "main version" {
+		t.Errorf("README.md.main = %q, want %q", string(mainContent), "main version")
+	}
+
+	branchContent, readErr := os.ReadFile(filepath.Join(app.Dir, "README.md.branch"))
+	if readErr != nil {
+		t.Fatalf("expected README.md.branch to be written: %v", readErr)
+	}
+	if string(branchContent) != "branch version" {
+		t.Errorf("README.md.branch = %q, want %q", string(branchContent), "branch version")
+	}
+
+	if !strings.Contains(out.String(), "README.md") {
+		t.Errorf("expected conflict path in output:\n%s", out.String())
+	}
+}
+
+func TestRebase_OnMain(t *testing.T) {
+	app, _ := newTestApp(t, nil)
+	initWorkspace(t, app, "http://test", "main", "alice")
+
+	err := app.Rebase()
+	if err == nil || !strings.Contains(err.Error(), "cannot rebase main") {
+		t.Errorf("expected 'cannot rebase main' error, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Resolve
+// ---------------------------------------------------------------------------
+
+func TestResolve_CommitsResolvedFile(t *testing.T) {
+	var gotReq model.CommitRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && r.URL.Path == "/repos/default/commit" {
+			json.NewDecoder(r.Body).Decode(&gotReq)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(model.CommitResponse{Sequence: 8})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	app, out := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "feature/x", "alice")
+
+	// Write conflict files and the resolved file.
+	writeFile(t, app, "README.md.main", "main version")
+	writeFile(t, app, "README.md.branch", "branch version")
+	writeFile(t, app, "README.md", "resolved content")
+
+	if err := app.Resolve("README.md"); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(gotReq.Files) != 1 || gotReq.Files[0].Path != "README.md" {
+		t.Errorf("expected commit for README.md, got: %v", gotReq.Files)
+	}
+	if string(gotReq.Files[0].Content) != "resolved content" {
+		t.Errorf("committed content = %q, want %q", string(gotReq.Files[0].Content), "resolved content")
+	}
+
+	// State should be updated.
+	st, _ := app.loadState()
+	if st.Sequence != 8 {
+		t.Errorf("state.sequence = %d, want 8", st.Sequence)
+	}
+	if _, ok := st.Files["README.md"]; !ok {
+		t.Error("expected README.md in state files")
+	}
+
+	if !strings.Contains(out.String(), "resolved README.md") {
+		t.Errorf("expected resolution confirmation in output:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "sequence 8") {
+		t.Errorf("expected sequence number in output:\n%s", out.String())
+	}
+}
+
+func TestResolve_CleansUpConflictFiles(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(model.CommitResponse{Sequence: 9})
+	}))
+	defer srv.Close()
+
+	app, _ := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "feature/x", "alice")
+
+	writeFile(t, app, "src/file.go.main", "main")
+	writeFile(t, app, "src/file.go.branch", "branch")
+	writeFile(t, app, "src/file.go", "resolved")
+
+	if err := app.Resolve("src/file.go"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Conflict files should be removed.
+	if _, err := os.Stat(filepath.Join(app.Dir, "src/file.go.main")); !os.IsNotExist(err) {
+		t.Error("expected src/file.go.main to be removed")
+	}
+	if _, err := os.Stat(filepath.Join(app.Dir, "src/file.go.branch")); !os.IsNotExist(err) {
+		t.Error("expected src/file.go.branch to be removed")
+	}
+	// Resolved file should still exist.
+	if _, err := os.Stat(filepath.Join(app.Dir, "src/file.go")); err != nil {
+		t.Errorf("expected src/file.go to still exist: %v", err)
+	}
+}
+
+func TestResolve_NoConflictFiles(t *testing.T) {
+	app, _ := newTestApp(t, nil)
+	initWorkspace(t, app, "http://test", "feature/x", "alice")
+
+	err := app.Resolve("README.md")
+	if err == nil || !strings.Contains(err.Error(), "README.md.main") {
+		t.Errorf("expected error about missing conflict file, got: %v", err)
+	}
+}
+
+// mustParseTime parses a date string for use in tests.
+func mustParseTime(s string) time.Time {
+	t, err := time.Parse("2006-01-02", s)
+	if err != nil {
+		panic(err)
+	}
+	return t
 }

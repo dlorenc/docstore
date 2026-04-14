@@ -192,3 +192,140 @@ func TestFullWorkflow(t *testing.T) {
 		t.Errorf("ws2 state.files = %d, want 2 after pull", len(st2.Files))
 	}
 }
+
+// TestCLILog_EndToEnd verifies that ds log returns commits in newest-first order.
+func TestCLILog_EndToEnd(t *testing.T) {
+	srv := newRealServer(t)
+
+	ws, out := newTestApp(t, srv)
+	if err := ws.Init(srv.URL, "", "alice"); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	writeFile(t, ws, "a.txt", "aaa")
+	if err := ws.Commit("first commit"); err != nil {
+		t.Fatalf("Commit 1: %v", err)
+	}
+
+	writeFile(t, ws, "b.txt", "bbb")
+	if err := ws.Commit("second commit"); err != nil {
+		t.Fatalf("Commit 2: %v", err)
+	}
+
+	out.Reset()
+	if err := ws.Log("", 20); err != nil {
+		t.Fatalf("Log: %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "second commit") {
+		t.Errorf("expected 'second commit' in log output:\n%s", output)
+	}
+	if !strings.Contains(output, "first commit") {
+		t.Errorf("expected 'first commit' in log output:\n%s", output)
+	}
+	// newest first: second commit appears before first commit
+	if strings.Index(output, "second commit") > strings.Index(output, "first commit") {
+		t.Errorf("expected newest commit first:\n%s", output)
+	}
+}
+
+// TestCLIRebase_EndToEnd exercises the full rebase workflow with a real server.
+func TestCLIRebase_EndToEnd(t *testing.T) {
+	srv := newRealServer(t)
+
+	ws, _ := newTestApp(t, srv)
+	if err := ws.Init(srv.URL, "", "alice"); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	// Commit something to main.
+	writeFile(t, ws, "main.txt", "main content")
+	if err := ws.Commit("base commit"); err != nil {
+		t.Fatalf("Commit base: %v", err)
+	}
+
+	// Create a feature branch and commit.
+	if err := ws.CheckoutNew("feature/rebase-test"); err != nil {
+		t.Fatalf("CheckoutNew: %v", err)
+	}
+	writeFile(t, ws, "feature.txt", "feature content")
+	if err := ws.Commit("feature commit"); err != nil {
+		t.Fatalf("Commit feature: %v", err)
+	}
+
+	// Advance main past the feature branch base.
+	if err := ws.Checkout("main"); err != nil {
+		t.Fatalf("Checkout main: %v", err)
+	}
+	writeFile(t, ws, "main2.txt", "more main content")
+	if err := ws.Commit("main advance"); err != nil {
+		t.Fatalf("Commit main advance: %v", err)
+	}
+
+	// Go back to feature branch and rebase.
+	if err := ws.Checkout("feature/rebase-test"); err != nil {
+		t.Fatalf("Checkout feature: %v", err)
+	}
+
+	wsOut := &strings.Builder{}
+	ws.Out = wsOut
+	if err := ws.Rebase(); err != nil {
+		t.Fatalf("Rebase: %v", err)
+	}
+
+	if !strings.Contains(wsOut.String(), "Rebased") {
+		t.Errorf("expected 'Rebased' in output:\n%s", wsOut.String())
+	}
+
+	// state.json sequence should be updated.
+	st, _ := ws.loadState()
+	if st.Sequence == 0 {
+		t.Error("expected non-zero sequence in state after rebase")
+	}
+}
+
+// TestCLIResolve_EndToEnd exercises the resolve workflow: write conflict files,
+// create a resolved version, call Resolve, verify commit and cleanup.
+func TestCLIResolve_EndToEnd(t *testing.T) {
+	srv := newRealServer(t)
+
+	ws, _ := newTestApp(t, srv)
+	if err := ws.Init(srv.URL, "", "alice"); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	// Create a branch so we can commit to it.
+	if err := ws.CheckoutNew("feature/resolve-test"); err != nil {
+		t.Fatalf("CheckoutNew: %v", err)
+	}
+
+	// Simulate conflict files written by a rebase.
+	writeFile(t, ws, "README.md.main", "main version")
+	writeFile(t, ws, "README.md.branch", "branch version")
+	writeFile(t, ws, "README.md", "resolved version")
+
+	wsOut := &strings.Builder{}
+	ws.Out = wsOut
+	if err := ws.Resolve("README.md"); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	if !strings.Contains(wsOut.String(), "resolved README.md") {
+		t.Errorf("expected resolution message in output:\n%s", wsOut.String())
+	}
+
+	// Conflict files should be gone.
+	if _, err := os.Stat(filepath.Join(ws.Dir, "README.md.main")); !os.IsNotExist(err) {
+		t.Error("expected README.md.main to be removed")
+	}
+	if _, err := os.Stat(filepath.Join(ws.Dir, "README.md.branch")); !os.IsNotExist(err) {
+		t.Error("expected README.md.branch to be removed")
+	}
+
+	// State should track README.md.
+	st, _ := ws.loadState()
+	if _, ok := st.Files["README.md"]; !ok {
+		t.Error("expected README.md in state files after resolve")
+	}
+}
