@@ -284,6 +284,20 @@ type ReposResponse struct {
 }
 
 // ---------------------------------------------------------------------------
+// GET /repos/:name/roles / PUT /repos/:name/roles/:identity / DELETE /repos/:name/roles/:identity
+// ---------------------------------------------------------------------------
+
+// SetRoleRequest is the body for PUT /repos/:name/roles/:identity.
+type SetRoleRequest struct {
+	Role RoleType `json:"role"`
+}
+
+// RolesResponse is the response for GET /repos/:name/roles.
+type RolesResponse struct {
+	Roles []Role `json:"roles"`
+}
+
+// ---------------------------------------------------------------------------
 // Error
 // ---------------------------------------------------------------------------
 

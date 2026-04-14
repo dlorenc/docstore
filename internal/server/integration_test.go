@@ -59,7 +59,7 @@ func seed(t *testing.T, db *sql.DB) {
 func TestIntegrationTreeEndpoint(t *testing.T) {
 	db := testutil.TestDB(t, dbpkg.MigrationSQL)
 	seed(t, db)
-	handler := server.New(dbpkg.NewStore(db), db, "test@example.com")
+	handler := server.New(dbpkg.NewStore(db), db, "test@example.com", "test@example.com")
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -86,7 +86,7 @@ func TestIntegrationTreeEndpoint(t *testing.T) {
 func TestIntegrationFileEndpoint(t *testing.T) {
 	db := testutil.TestDB(t, dbpkg.MigrationSQL)
 	seed(t, db)
-	handler := server.New(dbpkg.NewStore(db), db, "test@example.com")
+	handler := server.New(dbpkg.NewStore(db), db, "test@example.com", "test@example.com")
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -177,7 +177,7 @@ func TestIntegrationBranchesEndpoint(t *testing.T) {
 		t.Fatalf("seed branch: %v", err)
 	}
 
-	handler := server.New(dbpkg.NewStore(database), database, "test@example.com")
+	handler := server.New(dbpkg.NewStore(database), database, "test@example.com", "test@example.com")
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -243,7 +243,7 @@ func TestIntegrationDiffEndpoint(t *testing.T) {
 		}
 	}
 
-	handler := server.New(dbpkg.NewStore(database), database, "test@example.com")
+	handler := server.New(dbpkg.NewStore(database), database, "test@example.com", "test@example.com")
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -298,7 +298,7 @@ func TestIntegrationDiffEndpoint(t *testing.T) {
 func TestIntegrationCommitEndpoint(t *testing.T) {
 	db := testutil.TestDB(t, dbpkg.MigrationSQL)
 	seed(t, db)
-	handler := server.New(nil, db, "test@example.com")
+	handler := server.New(nil, db, "test@example.com", "")
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -356,7 +356,7 @@ func TestIntegrationDeleteBranch(t *testing.T) {
 	seed(t, database)
 
 	writeStore := dbpkg.NewStore(database)
-	handler := server.New(writeStore, database, "test@example.com")
+	handler := server.New(writeStore, database, "test@example.com", "test@example.com")
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -432,7 +432,7 @@ func TestIntegrationDeleteBranch(t *testing.T) {
 func TestIntegrationRebase_FullFlow(t *testing.T) {
 	database := testutil.TestDB(t, dbpkg.MigrationSQL)
 	writeStore := dbpkg.NewStore(database)
-	handler := server.New(writeStore, database, "test@example.com")
+	handler := server.New(writeStore, database, "test@example.com", "test@example.com")
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -541,7 +541,7 @@ func TestIntegrationRebase_FullFlow(t *testing.T) {
 // is present and the server is not in dev mode.
 func TestHTTP_AuthRequired(t *testing.T) {
 	// No devIdentity → real IAP auth enforced.
-	handler := server.New(nil, nil, "")
+	handler := server.New(nil, nil, "", "")
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -572,7 +572,7 @@ func TestHTTP_AuthIdentityUsedAsAuthor(t *testing.T) {
 	const identity = "alice@example.com"
 	database := testutil.TestDB(t, dbpkg.MigrationSQL)
 	writeStore := dbpkg.NewStore(database)
-	handler := server.New(writeStore, database, identity)
+	handler := server.New(writeStore, database, identity, identity)
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -613,7 +613,7 @@ func TestHTTP_AuthIdentityUsedAsAuthor(t *testing.T) {
 func TestHandleCreateRepo_Success(t *testing.T) {
 	database := testutil.TestDB(t, dbpkg.MigrationSQL)
 	writeStore := dbpkg.NewStore(database)
-	handler := server.New(writeStore, database, "test@example.com")
+	handler := server.New(writeStore, database, "test@example.com", "test@example.com")
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -632,7 +632,7 @@ func TestHandleCreateRepo_Success(t *testing.T) {
 func TestHandleCreateRepo_Duplicate(t *testing.T) {
 	database := testutil.TestDB(t, dbpkg.MigrationSQL)
 	writeStore := dbpkg.NewStore(database)
-	handler := server.New(writeStore, database, "test@example.com")
+	handler := server.New(writeStore, database, "test@example.com", "test@example.com")
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -652,7 +652,7 @@ func TestHandleCreateRepo_Duplicate(t *testing.T) {
 func TestHandleDeleteRepo_Success(t *testing.T) {
 	database := testutil.TestDB(t, dbpkg.MigrationSQL)
 	writeStore := dbpkg.NewStore(database)
-	handler := server.New(writeStore, database, "test@example.com")
+	handler := server.New(writeStore, database, "test@example.com", "test@example.com")
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -679,7 +679,7 @@ func TestHandleDeleteRepo_Success(t *testing.T) {
 func TestHandleDeleteRepo_NotFound(t *testing.T) {
 	database := testutil.TestDB(t, dbpkg.MigrationSQL)
 	writeStore := dbpkg.NewStore(database)
-	handler := server.New(writeStore, database, "test@example.com")
+	handler := server.New(writeStore, database, "test@example.com", "test@example.com")
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -697,7 +697,7 @@ func TestHandleDeleteRepo_NotFound(t *testing.T) {
 func TestHandleListRepos(t *testing.T) {
 	database := testutil.TestDB(t, dbpkg.MigrationSQL)
 	writeStore := dbpkg.NewStore(database)
-	handler := server.New(writeStore, database, "test@example.com")
+	handler := server.New(writeStore, database, "test@example.com", "test@example.com")
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -733,7 +733,7 @@ func TestHandleListRepos(t *testing.T) {
 func TestIntegrationMultiRepo_FullIsolation(t *testing.T) {
 	database := testutil.TestDB(t, dbpkg.MigrationSQL)
 	writeStore := dbpkg.NewStore(database)
-	handler := server.New(writeStore, database, "test@example.com")
+	handler := server.New(writeStore, database, "test@example.com", "test@example.com")
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -809,7 +809,7 @@ func TestIntegrationMultiRepo_FullIsolation(t *testing.T) {
 func TestIntegrationDeleteRepo_CleansUp(t *testing.T) {
 	database := testutil.TestDB(t, dbpkg.MigrationSQL)
 	writeStore := dbpkg.NewStore(database)
-	handler := server.New(writeStore, database, "test@example.com")
+	handler := server.New(writeStore, database, "test@example.com", "test@example.com")
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -867,7 +867,7 @@ func TestIntegrationDeleteRepo_CleansUp(t *testing.T) {
 func TestIntegrationReviewFlow(t *testing.T) {
 	database := testutil.TestDB(t, dbpkg.MigrationSQL)
 	writeStore := dbpkg.NewStore(database)
-	handler := server.New(writeStore, database, "alice@example.com")
+	handler := server.New(writeStore, database, "alice@example.com", "alice@example.com")
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -902,7 +902,7 @@ func TestIntegrationReviewFlow(t *testing.T) {
 	}
 
 	// Step 4: Switch server identity to bob who hasn't committed anything.
-	handlerBob := server.New(writeStore, database, "bob@example.com")
+	handlerBob := server.New(writeStore, database, "bob@example.com", "bob@example.com")
 	srvBob := httptest.NewServer(handlerBob)
 	defer srvBob.Close()
 
@@ -974,7 +974,7 @@ func TestIntegrationReviewFlow(t *testing.T) {
 func TestIntegrationCheckRunFlow(t *testing.T) {
 	database := testutil.TestDB(t, dbpkg.MigrationSQL)
 	writeStore := dbpkg.NewStore(database)
-	handler := server.New(writeStore, database, "ci-bot@example.com")
+	handler := server.New(writeStore, database, "ci-bot@example.com", "ci-bot@example.com")
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -1035,7 +1035,7 @@ func TestIntegrationReviewRepoIsolation(t *testing.T) {
 	database := testutil.TestDB(t, dbpkg.MigrationSQL)
 	writeStore := dbpkg.NewStore(database)
 	// alice is the reviewer; bob is the committer so alice can approve
-	handler := server.New(writeStore, database, "alice@example.com")
+	handler := server.New(writeStore, database, "alice@example.com", "alice@example.com")
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -1080,5 +1080,188 @@ func TestIntegrationReviewRepoIsolation(t *testing.T) {
 	}
 	if len(reviews) != 0 {
 		t.Errorf("expected 0 reviews in repo-y, got %d", len(reviews))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RBAC integration tests
+// ---------------------------------------------------------------------------
+
+// TestIntegrationRBAC_FullFlow exercises the complete bootstrap → role assignment
+// → role-constrained operations flow.
+func TestIntegrationRBAC_FullFlow(t *testing.T) {
+	database := testutil.TestDB(t, dbpkg.MigrationSQL)
+	writeStore := dbpkg.NewStore(database)
+
+	const bootstrapAdmin = "admin@example.com"
+	const writerID = "writer@example.com"
+	const maintainerID = "maintainer@example.com"
+
+	// Helper: create a server with a specific dev identity.
+	makeHandler := func(devID, bootAdmin string) *httptest.Server {
+		h := server.New(writeStore, database, devID, bootAdmin)
+		srv := httptest.NewServer(h)
+		t.Cleanup(srv.Close)
+		return srv
+	}
+
+	doPost := func(srv *httptest.Server, path, body string) *http.Response {
+		t.Helper()
+		resp, err := http.Post(srv.URL+path, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST %s: %v", path, err)
+		}
+		return resp
+	}
+	doPut := func(srv *httptest.Server, path, body string) *http.Response {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPut, srv.URL+path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("PUT %s: %v", path, err)
+		}
+		return resp
+	}
+	doGet := func(srv *httptest.Server, path string) *http.Response {
+		t.Helper()
+		resp, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		return resp
+	}
+
+	// Step 1: Create a repo as bootstrap admin.
+	adminSrv := makeHandler(bootstrapAdmin, bootstrapAdmin)
+	r := doPost(adminSrv, "/repos", `{"name":"rbacrepo"}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("create repo: expected 201, got %d", r.StatusCode)
+	}
+
+	// Step 2: Bootstrap admin assigns writer and maintainer roles.
+	r = doPut(adminSrv, "/repos/rbacrepo/roles/"+writerID, `{"role":"writer"}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("assign writer role: expected 200, got %d", r.StatusCode)
+	}
+
+	r = doPut(adminSrv, "/repos/rbacrepo/roles/"+maintainerID, `{"role":"maintainer"}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("assign maintainer role: expected 200, got %d", r.StatusCode)
+	}
+
+	// Step 3: Admin creates branch; writer commits to it.
+	r = doPost(adminSrv, "/repos/rbacrepo/branch", `{"name":"feature/rbac-test"}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("admin create branch: expected 201, got %d", r.StatusCode)
+	}
+
+	writerSrv := makeHandler(writerID, bootstrapAdmin)
+	r = doPost(writerSrv, "/repos/rbacrepo/commit",
+		`{"branch":"feature/rbac-test","message":"writer commit","files":[{"path":"f.txt","content":"aGVsbG8="}]}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("writer commit: expected 201, got %d", r.StatusCode)
+	}
+
+	// Step 4: Writer cannot merge (not maintainer).
+	r = doPost(writerSrv, "/repos/rbacrepo/merge", `{"branch":"feature/rbac-test"}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusForbidden {
+		t.Fatalf("writer merge: expected 403, got %d", r.StatusCode)
+	}
+
+	// Step 5: Maintainer can merge.
+	maintainerSrv := makeHandler(maintainerID, bootstrapAdmin)
+	r = doPost(maintainerSrv, "/repos/rbacrepo/merge", `{"branch":"feature/rbac-test"}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("maintainer merge: expected 200, got %d", r.StatusCode)
+	}
+
+	// Step 6: Admin can read the tree.
+	r = doGet(adminSrv, "/repos/rbacrepo/tree")
+	r.Body.Close()
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("admin read tree: expected 200, got %d", r.StatusCode)
+	}
+
+	// Step 7: Unknown identity has no access.
+	unknownSrv := makeHandler("unknown@example.com", bootstrapAdmin)
+	r = doGet(unknownSrv, "/repos/rbacrepo/tree")
+	r.Body.Close()
+	if r.StatusCode != http.StatusForbidden {
+		t.Fatalf("unknown identity read: expected 403, got %d", r.StatusCode)
+	}
+}
+
+// TestIntegrationRBAC_CrossRepoIsolation verifies that a role in repo-a
+// grants no access to repo-b.
+func TestIntegrationRBAC_CrossRepoIsolation(t *testing.T) {
+	database := testutil.TestDB(t, dbpkg.MigrationSQL)
+	writeStore := dbpkg.NewStore(database)
+
+	const bootstrapAdmin = "admin@example.com"
+	const alice = "alice@example.com"
+
+	adminSrv := httptest.NewServer(server.New(writeStore, database, bootstrapAdmin, bootstrapAdmin))
+	t.Cleanup(adminSrv.Close)
+
+	doPost := func(srv *httptest.Server, path, body string) *http.Response {
+		t.Helper()
+		resp, err := http.Post(srv.URL+path, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST %s: %v", path, err)
+		}
+		return resp
+	}
+
+	// Create two repos.
+	for _, name := range []string{"repo-x", "repo-y"} {
+		r := doPost(adminSrv, "/repos", `{"name":"`+name+`"}`)
+		r.Body.Close()
+		if r.StatusCode != http.StatusCreated {
+			t.Fatalf("create %s: expected 201, got %d", name, r.StatusCode)
+		}
+	}
+
+	// Assign alice as admin in repo-x only.
+	req, _ := http.NewRequest(http.MethodPut, adminSrv.URL+"/repos/repo-x/roles/"+alice, strings.NewReader(`{"role":"admin"}`))
+	req.Header.Set("Content-Type", "application/json")
+	r, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT role: %v", err)
+	}
+	r.Body.Close()
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("assign role: expected 200, got %d", r.StatusCode)
+	}
+
+	// Alice server (no bootstrap — must use explicit role).
+	aliceSrv := httptest.NewServer(server.New(writeStore, database, alice, ""))
+	t.Cleanup(aliceSrv.Close)
+
+	// Alice can access repo-x.
+	resp, err := http.Get(aliceSrv.URL + "/repos/repo-x/tree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("alice repo-x: expected 200, got %d", resp.StatusCode)
+	}
+
+	// Alice cannot access repo-y (no role there).
+	resp, err = http.Get(aliceSrv.URL + "/repos/repo-y/tree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("alice repo-y: expected 403, got %d", resp.StatusCode)
 	}
 }

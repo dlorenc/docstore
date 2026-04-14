@@ -12,7 +12,7 @@ import (
 	"github.com/dlorenc/docstore/internal/store"
 )
 
-// WriteStore abstracts the database write and repo management operations.
+// WriteStore abstracts the database write, repo management, and role operations.
 type WriteStore interface {
 	// Repo management
 	CreateRepo(ctx context.Context, req model.CreateRepoRequest) (*model.Repo, error)
@@ -32,6 +32,13 @@ type WriteStore interface {
 	ListReviews(ctx context.Context, repo, branch string, atSeq *int64) ([]model.Review, error)
 	CreateCheckRun(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string) (*model.CheckRun, error)
 	ListCheckRuns(ctx context.Context, repo, branch string, atSeq *int64) ([]model.CheckRun, error)
+
+	// Role management
+	GetRole(ctx context.Context, repo, identity string) (*model.Role, error)
+	SetRole(ctx context.Context, repo, identity string, role model.RoleType) error
+	DeleteRole(ctx context.Context, repo, identity string) error
+	ListRoles(ctx context.Context, repo string) ([]model.Role, error)
+	HasAdmin(ctx context.Context, repo string) (bool, error)
 }
 
 // CommitStore is an alias for backward compatibility with tests.
@@ -39,9 +46,10 @@ type CommitStore = WriteStore
 
 // New returns an http.Handler with all routes registered.
 // devIdentity, if non-empty, bypasses IAP JWT validation (for local dev/testing).
+// bootstrapAdmin, if non-empty, has admin access to any repo with no existing admin.
 // writeStore provides write operations; pass nil if only read/health endpoints are needed.
 // database provides read operations; pass nil if only write/health endpoints are needed.
-func New(writeStore WriteStore, database *sql.DB, devIdentity string) http.Handler {
+func New(writeStore WriteStore, database *sql.DB, devIdentity, bootstrapAdmin string) http.Handler {
 	s := &server{commitStore: writeStore}
 	if database != nil {
 		s.readStore = store.New(database)
@@ -80,7 +88,18 @@ func New(writeStore WriteStore, database *sql.DB, devIdentity string) http.Handl
 	inner.HandleFunc("POST /repos/{name}/check", s.handleCheck)
 	inner.HandleFunc("DELETE /repos/{name}/branch/{bname...}", s.handleDeleteBranch)
 
-	outer.Handle("/", IAPMiddleware(devIdentity)(inner))
+	// Role management endpoints
+	inner.HandleFunc("GET /repos/{name}/roles", s.handleListRoles)
+	inner.HandleFunc("PUT /repos/{name}/roles/{identity...}", s.handleSetRole)
+	inner.HandleFunc("DELETE /repos/{name}/roles/{identity...}", s.handleDeleteRole)
+
+	// Chain: IAPMiddleware → RBACMiddleware (when store present) → routes.
+	// IAP must run first to set identity in context before RBAC reads it.
+	var routed http.Handler = inner
+	if writeStore != nil {
+		routed = RBACMiddleware(writeStore, bootstrapAdmin)(inner)
+	}
+	outer.Handle("/", IAPMiddleware(devIdentity)(routed))
 	return outer
 }
 
