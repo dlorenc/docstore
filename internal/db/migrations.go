@@ -2,31 +2,35 @@ package db
 
 import (
 	"database/sql"
+	"embed"
+	"errors"
 	"fmt"
-	_ "embed"
+
+	"github.com/golang-migrate/migrate/v4"
+	"github.com/golang-migrate/migrate/v4/database/postgres"
+	"github.com/golang-migrate/migrate/v4/source/iofs"
 )
 
-//go:embed migrations/000001_initial_schema.up.sql
-var migration001 string
+//go:embed migrations
+var migrationsFS embed.FS
 
-//go:embed migrations/000002_add_commits_table.up.sql
-var migration002 string
-
-//go:embed migrations/000003_multitenancy.up.sql
-var migration003 string
-
-//go:embed migrations/000004_reviews_checks.up.sql
-var migration004 string
-
-// MigrationSQL is the combined SQL for all schema migrations, run in order.
-var MigrationSQL = migration001 + "\n" + migration002 + "\n" + migration003 + "\n" + migration004
-
-//go:embed migrations/000001_initial_schema.down.sql
-var MigrationDownSQL string
-
-// RunMigrations executes all migrations against the given database.
+// RunMigrations applies all pending migrations to the given database using
+// golang-migrate. It is idempotent: if all migrations are already applied,
+// it returns nil.
 func RunMigrations(database *sql.DB) error {
-	if _, err := database.Exec(MigrationSQL); err != nil {
+	src, err := iofs.New(migrationsFS, "migrations")
+	if err != nil {
+		return fmt.Errorf("create migration source: %w", err)
+	}
+	driver, err := postgres.WithInstance(database, &postgres.Config{})
+	if err != nil {
+		return fmt.Errorf("create postgres driver: %w", err)
+	}
+	m, err := migrate.NewWithInstance("iofs", src, "postgres", driver)
+	if err != nil {
+		return fmt.Errorf("create migrator: %w", err)
+	}
+	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		return fmt.Errorf("run migrations: %w", err)
 	}
 	return nil
