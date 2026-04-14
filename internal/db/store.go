@@ -355,6 +355,43 @@ func nullStr(s *string) string {
 	return *s
 }
 
+// DeleteBranch marks a branch as abandoned. It returns ErrBranchNotFound if
+// the branch does not exist, and ErrBranchNotActive if it is already merged
+// or abandoned (i.e. not active).
+func (s *Store) DeleteBranch(ctx context.Context, name string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var status string
+	err = tx.QueryRowContext(ctx,
+		"SELECT status FROM branches WHERE name = $1 FOR UPDATE",
+		name,
+	).Scan(&status)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrBranchNotFound
+		}
+		return fmt.Errorf("lock branch: %w", err)
+	}
+
+	if status != "active" {
+		return ErrBranchNotActive
+	}
+
+	_, err = tx.ExecContext(ctx,
+		"UPDATE branches SET status = 'abandoned' WHERE name = $1",
+		name,
+	)
+	if err != nil {
+		return fmt.Errorf("update branch status: %w", err)
+	}
+
+	return tx.Commit()
+}
+
 // isDuplicateKeyError checks if a PostgreSQL error is a unique violation (23505).
 func isDuplicateKeyError(err error) bool {
 	var pqErr *pq.Error
