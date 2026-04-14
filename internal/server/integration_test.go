@@ -157,7 +157,7 @@ func TestIntegrationFileEndpoint(t *testing.T) {
 }
 
 func TestIntegrationBranchesEndpoint(t *testing.T) {
-	database := testutil.TestDB(t)
+	database := testutil.TestDB(t, dbpkg.MigrationSQL)
 	seed(t, database)
 
 	// Add feature branch.
@@ -213,7 +213,7 @@ func TestIntegrationBranchesEndpoint(t *testing.T) {
 }
 
 func TestIntegrationDiffEndpoint(t *testing.T) {
-	database := testutil.TestDB(t)
+	database := testutil.TestDB(t, dbpkg.MigrationSQL)
 	seed(t, database)
 
 	// Create a branch with changes.
