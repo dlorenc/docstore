@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	dbpkg "github.com/dlorenc/docstore/internal/db"
@@ -424,4 +425,112 @@ func TestIntegrationDeleteBranch(t *testing.T) {
 			t.Fatalf("expected 409, got %d", resp.StatusCode)
 		}
 	})
+}
+
+func TestIntegrationRebase_FullFlow(t *testing.T) {
+	database := testutil.TestDB(t, dbpkg.MigrationSQL)
+	writeStore := dbpkg.NewStore(database)
+	handler := server.New(writeStore, database)
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	post := func(path, body string) *http.Response {
+		t.Helper()
+		resp, err := http.Post(srv.URL+path, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST %s: %v", path, err)
+		}
+		return resp
+	}
+
+	// Step 1: Commit to main (creates seq=1).
+	r := post("/commit", `{"branch":"main","message":"initial","author":"alice","files":[{"path":"base.txt","content":"YmFzZQ=="}]}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /commit to main: expected 201, got %d", r.StatusCode)
+	}
+
+	// Step 2: Create branch (base=1, head=1).
+	r = post("/branch", `{"name":"feature/rebase-flow"}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /branch: expected 201, got %d", r.StatusCode)
+	}
+
+	// Step 3: Commit to branch (seq=2, adds "branch.txt").
+	r = post("/commit", `{"branch":"feature/rebase-flow","message":"branch work","author":"bob","files":[{"path":"branch.txt","content":"YnJhbmNo"}]}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /commit to branch: expected 201, got %d", r.StatusCode)
+	}
+
+	// Step 4: Advance main (seq=3, adds "other.txt").
+	r = post("/commit", `{"branch":"main","message":"main advance","author":"alice","files":[{"path":"other.txt","content":"b3RoZXI="}]}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /commit to advance main: expected 201, got %d", r.StatusCode)
+	}
+
+	// Step 5: GET /diff — should show main_changes before rebase.
+	diffResp, err := http.Get(srv.URL + "/diff?branch=feature/rebase-flow")
+	if err != nil {
+		t.Fatalf("GET /diff: %v", err)
+	}
+	defer diffResp.Body.Close()
+	if diffResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /diff: expected 200, got %d", diffResp.StatusCode)
+	}
+	var diffResult store.DiffResult
+	if err := json.NewDecoder(diffResp.Body).Decode(&diffResult); err != nil {
+		t.Fatalf("decode diff: %v", err)
+	}
+	if len(diffResult.MainChanges) != 1 {
+		t.Fatalf("expected 1 main_change before rebase, got %d", len(diffResult.MainChanges))
+	}
+
+	// Step 6: POST /rebase.
+	r = post("/rebase", `{"branch":"feature/rebase-flow","author":"bob"}`)
+	defer r.Body.Close()
+	if r.StatusCode != http.StatusOK {
+		var errBody map[string]interface{}
+		json.NewDecoder(r.Body).Decode(&errBody)
+		t.Fatalf("POST /rebase: expected 200, got %d; body: %v", r.StatusCode, errBody)
+	}
+	var rebaseResp struct {
+		BaseSequence    int64 `json:"base_sequence"`
+		HeadSequence    int64 `json:"head_sequence"`
+		CommitsReplayed int64 `json:"commits_replayed"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&rebaseResp); err != nil {
+		t.Fatalf("decode rebase response: %v", err)
+	}
+	if rebaseResp.CommitsReplayed != 1 {
+		t.Errorf("expected 1 commit replayed, got %d", rebaseResp.CommitsReplayed)
+	}
+
+	// Step 7: GET /diff — should show no main_changes after rebase.
+	diffResp2, err := http.Get(srv.URL + "/diff?branch=feature/rebase-flow")
+	if err != nil {
+		t.Fatalf("GET /diff after rebase: %v", err)
+	}
+	defer diffResp2.Body.Close()
+	if diffResp2.StatusCode != http.StatusOK {
+		t.Fatalf("GET /diff after rebase: expected 200, got %d", diffResp2.StatusCode)
+	}
+	var diffResult2 store.DiffResult
+	if err := json.NewDecoder(diffResp2.Body).Decode(&diffResult2); err != nil {
+		t.Fatalf("decode diff2: %v", err)
+	}
+	if len(diffResult2.MainChanges) != 0 {
+		t.Errorf("expected 0 main_changes after rebase, got %d", len(diffResult2.MainChanges))
+	}
+
+	// Step 8: POST /merge — should succeed cleanly.
+	r = post("/merge", `{"branch":"feature/rebase-flow","author":"alice"}`)
+	defer r.Body.Close()
+	if r.StatusCode != http.StatusOK {
+		var errBody map[string]interface{}
+		json.NewDecoder(r.Body).Decode(&errBody)
+		t.Fatalf("POST /merge after rebase: expected 200, got %d; body: %v", r.StatusCode, errBody)
+	}
 }
