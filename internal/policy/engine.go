@@ -155,7 +155,10 @@ func evalPrepared(ctx context.Context, p preparedPolicy, input Input) (model.Pol
 
 	// Denied — try to get the reason string.
 	reason := "policy denied"
-	reasonRs, _ := p.reasonPQ.Eval(ctx, rego.EvalInput(input))
+	reasonRs, err := p.reasonPQ.Eval(ctx, rego.EvalInput(input))
+	if err != nil {
+		return model.PolicyResult{}, fmt.Errorf("reason eval: %w", err)
+	}
 	if len(reasonRs) > 0 && len(reasonRs[0].Expressions) > 0 {
 		if r, ok := reasonRs[0].Expressions[0].Value.(string); ok && r != "" {
 			reason = r
