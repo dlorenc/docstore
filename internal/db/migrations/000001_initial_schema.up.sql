@@ -31,6 +31,7 @@ CREATE TABLE documents (
     path         TEXT NOT NULL,
     content      BYTEA NOT NULL,
     content_hash TEXT NOT NULL,
+    content_type TEXT,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     created_by   TEXT NOT NULL,
     repo         TEXT NOT NULL DEFAULT 'default/default' REFERENCES repos (name)

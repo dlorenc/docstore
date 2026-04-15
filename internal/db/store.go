@@ -352,10 +352,14 @@ func (s *Store) Commit(ctx context.Context, req model.CommitRequest) (*model.Com
 			if errors.Is(err, sql.ErrNoRows) {
 				// Insert new document.
 				existingID = uuid.New().String()
+				var contentType sql.NullString
+				if f.ContentType != "" {
+					contentType = sql.NullString{String: f.ContentType, Valid: true}
+				}
 				_, err = tx.ExecContext(ctx,
-					`INSERT INTO documents (repo, version_id, path, content, content_hash, created_at, created_by)
-					 VALUES ($1, $2, $3, $4, $5, now(), $6)`,
-					req.Repo, existingID, f.Path, f.Content, contentHash, req.Author,
+					`INSERT INTO documents (repo, version_id, path, content, content_hash, content_type, created_at, created_by)
+					 VALUES ($1, $2, $3, $4, $5, $6, now(), $7)`,
+					req.Repo, existingID, f.Path, f.Content, contentHash, contentType, req.Author,
 				)
 				if err != nil {
 					return nil, fmt.Errorf("insert document: %w", err)

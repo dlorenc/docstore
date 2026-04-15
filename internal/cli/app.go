@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/dlorenc/docstore/internal/model"
 	"github.com/dlorenc/docstore/internal/tui"
@@ -171,6 +173,20 @@ func hashFile(path string) (string, error) {
 func HashBytes(data []byte) string {
 	h := sha256.Sum256(data)
 	return hex.EncodeToString(h[:])
+}
+
+// detectContentType returns a MIME type string for binary files, or empty string
+// for text files. Binary detection uses utf8.Valid; the MIME type is derived from
+// the file extension, defaulting to "application/octet-stream".
+func detectContentType(path string, content []byte) string {
+	if utf8.Valid(content) {
+		return ""
+	}
+	ct := mime.TypeByExtension(filepath.Ext(path))
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+	return ct
 }
 
 // isDirty returns true if there are local uncommitted changes.
@@ -352,7 +368,8 @@ func (a *App) Commit(message string) error {
 			if err != nil {
 				return err
 			}
-			files = append(files, model.FileChange{Path: path, Content: content})
+			ct := detectContentType(path, content)
+			files = append(files, model.FileChange{Path: path, Content: content, ContentType: ct})
 		}
 	}
 
@@ -695,6 +712,8 @@ func (a *App) Diff() error {
 		for _, d := range diffResp.BranchChanges {
 			if d.VersionID == nil {
 				fmt.Fprintf(a.Out, "  deleted: %s\n", d.Path)
+			} else if d.Binary {
+				fmt.Fprintf(a.Out, "  changed: %s [binary]\n", d.Path)
 			} else {
 				fmt.Fprintf(a.Out, "  changed: %s\n", d.Path)
 			}
@@ -706,6 +725,8 @@ func (a *App) Diff() error {
 		for _, d := range diffResp.MainChanges {
 			if d.VersionID == nil {
 				fmt.Fprintf(a.Out, "  deleted: %s\n", d.Path)
+			} else if d.Binary {
+				fmt.Fprintf(a.Out, "  changed: %s [binary]\n", d.Path)
 			} else {
 				fmt.Fprintf(a.Out, "  changed: %s\n", d.Path)
 			}

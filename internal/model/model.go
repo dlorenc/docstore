@@ -64,6 +64,7 @@ type Document struct {
 	Path        string    `json:"path"`
 	Content     []byte    `json:"content"`
 	ContentHash string    `json:"content_hash"`
+	ContentType string    `json:"content_type,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
 	CreatedBy   string    `json:"created_by"`
 }
