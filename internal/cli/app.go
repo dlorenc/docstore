@@ -1106,11 +1106,10 @@ func (a *App) Branches(status string) error {
 		return fmt.Errorf("decoding branches: %w", err)
 	}
 
-	fmt.Fprintf(a.Out, "%-30s %-6s %-6s %-30s %-10s\n", "BRANCH", "HEAD", "BASE", "AUTHOR", "STATUS")
+	fmt.Fprintf(a.Out, "%-30s %-6s %-6s %-10s\n", "BRANCH", "HEAD", "BASE", "STATUS")
 	for _, b := range branches {
-		// Author is not directly available in Branch model; use empty placeholder.
-		fmt.Fprintf(a.Out, "%-30s %-6d %-6d %-30s %-10s\n",
-			b.Name, b.HeadSequence, b.BaseSequence, "", string(b.Status))
+		fmt.Fprintf(a.Out, "%-30s %-6d %-6d %-10s\n",
+			b.Name, b.HeadSequence, b.BaseSequence, string(b.Status))
 	}
 	return nil
 }
@@ -1131,7 +1130,7 @@ func (a *App) Reviews(branch string) error {
 		return err
 	}
 
-	resp, err := a.httpGet(cfg, repoBase(cfg)+"/branch/"+branch+"/reviews")
+	resp, err := a.httpGet(cfg, repoBase(cfg)+"/branch/"+url.PathEscape(branch)+"/reviews")
 	if err != nil {
 		return fmt.Errorf("fetching reviews: %w", err)
 	}
@@ -1212,7 +1211,7 @@ func (a *App) Checks(branch string) error {
 		branch = cfg.Branch
 	}
 
-	resp, err := a.httpGet(cfg, repoBase(cfg)+"/branch/"+branch+"/checks")
+	resp, err := a.httpGet(cfg, repoBase(cfg)+"/branch/"+url.PathEscape(branch)+"/checks")
 	if err != nil {
 		return fmt.Errorf("fetching checks: %w", err)
 	}
