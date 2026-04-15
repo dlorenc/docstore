@@ -32,6 +32,42 @@ func ParseOwners(files map[string][]byte) map[string][]string {
 	return owners
 }
 
+// ResolveOwners returns the owners for a given file path by finding the most
+// specific (longest) directory prefix in ownersMap that is a parent of the path.
+// The ownersMap keys use the format produced by ParseOwners: directory paths
+// without trailing slashes, with root represented by the empty string "".
+//
+// Examples (ownersMap keys: "", "src", "src/pkg"):
+//   - "src/pkg/foo.go" → ownersMap["src/pkg"]  (most specific match)
+//   - "src/bar.go"     → ownersMap["src"]
+//   - "README.md"      → ownersMap[""]           (root fallback)
+//   - If no root entry exists and no prefix matches, returns nil.
+func ResolveOwners(ownersMap map[string][]string, filePath string) []string {
+	bestKey := ""
+	bestMatchLen := -1
+
+	for k := range ownersMap {
+		var matchLen int
+		if k == "" {
+			// Root matches everything.
+			matchLen = 0
+		} else if strings.HasPrefix(filePath, k+"/") {
+			matchLen = len(k)
+		} else {
+			continue
+		}
+		if matchLen > bestMatchLen {
+			bestKey = k
+			bestMatchLen = matchLen
+		}
+	}
+
+	if bestMatchLen < 0 {
+		return nil
+	}
+	return ownersMap[bestKey]
+}
+
 // parseOwnersFile parses a single OWNERS file.
 // Lines starting with '#' are treated as comments.
 // Empty or whitespace-only lines are skipped.
