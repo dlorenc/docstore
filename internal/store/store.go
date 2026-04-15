@@ -252,6 +252,23 @@ type DiffResult struct {
 	Conflicts     []ConflictEntry `json:"conflicts,omitempty"`
 }
 
+// GetBranch returns the BranchInfo for a single named branch in a repo.
+// Returns nil, nil if the branch does not exist.
+func (s *Store) GetBranch(ctx context.Context, repo, branch string) (*BranchInfo, error) {
+	var b BranchInfo
+	err := s.db.QueryRowContext(ctx,
+		"SELECT name, head_sequence, base_sequence, status FROM branches WHERE repo = $1 AND name = $2",
+		repo, branch,
+	).Scan(&b.Name, &b.HeadSequence, &b.BaseSequence, &b.Status)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &b, nil
+}
+
 // ListBranches returns all branches in a repo, optionally filtered by status.
 func (s *Store) ListBranches(ctx context.Context, repo, statusFilter string) ([]BranchInfo, error) {
 	var rows *sql.Rows
