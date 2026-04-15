@@ -5,7 +5,8 @@ DocStore is a version control system for structured documents, built on Postgres
 ## Overview
 
 - **Server-side VCS**: all history lives in Postgres; the working directory is a local cache
-- **Multi-repo**: one server hosts many named repositories
+- **Multi-repo**: one server hosts many named repositories, organized into orgs
+- **Orgs**: repos belong to an org; repo names are `owner/name` full paths (e.g. `acme/myrepo`)
 - **Branching model**: one permanent `main` branch; all work happens on named feature branches
 - **Content deduplication**: identical file contents are stored once (content-addressed by SHA256)
 - **RBAC**: per-repo roles (reader / writer / maintainer / admin)
@@ -28,8 +29,10 @@ make build-ds    # produces bin/ds
 
 ### 2. Initialize a workspace
 
+Repos are owned by orgs. The repo name is an `owner/name` full path (e.g. `acme/myrepo`).
+
 ```bash
-ds init https://docstore.example.com/repos/myrepo
+ds init https://docstore.example.com/repos/acme/myrepo
 ```
 
 This creates a `.docstore/` config directory and downloads the current tree from `main`.
@@ -37,10 +40,10 @@ This creates a `.docstore/` config directory and downloads the current tree from
 You can also pass the repo name separately:
 
 ```bash
-ds init https://docstore.example.com --repo myrepo
+ds init https://docstore.example.com --repo acme/myrepo
 ```
 
-If no repo is specified and the URL has no `/repos/` segment, the repo name defaults to `default`.
+If no repo is specified and the URL has no `/repos/` segment, the repo name defaults to `default/default`.
 
 ### 3. Make changes, commit, and push
 
@@ -91,14 +94,14 @@ ds init https://docstore.example.com/repos/myrepo --author alice@example.com
 
 Initialize a docstore workspace in the current directory.
 
-- `<remote-url>` — base server URL, optionally including the repo path (`https://host/repos/myrepo`)
+- `<remote-url>` — base server URL, optionally including the repo path (`https://host/repos/acme/myrepo`)
 - `--author <name>` — identity to use for commits (defaults to OS username)
-- `--repo <name>` — repo name on the server (overrides any name embedded in the URL; defaults to `default`)
+- `--repo <name>` — full repo name `owner/name` (overrides any name embedded in the URL; defaults to `default/default`)
 
 Creates `.docstore/config.json` and `.docstore/state.json`, then syncs files from `main`.
 
 ```bash
-ds init https://docstore.example.com/repos/docs --author jane@example.com
+ds init https://docstore.example.com/repos/acme/docs --author jane@example.com
 ```
 
 ---
@@ -330,18 +333,46 @@ ds merge
 
 ---
 
-## Server URL Format
+## Orgs and Repos
 
-The server exposes all repos under `/repos/:name`. You can give `ds init` the full path:
+Repos live under orgs. An org must be created before a repo can be created in it.
 
 ```bash
-ds init https://docstore.example.com/repos/myrepo
+# Create an org
+curl -X POST https://docstore.example.com/orgs \
+  -H "Content-Type: application/json" \
+  -d '{"name": "acme"}'
+
+# Create a repo in that org
+curl -X POST https://docstore.example.com/repos \
+  -H "Content-Type: application/json" \
+  -d '{"owner": "acme", "name": "myrepo"}'
+```
+
+The full repo name is `owner/name` (e.g. `acme/myrepo`). Repo names can contain additional slashes for subgroup nesting (e.g. `acme/team/subrepo`), in which case `acme` is still the owner (org) and `team/subrepo` is the repo name within that org.
+
+---
+
+## Server URL Format
+
+All repo-scoped API routes use a `/-/` separator to cleanly separate the full repo name (which may contain slashes) from the endpoint:
+
+```
+GET  /repos/acme/myrepo/-/tree
+POST /repos/acme/myrepo/-/commit
+GET  /repos/acme/team/subrepo/-/branches
+```
+
+For the CLI, you can give `ds init` the full path:
+
+```bash
+ds init https://docstore.example.com/repos/acme/myrepo
 ```
 
 Or the base URL with `--repo`:
 
 ```bash
-ds init https://docstore.example.com --repo myrepo
+ds init https://docstore.example.com --repo acme/myrepo
 ```
 
-Both are equivalent. The CLI stores only the base URL internally.
+Both are equivalent. The CLI stores only the base URL and repo name separately in `.docstore/config.json`. A fresh server seeds a `default` org and a `default/default` repo — the CLI defaults to this repo when no repo is specified.
