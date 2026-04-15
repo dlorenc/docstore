@@ -1473,3 +1473,335 @@ func TestHandleCreateRepo_OwnerSlashMismatch(t *testing.T) {
 		t.Errorf("expected 400, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Role management handler tests
+// ---------------------------------------------------------------------------
+
+func TestHandleListRoles_Success(t *testing.T) {
+	ms := &mockStore{
+		listRolesFn: func(ctx context.Context, repo string) ([]model.Role, error) {
+			return []model.Role{
+				{Identity: "alice@example.com", Role: model.RoleAdmin},
+				{Identity: "bob@example.com", Role: model.RoleReader},
+			}, nil
+		},
+	}
+	srv := New(ms, nil, devID, devID)
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/default/-/roles", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp model.RolesResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Roles) != 2 {
+		t.Errorf("expected 2 roles, got %d", len(resp.Roles))
+	}
+}
+
+func TestHandleListRoles_Empty(t *testing.T) {
+	ms := &mockStore{
+		listRolesFn: func(ctx context.Context, repo string) ([]model.Role, error) {
+			return nil, nil
+		},
+	}
+	srv := New(ms, nil, devID, devID)
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/default/-/roles", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp model.RolesResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Roles) != 0 {
+		t.Errorf("expected 0 roles, got %d", len(resp.Roles))
+	}
+}
+
+func TestHandleListRoles_InternalError(t *testing.T) {
+	ms := &mockStore{
+		listRolesFn: func(ctx context.Context, repo string) ([]model.Role, error) {
+			return nil, errors.New("db error")
+		},
+	}
+	srv := New(ms, nil, devID, devID)
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/default/-/roles", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", rec.Code)
+	}
+}
+
+func TestHandleSetRole_Success(t *testing.T) {
+	var capturedIdentity string
+	var capturedRole model.RoleType
+	ms := &mockStore{
+		setRoleFn: func(ctx context.Context, repo, identity string, role model.RoleType) error {
+			capturedIdentity = identity
+			capturedRole = role
+			return nil
+		},
+	}
+	srv := New(ms, nil, devID, devID)
+	body, _ := json.Marshal(model.SetRoleRequest{Role: model.RoleWriter})
+	req := httptest.NewRequest(http.MethodPut, "/repos/default/default/-/roles/alice@example.com", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if capturedIdentity != "alice@example.com" {
+		t.Errorf("expected identity alice@example.com, got %q", capturedIdentity)
+	}
+	if capturedRole != model.RoleWriter {
+		t.Errorf("expected role writer, got %q", capturedRole)
+	}
+}
+
+func TestHandleSetRole_InvalidRole(t *testing.T) {
+	ms := &mockStore{}
+	srv := New(ms, nil, devID, devID)
+	body, _ := json.Marshal(model.SetRoleRequest{Role: "superuser"})
+	req := httptest.NewRequest(http.MethodPut, "/repos/default/default/-/roles/alice@example.com", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleSetRole_InvalidJSON(t *testing.T) {
+	ms := &mockStore{}
+	srv := New(ms, nil, devID, devID)
+	req := httptest.NewRequest(http.MethodPut, "/repos/default/default/-/roles/alice@example.com", bytes.NewReader([]byte("not json")))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestHandleSetRole_InternalError(t *testing.T) {
+	ms := &mockStore{
+		setRoleFn: func(ctx context.Context, repo, identity string, role model.RoleType) error {
+			return errors.New("db down")
+		},
+	}
+	srv := New(ms, nil, devID, devID)
+	body, _ := json.Marshal(model.SetRoleRequest{Role: model.RoleAdmin})
+	req := httptest.NewRequest(http.MethodPut, "/repos/default/default/-/roles/alice@example.com", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", rec.Code)
+	}
+}
+
+func TestHandleDeleteRole_Success(t *testing.T) {
+	ms := &mockStore{
+		deleteRoleFn: func(ctx context.Context, repo, identity string) error {
+			return nil
+		},
+	}
+	srv := New(ms, nil, devID, devID)
+	req := httptest.NewRequest(http.MethodDelete, "/repos/default/default/-/roles/alice@example.com", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleDeleteRole_NotFound(t *testing.T) {
+	ms := &mockStore{
+		deleteRoleFn: func(ctx context.Context, repo, identity string) error {
+			return db.ErrRoleNotFound
+		},
+	}
+	srv := New(ms, nil, devID, devID)
+	req := httptest.NewRequest(http.MethodDelete, "/repos/default/default/-/roles/nobody@example.com", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec.Code)
+	}
+}
+
+func TestHandleDeleteRole_InternalError(t *testing.T) {
+	ms := &mockStore{
+		deleteRoleFn: func(ctx context.Context, repo, identity string) error {
+			return errors.New("db error")
+		},
+	}
+	srv := New(ms, nil, devID, devID)
+	req := httptest.NewRequest(http.MethodDelete, "/repos/default/default/-/roles/alice@example.com", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", rec.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleGetReviews additional paths
+// ---------------------------------------------------------------------------
+
+func TestHandleGetReviews_WithAtParam(t *testing.T) {
+	var capturedSeq *int64
+	ms := &mockStore{
+		listReviewsFn: func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.Review, error) {
+			capturedSeq = atSeq
+			return []model.Review{}, nil
+		},
+	}
+	srv := New(ms, nil, devID, devID)
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/default/-/branch/main/reviews?at=5", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if capturedSeq == nil || *capturedSeq != 5 {
+		t.Errorf("expected at=5, got %v", capturedSeq)
+	}
+}
+
+func TestHandleGetReviews_InvalidAt(t *testing.T) {
+	ms := &mockStore{}
+	srv := New(ms, nil, devID, devID)
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/default/-/branch/main/reviews?at=notanumber", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestHandleGetReviews_InternalError(t *testing.T) {
+	ms := &mockStore{
+		listReviewsFn: func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.Review, error) {
+			return nil, errors.New("db error")
+		},
+	}
+	srv := New(ms, nil, devID, devID)
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/default/-/branch/main/reviews", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", rec.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleGetChecks additional paths
+// ---------------------------------------------------------------------------
+
+func TestHandleGetChecks_WithAtParam(t *testing.T) {
+	var capturedSeq *int64
+	ms := &mockStore{
+		listCheckRunsFn: func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.CheckRun, error) {
+			capturedSeq = atSeq
+			return []model.CheckRun{}, nil
+		},
+	}
+	srv := New(ms, nil, devID, devID)
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/default/-/branch/main/checks?at=3", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if capturedSeq == nil || *capturedSeq != 3 {
+		t.Errorf("expected at=3, got %v", capturedSeq)
+	}
+}
+
+func TestHandleGetChecks_InvalidAt(t *testing.T) {
+	ms := &mockStore{}
+	srv := New(ms, nil, devID, devID)
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/default/-/branch/main/checks?at=bad", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestHandleGetChecks_InternalError(t *testing.T) {
+	ms := &mockStore{
+		listCheckRunsFn: func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.CheckRun, error) {
+			return nil, errors.New("db error")
+		},
+	}
+	srv := New(ms, nil, devID, devID)
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/default/-/branch/main/checks", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", rec.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleFileHistory additional paths
+// ---------------------------------------------------------------------------
+
+func TestHandleFileHistory_InvalidLimit(t *testing.T) {
+	ms := &mockStore{}
+	srv := New(ms, nil, devID, devID)
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/default/-/file/hello.txt/history?limit=notanumber", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleFileHistory_ZeroLimit(t *testing.T) {
+	ms := &mockStore{}
+	srv := New(ms, nil, devID, devID)
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/default/-/file/hello.txt/history?limit=0", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleFileHistory_InvalidAfter(t *testing.T) {
+	ms := &mockStore{}
+	srv := New(ms, nil, devID, devID)
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/default/-/file/hello.txt/history?after=notanumber", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
