@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/dlorenc/docstore/internal/model"
+	"github.com/dlorenc/docstore/internal/tui"
 )
 
 // commitInfo is a local type for decoding GET /commit/:seq server responses.
@@ -1076,6 +1077,249 @@ func (a *App) fetchFileBytesForBranch(cfg *Config, path, branch string) ([]byte,
 		return nil, fmt.Errorf("decoding response: %w", err)
 	}
 	return fileResp.Content, nil
+}
+
+// Branches lists branches for the current repo, filtered by status (default: active).
+func (a *App) Branches(status string) error {
+	cfg, err := a.loadConfig()
+	if err != nil {
+		return err
+	}
+	if status == "" {
+		status = "active"
+	}
+
+	q := url.Values{}
+	q.Set("status", status)
+	resp, err := a.httpGet(cfg, repoBase(cfg)+"/branches?"+q.Encode())
+	if err != nil {
+		return fmt.Errorf("fetching branches: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return a.readError(resp)
+	}
+
+	var branches []model.Branch
+	if err := json.NewDecoder(resp.Body).Decode(&branches); err != nil {
+		return fmt.Errorf("decoding branches: %w", err)
+	}
+
+	fmt.Fprintf(a.Out, "%-30s %-6s %-6s %-30s %-10s\n", "BRANCH", "HEAD", "BASE", "AUTHOR", "STATUS")
+	for _, b := range branches {
+		// Author is not directly available in Branch model; use empty placeholder.
+		fmt.Fprintf(a.Out, "%-30s %-6d %-6d %-30s %-10s\n",
+			b.Name, b.HeadSequence, b.BaseSequence, "", string(b.Status))
+	}
+	return nil
+}
+
+// Reviews lists reviews for a branch (defaults to current branch if empty).
+// A review is marked [stale] if its sequence < the branch's head_sequence.
+func (a *App) Reviews(branch string) error {
+	cfg, err := a.loadConfig()
+	if err != nil {
+		return err
+	}
+	if branch == "" {
+		branch = cfg.Branch
+	}
+
+	headSeq, err := a.branchHeadSequence(cfg, branch)
+	if err != nil {
+		return err
+	}
+
+	resp, err := a.httpGet(cfg, repoBase(cfg)+"/branch/"+branch+"/reviews")
+	if err != nil {
+		return fmt.Errorf("fetching reviews: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return a.readError(resp)
+	}
+
+	var reviews []model.Review
+	if err := json.NewDecoder(resp.Body).Decode(&reviews); err != nil {
+		return fmt.Errorf("decoding reviews: %w", err)
+	}
+
+	if len(reviews) == 0 {
+		fmt.Fprintf(a.Out, "No reviews for branch '%s'\n", branch)
+		return nil
+	}
+
+	fmt.Fprintf(a.Out, "%-36s  %-30s  %-4s  %-10s  %s\n", "ID", "REVIEWER", "SEQ", "STATUS", "BODY")
+	for _, r := range reviews {
+		stale := ""
+		if r.Sequence < headSeq {
+			stale = "  [stale]"
+		}
+		fmt.Fprintf(a.Out, "%-36s  %-30s  %-4d  %-10s  %s%s\n",
+			r.ID, r.Reviewer, r.Sequence, string(r.Status), r.Body, stale)
+	}
+	return nil
+}
+
+// Review submits a review for a branch.
+func (a *App) Review(branch, status, body string) error {
+	cfg, err := a.loadConfig()
+	if err != nil {
+		return err
+	}
+	if branch == "" {
+		branch = cfg.Branch
+	}
+
+	reviewStatus := model.ReviewStatus(status)
+	if reviewStatus != model.ReviewApproved && reviewStatus != model.ReviewRejected {
+		return fmt.Errorf("status must be 'approved' or 'rejected'")
+	}
+
+	req := model.CreateReviewRequest{
+		Branch: branch,
+		Status: reviewStatus,
+		Body:   body,
+	}
+	resp, err := a.postJSON(cfg, repoBase(cfg)+"/review", req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		return a.readError(resp)
+	}
+
+	var reviewResp model.CreateReviewResponse
+	if err := json.NewDecoder(resp.Body).Decode(&reviewResp); err != nil {
+		return fmt.Errorf("decoding response: %w", err)
+	}
+
+	fmt.Fprintf(a.Out, "Review submitted: %s (id: %s, sequence: %d)\n", status, reviewResp.ID, reviewResp.Sequence)
+	return nil
+}
+
+// Checks lists check runs for a branch (defaults to current branch if empty).
+func (a *App) Checks(branch string) error {
+	cfg, err := a.loadConfig()
+	if err != nil {
+		return err
+	}
+	if branch == "" {
+		branch = cfg.Branch
+	}
+
+	resp, err := a.httpGet(cfg, repoBase(cfg)+"/branch/"+branch+"/checks")
+	if err != nil {
+		return fmt.Errorf("fetching checks: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return a.readError(resp)
+	}
+
+	var checkRuns []model.CheckRun
+	if err := json.NewDecoder(resp.Body).Decode(&checkRuns); err != nil {
+		return fmt.Errorf("decoding checks: %w", err)
+	}
+
+	if len(checkRuns) == 0 {
+		fmt.Fprintf(a.Out, "No check runs for branch '%s'\n", branch)
+		return nil
+	}
+
+	headSeq, err := a.branchHeadSequence(cfg, branch)
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(a.Out, "%-8s  %-20s  %-4s  %-10s  %s\n", "ID", "CHECK NAME", "SEQ", "STATUS", "REPORTER")
+	for _, c := range checkRuns {
+		stale := ""
+		if c.Sequence < headSeq {
+			stale = "  [stale]"
+		}
+		id := c.ID
+		if len(id) > 8 {
+			id = id[:8]
+		}
+		fmt.Fprintf(a.Out, "%-8s  %-20s  %-4d  %-10s  %s%s\n",
+			id, c.CheckName, c.Sequence, string(c.Status), c.Reporter, stale)
+	}
+	return nil
+}
+
+// Check reports a CI check result for a branch.
+func (a *App) Check(branch, name, status string) error {
+	cfg, err := a.loadConfig()
+	if err != nil {
+		return err
+	}
+	if branch == "" {
+		branch = cfg.Branch
+	}
+
+	checkStatus := model.CheckRunStatus(status)
+	if checkStatus != model.CheckRunPassed && checkStatus != model.CheckRunFailed && checkStatus != model.CheckRunPending {
+		return fmt.Errorf("status must be 'passed', 'failed', or 'pending'")
+	}
+
+	req := model.CreateCheckRunRequest{
+		Branch:    branch,
+		CheckName: name,
+		Status:    checkStatus,
+	}
+	resp, err := a.postJSON(cfg, repoBase(cfg)+"/check", req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		return a.readError(resp)
+	}
+
+	var checkResp model.CreateCheckRunResponse
+	if err := json.NewDecoder(resp.Body).Decode(&checkResp); err != nil {
+		return fmt.Errorf("decoding response: %w", err)
+	}
+
+	fmt.Fprintf(a.Out, "Check run submitted: %s=%s (id: %s, sequence: %d)\n", name, status, checkResp.ID, checkResp.Sequence)
+	return nil
+}
+
+// branchHeadSequence returns the head sequence of a named branch.
+func (a *App) branchHeadSequence(cfg *Config, branch string) (int64, error) {
+	resp, err := a.httpGet(cfg, repoBase(cfg)+"/branches")
+	if err != nil {
+		return 0, fmt.Errorf("fetching branches: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var branches []model.Branch
+	if err := json.NewDecoder(resp.Body).Decode(&branches); err != nil {
+		return 0, fmt.Errorf("decoding branches: %w", err)
+	}
+
+	for _, b := range branches {
+		if b.Name == branch {
+			return b.HeadSequence, nil
+		}
+	}
+	return 0, fmt.Errorf("branch %q not found", branch)
+}
+
+// TUI launches the terminal UI reading config from .docstore/config.json.
+func (a *App) TUI() error {
+	cfg, err := a.loadConfig()
+	if err != nil {
+		return err
+	}
+	return tui.Run(a.HTTP, cfg.Remote, cfg.Repo, cfg.Author)
 }
 
 // Resolve resolves a merge/rebase conflict for path.
