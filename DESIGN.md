@@ -6,7 +6,15 @@ A simplified version control system built on a versioned document store. One lon
 
 ## Data Model
 
-Seven tables. Documents and file_commits are append-only. Branches are mutable (head_sequence and status are updated in place).
+Eight tables. Documents and file_commits are append-only. Branches are mutable (head_sequence and status are updated in place).
+
+**orgs** is the top-level namespace. Every repo belongs to exactly one org. The org name must equal the first path segment of the repo's full name.
+
+| Column | Type | Notes |
+|---|---|---|
+| name | text | PK — e.g. `acme` |
+| created_at | timestamp | |
+| created_by | text | identity that created the org |
 
 **documents** stores immutable file versions. Every save creates a new row.
 
@@ -38,16 +46,28 @@ Seven tables. Documents and file_commits are append-only. Branches are mutable (
 | version_id | uuid | FK → documents, null = delete |
 | branch | text | `main` or `feature/*` |
 
+**repos** are named tenants owned by an org. The name is the full path (e.g. `acme/myrepo` or `acme/team/subrepo`); the owner is always the first path segment.
+
+| Column | Type | Notes |
+|---|---|---|
+| name | text | PK — full path, e.g. `acme/myrepo` |
+| owner | text | FK → orgs, must equal `split_part(name, '/', 1)` |
+| created_at | timestamp | |
+| created_by | text | |
+
 **branches** are named pointers.
 
 | Column | Type | Notes |
 |---|---|---|
-| name | text | PK |
+| repo | text | FK → repos |
+| name | text | branch name (may contain `/`) |
 | head_sequence | bigint | latest sequence on this branch |
 | base_sequence | bigint | where it forked from main |
 | status | enum | active / merged / abandoned |
 | created_at | timestamp | |
 | created_by | text | identity that created the branch |
+
+Primary key: `(repo, name)`.
 
 **roles** maps identities to coarse-grained permissions.
 
@@ -157,66 +177,115 @@ At policy evaluation time, the engine reads OWNERS from the materialized `main` 
 
 All endpoints are REST. Sequences are returned in every mutation response. List endpoints (`/tree`, `/file/:path/history`, `/commit/:sequence`) accept `?limit=N&after=cursor` for pagination. The cursor is the last `sequence` (or `path` for tree) from the previous page. Default limit is 100.
 
-**Reads**
+### URL structure
 
-`GET /tree?branch=main&at=sequence` — Materialize. Returns `[{path, version_id, content_hash}]` for every live file at that sequence. Omit `at` for head.
+Org and repo management endpoints are at the top level:
 
-`GET /file/:path/history?branch=main` — File history. Returns `[{sequence, version_id, message, author, created_at}]` ordered by sequence desc.
+```
+POST   /orgs                     create an org
+GET    /orgs                     list orgs
+GET    /orgs/{org}               get an org
+DELETE /orgs/{org}               delete an org (fails if org has repos)
+GET    /orgs/{org}/repos         list repos in an org
 
-`GET /file/:path?branch=main&at=sequence` — Get file content at a point in time.
+POST   /repos                    create a repo
+GET    /repos                    list all repos
+```
 
-`GET /diff?branch=feature/x` — PR diff. Returns files changed on the branch relative to its `base_sequence`, plus any conflicting paths on main since that base.
+All repo-scoped operations use a `/-/` separator to unambiguously separate the (possibly slash-containing) repo name from the endpoint:
 
-`GET /commit/:sequence` — Show all files changed in a single atomic commit.
+```
+GET    /repos/acme/myrepo/-/tree
+POST   /repos/acme/myrepo/-/commit
+GET    /repos/acme/team/subrepo/-/branches
+```
 
-`GET /branches` — List all branches. Returns `[{name, head_sequence, base_sequence, status}]`. Supports `?status=active` filter.
+The pattern is `/repos/{full-repo-name}/-/{endpoint}`. The full repo name may contain multiple slashes (e.g. `acme/team/subrepo`).
 
-`GET /branch/:name/status` — Evaluate all merge policies for a branch without actually merging. Returns `{mergeable: bool, policies: [{name, pass, reason}]}`. Useful for UI status checks and CI gates.
+### Org endpoints
 
-`GET /branch/:name/reviews` — List reviews for a branch. Returns `[{id, reviewer, sequence, status, body, created_at}]` ordered by created_at desc.
+`POST /orgs` — Create an org. Body: `{name}`.
 
-`GET /branch/:name/checks` — List check runs for a branch. Returns `[{id, sequence, check_name, status, reporter, created_at}]` ordered by created_at desc.
+`GET /orgs` — List all orgs.
 
-**Writes**
+`GET /orgs/{org}` — Get a single org.
 
-`POST /commit` — Commit one or more file changes atomically. Body: `{branch, files: [{path, content}], message}`. Policy-evaluated: the engine checks the actor's role and the target branch (e.g., direct commits to `main` can be blocked by policy). Allocates a single sequence number, writes one row to commits and one row per file to file_commits (all referencing that sequence), advances the branch head.
+`DELETE /orgs/{org}` — Delete an org. Returns `409 Conflict` if the org still has repos.
 
-`POST /branch` — Create a branch. Body: `{name}`. Policy-evaluated. Sets `base_sequence` to main's current head.
+`GET /orgs/{org}/repos` — List repos belonging to an org.
 
-`POST /merge` — Merge a branch into main. Body: `{branch}`. Policy-evaluated: the engine evaluates all merge policies (required reviews, passing checks, OWNERS approval) before proceeding. On policy failure, returns `{policies: [{name, pass, reason}]}` with a 403. **Staleness rule**: the server only includes reviews and check_runs whose `sequence` matches the branch's current `head_sequence` in the policy input. Any new commit to the branch advances `head_sequence`, which automatically invalidates all prior reviews and checks — policies see an empty list until the branch is re-reviewed and re-checked at the new head. The merge uses `base_sequence` from the branches table as the fork point:
+### Repo endpoints
+
+`POST /repos` — Create a repo. Body: `{owner, name}` where `owner` is the org name and `name` is the repo path within the org (may contain slashes). The full repo identifier is `owner/name`.
+
+`GET /repos` — List all repos.
+
+`GET /repos/{full-name}` — Get a repo by its full name.
+
+`DELETE /repos/{full-name}` — Hard-delete a repo.
+
+### Repo-scoped reads
+
+`GET /repos/{name}/-/tree?branch=main&at=sequence` — Materialize. Returns `[{path, version_id, content_hash}]` for every live file at that sequence. Omit `at` for head.
+
+`GET /repos/{name}/-/file/:path/history?branch=main` — File history. Returns `[{sequence, version_id, message, author, created_at}]` ordered by sequence desc.
+
+`GET /repos/{name}/-/file/:path?branch=main&at=sequence` — Get file content at a point in time.
+
+`GET /repos/{name}/-/diff?branch=feature/x` — PR diff. Returns files changed on the branch relative to its `base_sequence`, plus any conflicting paths on main since that base.
+
+`GET /repos/{name}/-/commit/:sequence` — Show all files changed in a single atomic commit.
+
+`GET /repos/{name}/-/branches` — List all branches. Returns `[{name, head_sequence, base_sequence, status}]`. Supports `?status=active` filter.
+
+`GET /repos/{name}/-/branch/:bname/status` — Evaluate all merge policies for a branch without actually merging. Returns `{mergeable: bool, policies: [{name, pass, reason}]}`. Useful for UI status checks and CI gates.
+
+`GET /repos/{name}/-/branch/:bname/reviews` — List reviews for a branch. Returns `[{id, reviewer, sequence, status, body, created_at}]` ordered by created_at desc.
+
+`GET /repos/{name}/-/branch/:bname/checks` — List check runs for a branch. Returns `[{id, sequence, check_name, status, reporter, created_at}]` ordered by created_at desc.
+
+### Repo-scoped writes
+
+`POST /repos/{name}/-/commit` — Commit one or more file changes atomically. Body: `{branch, files: [{path, content}], message}`. Policy-evaluated: the engine checks the actor's role and the target branch (e.g., direct commits to `main` can be blocked by policy). Allocates a single sequence number, writes one row to commits and one row per file to file_commits (all referencing that sequence), advances the branch head.
+
+`POST /repos/{name}/-/branch` — Create a branch. Body: `{name}`. Policy-evaluated. Sets `base_sequence` to main's current head.
+
+`POST /repos/{name}/-/merge` — Merge a branch into main. Body: `{branch}`. Policy-evaluated: the engine evaluates all merge policies (required reviews, passing checks, OWNERS approval) before proceeding. On policy failure, returns `{policies: [{name, pass, reason}]}` with a 403. **Staleness rule**: the server only includes reviews and check_runs whose `sequence` matches the branch's current `head_sequence` in the policy input. Any new commit to the branch advances `head_sequence`, which automatically invalidates all prior reviews and checks — policies see an empty list until the branch is re-reviewed and re-checked at the new head. The merge uses `base_sequence` from the branches table as the fork point:
 
 1. **Branch changes**: find the latest version of each path changed on the branch since `base_sequence` (`WHERE branch = :branch AND sequence > :base_sequence`, `DISTINCT ON (path) ... ORDER BY path, sequence DESC`).
 2. **Main changes**: find the latest version of each path changed on main since `base_sequence` (same query shape against `branch = 'main'`).
 3. **Conflict check**: any path that appears in both sets is a conflict — return `{conflicts: [...]}` and abort.
 4. **If clean**: insert new `file_commits` rows on main for each branch-changed path (all sharing a single new sequence), advance main's head, mark the branch as merged.
 
-`POST /rebase` — Rebase a branch onto main's current head. Body: `{branch}`. Policy-evaluated. The entire rebase runs in a single transaction. Replays the branch's file_commits grouped by their original sequence numbers, each group getting a new sequence. Updates the branch's `base_sequence` to main's current head. If any replayed path conflicts with a main change, the entire transaction rolls back and returns conflict details — no partial rebase state.
+`POST /repos/{name}/-/rebase` — Rebase a branch onto main's current head. Body: `{branch}`. Policy-evaluated. The entire rebase runs in a single transaction. Replays the branch's file_commits grouped by their original sequence numbers, each group getting a new sequence. Updates the branch's `base_sequence` to main's current head. If any replayed path conflicts with a main change, the entire transaction rolls back and returns conflict details — no partial rebase state.
 
-`POST /review` — Submit a review for a branch. Body: `{branch, status, body}` where status is `approved` or `rejected` and body is an optional comment. Policy-evaluated. The review is recorded against the branch's current `head_sequence`. New commits invalidate prior reviews (see staleness rule on `/merge`).
+`POST /repos/{name}/-/review` — Submit a review for a branch. Body: `{branch, status, body}` where status is `approved` or `rejected` and body is an optional comment. Policy-evaluated. The review is recorded against the branch's current `head_sequence`. New commits invalidate prior reviews (see staleness rule on `/merge`).
 
-`POST /check` — Report CI check status. Body: `{branch, check_name, status}` where status is `passed` or `failed`. Policy-evaluated: only identities authorized for a given `check_name` can report results (prevents spoofing CI status). Recorded against the branch's current `head_sequence`. New commits invalidate prior checks (see staleness rule on `/merge`).
+`POST /repos/{name}/-/check` — Report CI check status. Body: `{branch, check_name, status}` where status is `passed` or `failed`. Policy-evaluated: only identities authorized for a given `check_name` can report results (prevents spoofing CI status). Recorded against the branch's current `head_sequence`. New commits invalidate prior checks (see staleness rule on `/merge`).
 
-`DELETE /branch/:name` — Mark a branch as abandoned. Policy-evaluated.
+`DELETE /repos/{name}/-/branch/:bname` — Mark a branch as abandoned. Policy-evaluated.
 
-`POST /purge` — Delete `file_commits` and `commits` rows for branches with status `merged` or `abandoned`. Body: `{older_than}` where `older_than` is a duration (e.g. `"90d"`) — only branches whose last activity is older than this threshold are purged. Also deletes any `documents` rows whose `version_id` is no longer referenced by any remaining `file_commits` row. Policy-evaluated (admin-only). Returns `{branches_purged: N, file_commits_deleted: N, documents_deleted: N}`.
+`POST /repos/{name}/-/purge` — Delete `file_commits` and `commits` rows for branches with status `merged` or `abandoned`. Body: `{older_than}` where `older_than` is a duration (e.g. `"90d"`) — only branches whose last activity is older than this threshold are purged. Also deletes any `documents` rows whose `version_id` is no longer referenced by any remaining `file_commits` row. Policy-evaluated (admin-only). Returns `{branches_purged: N, file_commits_deleted: N, documents_deleted: N}`.
 
 ## Client
 
-A CLI that wraps the API. Working directory tracked via a `.docstore` config file containing the remote URL and current branch.
+A CLI that wraps the API. Working directory tracked via a `.docstore` config file containing the remote URL, repo name, and current branch.
 
 ```
 ds init <remote-url>
-ds checkout -b <branch>      # POST /branch
-ds status                     # diff local fs against GET /tree
-ds commit -m "message"        # POST /commit with all changed files atomically
-ds log [path]                 # GET /file/:path/history or full branch log
-ds diff                       # GET /diff for current branch
-ds merge                      # POST /merge
-ds rebase                     # POST /rebase
+ds checkout -b <branch>      # POST /repos/{repo}/-/branch
+ds status                     # diff local fs against GET /repos/{repo}/-/tree
+ds commit -m "message"        # POST /repos/{repo}/-/commit with all changed files atomically
+ds log [path]                 # GET /repos/{repo}/-/file/:path/history or full branch log
+ds diff                       # GET /repos/{repo}/-/diff for current branch
+ds merge                      # POST /repos/{repo}/-/merge
+ds rebase                     # POST /repos/{repo}/-/rebase
 ds pull                       # fetch latest tree for current branch, update local files
-ds checkout main              # switch branch, GET /tree to update local files
-ds show <sequence> [path]     # GET /tree?at=N or GET /file/:path?at=N
+ds checkout main              # switch branch, GET /repos/{repo}/-/tree to update local files
+ds show <sequence> [path]     # GET /repos/{repo}/-/commit/:seq or GET /repos/{repo}/-/file/:path?at=N
 ```
+
+The CLI stores the base server URL and repo name (e.g. `default/default`) separately in `.docstore/config.json`. The `ds init` command accepts the repo name either embedded in the URL (`https://host/repos/acme/myrepo`) or via the `--repo` flag. The default repo is `default/default`.
 
 **`ds pull` flow**:
 
