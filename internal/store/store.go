@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"time"
 )
 
@@ -29,6 +30,7 @@ type FileContent struct {
 	VersionID   string `json:"version_id"`
 	ContentHash string `json:"content_hash"`
 	Content     []byte `json:"content"`
+	ContentType string `json:"content_type,omitempty"`
 }
 
 // FileHistoryEntry is one change to a file.
@@ -124,7 +126,7 @@ func (s *Store) GetFile(ctx context.Context, repo, branch, path string, atSequen
 WITH branch_info AS (
     SELECT base_sequence FROM branches WHERE repo = $1 AND name = $2
 )
-SELECT fc.version_id, d.content_hash, d.content
+SELECT fc.version_id, d.content_hash, d.content, d.content_type
 FROM file_commits fc
 CROSS JOIN branch_info bi
 LEFT JOIN documents d ON d.version_id = fc.version_id AND d.repo = $1
@@ -146,8 +148,9 @@ LIMIT 1`
 	var versionID sql.NullString
 	var contentHash sql.NullString
 	var content []byte
+	var contentType sql.NullString
 
-	err := s.db.QueryRowContext(ctx, q, repo, branch, path, at).Scan(&versionID, &contentHash, &content)
+	err := s.db.QueryRowContext(ctx, q, repo, branch, path, at).Scan(&versionID, &contentHash, &content, &contentType)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -165,6 +168,7 @@ LIMIT 1`
 		VersionID:   versionID.String,
 		ContentHash: contentHash.String,
 		Content:     content,
+		ContentType: contentType.String,
 	}, nil
 }
 
@@ -231,6 +235,7 @@ type BranchInfo struct {
 type DiffEntry struct {
 	Path      string  `json:"path"`
 	VersionID *string `json:"version_id"`
+	Binary    bool    `json:"binary,omitempty"`
 }
 
 // ConflictEntry represents a file changed on both main and the branch.
@@ -310,21 +315,22 @@ func (s *Store) GetDiff(ctx context.Context, repo, branch string) (*DiffResult, 
 
 	result := &DiffResult{}
 
-	for path, vid := range branchChanges {
+	for path, change := range branchChanges {
 		result.BranchChanges = append(result.BranchChanges, DiffEntry{
 			Path:      path,
-			VersionID: vid,
+			VersionID: change.versionID,
+			Binary:    isBinaryContentType(change.contentType),
 		})
 
 		// Check for conflicts.
-		if mainVID, ok := mainChanges[path]; ok {
+		if mainChange, ok := mainChanges[path]; ok {
 			mainV := ""
-			if mainVID != nil {
-				mainV = *mainVID
+			if mainChange.versionID != nil {
+				mainV = *mainChange.versionID
 			}
 			branchV := ""
-			if vid != nil {
-				branchV = *vid
+			if change.versionID != nil {
+				branchV = *change.versionID
 			}
 			result.Conflicts = append(result.Conflicts, ConflictEntry{
 				Path:            path,
@@ -334,24 +340,32 @@ func (s *Store) GetDiff(ctx context.Context, repo, branch string) (*DiffResult, 
 		}
 	}
 
-	for path, vid := range mainChanges {
+	for path, change := range mainChanges {
 		result.MainChanges = append(result.MainChanges, DiffEntry{
 			Path:      path,
-			VersionID: vid,
+			VersionID: change.versionID,
+			Binary:    isBinaryContentType(change.contentType),
 		})
 	}
 
 	return result, nil
 }
 
-// latestChanges returns the latest version of each path changed on a branch
-// in a repo since the given base sequence.
-func (s *Store) latestChanges(ctx context.Context, repo, branch string, baseSeq int64) (map[string]*string, error) {
+// diffChangeInfo holds a version ID and content_type for a single file change.
+type diffChangeInfo struct {
+	versionID   *string
+	contentType string
+}
+
+// latestChanges returns the latest version and content_type of each path changed
+// on a branch in a repo since the given base sequence.
+func (s *Store) latestChanges(ctx context.Context, repo, branch string, baseSeq int64) (map[string]diffChangeInfo, error) {
 	const q = `
-SELECT DISTINCT ON (path) path, version_id::text
-FROM file_commits
-WHERE repo = $1 AND branch = $2 AND sequence > $3
-ORDER BY path, sequence DESC`
+SELECT DISTINCT ON (fc.path) fc.path, fc.version_id::text, d.content_type
+FROM file_commits fc
+LEFT JOIN documents d ON d.version_id = fc.version_id AND d.repo = $1
+WHERE fc.repo = $1 AND fc.branch = $2 AND fc.sequence > $3
+ORDER BY fc.path, fc.sequence DESC`
 
 	rows, err := s.db.QueryContext(ctx, q, repo, branch, baseSeq)
 	if err != nil {
@@ -359,21 +373,27 @@ ORDER BY path, sequence DESC`
 	}
 	defer rows.Close()
 
-	changes := make(map[string]*string)
+	changes := make(map[string]diffChangeInfo)
 	for rows.Next() {
 		var path string
 		var vid sql.NullString
-		if err := rows.Scan(&path, &vid); err != nil {
+		var ct sql.NullString
+		if err := rows.Scan(&path, &vid, &ct); err != nil {
 			return nil, err
 		}
+		var versionID *string
 		if vid.Valid {
 			v := vid.String
-			changes[path] = &v
-		} else {
-			changes[path] = nil
+			versionID = &v
 		}
+		changes[path] = diffChangeInfo{versionID: versionID, contentType: ct.String}
 	}
 	return changes, rows.Err()
+}
+
+// isBinaryContentType reports whether a content_type indicates binary content.
+func isBinaryContentType(ct string) bool {
+	return ct != "" && !strings.HasPrefix(ct, "text/")
 }
 
 // GetCommit returns all file changes in a single atomic commit (by sequence) within a repo.
