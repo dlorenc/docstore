@@ -56,6 +56,7 @@ type FileResponse struct {
 	VersionID   string `json:"version_id"`
 	ContentHash string `json:"content_hash"`
 	Content     []byte `json:"content"`
+	ContentType string `json:"content_type,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -66,6 +67,7 @@ type FileResponse struct {
 type DiffEntry struct {
 	Path      string  `json:"path"`
 	VersionID *string `json:"version_id"` // nil means deleted
+	Binary    bool    `json:"binary,omitempty"`
 }
 
 // ConflictEntry represents a file that was changed on both main and the branch.
@@ -134,8 +136,9 @@ type BranchStatusResponse struct {
 // FileChange is one file in a commit request.
 // A nil Content means delete.
 type FileChange struct {
-	Path    string `json:"path"`
-	Content []byte `json:"content,omitempty"`
+	Path        string `json:"path"`
+	Content     []byte `json:"content,omitempty"`
+	ContentType string `json:"content_type,omitempty"`
 }
 
 // CommitRequest is the body for POST /repos/:name/commit.
