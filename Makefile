@@ -2,12 +2,13 @@
 
 BINARY := docstore
 BUILD_DIR := bin
+DEFAULT_REMOTE ?= https://docstore-efuj4cj54a-uc.a.run.app
 
 build:
 	go build -o $(BUILD_DIR)/$(BINARY) ./cmd/docstore
 
 build-ds:
-	go build -o $(BUILD_DIR)/ds ./cmd/ds
+	go build -ldflags "-X main.defaultRemote=$(DEFAULT_REMOTE)" -o $(BUILD_DIR)/ds ./cmd/ds
 
 test:
 	go test ./...

@@ -6,14 +6,19 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/dlorenc/docstore/internal/cli"
 )
 
+// defaultRemote is the compiled-in default server URL, injected via -ldflags.
+// If empty, ds init requires an explicit remote URL.
+var defaultRemote string
+
 const usage = `usage: ds <command> [args]
 
 commands:
-  init <remote-url> [--author <name>]            Initialize a docstore workspace
+  init [<remote-url>] [--author <name>]          Initialize a docstore workspace
   status                                          Show changed files
   commit -m "message"                             Commit all changes
   checkout -b <branch>                            Create and switch to a new branch
@@ -56,14 +61,20 @@ func main() {
 
 	switch cmd {
 	case "init":
-		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "usage: ds init <remote-url> [--author <name>]")
+		remote := defaultRemote
+		flagStart := 1
+		if len(args) >= 2 && !strings.HasPrefix(args[1], "--") {
+			remote = args[1]
+			flagStart = 2
+		}
+		if remote == "" {
+			fmt.Fprintln(os.Stderr, "usage: ds init [<remote-url>] [--author <name>]")
+			fmt.Fprintln(os.Stderr, "error: no remote URL provided and no default compiled in")
 			os.Exit(1)
 		}
-		remote := args[1]
 		repo := ""
 		author := ""
-		for i := 2; i < len(args); i++ {
+		for i := flagStart; i < len(args); i++ {
 			if args[i] == "--author" && i+1 < len(args) {
 				author = args[i+1]
 				i++
