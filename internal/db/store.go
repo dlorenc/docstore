@@ -8,12 +8,94 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
+	"strconv"
 	"time"
 
 	"github.com/dlorenc/docstore/internal/model"
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 )
+
+// genesisHash is the all-zeros hash used as the previous hash for the first commit.
+const genesisHash = "0000000000000000000000000000000000000000000000000000000000000000"
+
+// chainFile holds a path and content_hash for commit hash computation.
+type chainFile struct {
+	path        string
+	contentHash string
+}
+
+// computeCommitHash computes the SHA256 chain hash for a commit.
+// prevHash is the hex-encoded hash of the previous commit (or genesisHash for the first commit).
+// files are sorted by path internally, so caller order does not matter.
+func computeCommitHash(prevHash string, seq int64, repo, branch, author, message string, createdAt time.Time, files []chainFile) string {
+	// Sort a copy so the hash is always canonical regardless of input order.
+	sorted := make([]chainFile, len(files))
+	copy(sorted, files)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].path < sorted[j].path })
+
+	h := sha256.New()
+	h.Write([]byte(prevHash + "\n"))
+	h.Write([]byte(strconv.FormatInt(seq, 10) + "\n"))
+	h.Write([]byte(repo + "\n"))
+	h.Write([]byte(branch + "\n"))
+	h.Write([]byte(author + "\n"))
+	h.Write([]byte(message + "\n"))
+	h.Write([]byte(createdAt.UTC().Format(time.RFC3339Nano) + "\n"))
+	for _, f := range sorted {
+		h.Write([]byte(f.path + ":" + f.contentHash + "\n"))
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// fetchPrevCommitHash fetches the commit_hash of the most recent commit before seq
+// in the given repo. Returns genesisHash if no previous commit exists or if the
+// previous commit has a NULL commit_hash (pre-feature commit).
+func fetchPrevCommitHash(ctx context.Context, tx *sql.Tx, repo string, seq int64) (string, error) {
+	var prevNull sql.NullString
+	err := tx.QueryRowContext(ctx,
+		`SELECT commit_hash FROM commits
+		 WHERE repo = $1 AND sequence = (SELECT MAX(sequence) FROM commits WHERE repo = $1 AND sequence < $2)`,
+		repo, seq,
+	).Scan(&prevNull)
+	if errors.Is(err, sql.ErrNoRows) {
+		return genesisHash, nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("fetch prev commit hash: %w", err)
+	}
+	if !prevNull.Valid || prevNull.String == "" {
+		return genesisHash, nil
+	}
+	return prevNull.String, nil
+}
+
+// fetchVersionContentHash fetches the content_hash for a version_id from documents.
+// Returns empty string for nil version_id (deleted files).
+func fetchVersionContentHash(ctx context.Context, tx *sql.Tx, versionID *string) (string, error) {
+	if versionID == nil {
+		return "", nil
+	}
+	var hash string
+	err := tx.QueryRowContext(ctx,
+		"SELECT content_hash FROM documents WHERE version_id = $1",
+		*versionID,
+	).Scan(&hash)
+	if err != nil {
+		return "", fmt.Errorf("fetch content hash for version %s: %w", *versionID, err)
+	}
+	return hash, nil
+}
+
+// updateCommitHash stores the given hash on the commits row identified by repo+seq.
+func updateCommitHash(ctx context.Context, tx *sql.Tx, repo string, seq int64, hash string) error {
+	_, err := tx.ExecContext(ctx,
+		"UPDATE commits SET commit_hash = $1 WHERE repo = $2 AND sequence = $3",
+		hash, repo, seq,
+	)
+	return err
+}
 
 var (
 	ErrBranchNotFound  = errors.New("branch not found")
@@ -323,24 +405,29 @@ func (s *Store) Commit(ctx context.Context, req model.CommitRequest) (*model.Com
 	}
 
 	// Allocate a globally monotonic sequence by inserting into commits.
+	// RETURNING created_at so we can include it in the hash computation.
 	var newSeq int64
+	var commitCreatedAt time.Time
 	err = tx.QueryRowContext(ctx,
-		`INSERT INTO commits (repo, branch, message, author) VALUES ($1, $2, $3, $4) RETURNING sequence`,
+		`INSERT INTO commits (repo, branch, message, author) VALUES ($1, $2, $3, $4) RETURNING sequence, created_at`,
 		req.Repo, req.Branch, req.Message, req.Author,
-	).Scan(&newSeq)
+	).Scan(&newSeq, &commitCreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("insert commit: %w", err)
 	}
 
 	results := make([]model.CommitFileResult, 0, len(req.Files))
+	hashFiles := make([]chainFile, 0, len(req.Files))
 
 	for _, f := range req.Files {
 		var versionIDPtr *string
+		fileContentHash := ""
 
 		if f.Content != nil {
 			// Hash content for per-repo dedup.
 			h := sha256.Sum256(f.Content)
 			contentHash := hex.EncodeToString(h[:])
+			fileContentHash = contentHash
 
 			// Check for existing document with the same hash in this repo.
 			var existingID string
@@ -370,7 +457,7 @@ func (s *Store) Commit(ctx context.Context, req model.CommitRequest) (*model.Com
 
 			versionIDPtr = &existingID
 		}
-		// nil Content → delete: versionIDPtr stays nil.
+		// nil Content → delete: versionIDPtr stays nil, fileContentHash stays "".
 
 		commitID := uuid.New().String()
 		_, err = tx.ExecContext(ctx,
@@ -386,6 +473,7 @@ func (s *Store) Commit(ctx context.Context, req model.CommitRequest) (*model.Com
 			Path:      f.Path,
 			VersionID: versionIDPtr,
 		})
+		hashFiles = append(hashFiles, chainFile{path: f.Path, contentHash: fileContentHash})
 	}
 
 	// Advance branch head.
@@ -395,6 +483,17 @@ func (s *Store) Commit(ctx context.Context, req model.CommitRequest) (*model.Com
 	)
 	if err != nil {
 		return nil, fmt.Errorf("update branch head: %w", err)
+	}
+
+	// Compute and store commit_hash.
+	prevHash, err := fetchPrevCommitHash(ctx, tx, req.Repo, newSeq)
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(hashFiles, func(i, j int) bool { return hashFiles[i].path < hashFiles[j].path })
+	commitHash := computeCommitHash(prevHash, newSeq, req.Repo, req.Branch, req.Author, req.Message, commitCreatedAt, hashFiles)
+	if err := updateCommitHash(ctx, tx, req.Repo, newSeq, commitHash); err != nil {
+		return nil, fmt.Errorf("store commit hash: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -551,11 +650,13 @@ func (s *Store) Merge(ctx context.Context, req model.MergeRequest) (*model.Merge
 
 	// Step 4: No conflicts — allocate a global sequence for the merge commit,
 	// then insert file_commits rows on main for each branch-changed path.
+	mergeMsg := fmt.Sprintf("merge branch '%s'", req.Branch)
 	var newSeq int64
+	var mergeCreatedAt time.Time
 	err = tx.QueryRowContext(ctx,
-		`INSERT INTO commits (repo, branch, message, author) VALUES ($1, 'main', $2, $3) RETURNING sequence`,
-		req.Repo, fmt.Sprintf("merge branch '%s'", req.Branch), req.Author,
-	).Scan(&newSeq)
+		`INSERT INTO commits (repo, branch, message, author) VALUES ($1, 'main', $2, $3) RETURNING sequence, created_at`,
+		req.Repo, mergeMsg, req.Author,
+	).Scan(&newSeq, &mergeCreatedAt)
 	if err != nil {
 		return nil, nil, fmt.Errorf("insert merge commit: %w", err)
 	}
@@ -588,6 +689,25 @@ func (s *Store) Merge(ctx context.Context, req model.MergeRequest) (*model.Merge
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("update branch status: %w", err)
+	}
+
+	// Compute and store commit_hash for the merge commit.
+	prevHash, err := fetchPrevCommitHash(ctx, tx, req.Repo, newSeq)
+	if err != nil {
+		return nil, nil, err
+	}
+	hashFiles := make([]chainFile, 0, len(branchChanges))
+	for path, versionID := range branchChanges {
+		contentHash, err := fetchVersionContentHash(ctx, tx, versionID)
+		if err != nil {
+			return nil, nil, err
+		}
+		hashFiles = append(hashFiles, chainFile{path: path, contentHash: contentHash})
+	}
+	sort.Slice(hashFiles, func(i, j int) bool { return hashFiles[i].path < hashFiles[j].path })
+	mergeHash := computeCommitHash(prevHash, newSeq, req.Repo, "main", req.Author, mergeMsg, mergeCreatedAt, hashFiles)
+	if err := updateCommitHash(ctx, tx, req.Repo, newSeq, mergeHash); err != nil {
+		return nil, nil, fmt.Errorf("store merge commit hash: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -706,11 +826,13 @@ func (s *Store) Rebase(ctx context.Context, req model.RebaseRequest) (*model.Reb
 	}
 	var lastSeq int64
 	for _, g := range groups {
+		rebaseMsg := fmt.Sprintf("rebase: replay sequence %d", g.seq)
 		var newSeq int64
+		var rebaseCreatedAt time.Time
 		err = tx.QueryRowContext(ctx,
-			`INSERT INTO commits (repo, branch, message, author) VALUES ($1, $2, $3, $4) RETURNING sequence`,
-			req.Repo, req.Branch, fmt.Sprintf("rebase: replay sequence %d", g.seq), author,
-		).Scan(&newSeq)
+			`INSERT INTO commits (repo, branch, message, author) VALUES ($1, $2, $3, $4) RETURNING sequence, created_at`,
+			req.Repo, req.Branch, rebaseMsg, author,
+		).Scan(&newSeq, &rebaseCreatedAt)
 		if err != nil {
 			return nil, nil, fmt.Errorf("insert rebase commit: %w", err)
 		}
@@ -726,6 +848,26 @@ func (s *Store) Rebase(ctx context.Context, req model.RebaseRequest) (*model.Reb
 				return nil, nil, fmt.Errorf("insert file_commit: %w", err)
 			}
 		}
+
+		// Compute and store commit_hash for this replayed commit.
+		prevHash, err := fetchPrevCommitHash(ctx, tx, req.Repo, newSeq)
+		if err != nil {
+			return nil, nil, err
+		}
+		hashFiles := make([]chainFile, 0, len(g.files))
+		for _, f := range g.files {
+			contentHash, err := fetchVersionContentHash(ctx, tx, f.versionID)
+			if err != nil {
+				return nil, nil, err
+			}
+			hashFiles = append(hashFiles, chainFile{path: f.path, contentHash: contentHash})
+		}
+		sort.Slice(hashFiles, func(i, j int) bool { return hashFiles[i].path < hashFiles[j].path })
+		rebaseHash := computeCommitHash(prevHash, newSeq, req.Repo, req.Branch, author, rebaseMsg, rebaseCreatedAt, hashFiles)
+		if err := updateCommitHash(ctx, tx, req.Repo, newSeq, rebaseHash); err != nil {
+			return nil, nil, fmt.Errorf("store rebase commit hash: %w", err)
+		}
+
 		lastSeq = newSeq
 	}
 

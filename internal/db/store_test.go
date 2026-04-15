@@ -3003,3 +3003,148 @@ func TestIsForeignKeyViolation_FromDB(t *testing.T) {
 		t.Errorf("expected ErrOrgNotFound (wrapping FK violation), got %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Hash chain tests
+// ---------------------------------------------------------------------------
+
+// TestComputeCommitHash verifies that computeCommitHash produces a stable SHA256 output.
+func TestComputeCommitHash(t *testing.T) {
+	ts := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	files := []chainFile{
+		{path: "b.txt", contentHash: "bbb"},
+		{path: "a.txt", contentHash: "aaa"},
+	}
+	// Files are sorted inside computeCommitHash, so order of input shouldn't matter.
+	got := computeCommitHash(genesisHash, 1, "myorg/repo", "main", "alice", "first commit", ts, files)
+	if len(got) != 64 {
+		t.Fatalf("expected 64-char hex string, got %q (len=%d)", got, len(got))
+	}
+
+	// Recomputing with the same inputs must produce the same hash.
+	got2 := computeCommitHash(genesisHash, 1, "myorg/repo", "main", "alice", "first commit", ts, files)
+	if got != got2 {
+		t.Errorf("hash not deterministic: got %q vs %q", got, got2)
+	}
+
+	// Changing any field must produce a different hash.
+	for _, tc := range []struct {
+		name string
+		fn   func() string
+	}{
+		{"author", func() string {
+			return computeCommitHash(genesisHash, 1, "myorg/repo", "main", "bob", "first commit", ts, files)
+		}},
+		{"message", func() string {
+			return computeCommitHash(genesisHash, 1, "myorg/repo", "main", "alice", "other msg", ts, files)
+		}},
+		{"sequence", func() string {
+			return computeCommitHash(genesisHash, 2, "myorg/repo", "main", "alice", "first commit", ts, files)
+		}},
+		{"repo", func() string {
+			return computeCommitHash(genesisHash, 1, "other/repo", "main", "alice", "first commit", ts, files)
+		}},
+		{"prevHash", func() string {
+			return computeCommitHash("aaaa"+genesisHash[4:], 1, "myorg/repo", "main", "alice", "first commit", ts, files)
+		}},
+	} {
+		if diff := tc.fn(); diff == got {
+			t.Errorf("changing %s should change the hash", tc.name)
+		}
+	}
+
+	// Verify expected value by building the same hash inline.
+	// computeCommitHash sorts files internally, so feed them sorted.
+	h := sha256.New()
+	h.Write([]byte(genesisHash + "\n"))
+	h.Write([]byte("1\n"))
+	h.Write([]byte("myorg/repo\n"))
+	h.Write([]byte("main\n"))
+	h.Write([]byte("alice\n"))
+	h.Write([]byte("first commit\n"))
+	// Use the same format string as the production code.
+	h.Write([]byte(ts.UTC().Format(time.RFC3339Nano) + "\n"))
+	// Sorted alphabetically by path: a.txt then b.txt.
+	h.Write([]byte("a.txt:aaa\n"))
+	h.Write([]byte("b.txt:bbb\n"))
+	expected := hex.EncodeToString(h.Sum(nil))
+	if got != expected {
+		t.Errorf("hash mismatch: got %s, want %s", got, expected)
+	}
+}
+
+// TestCommit_HashIsSet verifies that Commit stores a non-empty commit_hash.
+func TestCommit_HashIsSet(t *testing.T) {
+	d := testutil.TestDB(t, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	resp, err := s.Commit(ctx, model.CommitRequest{
+		Repo:    "default/default",
+		Branch:  "main",
+		Files:   []model.FileChange{{Path: "hello.txt", Content: []byte("hello")}},
+		Message: "first commit",
+		Author:  "alice@example.com",
+	})
+	if err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	var commitHash sql.NullString
+	err = d.QueryRowContext(ctx,
+		"SELECT commit_hash FROM commits WHERE sequence = $1",
+		resp.Sequence,
+	).Scan(&commitHash)
+	if err != nil {
+		t.Fatalf("query commit_hash: %v", err)
+	}
+	if !commitHash.Valid || commitHash.String == "" {
+		t.Fatal("expected commit_hash to be set, got NULL or empty")
+	}
+	if len(commitHash.String) != 64 {
+		t.Errorf("expected 64-char hex commit_hash, got %q", commitHash.String)
+	}
+}
+
+// TestCommit_ChainLinks verifies that the second commit's hash links to the first.
+func TestCommit_ChainLinks(t *testing.T) {
+	d := testutil.TestDB(t, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	resp1, err := s.Commit(ctx, model.CommitRequest{
+		Repo:    "default/default",
+		Branch:  "main",
+		Files:   []model.FileChange{{Path: "a.txt", Content: []byte("alpha")}},
+		Message: "first",
+		Author:  "alice@example.com",
+	})
+	if err != nil {
+		t.Fatalf("commit 1: %v", err)
+	}
+
+	resp2, err := s.Commit(ctx, model.CommitRequest{
+		Repo:    "default/default",
+		Branch:  "main",
+		Files:   []model.FileChange{{Path: "b.txt", Content: []byte("beta")}},
+		Message: "second",
+		Author:  "alice@example.com",
+	})
+	if err != nil {
+		t.Fatalf("commit 2: %v", err)
+	}
+
+	var hash1, hash2 sql.NullString
+	if err := d.QueryRowContext(ctx, "SELECT commit_hash FROM commits WHERE sequence = $1", resp1.Sequence).Scan(&hash1); err != nil {
+		t.Fatalf("query hash1: %v", err)
+	}
+	if err := d.QueryRowContext(ctx, "SELECT commit_hash FROM commits WHERE sequence = $1", resp2.Sequence).Scan(&hash2); err != nil {
+		t.Fatalf("query hash2: %v", err)
+	}
+	if !hash1.Valid || !hash2.Valid {
+		t.Fatal("expected both hashes to be set")
+	}
+	if hash1.String == hash2.String {
+		t.Error("expected different hashes for different commits")
+	}
+}

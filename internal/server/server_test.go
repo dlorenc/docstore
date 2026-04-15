@@ -1805,13 +1805,14 @@ func TestHandleFileHistory_InvalidAfter(t *testing.T) {
 
 // mockReadStore implements the readStore interface for testing.
 type mockReadStore struct {
-	getBranchFn      func(ctx context.Context, repo, branch string) (*store.BranchInfo, error)
-	getDiffFn        func(ctx context.Context, repo, branch string) (*store.DiffResult, error)
+	getBranchFn       func(ctx context.Context, repo, branch string) (*store.BranchInfo, error)
+	getDiffFn         func(ctx context.Context, repo, branch string) (*store.DiffResult, error)
 	materializeTreeFn func(ctx context.Context, repo, branch string, atSeq *int64, limit int, afterPath string) ([]store.TreeEntry, error)
 	getFileFn         func(ctx context.Context, repo, branch, path string, atSeq *int64) (*store.FileContent, error)
 	getFileHistoryFn  func(ctx context.Context, repo, branch, path string, limit int, afterSeq *int64) ([]store.FileHistoryEntry, error)
 	listBranchesFn    func(ctx context.Context, repo, statusFilter string) ([]store.BranchInfo, error)
 	getCommitFn       func(ctx context.Context, repo string, seq int64) (*store.CommitDetail, error)
+	getChainFn        func(ctx context.Context, repo string, from, to int64) ([]store.ChainEntry, error)
 }
 
 func (m *mockReadStore) GetBranch(ctx context.Context, repo, branch string) (*store.BranchInfo, error) {
@@ -1861,6 +1862,13 @@ func (m *mockReadStore) GetCommit(ctx context.Context, repo string, seq int64) (
 		return m.getCommitFn(ctx, repo, seq)
 	}
 	return nil, nil
+}
+
+func (m *mockReadStore) GetChain(ctx context.Context, repo string, from, to int64) ([]store.ChainEntry, error) {
+	if m.getChainFn != nil {
+		return m.getChainFn(ctx, repo, from, to)
+	}
+	return []store.ChainEntry{}, nil
 }
 
 // mockPolicyCache implements the policyCache interface for testing.
@@ -2250,5 +2258,76 @@ default allow = true
 	}
 	if len(pc.invalidated) != 0 {
 		t.Errorf("expected no Invalidate calls from branch status, got: %v", pc.invalidated)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Chain endpoint tests
+// ---------------------------------------------------------------------------
+
+func TestHandleChain_Success(t *testing.T) {
+	hash := "abc123"
+	rs := &mockReadStore{
+		getChainFn: func(ctx context.Context, repo string, from, to int64) ([]store.ChainEntry, error) {
+			if repo != "default/default" || from != 1 || to != 2 {
+				t.Errorf("unexpected args: repo=%s from=%d to=%d", repo, from, to)
+			}
+			return []store.ChainEntry{
+				{
+					Sequence:   1,
+					Branch:     "main",
+					Author:     "alice",
+					Message:    "first",
+					CreatedAt:  time.Now(),
+					CommitHash: &hash,
+					Files:      []store.ChainFile{{Path: "a.txt", ContentHash: "aaa"}},
+				},
+			}, nil
+		},
+	}
+	h := newTestHandler(&mockStore{}, rs, nil)
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/default/-/chain?from=1&to=2", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var entries []store.ChainEntry
+	if err := json.NewDecoder(w.Body).Decode(&entries); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	if entries[0].Sequence != 1 {
+		t.Errorf("expected sequence 1, got %d", entries[0].Sequence)
+	}
+	if entries[0].CommitHash == nil || *entries[0].CommitHash != "abc123" {
+		t.Errorf("unexpected commit_hash: %v", entries[0].CommitHash)
+	}
+}
+
+func TestHandleChain_MissingParams(t *testing.T) {
+	rs := &mockReadStore{}
+	h := newTestHandler(&mockStore{}, rs, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/default/-/chain", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for missing params, got %d", w.Code)
+	}
+}
+
+func TestHandleChain_InvalidFrom(t *testing.T) {
+	rs := &mockReadStore{}
+	h := newTestHandler(&mockStore{}, rs, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/default/-/chain?from=abc&to=5", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid from, got %d", w.Code)
 	}
 }
