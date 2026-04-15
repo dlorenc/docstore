@@ -10,6 +10,7 @@ import (
 
 	"github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/model"
+	"github.com/dlorenc/docstore/internal/policy"
 	"github.com/dlorenc/docstore/internal/store"
 )
 
@@ -61,7 +62,7 @@ type CommitStore = WriteStore
 // writeStore provides write operations; pass nil if only read/health endpoints are needed.
 // database provides read operations; pass nil if only write/health endpoints are needed.
 func New(writeStore WriteStore, database *sql.DB, devIdentity, bootstrapAdmin string) http.Handler {
-	s := &server{commitStore: writeStore}
+	s := &server{commitStore: writeStore, policyCache: policy.NewCache()}
 	if database != nil {
 		s.readStore = store.New(database)
 	}
@@ -104,6 +105,7 @@ func New(writeStore WriteStore, database *sql.DB, devIdentity, bootstrapAdmin st
 type server struct {
 	commitStore CommitStore
 	readStore   *store.Store
+	policyCache *policy.Cache
 }
 
 func (s *server) handleCommit(w http.ResponseWriter, r *http.Request) {
@@ -153,6 +155,12 @@ func (s *server) handleCommit(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal server error"})
 		}
 		return
+	}
+
+	// Invalidate the policy cache when committing directly to main so the
+	// next merge picks up any updated .rego or OWNERS files.
+	if req.Branch == "main" && s.policyCache != nil {
+		s.policyCache.Invalidate(repo)
 	}
 
 	slog.Info("commit created", "repo", repo, "branch", req.Branch, "sequence", resp.Sequence, "files", len(req.Files), "author", req.Author)
