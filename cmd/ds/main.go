@@ -30,6 +30,7 @@ commands:
   review --status approved|rejected [--body "…"] [--branch <name>]  Submit a review
   checks [--branch <name>]                        List check runs for a branch
   check --name <n> --status passed|failed [--branch <name>]  Report a CI check
+  import-git <path> [--mode squash|replay]        Import a git repo into docstore main
   tui                                             Launch the terminal UI`
 
 func main() {
@@ -245,6 +246,21 @@ func main() {
 			os.Exit(1)
 		}
 		err = app.Check(branch, name, status)
+
+	case "import-git":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: ds import-git <path> [--mode squash|replay]")
+			os.Exit(1)
+		}
+		repoPath := args[1]
+		mode := "replay"
+		for i := 2; i < len(args); i++ {
+			if args[i] == "--mode" && i+1 < len(args) {
+				mode = args[i+1]
+				i++
+			}
+		}
+		err = app.ImportGit(repoPath, mode)
 
 	case "tui":
 		err = app.TUI()
