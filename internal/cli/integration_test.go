@@ -772,3 +772,44 @@ func TestIntegrationShow_FileContent(t *testing.T) {
 		t.Errorf("expected file content in Show output:\n%s", wsOut.String())
 	}
 }
+
+// TestIntegrationBinaryFile verifies that committing a binary file succeeds and
+// that ds diff shows [binary] for that file on the branch diff.
+func TestIntegrationBinaryFile(t *testing.T) {
+	srv := newRealServer(t)
+
+	ws, wsOut := newTestApp(t, srv)
+	if err := ws.Init(srv.URL, "", "alice"); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	// Create a feature branch so the binary file shows up in diff.
+	if err := ws.CheckoutNew("feature/binary"); err != nil {
+		t.Fatalf("CheckoutNew: %v", err)
+	}
+
+	// Write a binary file (non-UTF-8 bytes).
+	binContent := []byte{0xFF, 0xFE, 0x00, 0x01, 0x02, 0x03}
+	if err := os.WriteFile(filepath.Join(ws.Dir, "image.png"), binContent, 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Commit should succeed.
+	if err := ws.Commit("add binary file"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	// Diff should show image.png as [binary].
+	wsOut.Reset()
+	if err := ws.Diff(); err != nil {
+		t.Fatalf("Diff: %v", err)
+	}
+
+	output := wsOut.String()
+	if !strings.Contains(output, "image.png") {
+		t.Errorf("expected image.png in diff output:\n%s", output)
+	}
+	if !strings.Contains(output, "[binary]") {
+		t.Errorf("expected [binary] in diff output:\n%s", output)
+	}
+}

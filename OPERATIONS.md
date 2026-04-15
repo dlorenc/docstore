@@ -138,6 +138,18 @@ Rollbacks must be applied manually using the `migrate` CLI tool if needed:
 migrate -database "$DATABASE_URL" -path internal/db/migrations down 1
 ```
 
+### Schema reset (destructive)
+
+Use this procedure when a migration has been applied in-place to an existing migration file (rather than added as a new numbered migration). All data will be lost.
+
+1. Reset the database:
+   ```bash
+   DATABASE_URL=<your-url> make db-reset
+   ```
+2. Deploy or restart the server — migrations re-run automatically on startup via m.Up().
+
+The db-reset target drops and recreates the public schema using psql. This removes all tables including schema_migrations, so the server treats the database as fresh on next start.
+
 ---
 
 ## IAP Authentication
