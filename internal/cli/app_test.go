@@ -1610,6 +1610,374 @@ func TestResolve_NoConflictFiles(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Branches
+// ---------------------------------------------------------------------------
+
+func TestBranches_ListsActive(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && r.URL.Path == "/repos/default/default/-/branches" {
+			if r.URL.Query().Get("status") != "active" {
+				t.Errorf("expected status=active, got %q", r.URL.Query().Get("status"))
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]model.Branch{
+				{Name: "feature/new-api", HeadSequence: 142, BaseSequence: 130, Status: model.BranchStatusActive},
+				{Name: "bugfix/login", HeadSequence: 135, BaseSequence: 128, Status: model.BranchStatusActive},
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	app, out := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "main", "alice")
+
+	if err := app.Branches("active"); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "feature/new-api") {
+		t.Errorf("expected branch name in output:\n%s", output)
+	}
+	if !strings.Contains(output, "bugfix/login") {
+		t.Errorf("expected second branch in output:\n%s", output)
+	}
+	if !strings.Contains(output, "142") {
+		t.Errorf("expected head sequence in output:\n%s", output)
+	}
+}
+
+func TestBranches_DefaultStatusActive(t *testing.T) {
+	var gotStatus string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotStatus = r.URL.Query().Get("status")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]model.Branch{})
+	}))
+	defer srv.Close()
+
+	app, _ := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "main", "alice")
+
+	app.Branches("")
+	if gotStatus != "active" {
+		t.Errorf("expected status=active, got %q", gotStatus)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Reviews
+// ---------------------------------------------------------------------------
+
+func TestReviews_ListsWithStale(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/default/default/-/branches":
+			json.NewEncoder(w).Encode([]model.Branch{
+				{Name: "feature/x", HeadSequence: 10, BaseSequence: 5, Status: model.BranchStatusActive},
+			})
+		case r.Method == "GET" && r.URL.Path == "/repos/default/default/-/branch/feature/x/reviews":
+			json.NewEncoder(w).Encode([]model.Review{
+				{ID: "rev-1", Branch: "feature/x", Reviewer: "alice@example.com", Sequence: 10, Status: model.ReviewApproved, Body: "LGTM"},
+				{ID: "rev-2", Branch: "feature/x", Reviewer: "bob@example.com", Sequence: 7, Status: model.ReviewRejected, Body: "needs tests"},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	app, out := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "feature/x", "alice")
+
+	if err := app.Reviews("feature/x"); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "alice@example.com") {
+		t.Errorf("expected reviewer alice in output:\n%s", output)
+	}
+	if !strings.Contains(output, "approved") {
+		t.Errorf("expected 'approved' in output:\n%s", output)
+	}
+	if !strings.Contains(output, "[stale]") {
+		t.Errorf("expected [stale] marker for old review:\n%s", output)
+	}
+}
+
+func TestReviews_DefaultsToCurrentBranch(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "/reviews") {
+			gotPath = r.URL.Path
+			json.NewEncoder(w).Encode([]model.Review{})
+			return
+		}
+		json.NewEncoder(w).Encode([]model.Branch{
+			{Name: "feature/current", HeadSequence: 5},
+		})
+	}))
+	defer srv.Close()
+
+	app, _ := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "feature/current", "alice")
+
+	app.Reviews("") // empty branch → use current
+	if !strings.Contains(gotPath, "feature") {
+		t.Errorf("expected reviews for current branch, got path: %s", gotPath)
+	}
+}
+
+func TestReviews_Empty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.Path, "/reviews"):
+			json.NewEncoder(w).Encode([]model.Review{})
+		default:
+			json.NewEncoder(w).Encode([]model.Branch{{Name: "main", HeadSequence: 1}})
+		}
+	}))
+	defer srv.Close()
+
+	app, out := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "main", "alice")
+
+	if err := app.Reviews("main"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "No reviews") {
+		t.Errorf("expected 'No reviews' in output:\n%s", out.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Review (submit)
+// ---------------------------------------------------------------------------
+
+func TestReviewSubmit_Approved(t *testing.T) {
+	var gotReq model.CreateReviewRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && r.URL.Path == "/repos/default/default/-/review" {
+			json.NewDecoder(r.Body).Decode(&gotReq)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(model.CreateReviewResponse{ID: "review-abc", Sequence: 10})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	app, out := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "feature/x", "alice")
+
+	if err := app.Review("feature/x", "approved", "LGTM"); err != nil {
+		t.Fatal(err)
+	}
+
+	if gotReq.Branch != "feature/x" {
+		t.Errorf("branch = %q, want %q", gotReq.Branch, "feature/x")
+	}
+	if gotReq.Status != model.ReviewApproved {
+		t.Errorf("status = %q, want %q", gotReq.Status, model.ReviewApproved)
+	}
+	if gotReq.Body != "LGTM" {
+		t.Errorf("body = %q, want %q", gotReq.Body, "LGTM")
+	}
+	if !strings.Contains(out.String(), "approved") {
+		t.Errorf("expected 'approved' in output:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "review-abc") {
+		t.Errorf("expected review id in output:\n%s", out.String())
+	}
+}
+
+func TestReviewSubmit_DefaultBranch(t *testing.T) {
+	var gotReq model.CreateReviewRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && r.URL.Path == "/repos/default/default/-/review" {
+			json.NewDecoder(r.Body).Decode(&gotReq)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(model.CreateReviewResponse{ID: "r1", Sequence: 5})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	app, _ := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "feature/current", "alice")
+
+	if err := app.Review("", "rejected", "needs work"); err != nil {
+		t.Fatal(err)
+	}
+
+	if gotReq.Branch != "feature/current" {
+		t.Errorf("branch = %q, want feature/current", gotReq.Branch)
+	}
+}
+
+func TestReviewSubmit_InvalidStatus(t *testing.T) {
+	app, _ := newTestApp(t, nil)
+	initWorkspace(t, app, "http://test", "main", "alice")
+
+	err := app.Review("main", "unknown", "")
+	if err == nil || !strings.Contains(err.Error(), "status must be") {
+		t.Errorf("expected status validation error, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Checks
+// ---------------------------------------------------------------------------
+
+func TestChecks_ListsWithStale(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/default/default/-/branches":
+			json.NewEncoder(w).Encode([]model.Branch{
+				{Name: "feature/x", HeadSequence: 10},
+			})
+		case r.Method == "GET" && r.URL.Path == "/repos/default/default/-/branch/feature/x/checks":
+			json.NewEncoder(w).Encode([]model.CheckRun{
+				{ID: "chk-1", Branch: "feature/x", CheckName: "ci/build", Sequence: 10, Status: model.CheckRunPassed, Reporter: "ci-bot"},
+				{ID: "chk-2", Branch: "feature/x", CheckName: "ci/lint", Sequence: 8, Status: model.CheckRunFailed, Reporter: "ci-bot"},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	app, out := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "feature/x", "alice")
+
+	if err := app.Checks("feature/x"); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "ci/build") {
+		t.Errorf("expected ci/build in output:\n%s", output)
+	}
+	if !strings.Contains(output, "passed") {
+		t.Errorf("expected 'passed' in output:\n%s", output)
+	}
+	if !strings.Contains(output, "[stale]") {
+		t.Errorf("expected [stale] marker for old check:\n%s", output)
+	}
+}
+
+func TestChecks_Empty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.Path, "/checks"):
+			json.NewEncoder(w).Encode([]model.CheckRun{})
+		default:
+			json.NewEncoder(w).Encode([]model.Branch{{Name: "main", HeadSequence: 1}})
+		}
+	}))
+	defer srv.Close()
+
+	app, out := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "main", "alice")
+
+	if err := app.Checks("main"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "No check runs") {
+		t.Errorf("expected 'No check runs' in output:\n%s", out.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Check (submit)
+// ---------------------------------------------------------------------------
+
+func TestCheckSubmit_Passed(t *testing.T) {
+	var gotReq model.CreateCheckRunRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && r.URL.Path == "/repos/default/default/-/check" {
+			json.NewDecoder(r.Body).Decode(&gotReq)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(model.CreateCheckRunResponse{ID: "check-xyz", Sequence: 10})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	app, out := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "feature/x", "alice")
+
+	if err := app.Check("feature/x", "ci/build", "passed"); err != nil {
+		t.Fatal(err)
+	}
+
+	if gotReq.Branch != "feature/x" {
+		t.Errorf("branch = %q, want %q", gotReq.Branch, "feature/x")
+	}
+	if gotReq.CheckName != "ci/build" {
+		t.Errorf("check_name = %q, want %q", gotReq.CheckName, "ci/build")
+	}
+	if gotReq.Status != model.CheckRunPassed {
+		t.Errorf("status = %q, want %q", gotReq.Status, model.CheckRunPassed)
+	}
+	if !strings.Contains(out.String(), "ci/build") {
+		t.Errorf("expected check name in output:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "check-xyz") {
+		t.Errorf("expected check id in output:\n%s", out.String())
+	}
+}
+
+func TestCheckSubmit_DefaultBranch(t *testing.T) {
+	var gotReq model.CreateCheckRunRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && r.URL.Path == "/repos/default/default/-/check" {
+			json.NewDecoder(r.Body).Decode(&gotReq)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(model.CreateCheckRunResponse{ID: "c1", Sequence: 5})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	app, _ := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "feature/current", "alice")
+
+	if err := app.Check("", "ci/test", "failed"); err != nil {
+		t.Fatal(err)
+	}
+
+	if gotReq.Branch != "feature/current" {
+		t.Errorf("branch = %q, want feature/current", gotReq.Branch)
+	}
+}
+
+func TestCheckSubmit_InvalidStatus(t *testing.T) {
+	app, _ := newTestApp(t, nil)
+	initWorkspace(t, app, "http://test", "main", "alice")
+
+	err := app.Check("main", "ci/build", "unknown")
+	if err == nil || !strings.Contains(err.Error(), "status must be") {
+		t.Errorf("expected status validation error, got: %v", err)
+	}
+}
+
 // mustParseTime parses a date string for use in tests.
 func mustParseTime(s string) time.Time {
 	t, err := time.Parse("2006-01-02", s)

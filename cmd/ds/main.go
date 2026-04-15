@@ -13,18 +13,24 @@ import (
 const usage = `usage: ds <command> [args]
 
 commands:
-  init <remote-url> [--author <name>]   Initialize a docstore workspace
-  status                                 Show changed files
-  commit -m "message"                    Commit all changes
-  checkout -b <branch>                   Create and switch to a new branch
-  checkout <branch>                      Switch to an existing branch
-  pull                                   Sync files from the server
-  merge                                  Merge current branch into main
-  diff                                   Show branch diff from server
-  log [path] [--limit N]                 Show commit history (default limit 20)
-  show <sequence> [path]                 Show commit or file at a sequence
-  rebase                                 Rebase current branch onto main
-  resolve <path>                         Resolve a merge/rebase conflict`
+  init <remote-url> [--author <name>]            Initialize a docstore workspace
+  status                                          Show changed files
+  commit -m "message"                             Commit all changes
+  checkout -b <branch>                            Create and switch to a new branch
+  checkout <branch>                               Switch to an existing branch
+  pull                                            Sync files from the server
+  merge                                           Merge current branch into main
+  diff                                            Show branch diff from server
+  log [path] [--limit N]                          Show commit history (default limit 20)
+  show <sequence> [path]                          Show commit or file at a sequence
+  rebase                                          Rebase current branch onto main
+  resolve <path>                                  Resolve a merge/rebase conflict
+  branches [--status active|merged|abandoned]     List branches
+  reviews [--branch <name>]                       List reviews for a branch
+  review --status approved|rejected [--body "…"] [--branch <name>]  Submit a review
+  checks [--branch <name>]                        List check runs for a branch
+  check --name <n> --status passed|failed [--branch <name>]  Report a CI check
+  tui                                             Launch the terminal UI`
 
 func main() {
 	if len(os.Args) < 2 {
@@ -151,6 +157,97 @@ func main() {
 			os.Exit(1)
 		}
 		err = app.Resolve(args[1])
+
+	case "branches":
+		status := "active"
+		for i := 1; i < len(args); i++ {
+			if args[i] == "--status" && i+1 < len(args) {
+				status = args[i+1]
+				i++
+			}
+		}
+		err = app.Branches(status)
+
+	case "reviews":
+		branch := ""
+		for i := 1; i < len(args); i++ {
+			if args[i] == "--branch" && i+1 < len(args) {
+				branch = args[i+1]
+				i++
+			}
+		}
+		err = app.Reviews(branch)
+
+	case "review":
+		status := ""
+		body := ""
+		branch := ""
+		for i := 1; i < len(args); i++ {
+			switch args[i] {
+			case "--status":
+				if i+1 < len(args) {
+					status = args[i+1]
+					i++
+				}
+			case "--body":
+				if i+1 < len(args) {
+					body = args[i+1]
+					i++
+				}
+			case "--branch":
+				if i+1 < len(args) {
+					branch = args[i+1]
+					i++
+				}
+			}
+		}
+		if status == "" {
+			fmt.Fprintln(os.Stderr, "usage: ds review --status approved|rejected [--body \"...\"] [--branch <name>]")
+			os.Exit(1)
+		}
+		err = app.Review(branch, status, body)
+
+	case "checks":
+		branch := ""
+		for i := 1; i < len(args); i++ {
+			if args[i] == "--branch" && i+1 < len(args) {
+				branch = args[i+1]
+				i++
+			}
+		}
+		err = app.Checks(branch)
+
+	case "check":
+		name := ""
+		status := ""
+		branch := ""
+		for i := 1; i < len(args); i++ {
+			switch args[i] {
+			case "--name":
+				if i+1 < len(args) {
+					name = args[i+1]
+					i++
+				}
+			case "--status":
+				if i+1 < len(args) {
+					status = args[i+1]
+					i++
+				}
+			case "--branch":
+				if i+1 < len(args) {
+					branch = args[i+1]
+					i++
+				}
+			}
+		}
+		if name == "" || status == "" {
+			fmt.Fprintln(os.Stderr, "usage: ds check --name <check_name> --status passed|failed [--branch <name>]")
+			os.Exit(1)
+		}
+		err = app.Check(branch, name, status)
+
+	case "tui":
+		err = app.TUI()
 
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
