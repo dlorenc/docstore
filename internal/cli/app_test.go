@@ -2413,3 +2413,115 @@ func TestImportGitDeletedFiles(t *testing.T) {
 		t.Errorf("expected deleted file with nil content in second commit; got %+v", deleteReq.Files)
 	}
 }
+
+func TestImportGitReplayBinaryFile(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=Test User",
+			"GIT_AUTHOR_EMAIL=test@example.com",
+			"GIT_COMMITTER_NAME=Test User",
+			"GIT_COMMITTER_EMAIL=test@example.com",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init", "-b", "main")
+	run("config", "user.email", "test@example.com")
+	run("config", "user.name", "Test User")
+
+	binData := []byte{0xFF, 0xFE, 0x00, 0x01}
+	if err := os.WriteFile(filepath.Join(dir, "image.png"), binData, 0644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "image.png")
+	run("commit", "-m", "Add binary image")
+
+	var capturedReqs []model.CommitRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/commit") {
+			var req model.CommitRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, err.Error(), 500)
+				return
+			}
+			capturedReqs = append(capturedReqs, req)
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(model.CommitResponse{Sequence: int64(len(capturedReqs))})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	app, _ := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "main", "importer")
+
+	if err := app.ImportGit(dir, "replay"); err != nil {
+		t.Fatalf("ImportGit replay: %v", err)
+	}
+
+	if len(capturedReqs) != 1 {
+		t.Fatalf("expected 1 commit request, got %d", len(capturedReqs))
+	}
+
+	foundPNG := false
+	for _, f := range capturedReqs[0].Files {
+		if f.Path == "image.png" && f.ContentType == "image/png" {
+			foundPNG = true
+		}
+	}
+	if !foundPNG {
+		t.Errorf("expected image.png with ContentType image/png; got %+v", capturedReqs[0].Files)
+	}
+}
+
+func TestImportGitDefaultMode(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	gitDir := initTestGitRepo(t, []map[string]string{
+		{"readme.txt": "hello\n"},
+	})
+
+	var capturedReqs []model.CommitRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/commit") {
+			var req model.CommitRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, err.Error(), 500)
+				return
+			}
+			capturedReqs = append(capturedReqs, req)
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(model.CommitResponse{Sequence: int64(len(capturedReqs))})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	app, _ := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "main", "importer")
+
+	// Empty string mode should default to "replay".
+	if err := app.ImportGit(gitDir, ""); err != nil {
+		t.Fatalf("ImportGit default mode: %v", err)
+	}
+
+	if len(capturedReqs) != 1 {
+		t.Fatalf("expected 1 commit request, got %d", len(capturedReqs))
+	}
+}
