@@ -36,7 +36,20 @@ commands:
   checks [--branch <name>]                        List check runs for a branch
   check --name <n> --status passed|failed [--branch <name>]  Report a CI check
   import-git <path> [--mode squash|replay]        Import a git repo into docstore main
-  tui                                             Launch the terminal UI`
+  tui                                             Launch the terminal UI
+
+  orgs                                            List organizations
+  orgs create <name>                              Create an organization
+  orgs delete <name>                              Delete an organization
+  orgs repos <name>                               List repos in an organization
+
+  repos                                           List repositories
+  repos create <owner> <name>                     Create a repository
+  repos delete <name>                             Delete a repository (e.g. acme/myrepo)
+
+  roles                                           List roles for the current repo
+  roles set <identity> <role>                     Set a role (reader/writer/maintainer/admin)
+  roles delete <identity>                         Delete a role assignment`
 
 func main() {
 	if len(os.Args) < 2 {
@@ -51,9 +64,10 @@ func main() {
 	}
 
 	app := &cli.App{
-		Dir:  dir,
-		Out:  os.Stdout,
-		HTTP: http.DefaultClient,
+		Dir:           dir,
+		Out:           os.Stdout,
+		HTTP:          http.DefaultClient,
+		DefaultRemote: defaultRemote,
 	}
 
 	args := os.Args[1:]
@@ -275,6 +289,84 @@ func main() {
 
 	case "tui":
 		err = app.TUI()
+
+	case "orgs":
+		if len(args) < 2 {
+			err = app.Orgs()
+		} else {
+			switch args[1] {
+			case "create":
+				if len(args) < 3 {
+					fmt.Fprintln(os.Stderr, "usage: ds orgs create <name>")
+					os.Exit(1)
+				}
+				err = app.OrgsCreate(args[2])
+			case "delete":
+				if len(args) < 3 {
+					fmt.Fprintln(os.Stderr, "usage: ds orgs delete <name>")
+					os.Exit(1)
+				}
+				err = app.OrgsDelete(args[2])
+			case "repos":
+				if len(args) < 3 {
+					fmt.Fprintln(os.Stderr, "usage: ds orgs repos <name>")
+					os.Exit(1)
+				}
+				err = app.OrgsRepos(args[2])
+			default:
+				fmt.Fprintf(os.Stderr, "unknown orgs subcommand: %s\n", args[1])
+				fmt.Fprintln(os.Stderr, usage)
+				os.Exit(1)
+			}
+		}
+
+	case "repos":
+		if len(args) < 2 {
+			err = app.Repos()
+		} else {
+			switch args[1] {
+			case "create":
+				if len(args) < 4 {
+					fmt.Fprintln(os.Stderr, "usage: ds repos create <owner> <name>")
+					os.Exit(1)
+				}
+				err = app.ReposCreate(args[2], args[3])
+			case "delete":
+				if len(args) < 3 {
+					fmt.Fprintln(os.Stderr, "usage: ds repos delete <name>")
+					os.Exit(1)
+				}
+				err = app.ReposDelete(args[2])
+			default:
+				fmt.Fprintf(os.Stderr, "unknown repos subcommand: %s\n", args[1])
+				fmt.Fprintln(os.Stderr, usage)
+				os.Exit(1)
+			}
+		}
+
+	case "roles":
+		if len(args) < 2 {
+			err = app.Roles()
+		} else {
+			switch args[1] {
+			case "set":
+				if len(args) < 4 {
+					fmt.Fprintln(os.Stderr, "usage: ds roles set <identity> <role>")
+					os.Exit(1)
+				}
+				err = app.RolesSet(args[2], args[3])
+			case "delete":
+				if len(args) < 3 {
+					fmt.Fprintln(os.Stderr, "usage: ds roles delete <identity>")
+					os.Exit(1)
+				}
+				err = app.RolesDelete(args[2])
+			default:
+				fmt.Fprintf(os.Stderr, "unknown roles subcommand: %s\n", args[1])
+				fmt.Fprintln(os.Stderr, usage)
+				os.Exit(1)
+			}
+		}
 
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
