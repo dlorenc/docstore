@@ -69,9 +69,10 @@ type State struct {
 
 // App is the CLI application. All fields are injectable for testing.
 type App struct {
-	Dir  string       // working directory
-	Out  io.Writer    // output writer
-	HTTP *http.Client // HTTP client (mockable)
+	Dir           string       // working directory
+	Out           io.Writer    // output writer
+	HTTP          *http.Client // HTTP client (mockable)
+	DefaultRemote string       // fallback remote URL when no config file exists
 }
 
 func (a *App) configPath() string {
@@ -92,6 +93,22 @@ func (a *App) loadConfig() (*Config, error) {
 		return nil, fmt.Errorf("corrupt config: %w", err)
 	}
 	return &cfg, nil
+}
+
+// loadRemote returns the server remote URL. It first tries to read
+// .docstore/config.json; if absent it falls back to App.DefaultRemote.
+func (a *App) loadRemote() (string, error) {
+	data, err := os.ReadFile(a.configPath())
+	if err == nil {
+		var cfg Config
+		if jsonErr := json.Unmarshal(data, &cfg); jsonErr == nil && cfg.Remote != "" {
+			return cfg.Remote, nil
+		}
+	}
+	if a.DefaultRemote != "" {
+		return a.DefaultRemote, nil
+	}
+	return "", fmt.Errorf("not a docstore workspace (run 'ds init' first)")
 }
 
 func (a *App) saveConfig(cfg *Config) error {
@@ -762,6 +779,52 @@ func (a *App) httpGet(cfg *Config, urlStr string) (*http.Response, error) {
 		return nil, err
 	}
 	req.Header.Set("X-DocStore-Identity", cfg.Author)
+	return a.HTTP.Do(req)
+}
+
+// doGET sends a GET request without requiring a workspace config.
+func (a *App) doGET(urlStr string) (*http.Response, error) {
+	req, err := http.NewRequest("GET", urlStr, nil)
+	if err != nil {
+		return nil, err
+	}
+	return a.HTTP.Do(req)
+}
+
+// doDELETE sends a DELETE request without requiring a workspace config.
+func (a *App) doDELETE(urlStr string) (*http.Response, error) {
+	req, err := http.NewRequest("DELETE", urlStr, nil)
+	if err != nil {
+		return nil, err
+	}
+	return a.HTTP.Do(req)
+}
+
+// doPOSTJSON sends a POST request with JSON body without requiring a workspace config.
+func (a *App) doPOSTJSON(urlStr string, body interface{}) (*http.Response, error) {
+	data, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequest("POST", urlStr, bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	return a.HTTP.Do(req)
+}
+
+// doPUTJSON sends a PUT request with JSON body without requiring a workspace config.
+func (a *App) doPUTJSON(urlStr string, body interface{}) (*http.Response, error) {
+	data, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequest("PUT", urlStr, bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
 	return a.HTTP.Do(req)
 }
 
@@ -1589,5 +1652,244 @@ func (a *App) importGitSquash(cfg *Config, repoPath string) error {
 	}
 
 	fmt.Fprintf(a.Out, "Done. 1 commit imported (%d files).\n", len(filePaths))
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Org management
+// ---------------------------------------------------------------------------
+
+// Orgs lists all organizations.
+func (a *App) Orgs() error {
+	remote, err := a.loadRemote()
+	if err != nil {
+		return err
+	}
+	resp, err := a.doGET(remote + "/orgs")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return a.readError(resp)
+	}
+	var r model.ListOrgsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return fmt.Errorf("decoding response: %w", err)
+	}
+	fmt.Fprintf(a.Out, "%-30s  %-20s  %s\n", "NAME", "CREATED BY", "CREATED AT")
+	for _, org := range r.Orgs {
+		fmt.Fprintf(a.Out, "%-30s  %-20s  %s\n", org.Name, org.CreatedBy, org.CreatedAt.Format("2006-01-02"))
+	}
+	return nil
+}
+
+// OrgsCreate creates a new organization.
+func (a *App) OrgsCreate(name string) error {
+	remote, err := a.loadRemote()
+	if err != nil {
+		return err
+	}
+	resp, err := a.doPOSTJSON(remote+"/orgs", model.CreateOrgRequest{Name: name})
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		return a.readError(resp)
+	}
+	var org model.Org
+	if err := json.NewDecoder(resp.Body).Decode(&org); err != nil {
+		return fmt.Errorf("decoding response: %w", err)
+	}
+	fmt.Fprintf(a.Out, "Created org '%s'\n", org.Name)
+	return nil
+}
+
+// OrgsDelete deletes an organization (fails if it still has repos).
+func (a *App) OrgsDelete(name string) error {
+	remote, err := a.loadRemote()
+	if err != nil {
+		return err
+	}
+	resp, err := a.doDELETE(remote + "/orgs/" + name)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusConflict {
+		return fmt.Errorf("org '%s' still has repos", name)
+	}
+	if resp.StatusCode != http.StatusNoContent {
+		return a.readError(resp)
+	}
+	fmt.Fprintf(a.Out, "Deleted org '%s'\n", name)
+	return nil
+}
+
+// OrgsRepos lists repositories within an organization.
+func (a *App) OrgsRepos(orgName string) error {
+	remote, err := a.loadRemote()
+	if err != nil {
+		return err
+	}
+	resp, err := a.doGET(remote + "/orgs/" + orgName + "/repos")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return a.readError(resp)
+	}
+	var r model.ReposResponse
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return fmt.Errorf("decoding response: %w", err)
+	}
+	fmt.Fprintf(a.Out, "%-30s  %-20s  %-20s  %s\n", "NAME", "OWNER", "CREATED BY", "CREATED AT")
+	for _, repo := range r.Repos {
+		fmt.Fprintf(a.Out, "%-30s  %-20s  %-20s  %s\n", repo.Name, repo.Owner, repo.CreatedBy, repo.CreatedAt.Format("2006-01-02"))
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Repo management
+// ---------------------------------------------------------------------------
+
+// Repos lists all repositories.
+func (a *App) Repos() error {
+	remote, err := a.loadRemote()
+	if err != nil {
+		return err
+	}
+	resp, err := a.doGET(remote + "/repos")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return a.readError(resp)
+	}
+	var r model.ReposResponse
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return fmt.Errorf("decoding response: %w", err)
+	}
+	fmt.Fprintf(a.Out, "%-30s  %-20s  %-20s  %s\n", "NAME", "OWNER", "CREATED BY", "CREATED AT")
+	for _, repo := range r.Repos {
+		fmt.Fprintf(a.Out, "%-30s  %-20s  %-20s  %s\n", repo.Name, repo.Owner, repo.CreatedBy, repo.CreatedAt.Format("2006-01-02"))
+	}
+	return nil
+}
+
+// ReposCreate creates a new repository under the given owner organization.
+func (a *App) ReposCreate(owner, name string) error {
+	remote, err := a.loadRemote()
+	if err != nil {
+		return err
+	}
+	resp, err := a.doPOSTJSON(remote+"/repos", model.CreateRepoRequest{Owner: owner, Name: name})
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return fmt.Errorf("org '%s' not found", owner)
+	}
+	if resp.StatusCode != http.StatusCreated {
+		return a.readError(resp)
+	}
+	var repo model.Repo
+	if err := json.NewDecoder(resp.Body).Decode(&repo); err != nil {
+		return fmt.Errorf("decoding response: %w", err)
+	}
+	fmt.Fprintf(a.Out, "Created repo '%s'\n", repo.Name)
+	return nil
+}
+
+// ReposDelete deletes a repository by full name (e.g., "acme/myrepo").
+func (a *App) ReposDelete(name string) error {
+	remote, err := a.loadRemote()
+	if err != nil {
+		return err
+	}
+	resp, err := a.doDELETE(remote + "/repos/" + name + "/-/")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return a.readError(resp)
+	}
+	fmt.Fprintf(a.Out, "Deleted repo '%s'\n", name)
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Role management
+// ---------------------------------------------------------------------------
+
+// Roles lists roles for the current repository.
+func (a *App) Roles() error {
+	cfg, err := a.loadConfig()
+	if err != nil {
+		return err
+	}
+	resp, err := a.doGET(repoBase(cfg) + "/roles")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return a.readError(resp)
+	}
+	var r model.RolesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return fmt.Errorf("decoding response: %w", err)
+	}
+	fmt.Fprintf(a.Out, "%-30s  %s\n", "IDENTITY", "ROLE")
+	for _, role := range r.Roles {
+		fmt.Fprintf(a.Out, "%-30s  %s\n", role.Identity, string(role.Role))
+	}
+	return nil
+}
+
+// RolesSet grants or updates a role for an identity on the current repository.
+func (a *App) RolesSet(identity, role string) error {
+	switch model.RoleType(role) {
+	case model.RoleReader, model.RoleWriter, model.RoleMaintainer, model.RoleAdmin:
+	default:
+		return fmt.Errorf("role must be one of: reader, writer, maintainer, admin")
+	}
+	cfg, err := a.loadConfig()
+	if err != nil {
+		return err
+	}
+	resp, err := a.doPUTJSON(repoBase(cfg)+"/roles/"+identity, model.SetRoleRequest{Role: model.RoleType(role)})
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return a.readError(resp)
+	}
+	fmt.Fprintf(a.Out, "Set role '%s' for '%s'\n", role, identity)
+	return nil
+}
+
+// RolesDelete removes a role assignment for an identity on the current repository.
+func (a *App) RolesDelete(identity string) error {
+	cfg, err := a.loadConfig()
+	if err != nil {
+		return err
+	}
+	resp, err := a.doDELETE(repoBase(cfg) + "/roles/" + identity)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return a.readError(resp)
+	}
+	fmt.Fprintf(a.Out, "Deleted role for '%s'\n", identity)
 	return nil
 }
