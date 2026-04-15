@@ -14,6 +14,25 @@ import (
 	"github.com/dlorenc/docstore/internal/store"
 )
 
+// readStore is the interface for all read operations used by handlers.
+// *store.Store satisfies this interface.
+type readStore interface {
+	MaterializeTree(ctx context.Context, repo, branch string, atSeq *int64, limit int, afterPath string) ([]store.TreeEntry, error)
+	GetFile(ctx context.Context, repo, branch, path string, atSeq *int64) (*store.FileContent, error)
+	GetFileHistory(ctx context.Context, repo, branch, path string, limit int, afterSeq *int64) ([]store.FileHistoryEntry, error)
+	GetBranch(ctx context.Context, repo, branch string) (*store.BranchInfo, error)
+	ListBranches(ctx context.Context, repo, statusFilter string) ([]store.BranchInfo, error)
+	GetDiff(ctx context.Context, repo, branch string) (*store.DiffResult, error)
+	GetCommit(ctx context.Context, repo string, seq int64) (*store.CommitDetail, error)
+}
+
+// policyCache is the interface for loading and invalidating OPA policy engines.
+// *policy.Cache satisfies this interface.
+type policyCache interface {
+	Load(ctx context.Context, repo string, st policy.ReadStore) (*policy.Engine, map[string][]string, error)
+	Invalidate(repo string)
+}
+
 // WriteStore abstracts the database write, repo management, and role operations.
 type WriteStore interface {
 	// Org management
@@ -66,7 +85,13 @@ func New(writeStore WriteStore, database *sql.DB, devIdentity, bootstrapAdmin st
 	if database != nil {
 		s.readStore = store.New(database)
 	}
+	return s.buildHandler(devIdentity, bootstrapAdmin, writeStore)
+}
 
+// buildHandler wires up all routes and middleware for the given server.
+// Extracted so tests can construct a server with injected dependencies and still
+// get the full middleware stack.
+func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore WriteStore) http.Handler {
 	// Health check is exempt from auth — load balancers and probes call it.
 	outer := http.NewServeMux()
 	outer.HandleFunc("GET /healthz", handleHealth)
@@ -104,8 +129,8 @@ func New(writeStore WriteStore, database *sql.DB, devIdentity, bootstrapAdmin st
 
 type server struct {
 	commitStore CommitStore
-	readStore   *store.Store
-	policyCache *policy.Cache
+	readStore   readStore
+	policyCache policyCache
 }
 
 func (s *server) handleCommit(w http.ResponseWriter, r *http.Request) {

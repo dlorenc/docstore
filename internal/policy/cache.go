@@ -9,6 +9,13 @@ import (
 	"github.com/dlorenc/docstore/internal/store"
 )
 
+// ReadStore is the minimal interface for reading policy and OWNERS files.
+// *store.Store satisfies this interface.
+type ReadStore interface {
+	MaterializeTree(ctx context.Context, repo, branch string, atSeq *int64, limit int, afterPath string) ([]store.TreeEntry, error)
+	GetFile(ctx context.Context, repo, branch, path string, atSeq *int64) (*store.FileContent, error)
+}
+
 // cacheEntry holds a compiled engine and pre-loaded OWNERS map for one repo.
 type cacheEntry struct {
 	engine *Engine              // nil means no policies (bootstrap mode)
@@ -35,7 +42,7 @@ func NewCache() *Cache {
 // Load returns the compiled Engine and OWNERS map for the given repo, loading
 // them from the read store on first call. Returns nil, nil, nil in bootstrap
 // mode (no .rego files on the main branch).
-func (c *Cache) Load(ctx context.Context, repo string, readStore *store.Store) (*Engine, map[string][]string, error) {
+func (c *Cache) Load(ctx context.Context, repo string, readStore ReadStore) (*Engine, map[string][]string, error) {
 	// Fast path: already loaded.
 	c.mu.RLock()
 	if c.loaded[repo] {
@@ -75,7 +82,7 @@ func (c *Cache) Invalidate(repo string) {
 }
 
 // loadEntry fetches policy files and OWNERS from the main branch of a repo.
-func loadEntry(ctx context.Context, repo string, readStore *store.Store) (*cacheEntry, error) {
+func loadEntry(ctx context.Context, repo string, readStore ReadStore) (*cacheEntry, error) {
 	modules, err := loadPolicyModules(ctx, repo, readStore)
 	if err != nil {
 		return nil, fmt.Errorf("load policy modules: %w", err)
@@ -102,7 +109,7 @@ func loadEntry(ctx context.Context, repo string, readStore *store.Store) (*cache
 }
 
 // loadPolicyModules fetches all .rego files from .docstore/policy/ on main.
-func loadPolicyModules(ctx context.Context, repo string, readStore *store.Store) (map[string]string, error) {
+func loadPolicyModules(ctx context.Context, repo string, readStore ReadStore) (map[string]string, error) {
 	const policyDir = ".docstore/policy/"
 	modules := make(map[string]string)
 
@@ -134,7 +141,7 @@ func loadPolicyModules(ctx context.Context, repo string, readStore *store.Store)
 }
 
 // loadOwnerFiles fetches all OWNERS files from the main branch.
-func loadOwnerFiles(ctx context.Context, repo string, readStore *store.Store) (map[string][]byte, error) {
+func loadOwnerFiles(ctx context.Context, repo string, readStore ReadStore) (map[string][]byte, error) {
 	result := make(map[string][]byte)
 	afterPath := ""
 
