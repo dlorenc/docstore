@@ -1442,6 +1442,7 @@ func (a *App) ImportGit(repoPath, mode string) error {
 
 // importGitReplay imports each non-merge git commit as one docstore commit.
 func (a *App) importGitReplay(cfg *Config, repoPath string) error {
+	// %s captures only the subject line; multi-line commit bodies are not imported.
 	out, err := exec.Command("git", "-C", repoPath, "log", "--reverse", "--no-merges", "--format=%H|%ae|%s", "HEAD").Output()
 	if err != nil {
 		return fmt.Errorf("git log failed: %w", err)
