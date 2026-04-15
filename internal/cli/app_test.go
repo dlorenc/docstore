@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -2140,4 +2141,275 @@ func mustParseTime(s string) time.Time {
 		panic(err)
 	}
 	return t
+}
+
+// ---------------------------------------------------------------------------
+// ImportGit
+// ---------------------------------------------------------------------------
+
+// initTestGitRepo creates a minimal git repo in dir with the given commits.
+// Each commit is a map of filename -> content strings.
+func initTestGitRepo(t *testing.T, commits []map[string]string) string {
+	t.Helper()
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=Test User",
+			"GIT_AUTHOR_EMAIL=test@example.com",
+			"GIT_COMMITTER_NAME=Test User",
+			"GIT_COMMITTER_EMAIL=test@example.com",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init", "-b", "main")
+	run("config", "user.email", "test@example.com")
+	run("config", "user.name", "Test User")
+
+	for i, files := range commits {
+		for name, content := range files {
+			full := filepath.Join(dir, name)
+			if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(full, []byte(content), 0644); err != nil {
+				t.Fatal(err)
+			}
+			run("add", name)
+		}
+		run("commit", "-m", fmt.Sprintf("Commit %d", i+1))
+	}
+	return dir
+}
+
+func TestImportGitReplay(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	gitDir := initTestGitRepo(t, []map[string]string{
+		{"hello.txt": "hello world\n"},
+		{"world.txt": "goodbye\n"},
+	})
+
+	var capturedReqs []model.CommitRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/commit") {
+			var req model.CommitRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, err.Error(), 500)
+				return
+			}
+			capturedReqs = append(capturedReqs, req)
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(model.CommitResponse{Sequence: int64(len(capturedReqs))})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	app, out := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "main", "importer")
+
+	if err := app.ImportGit(gitDir, "replay"); err != nil {
+		t.Fatalf("ImportGit replay: %v", err)
+	}
+
+	// Should have 2 commits (one per git commit).
+	if len(capturedReqs) != 2 {
+		t.Fatalf("expected 2 commit requests, got %d", len(capturedReqs))
+	}
+
+	// First commit: hello.txt added.
+	if !strings.Contains(capturedReqs[0].Message, "[git-author: test@example.com]") {
+		t.Errorf("message[0] = %q, want [git-author: ...] prefix", capturedReqs[0].Message)
+	}
+	if capturedReqs[0].Branch != "main" {
+		t.Errorf("branch[0] = %q, want main", capturedReqs[0].Branch)
+	}
+	found := false
+	for _, f := range capturedReqs[0].Files {
+		if f.Path == "hello.txt" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected hello.txt in first commit files")
+	}
+
+	// Second commit: world.txt added.
+	found = false
+	for _, f := range capturedReqs[1].Files {
+		if f.Path == "world.txt" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected world.txt in second commit files")
+	}
+
+	outStr := out.String()
+	if !strings.Contains(outStr, "Importing 2 commits") {
+		t.Errorf("output missing 'Importing 2 commits': %s", outStr)
+	}
+	if !strings.Contains(outStr, "Done. 2 commits imported.") {
+		t.Errorf("output missing 'Done.' line: %s", outStr)
+	}
+}
+
+func TestImportGitSquash(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	gitDir := initTestGitRepo(t, []map[string]string{
+		{"a.txt": "aaa\n", "b.txt": "bbb\n"},
+	})
+
+	var capturedReqs []model.CommitRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/commit") {
+			var req model.CommitRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, err.Error(), 500)
+				return
+			}
+			capturedReqs = append(capturedReqs, req)
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(model.CommitResponse{Sequence: 1})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	app, out := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "main", "importer")
+
+	if err := app.ImportGit(gitDir, "squash"); err != nil {
+		t.Fatalf("ImportGit squash: %v", err)
+	}
+
+	// Should have exactly 1 commit.
+	if len(capturedReqs) != 1 {
+		t.Fatalf("expected 1 commit request, got %d", len(capturedReqs))
+	}
+
+	req := capturedReqs[0]
+	if !strings.Contains(req.Message, "[git-import] Squashed import of") {
+		t.Errorf("squash message = %q, want [git-import] Squashed import of...", req.Message)
+	}
+	if req.Branch != "main" {
+		t.Errorf("branch = %q, want main", req.Branch)
+	}
+	if len(req.Files) != 2 {
+		t.Errorf("expected 2 files, got %d", len(req.Files))
+	}
+
+	outStr := out.String()
+	if !strings.Contains(outStr, "Collecting files from HEAD") {
+		t.Errorf("output missing 'Collecting files' line: %s", outStr)
+	}
+	if !strings.Contains(outStr, "Done. 1 commit imported") {
+		t.Errorf("output missing 'Done.' line: %s", outStr)
+	}
+}
+
+func TestImportGitInvalidMode(t *testing.T) {
+	app, _ := newTestApp(t, nil)
+	initWorkspace(t, app, "http://localhost", "main", "user")
+	err := app.ImportGit(t.TempDir(), "badmode")
+	if err == nil || !strings.Contains(err.Error(), "mode must be") {
+		t.Errorf("expected mode error, got %v", err)
+	}
+}
+
+func TestImportGitNotARepo(t *testing.T) {
+	app, _ := newTestApp(t, nil)
+	initWorkspace(t, app, "http://localhost", "main", "user")
+	dir := t.TempDir() // no .git
+	err := app.ImportGit(dir, "replay")
+	if err == nil || !strings.Contains(err.Error(), "not a git repository") {
+		t.Errorf("expected 'not a git repository' error, got %v", err)
+	}
+}
+
+func TestImportGitDeletedFiles(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	// First commit adds a file, second commit deletes it.
+	gitDir := initTestGitRepo(t, []map[string]string{
+		{"toDelete.txt": "gone\n"},
+	})
+	// Add a delete commit.
+	run := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = gitDir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=Test User",
+			"GIT_AUTHOR_EMAIL=test@example.com",
+			"GIT_COMMITTER_NAME=Test User",
+			"GIT_COMMITTER_EMAIL=test@example.com",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	if err := os.Remove(filepath.Join(gitDir, "toDelete.txt")); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "-A")
+	run("commit", "-m", "Delete toDelete.txt")
+
+	var capturedReqs []model.CommitRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/commit") {
+			var req model.CommitRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, err.Error(), 500)
+				return
+			}
+			capturedReqs = append(capturedReqs, req)
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(model.CommitResponse{Sequence: int64(len(capturedReqs))})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	app, _ := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "main", "importer")
+
+	if err := app.ImportGit(gitDir, "replay"); err != nil {
+		t.Fatalf("ImportGit replay: %v", err)
+	}
+
+	if len(capturedReqs) != 2 {
+		t.Fatalf("expected 2 commit requests, got %d", len(capturedReqs))
+	}
+
+	// Second commit should have a delete (nil content after JSON unmarshal = empty/missing).
+	deleteReq := capturedReqs[1]
+	foundDelete := false
+	for _, f := range deleteReq.Files {
+		if f.Path == "toDelete.txt" && f.Content == nil {
+			foundDelete = true
+		}
+	}
+	if !foundDelete {
+		t.Errorf("expected deleted file with nil content in second commit; got %+v", deleteReq.Files)
+	}
 }
