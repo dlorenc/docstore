@@ -2755,3 +2755,251 @@ func TestCommit_ToMergedBranch(t *testing.T) {
 		t.Fatalf("expected ErrBranchNotActive for commit to merged branch, got %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Org CRUD tests
+// ---------------------------------------------------------------------------
+
+func TestCreateOrg(t *testing.T) {
+	d := testutil.TestDB(t, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	org, err := s.CreateOrg(ctx, "myorg", "alice@example.com")
+	if err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+	if org.Name != "myorg" {
+		t.Errorf("expected name myorg, got %q", org.Name)
+	}
+	if org.CreatedBy != "alice@example.com" {
+		t.Errorf("expected created_by alice@example.com, got %q", org.CreatedBy)
+	}
+
+	// Duplicate name returns ErrOrgExists.
+	_, err = s.CreateOrg(ctx, "myorg", "bob@example.com")
+	if !errors.Is(err, ErrOrgExists) {
+		t.Errorf("expected ErrOrgExists on duplicate, got %v", err)
+	}
+}
+
+func TestCreateOrg_DefaultCreatedBy(t *testing.T) {
+	d := testutil.TestDB(t, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	org, err := s.CreateOrg(ctx, "auto-org", "")
+	if err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+	if org.CreatedBy != "system" {
+		t.Errorf("expected created_by system, got %q", org.CreatedBy)
+	}
+}
+
+func TestDeleteOrg(t *testing.T) {
+	d := testutil.TestDB(t, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	if _, err := s.CreateOrg(ctx, "todelete", "alice"); err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+
+	// Delete succeeds.
+	if err := s.DeleteOrg(ctx, "todelete"); err != nil {
+		t.Fatalf("DeleteOrg: %v", err)
+	}
+
+	// Second delete returns ErrOrgNotFound.
+	if err := s.DeleteOrg(ctx, "todelete"); !errors.Is(err, ErrOrgNotFound) {
+		t.Errorf("expected ErrOrgNotFound on second delete, got %v", err)
+	}
+}
+
+func TestDeleteOrg_NotFound(t *testing.T) {
+	d := testutil.TestDB(t, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	err := s.DeleteOrg(ctx, "nonexistent")
+	if !errors.Is(err, ErrOrgNotFound) {
+		t.Errorf("expected ErrOrgNotFound, got %v", err)
+	}
+}
+
+func TestDeleteOrg_HasRepos(t *testing.T) {
+	d := testutil.TestDB(t, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	if _, err := s.CreateOrg(ctx, "orgwithrepos", "alice"); err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+	if _, err := s.CreateRepo(ctx, model.CreateRepoRequest{Owner: "orgwithrepos", Name: "myrepo"}); err != nil {
+		t.Fatalf("CreateRepo: %v", err)
+	}
+
+	err := s.DeleteOrg(ctx, "orgwithrepos")
+	if !errors.Is(err, ErrOrgHasRepos) {
+		t.Errorf("expected ErrOrgHasRepos, got %v", err)
+	}
+}
+
+func TestListOrgRepos(t *testing.T) {
+	d := testutil.TestDB(t, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	if _, err := s.CreateOrg(ctx, "listorg", "alice"); err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+
+	// No repos yet.
+	repos, err := s.ListOrgRepos(ctx, "listorg")
+	if err != nil {
+		t.Fatalf("ListOrgRepos (empty): %v", err)
+	}
+	if len(repos) != 0 {
+		t.Errorf("expected 0 repos, got %d", len(repos))
+	}
+
+	// Create two repos.
+	for _, name := range []string{"alpha", "beta"} {
+		if _, err := s.CreateRepo(ctx, model.CreateRepoRequest{Owner: "listorg", Name: name}); err != nil {
+			t.Fatalf("CreateRepo %s: %v", name, err)
+		}
+	}
+
+	repos, err = s.ListOrgRepos(ctx, "listorg")
+	if err != nil {
+		t.Fatalf("ListOrgRepos: %v", err)
+	}
+	if len(repos) != 2 {
+		t.Fatalf("expected 2 repos, got %d", len(repos))
+	}
+	if repos[0].Name != "listorg/alpha" || repos[1].Name != "listorg/beta" {
+		t.Errorf("unexpected repo names: %v, %v", repos[0].Name, repos[1].Name)
+	}
+}
+
+func TestListRepos(t *testing.T) {
+	d := testutil.TestDB(t, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	// default org already has default/default from migration.
+	repos, err := s.ListRepos(ctx)
+	if err != nil {
+		t.Fatalf("ListRepos: %v", err)
+	}
+	initialCount := len(repos)
+
+	// Create an extra org and repo.
+	if _, err := s.CreateOrg(ctx, "extra", "alice"); err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+	if _, err := s.CreateRepo(ctx, model.CreateRepoRequest{Owner: "extra", Name: "newrepo"}); err != nil {
+		t.Fatalf("CreateRepo: %v", err)
+	}
+
+	repos, err = s.ListRepos(ctx)
+	if err != nil {
+		t.Fatalf("ListRepos after create: %v", err)
+	}
+	if len(repos) != initialCount+1 {
+		t.Errorf("expected %d repos, got %d", initialCount+1, len(repos))
+	}
+}
+
+func TestGetRepo(t *testing.T) {
+	d := testutil.TestDB(t, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	// default/default exists from migration seed.
+	repo, err := s.GetRepo(ctx, "default/default")
+	if err != nil {
+		t.Fatalf("GetRepo: %v", err)
+	}
+	if repo.Name != "default/default" {
+		t.Errorf("expected name default/default, got %q", repo.Name)
+	}
+
+	// Non-existent repo.
+	_, err = s.GetRepo(ctx, "default/noexist")
+	if !errors.Is(err, ErrRepoNotFound) {
+		t.Errorf("expected ErrRepoNotFound, got %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ListRoles DB test
+// ---------------------------------------------------------------------------
+
+func TestListRoles(t *testing.T) {
+	d := testutil.TestDB(t, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	// Empty initially.
+	roles, err := s.ListRoles(ctx, "default/default")
+	if err != nil {
+		t.Fatalf("ListRoles (empty): %v", err)
+	}
+	if len(roles) != 0 {
+		t.Errorf("expected 0 roles, got %d", len(roles))
+	}
+
+	// Add a couple of roles.
+	if err := s.SetRole(ctx, "default/default", "alice@example.com", model.RoleAdmin); err != nil {
+		t.Fatalf("SetRole alice: %v", err)
+	}
+	if err := s.SetRole(ctx, "default/default", "bob@example.com", model.RoleReader); err != nil {
+		t.Fatalf("SetRole bob: %v", err)
+	}
+
+	roles, err = s.ListRoles(ctx, "default/default")
+	if err != nil {
+		t.Fatalf("ListRoles: %v", err)
+	}
+	if len(roles) != 2 {
+		t.Fatalf("expected 2 roles, got %d", len(roles))
+	}
+	// Results should be ordered by identity.
+	if roles[0].Identity != "alice@example.com" || roles[0].Role != model.RoleAdmin {
+		t.Errorf("unexpected first role: %+v", roles[0])
+	}
+	if roles[1].Identity != "bob@example.com" || roles[1].Role != model.RoleReader {
+		t.Errorf("unexpected second role: %+v", roles[1])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// isForeignKeyViolation / isDuplicateKeyError helper tests
+// ---------------------------------------------------------------------------
+
+func TestIsForeignKeyViolation_NonPQError(t *testing.T) {
+	// A plain error should return false.
+	if isForeignKeyViolation(errors.New("some error")) {
+		t.Error("expected false for non-pq error")
+	}
+}
+
+func TestIsDuplicateKeyError_NonPQError(t *testing.T) {
+	if isDuplicateKeyError(errors.New("some error")) {
+		t.Error("expected false for non-pq error")
+	}
+}
+
+func TestIsForeignKeyViolation_FromDB(t *testing.T) {
+	d := testutil.TestDB(t, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	// Trying to create a repo for a non-existent org triggers a FK violation.
+	_, err := s.CreateRepo(ctx, model.CreateRepoRequest{Owner: "nosuchorg", Name: "somerepo"})
+	if !errors.Is(err, ErrOrgNotFound) {
+		t.Errorf("expected ErrOrgNotFound (wrapping FK violation), got %v", err)
+	}
+}
