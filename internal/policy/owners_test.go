@@ -94,3 +94,76 @@ func TestParseOwners_EmptyFile(t *testing.T) {
 		t.Errorf("expected no entry for all-comment OWNERS file, got %v", owners)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// ResolveOwners tests
+// ---------------------------------------------------------------------------
+
+func TestResolveOwners_ExactDirMatch(t *testing.T) {
+	// Most specific match: "src/pkg" is the longest prefix of "src/pkg/foo.go"
+	owners := map[string][]string{
+		"":        {"root@example.com"},
+		"src":     {"src@example.com"},
+		"src/pkg": {"pkg@example.com"},
+	}
+	got := policy.ResolveOwners(owners, "src/pkg/foo.go")
+	if len(got) != 1 || got[0] != "pkg@example.com" {
+		t.Errorf("expected [pkg@example.com], got %v", got)
+	}
+}
+
+func TestResolveOwners_PrefixInheritance(t *testing.T) {
+	// "src/pkg" not in map; fall back to "src"
+	owners := map[string][]string{
+		"":    {"root@example.com"},
+		"src": {"src@example.com"},
+	}
+	got := policy.ResolveOwners(owners, "src/bar.go")
+	if len(got) != 1 || got[0] != "src@example.com" {
+		t.Errorf("expected [src@example.com], got %v", got)
+	}
+}
+
+func TestResolveOwners_RootFallback(t *testing.T) {
+	// No subdirectory entry; root applies.
+	owners := map[string][]string{
+		"":    {"root@example.com"},
+		"src": {"src@example.com"},
+	}
+	got := policy.ResolveOwners(owners, "README.md")
+	if len(got) != 1 || got[0] != "root@example.com" {
+		t.Errorf("expected [root@example.com], got %v", got)
+	}
+}
+
+func TestResolveOwners_NoOwners(t *testing.T) {
+	// Empty map: no owners at all.
+	got := policy.ResolveOwners(map[string][]string{}, "src/foo.go")
+	if got != nil {
+		t.Errorf("expected nil, got %v", got)
+	}
+}
+
+func TestResolveOwners_NoMatchingPrefix(t *testing.T) {
+	// Map has entries but none match the path, and no root entry.
+	owners := map[string][]string{
+		"docs": {"docs@example.com"},
+	}
+	got := policy.ResolveOwners(owners, "src/foo.go")
+	if got != nil {
+		t.Errorf("expected nil (no root fallback), got %v", got)
+	}
+}
+
+func TestResolveOwners_DeepNesting(t *testing.T) {
+	// Three-level deep: "a/b/c" matches "a/b/c/d/e.go" better than "a/b"
+	owners := map[string][]string{
+		"":      {"root@example.com"},
+		"a/b":   {"ab@example.com"},
+		"a/b/c": {"abc@example.com"},
+	}
+	got := policy.ResolveOwners(owners, "a/b/c/d/e.go")
+	if len(got) != 1 || got[0] != "abc@example.com" {
+		t.Errorf("expected [abc@example.com], got %v", got)
+	}
+}
