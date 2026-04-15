@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/model"
+	"github.com/dlorenc/docstore/internal/policy"
 	"github.com/dlorenc/docstore/internal/store"
 )
 
@@ -183,7 +185,8 @@ func (s *server) handleReposPrefix(w http.ResponseWriter, r *http.Request) {
 			s.handleDeleteBranch(w, r)
 		case http.MethodGet:
 			if strings.HasSuffix(bpath, "/status") {
-				notImplemented(w, r)
+				branchName := strings.TrimSuffix(bpath, "/status")
+				s.handleBranchStatus(w, r, repoName, branchName)
 			} else {
 				r.SetPathValue("branch", bpath)
 				s.handleBranchGet(w, r)
@@ -1057,6 +1060,17 @@ func (s *server) handleMerge(w http.ResponseWriter, r *http.Request) {
 	// Author always comes from the authenticated identity; body value is ignored.
 	req.Author = IdentityFromContext(r.Context())
 
+	// Policy evaluation: runs before any database transaction.
+	if denied, err := s.evaluateMergePolicy(r.Context(), repo, req.Branch, req.Author); err != nil {
+		slog.Error("policy evaluation error", "op", "merge", "repo", repo, "branch", req.Branch, "error", err)
+		writeError(w, http.StatusInternalServerError, "policy evaluation error")
+		return
+	} else if denied != nil {
+		slog.Warn("merge denied by policy", "repo", repo, "branch", req.Branch, "actor", req.Author)
+		writeJSON(w, http.StatusForbidden, model.MergePolicyError{Policies: denied})
+		return
+	}
+
 	resp, conflicts, err := s.commitStore.Merge(r.Context(), req)
 	if err != nil {
 		switch {
@@ -1083,6 +1097,250 @@ func (s *server) handleMerge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Invalidate the policy cache: the merge may have updated policies on main.
+	if s.policyCache != nil {
+		s.policyCache.Invalidate(repo)
+	}
+
 	slog.Info("branch merged", "repo", repo, "branch", req.Branch, "by", req.Author, "sequence", resp.Sequence)
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// ---------------------------------------------------------------------------
+// Policy helpers
+// ---------------------------------------------------------------------------
+
+// evaluateMergePolicy evaluates all OPA policies for a pending merge.
+// Returns the failing PolicyResults (non-nil means denied), or nil if allowed.
+// Returns an error only for unexpected infrastructure failures.
+// When readStore or policyCache are nil, or no policies exist, the merge is allowed.
+func (s *server) evaluateMergePolicy(ctx context.Context, repo, branch, actor string) ([]model.PolicyResult, error) {
+	if s.policyCache == nil || s.readStore == nil {
+		return nil, nil
+	}
+
+	engine, owners, err := s.policyCache.Load(ctx, repo, s.readStore)
+	if err != nil {
+		return nil, err
+	}
+	if engine == nil {
+		return nil, nil // bootstrap mode
+	}
+
+	// Collect branch info for head/base sequence.
+	branchInfo, err := s.readStore.GetBranch(ctx, repo, branch)
+	if err != nil {
+		return nil, fmt.Errorf("get branch info: %w", err)
+	}
+	if branchInfo == nil {
+		return nil, nil // branch not found — let the merge handler surface the error
+	}
+
+	// Collect changed paths.
+	diff, err := s.readStore.GetDiff(ctx, repo, branch)
+	if err != nil {
+		return nil, fmt.Errorf("get diff: %w", err)
+	}
+	var paths []string
+	if diff != nil {
+		for _, e := range diff.BranchChanges {
+			paths = append(paths, e.Path)
+		}
+	}
+
+	// Collect reviews and check runs at the current head sequence.
+	reviews, err := s.commitStore.ListReviews(ctx, repo, branch, &branchInfo.HeadSequence)
+	if err != nil {
+		return nil, fmt.Errorf("list reviews: %w", err)
+	}
+	checkRuns, err := s.commitStore.ListCheckRuns(ctx, repo, branch, &branchInfo.HeadSequence)
+	if err != nil {
+		return nil, fmt.Errorf("list check runs: %w", err)
+	}
+
+	// Look up actor role (empty string if not assigned).
+	roleStr := ""
+	if r, err := s.commitStore.GetRole(ctx, repo, actor); err == nil && r != nil {
+		roleStr = string(r.Role)
+	}
+
+	// Build OPA input.
+	reviewInputs := make([]policy.ReviewInput, len(reviews))
+	for i, rev := range reviews {
+		reviewInputs[i] = policy.ReviewInput{
+			Reviewer: rev.Reviewer,
+			Status:   string(rev.Status),
+			Sequence: rev.Sequence,
+		}
+	}
+	checkInputs := make([]policy.CheckRunInput, len(checkRuns))
+	for i, cr := range checkRuns {
+		checkInputs[i] = policy.CheckRunInput{
+			CheckName: cr.CheckName,
+			Status:    string(cr.Status),
+			Sequence:  cr.Sequence,
+		}
+	}
+
+	input := policy.Input{
+		Actor:     actor,
+		Role:      roleStr,
+		Paths:     paths,
+		Reviews:   reviewInputs,
+		CheckRuns: checkInputs,
+		Owners:    owners,
+		Branch:    branch,
+		HeadSeq:   branchInfo.HeadSequence,
+		BaseSeq:   branchInfo.BaseSequence,
+	}
+
+	results, err := engine.Evaluate(ctx, input)
+	if err != nil {
+		return nil, fmt.Errorf("evaluate policies: %w", err)
+	}
+
+	// Collect any failing policies.
+	var denied []model.PolicyResult
+	for _, r := range results {
+		if !r.Pass {
+			denied = append(denied, r)
+		}
+	}
+	return denied, nil
+}
+
+// ---------------------------------------------------------------------------
+// Branch status handler
+// ---------------------------------------------------------------------------
+
+// handleBranchStatus implements GET /repos/:name/branch/:branch/status.
+// It evaluates merge policies without performing any write operations.
+func (s *server) handleBranchStatus(w http.ResponseWriter, r *http.Request, repo, branch string) {
+	if s.readStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "read store not available")
+		return
+	}
+
+	actor := IdentityFromContext(r.Context())
+
+	// Determine if the repo even exists.
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
+
+	// Load policies (nil engine → bootstrap mode → mergeable=true).
+	var engine *policy.Engine
+	var owners map[string][]string
+	if s.policyCache != nil {
+		var err error
+		engine, owners, err = s.policyCache.Load(r.Context(), repo, s.readStore)
+		if err != nil {
+			slog.Error("policy cache load error", "op", "branch_status", "repo", repo, "error", err)
+			writeError(w, http.StatusInternalServerError, "policy evaluation error")
+			return
+		}
+	}
+
+	if engine == nil {
+		// Bootstrap mode: no policies defined.
+		writeJSON(w, http.StatusOK, model.BranchStatusResponse{
+			Mergeable: true,
+			Policies:  []model.PolicyResult{},
+		})
+		return
+	}
+
+	// Collect branch info.
+	branchInfo, err := s.readStore.GetBranch(r.Context(), repo, branch)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if branchInfo == nil {
+		writeError(w, http.StatusNotFound, "branch not found")
+		return
+	}
+
+	// Collect changed paths.
+	diff, err := s.readStore.GetDiff(r.Context(), repo, branch)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	var paths []string
+	if diff != nil {
+		for _, e := range diff.BranchChanges {
+			paths = append(paths, e.Path)
+		}
+	}
+
+	// Collect reviews and check runs at current head.
+	reviews, err := s.commitStore.ListReviews(r.Context(), repo, branch, &branchInfo.HeadSequence)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	checkRuns, err := s.commitStore.ListCheckRuns(r.Context(), repo, branch, &branchInfo.HeadSequence)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+
+	// Actor role.
+	roleStr := ""
+	if role, err := s.commitStore.GetRole(r.Context(), repo, actor); err == nil && role != nil {
+		roleStr = string(role.Role)
+	}
+
+	reviewInputs := make([]policy.ReviewInput, len(reviews))
+	for i, rev := range reviews {
+		reviewInputs[i] = policy.ReviewInput{
+			Reviewer: rev.Reviewer,
+			Status:   string(rev.Status),
+			Sequence: rev.Sequence,
+		}
+	}
+	checkInputs := make([]policy.CheckRunInput, len(checkRuns))
+	for i, cr := range checkRuns {
+		checkInputs[i] = policy.CheckRunInput{
+			CheckName: cr.CheckName,
+			Status:    string(cr.Status),
+			Sequence:  cr.Sequence,
+		}
+	}
+
+	input := policy.Input{
+		Actor:     actor,
+		Role:      roleStr,
+		Paths:     paths,
+		Reviews:   reviewInputs,
+		CheckRuns: checkInputs,
+		Owners:    owners,
+		Branch:    branch,
+		HeadSeq:   branchInfo.HeadSequence,
+		BaseSeq:   branchInfo.BaseSequence,
+	}
+
+	results, err := engine.Evaluate(r.Context(), input)
+	if err != nil {
+		slog.Error("policy evaluation error", "op", "branch_status", "repo", repo, "branch", branch, "error", err)
+		writeError(w, http.StatusInternalServerError, "policy evaluation error")
+		return
+	}
+	if results == nil {
+		results = []model.PolicyResult{}
+	}
+
+	mergeable := true
+	for _, res := range results {
+		if !res.Pass {
+			mergeable = false
+			break
+		}
+	}
+
+	writeJSON(w, http.StatusOK, model.BranchStatusResponse{
+		Mergeable: mergeable,
+		Policies:  results,
+	})
 }

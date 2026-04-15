@@ -231,26 +231,17 @@ func TestHealthEndpoint(t *testing.T) {
 	}
 }
 
-func TestNotImplementedEndpoints(t *testing.T) {
+// TestBranchStatusNoReadStore verifies that GET /:name/branch/:b/status returns
+// 503 Service Unavailable when the server was started without a read store.
+func TestBranchStatusNoReadStore(t *testing.T) {
 	srv := New(nil, nil, devID, "")
 
-	endpoints := []struct {
-		method string
-		path   string
-	}{
-		{"GET", "/repos/default/default/-/branch/main/status"},
-	}
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/default/-/branch/main/status", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
 
-	for _, ep := range endpoints {
-		t.Run(ep.method+" "+ep.path, func(t *testing.T) {
-			req := httptest.NewRequest(ep.method, ep.path, nil)
-			rec := httptest.NewRecorder()
-			srv.ServeHTTP(rec, req)
-
-			if rec.Code != http.StatusNotImplemented {
-				t.Fatalf("expected 501, got %d", rec.Code)
-			}
-		})
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rec.Code)
 	}
 }
 
