@@ -23,9 +23,9 @@ Depends on P0 server being functional.
 - [x] **Roles table & RBAC middleware**: Role lookup, coarse-grained permission checks (reader/writer/maintainer/admin)
 - [x] **Review system**: `POST /repos/{repo}/-/review`, review storage, sequence-scoped approval tracking
 - [x] **Check runs**: `POST /repos/{repo}/-/check`, check status storage, reporter authorization
-- [ ] **OPA policy engine integration**: Embed OPA, load policies from `.docstore/policy/*.rego`, evaluate on all write endpoints
-- [ ] **OWNERS files**: Parse OWNERS from materialized main tree, build owners map for policy input
-- [ ] **Branch status endpoint**: `GET /repos/{repo}/-/branch/{name}/status` — evaluate merge policies without merging (currently returns 501)
+- [x] **OPA policy engine integration**: Embed OPA, load policies from `.docstore/policy/*.rego`, evaluate on `POST /merge`; package naming convention `package docstore.<name>`; bootstrap mode when no policies exist; cache invalidation on main writes
+- [x] **OWNERS files**: Parse OWNERS from materialized main tree, longest-prefix inheritance, per-path resolved owners in policy input
+- [x] **Branch status endpoint**: `GET /repos/{repo}/-/branch/{name}/status` — evaluate merge policies without merging; returns `{mergeable, policies[]}`
 
 ## P2 — CLI Client
 
@@ -36,3 +36,9 @@ Can be developed in parallel with P1.
 - [x] **Merge & rebase commands**: `merge`, `rebase`
 - [x] **Conflict resolution**: Write conflict files, `ds resolve` command
 - [x] **Local state management**: `.docstore/state.json`, local hash tracking for offline status
+- [x] **Review & CI workflow commands**: `ds branches`, `ds reviews`, `ds review`, `ds checks`, `ds check`
+- [x] **Terminal UI**: `ds tui` — Bubble Tea TUI with branch list, diff/review/check panels, inline merge
+- [x] **Binary file support**: Auto-detect binary files on commit; `content_type` stored; `[binary]` shown in diff; `binary` flag in diff API response
+- [x] **Git import**: `ds import-git <path> [--mode squash|replay]`
+- [x] **Org/repo/role CLI**: `ds orgs`, `ds repos`, `ds roles` subcommand groups with full CRUD
+- [x] **Default remote URL**: `make build-ds` bakes in Cloud Run URL via `-ldflags`; `ds init` works with no URL argument
