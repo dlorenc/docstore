@@ -195,7 +195,7 @@ func loadBranches(c *tuiClient) tea.Cmd {
 						}
 					}
 					for _, r := range latest {
-						if r.Sequence == b.HeadSequence {
+						if r.Sequence >= b.HeadSequence {
 							if r.Status == model.ReviewApproved {
 								s.approved++
 							} else if r.Status == model.ReviewRejected {
@@ -267,18 +267,33 @@ func loadBranchDetail(c *tuiClient, branchName string) tea.Cmd {
 			return branchDetailLoadedMsg{err: err}
 		}
 
-		// BUG-5: Fetch the base tree to classify files as new (+) vs modified (~).
+		// BUG-5 fix: Fetch the base tree with pagination to handle repos with >100 files.
 		baseTreePaths := make(map[string]bool)
-		treeURL := fmt.Sprintf("/tree?branch=%s&at=%d", url.QueryEscape(branchName), baseSeq)
-		tResp, tErr := c.get(treeURL)
-		if tErr == nil {
-			var treeEntries []model.TreeEntry
-			if jsonErr := json.NewDecoder(tResp.Body).Decode(&treeEntries); jsonErr == nil {
-				for _, e := range treeEntries {
-					baseTreePaths[e.Path] = true
-				}
+		const treePageSize = 500
+		var afterCursor string
+		for {
+			treeURL := fmt.Sprintf("/tree?branch=%s&at=%d&limit=%d",
+				url.QueryEscape(branchName), baseSeq, treePageSize)
+			if afterCursor != "" {
+				treeURL += "&after=" + url.QueryEscape(afterCursor)
 			}
+			tResp, tErr := c.get(treeURL)
+			if tErr != nil {
+				break
+			}
+			var treeEntries []model.TreeEntry
+			jsonErr := json.NewDecoder(tResp.Body).Decode(&treeEntries)
 			tResp.Body.Close()
+			if jsonErr != nil {
+				break
+			}
+			for _, e := range treeEntries {
+				baseTreePaths[e.Path] = true
+			}
+			if len(treeEntries) < treePageSize {
+				break // last page
+			}
+			afterCursor = treeEntries[len(treeEntries)-1].Path
 		}
 
 		// Reviews.
