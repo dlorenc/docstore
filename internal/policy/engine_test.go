@@ -34,7 +34,7 @@ func TestEngine_NilEvaluate(t *testing.T) {
 func TestEngine_Allow(t *testing.T) {
 	ctx := context.Background()
 	src := `
-package policy
+package docstore.require_review
 
 default allow = false
 
@@ -87,7 +87,7 @@ allow if {
 func TestEngine_DenyReason(t *testing.T) {
 	ctx := context.Background()
 	src := `
-package policy
+package docstore.require_check
 
 default allow = false
 default reason = "at least one passing check is required"
@@ -129,7 +129,7 @@ allow if {
 func TestEngine_MultipleModules(t *testing.T) {
 	ctx := context.Background()
 	reviewPolicy := `
-package policy
+package docstore.review
 
 default allow = false
 
@@ -138,7 +138,7 @@ allow if {
 }
 `
 	checkPolicy := `
-package policy
+package docstore.check
 
 default allow = false
 
@@ -176,7 +176,7 @@ allow if {
 func TestEngine_PolicyName(t *testing.T) {
 	ctx := context.Background()
 	src := `
-package policy
+package docstore.my_policy
 default allow = true
 `
 	engine, err := policy.NewEngine(ctx, map[string]string{
@@ -197,4 +197,86 @@ default allow = true
 func TestEngine_PolicyResultTypes(t *testing.T) {
 	// Verify that PolicyResult from policy package matches model.PolicyResult fields.
 	var _ = model.PolicyResult{Name: "x", Pass: true, Reason: "y"}
+}
+
+func TestEngine_InputFieldNames(t *testing.T) {
+	// Verify that the corrected field names are accessible and used by policies.
+	ctx := context.Background()
+	src := `
+package docstore.role_check
+
+default allow = false
+
+allow if {
+    input.actor_roles[_] == "maintainer"
+}
+`
+	engine, err := policy.NewEngine(ctx, map[string]string{
+		".docstore/policy/role_check.rego": src,
+	})
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+
+	// Should deny: no roles.
+	results, err := engine.Evaluate(ctx, policy.Input{
+		Actor:      "alice@example.com",
+		ActorRoles: []string{},
+	})
+	if err != nil {
+		t.Fatalf("evaluate error: %v", err)
+	}
+	if results[0].Pass {
+		t.Error("expected deny with no roles")
+	}
+
+	// Should allow: maintainer role present.
+	results, err = engine.Evaluate(ctx, policy.Input{
+		Actor:      "alice@example.com",
+		ActorRoles: []string{"maintainer"},
+	})
+	if err != nil {
+		t.Fatalf("evaluate error: %v", err)
+	}
+	if !results[0].Pass {
+		t.Errorf("expected pass with maintainer role, got deny: %s", results[0].Reason)
+	}
+}
+
+func TestEngine_ChangedPathsField(t *testing.T) {
+	// Verify changed_paths field name is accessible to policies.
+	ctx := context.Background()
+	src := `
+package docstore.path_check
+
+default allow = false
+
+allow if {
+    count(input.changed_paths) == 0
+}
+`
+	engine, err := policy.NewEngine(ctx, map[string]string{
+		".docstore/policy/path_check.rego": src,
+	})
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+
+	// Should allow: no changed paths.
+	results, err := engine.Evaluate(ctx, policy.Input{ChangedPaths: []string{}})
+	if err != nil {
+		t.Fatalf("evaluate error: %v", err)
+	}
+	if !results[0].Pass {
+		t.Errorf("expected pass with no changed paths")
+	}
+
+	// Should deny: has changed paths.
+	results, err = engine.Evaluate(ctx, policy.Input{ChangedPaths: []string{"foo.go"}})
+	if err != nil {
+		t.Fatalf("evaluate error: %v", err)
+	}
+	if results[0].Pass {
+		t.Error("expected deny with changed paths")
+	}
 }

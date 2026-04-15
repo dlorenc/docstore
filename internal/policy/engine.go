@@ -1,7 +1,8 @@
 // Package policy implements OPA-based policy evaluation for merge operations.
 //
 // Each .rego file in .docstore/policy/ on the main branch defines one policy.
-// Policies must be in `package policy` and should define:
+// Policies must use 'package docstore.<policy_name>' (e.g.
+// 'package docstore.require_review') and should define:
 //
 //	default allow = false
 //	allow { ... }         // conditions under which the merge is permitted
@@ -14,10 +15,11 @@ package policy
 import (
 	"context"
 	"fmt"
-	"path"
 	"strings"
+	"time"
 
 	"github.com/dlorenc/docstore/internal/model"
+	"github.com/open-policy-agent/opa/v1/ast"
 	"github.com/open-policy-agent/opa/v1/rego"
 )
 
@@ -37,15 +39,17 @@ type CheckRunInput struct {
 
 // Input is the structured context passed to every policy evaluation.
 type Input struct {
-	Actor     string              `json:"actor"`
-	Role      string              `json:"role"`
-	Paths     []string            `json:"paths"`
-	Reviews   []ReviewInput       `json:"reviews"`
-	CheckRuns []CheckRunInput     `json:"check_runs"`
-	Owners    map[string][]string `json:"owners"`
-	Branch    string              `json:"branch"`
-	HeadSeq   int64               `json:"head_sequence"`
-	BaseSeq   int64               `json:"base_sequence"`
+	Actor        string              `json:"actor"`
+	ActorRoles   []string            `json:"actor_roles"`
+	Action       string              `json:"action"`
+	Repo         string              `json:"repo"`
+	Branch       string              `json:"branch"`
+	ChangedPaths []string            `json:"changed_paths"`
+	Reviews      []ReviewInput       `json:"reviews"`
+	CheckRuns    []CheckRunInput     `json:"check_runs"`
+	Owners       map[string][]string `json:"owners"`
+	HeadSeq      int64               `json:"head_sequence"`
+	BaseSeq      int64               `json:"base_sequence"`
 }
 
 // preparedPolicy holds compiled OPA queries for a single .rego file.
@@ -63,6 +67,8 @@ type Engine struct {
 
 // NewEngine compiles the given modules into an Engine.
 // modules maps filename (e.g. ".docstore/policy/require_review.rego") to rego source.
+// Each module must declare 'package docstore.<name>'; the policy name is derived
+// from the last segment of the package path.
 // Returns nil, nil if modules is empty (bootstrap mode).
 func NewEngine(ctx context.Context, modules map[string]string) (*Engine, error) {
 	if len(modules) == 0 {
@@ -71,10 +77,16 @@ func NewEngine(ctx context.Context, modules map[string]string) (*Engine, error) 
 
 	queries := make([]preparedPolicy, 0, len(modules))
 	for filename, src := range modules {
-		name := policyName(filename)
+		// Parse the module AST to extract the package path.
+		module, err := ast.ParseModule(filename, src)
+		if err != nil {
+			return nil, fmt.Errorf("parse policy %q: %w", filename, err)
+		}
+		pkgPath := module.Package.Path.String()
+		name := nameFromPackagePath(pkgPath)
 
 		allowPQ, err := rego.New(
-			rego.Query("data.policy.allow"),
+			rego.Query(pkgPath+".allow"),
 			rego.Module(filename, src),
 		).PrepareForEval(ctx)
 		if err != nil {
@@ -82,7 +94,7 @@ func NewEngine(ctx context.Context, modules map[string]string) (*Engine, error) 
 		}
 
 		reasonPQ, err := rego.New(
-			rego.Query("data.policy.reason"),
+			rego.Query(pkgPath+".reason"),
 			rego.Module(filename, src),
 		).PrepareForEval(ctx)
 		if err != nil {
@@ -118,16 +130,18 @@ func (e *Engine) Evaluate(ctx context.Context, input Input) ([]model.PolicyResul
 }
 
 // evalPrepared evaluates one compiled policy against the given input.
+// Wraps evaluation in a 5-second timeout to prevent infinite loops in Rego
+// from blocking request goroutines. Returns errors rather than converting them
+// to silent denies so broken policies surface as 500s in the handler.
 func evalPrepared(ctx context.Context, p preparedPolicy, input Input) (model.PolicyResult, error) {
+	// Wrap in a 5-second timeout to prevent runaway Rego evaluation.
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
 	// Evaluate the allow rule.
 	allowRs, err := p.allowPQ.Eval(ctx, rego.EvalInput(input))
 	if err != nil {
-		// Treat evaluation errors as denials with an error reason.
-		return model.PolicyResult{
-			Name:   p.name,
-			Pass:   false,
-			Reason: fmt.Sprintf("evaluation error: %v", err),
-		}, nil
+		return model.PolicyResult{}, fmt.Errorf("allow eval: %w", err)
 	}
 
 	allow := false
@@ -151,8 +165,12 @@ func evalPrepared(ctx context.Context, p preparedPolicy, input Input) (model.Pol
 	return model.PolicyResult{Name: p.name, Pass: false, Reason: reason}, nil
 }
 
-// policyName extracts a human-readable policy name from its filename.
-func policyName(filename string) string {
-	base := path.Base(filename)
-	return strings.TrimSuffix(base, ".rego")
+// nameFromPackagePath extracts the policy name from an OPA package path.
+// E.g. "data.docstore.require_review" → "require_review".
+func nameFromPackagePath(pkgPath string) string {
+	idx := strings.LastIndex(pkgPath, ".")
+	if idx < 0 || idx == len(pkgPath)-1 {
+		return pkgPath
+	}
+	return pkgPath[idx+1:]
 }
