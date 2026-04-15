@@ -1983,17 +1983,21 @@ func TestCheckSubmit_InvalidStatus(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestReviews_ExplicitBranchOverride(t *testing.T) {
-	var gotPath string
+	var gotReviewsPath, gotBranchesPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if strings.Contains(r.URL.Path, "/reviews") {
-			gotPath = r.URL.Path
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/reviews"):
+			gotReviewsPath = r.URL.EscapedPath()
 			json.NewEncoder(w).Encode([]model.Review{})
-			return
+		case strings.HasSuffix(r.URL.Path, "/branches"):
+			gotBranchesPath = r.URL.EscapedPath()
+			json.NewEncoder(w).Encode([]model.Branch{
+				{Name: "feature/other", HeadSequence: 3},
+			})
+		default:
+			http.NotFound(w, r)
 		}
-		json.NewEncoder(w).Encode([]model.Branch{
-			{Name: "feature/other", HeadSequence: 3},
-		})
 	}))
 	defer srv.Close()
 
@@ -2001,26 +2005,30 @@ func TestReviews_ExplicitBranchOverride(t *testing.T) {
 	initWorkspace(t, app, srv.URL, "main", "alice") // workspace is on "main"
 
 	app.Reviews("feature/other") // explicit --branch different from workspace branch
-	if !strings.Contains(gotPath, "feature") {
-		t.Errorf("expected URL to contain explicit branch name, got path: %s", gotPath)
+
+	wantReviewsPath := "/repos/default/default/-/branch/feature%2Fother/reviews"
+	if gotReviewsPath != wantReviewsPath {
+		t.Errorf("reviews URL = %q, want %q", gotReviewsPath, wantReviewsPath)
 	}
-	if strings.Contains(gotPath, "main") {
-		t.Errorf("URL should not reference workspace branch 'main', got path: %s", gotPath)
+	wantBranchesPath := "/repos/default/default/-/branches"
+	if gotBranchesPath != wantBranchesPath {
+		t.Errorf("branches URL = %q, want %q", gotBranchesPath, wantBranchesPath)
 	}
 }
 
 func TestChecks_ExplicitBranchOverride(t *testing.T) {
-	var gotPath string
+	var gotChecksPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if strings.Contains(r.URL.Path, "/checks") {
-			gotPath = r.URL.Path
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/checks"):
+			gotChecksPath = r.URL.EscapedPath()
 			json.NewEncoder(w).Encode([]model.CheckRun{})
-			return
+		default:
+			json.NewEncoder(w).Encode([]model.Branch{
+				{Name: "feature/other", HeadSequence: 3},
+			})
 		}
-		json.NewEncoder(w).Encode([]model.Branch{
-			{Name: "feature/other", HeadSequence: 3},
-		})
 	}))
 	defer srv.Close()
 
@@ -2028,11 +2036,10 @@ func TestChecks_ExplicitBranchOverride(t *testing.T) {
 	initWorkspace(t, app, srv.URL, "main", "alice")
 
 	app.Checks("feature/other")
-	if !strings.Contains(gotPath, "feature") {
-		t.Errorf("expected URL to contain explicit branch name, got path: %s", gotPath)
-	}
-	if strings.Contains(gotPath, "main") {
-		t.Errorf("URL should not reference workspace branch 'main', got path: %s", gotPath)
+
+	wantChecksPath := "/repos/default/default/-/branch/feature%2Fother/checks"
+	if gotChecksPath != wantChecksPath {
+		t.Errorf("checks URL = %q, want %q", gotChecksPath, wantChecksPath)
 	}
 }
 
