@@ -822,10 +822,10 @@ func (s *server) handleDiff(w http.ResponseWriter, r *http.Request) {
 		MainChanges:   make([]model.DiffEntry, len(result.MainChanges)),
 	}
 	for i, e := range result.BranchChanges {
-		resp.BranchChanges[i] = model.DiffEntry{Path: e.Path, VersionID: e.VersionID}
+		resp.BranchChanges[i] = model.DiffEntry{Path: e.Path, VersionID: e.VersionID, Binary: e.Binary}
 	}
 	for i, e := range result.MainChanges {
-		resp.MainChanges[i] = model.DiffEntry{Path: e.Path, VersionID: e.VersionID}
+		resp.MainChanges[i] = model.DiffEntry{Path: e.Path, VersionID: e.VersionID, Binary: e.Binary}
 	}
 	for _, c := range result.Conflicts {
 		resp.Conflicts = append(resp.Conflicts, model.ConflictEntry{

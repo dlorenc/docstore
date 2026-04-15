@@ -281,8 +281,9 @@ func (m branchDetailModel) renderTabs() string {
 
 // diffFile groups a path and its change type.
 type diffFile struct {
-	path     string
+	path       string
 	changeType string // "+", "-", "~"
+	binary     bool
 }
 
 func diffFiles(d *model.DiffResponse, baseTreePaths map[string]bool) []diffFile {
@@ -291,13 +292,15 @@ func diffFiles(d *model.DiffResponse, baseTreePaths map[string]bool) []diffFile 
 	}
 	var files []diffFile
 	for _, e := range d.BranchChanges {
+		var changeType string
 		if e.VersionID == nil {
-			files = append(files, diffFile{path: e.Path, changeType: "-"})
+			changeType = "-"
 		} else if len(baseTreePaths) > 0 && !baseTreePaths[e.Path] {
-			files = append(files, diffFile{path: e.Path, changeType: "+"})
+			changeType = "+"
 		} else {
-			files = append(files, diffFile{path: e.Path, changeType: "~"})
+			changeType = "~"
 		}
+		files = append(files, diffFile{path: e.Path, changeType: changeType, binary: e.Binary})
 	}
 	return files
 }
@@ -325,18 +328,25 @@ func (m branchDetailModel) renderDiff() string {
 			iconStyled = styleModified.Render("~")
 		}
 
-		line := fmt.Sprintf("%s %s", iconStyled, f.path)
-		if i == m.diffCursor {
-			line = styleSelected.Render(prefix + iconStyled + " " + f.path)
-			sb.WriteString(line + "\n")
-		} else {
-			sb.WriteString(prefix + line + "\n")
+		pathLabel := f.path
+		if f.binary {
+			pathLabel = f.path + " [binary]"
 		}
 
-		// If expanded, show a placeholder hunk (the server returns full diff content
-		// in the diff response, but simple path listing is our primary view).
+		if i == m.diffCursor {
+			line := styleSelected.Render(prefix + iconStyled + " " + pathLabel)
+			sb.WriteString(line + "\n")
+		} else {
+			sb.WriteString(prefix + iconStyled + " " + pathLabel + "\n")
+		}
+
+		// If expanded, show placeholder or binary notice.
 		if m.expandedFiles[i] {
-			sb.WriteString(styleModified.Render("    (file contents diff not available in current view)") + "\n")
+			if f.binary {
+				sb.WriteString(styleModified.Render("    binary file, no preview") + "\n")
+			} else {
+				sb.WriteString(styleModified.Render("    (file contents diff not available in current view)") + "\n")
+			}
 		}
 	}
 	return sb.String()

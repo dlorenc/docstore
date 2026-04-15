@@ -1,4 +1,4 @@
-.PHONY: build build-ds test lint clean
+.PHONY: build build-ds test lint clean db-reset
 
 BINARY := docstore
 BUILD_DIR := bin
@@ -18,3 +18,9 @@ lint:
 
 clean:
 	rm -rf $(BUILD_DIR)
+
+# db-reset drops and recreates the public schema, destroying all data.
+# Migrations will re-run automatically on the next server start.
+# Requires DATABASE_URL to be set.
+db-reset:
+	psql "$(DATABASE_URL)" -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public; GRANT ALL ON SCHEMA public TO PUBLIC;"
