@@ -1988,6 +1988,9 @@ default allow = true
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
 	}
+	if len(pc.invalidated) == 0 || pc.invalidated[0] != "default/default" {
+		t.Errorf("expected policyCache.Invalidate called for repo, got: %v", pc.invalidated)
+	}
 }
 
 // TestHandleMerge_Bootstrap verifies that with no policies (nil engine) the merge proceeds normally.
@@ -2244,5 +2247,8 @@ default allow = true
 	}
 	if writeCallCount != 0 {
 		t.Errorf("branch status triggered %d write operation(s)", writeCallCount)
+	}
+	if len(pc.invalidated) != 0 {
+		t.Errorf("expected no Invalidate calls from branch status, got: %v", pc.invalidated)
 	}
 }
