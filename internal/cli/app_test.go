@@ -1158,6 +1158,46 @@ func TestLoadStateMissing(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// detectContentType
+// ---------------------------------------------------------------------------
+
+func TestDetectContentType(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		content []byte
+		want    string
+	}{
+		{
+			name:    "valid UTF-8 text returns empty",
+			path:    "hello.txt",
+			content: []byte("hello world"),
+			want:    "",
+		},
+		{
+			name:    "known binary extension with non-UTF-8 bytes returns image/png",
+			path:    "image.png",
+			content: []byte{0xFF, 0xFE, 0x00, 0x01},
+			want:    "image/png",
+		},
+		{
+			name:    "unknown extension with non-UTF-8 bytes returns application/octet-stream",
+			path:    "data.bin",
+			content: []byte{0xFF, 0xFE, 0x00, 0x01},
+			want:    "application/octet-stream",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := detectContentType(tt.path, tt.content)
+			if got != tt.want {
+				t.Errorf("detectContentType(%q, ...) = %q, want %q", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
 // HashBytes
 // ---------------------------------------------------------------------------
 
