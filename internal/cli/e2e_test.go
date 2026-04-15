@@ -329,3 +329,196 @@ func TestCLIResolve_EndToEnd(t *testing.T) {
 		t.Error("expected README.md in state files after resolve")
 	}
 }
+
+// TestOrgs_EndToEnd verifies org creation, listing, and deletion via a real server.
+func TestOrgs_EndToEnd(t *testing.T) {
+	srv := newRealServer(t)
+	app, out := newTestApp(t, srv)
+	app.DefaultRemote = srv.URL
+
+	// Create org.
+	if err := app.OrgsCreate("e2eorg"); err != nil {
+		t.Fatalf("OrgsCreate: %v", err)
+	}
+	if !strings.Contains(out.String(), "Created org 'e2eorg'") {
+		t.Errorf("expected creation message, got: %s", out.String())
+	}
+
+	// List orgs — should include new org.
+	out.Reset()
+	if err := app.Orgs(); err != nil {
+		t.Fatalf("Orgs: %v", err)
+	}
+	if !strings.Contains(out.String(), "e2eorg") {
+		t.Errorf("expected 'e2eorg' in listing, got: %s", out.String())
+	}
+
+	// Delete org.
+	out.Reset()
+	if err := app.OrgsDelete("e2eorg"); err != nil {
+		t.Fatalf("OrgsDelete: %v", err)
+	}
+	if !strings.Contains(out.String(), "Deleted org 'e2eorg'") {
+		t.Errorf("expected deletion message, got: %s", out.String())
+	}
+
+	// Org should no longer appear in listing.
+	out.Reset()
+	if err := app.Orgs(); err != nil {
+		t.Fatalf("Orgs after delete: %v", err)
+	}
+	if strings.Contains(out.String(), "e2eorg") {
+		t.Errorf("expected 'e2eorg' to be gone, got: %s", out.String())
+	}
+}
+
+// TestRepos_EndToEnd verifies repo creation, listing (global and per-org), and deletion.
+func TestRepos_EndToEnd(t *testing.T) {
+	srv := newRealServer(t)
+	app, out := newTestApp(t, srv)
+	app.DefaultRemote = srv.URL
+
+	// Create org.
+	if err := app.OrgsCreate("repoorg"); err != nil {
+		t.Fatalf("OrgsCreate: %v", err)
+	}
+
+	// Create repo.
+	out.Reset()
+	if err := app.ReposCreate("repoorg", "myrepo"); err != nil {
+		t.Fatalf("ReposCreate: %v", err)
+	}
+	if !strings.Contains(out.String(), "Created repo 'repoorg/myrepo'") {
+		t.Errorf("expected creation message, got: %s", out.String())
+	}
+
+	// List repos — should include new repo.
+	out.Reset()
+	if err := app.Repos(); err != nil {
+		t.Fatalf("Repos: %v", err)
+	}
+	if !strings.Contains(out.String(), "repoorg/myrepo") {
+		t.Errorf("expected 'repoorg/myrepo' in listing, got: %s", out.String())
+	}
+
+	// List org repos.
+	out.Reset()
+	if err := app.OrgsRepos("repoorg"); err != nil {
+		t.Fatalf("OrgsRepos: %v", err)
+	}
+	if !strings.Contains(out.String(), "repoorg/myrepo") {
+		t.Errorf("expected 'repoorg/myrepo' in org repo listing, got: %s", out.String())
+	}
+
+	// Delete repo.
+	out.Reset()
+	if err := app.ReposDelete("repoorg/myrepo"); err != nil {
+		t.Fatalf("ReposDelete: %v", err)
+	}
+	if !strings.Contains(out.String(), "Deleted repo 'repoorg/myrepo'") {
+		t.Errorf("expected deletion message, got: %s", out.String())
+	}
+
+	// Repo should no longer appear in listing.
+	out.Reset()
+	if err := app.Repos(); err != nil {
+		t.Fatalf("Repos after delete: %v", err)
+	}
+	if strings.Contains(out.String(), "repoorg/myrepo") {
+		t.Errorf("expected 'repoorg/myrepo' to be gone, got: %s", out.String())
+	}
+}
+
+// TestRoles_EndToEnd verifies role assignment, listing, and deletion via a real server.
+func TestRoles_EndToEnd(t *testing.T) {
+	srv := newRealServer(t)
+	app, out := newTestApp(t, srv)
+	app.DefaultRemote = srv.URL
+
+	// Create org and repo.
+	if err := app.OrgsCreate("roleorg"); err != nil {
+		t.Fatalf("OrgsCreate: %v", err)
+	}
+	if err := app.ReposCreate("roleorg", "rolerepo"); err != nil {
+		t.Fatalf("ReposCreate: %v", err)
+	}
+
+	// Set up a workspace config pointing to the new repo (roles commands need config).
+	if err := os.MkdirAll(filepath.Join(app.Dir, configDir), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.saveConfig(&Config{Remote: srv.URL, Repo: "roleorg/rolerepo", Branch: "main", Author: "test@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Set role.
+	out.Reset()
+	if err := app.RolesSet("alice@example.com", "writer"); err != nil {
+		t.Fatalf("RolesSet: %v", err)
+	}
+	if !strings.Contains(out.String(), "Set role 'writer' for 'alice@example.com'") {
+		t.Errorf("expected set message, got: %s", out.String())
+	}
+
+	// List roles.
+	out.Reset()
+	if err := app.Roles(); err != nil {
+		t.Fatalf("Roles: %v", err)
+	}
+	if !strings.Contains(out.String(), "alice@example.com") {
+		t.Errorf("expected 'alice@example.com' in roles listing, got: %s", out.String())
+	}
+	if !strings.Contains(out.String(), "writer") {
+		t.Errorf("expected 'writer' role in listing, got: %s", out.String())
+	}
+
+	// Delete role.
+	out.Reset()
+	if err := app.RolesDelete("alice@example.com"); err != nil {
+		t.Fatalf("RolesDelete: %v", err)
+	}
+	if !strings.Contains(out.String(), "Deleted role for 'alice@example.com'") {
+		t.Errorf("expected deletion message, got: %s", out.String())
+	}
+}
+
+// TestLoadRemote_Fallback verifies that loadRemote() uses DefaultRemote when no config exists.
+func TestLoadRemote_Fallback(t *testing.T) {
+	app, _ := newTestApp(t, nil)
+	app.DefaultRemote = "https://example.com"
+
+	remote, err := app.loadRemote()
+	if err != nil {
+		t.Fatalf("loadRemote: %v", err)
+	}
+	if remote != "https://example.com" {
+		t.Errorf("loadRemote = %q, want %q", remote, "https://example.com")
+	}
+}
+
+// TestLoadRemote_NoConfig verifies that loadRemote() errors when no config or DefaultRemote.
+func TestLoadRemote_NoConfig(t *testing.T) {
+	app, _ := newTestApp(t, nil)
+
+	_, err := app.loadRemote()
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "not a docstore workspace") {
+		t.Errorf("expected workspace error, got: %v", err)
+	}
+}
+
+// TestRolesSet_InvalidRole verifies client-side role validation.
+func TestRolesSet_InvalidRole(t *testing.T) {
+	app, _ := newTestApp(t, nil)
+	initWorkspace(t, app, "http://localhost", "main", "alice")
+
+	err := app.RolesSet("alice@example.com", "superadmin")
+	if err == nil {
+		t.Fatal("expected error for invalid role, got nil")
+	}
+	if !strings.Contains(err.Error(), "role must be one of") {
+		t.Errorf("expected role validation error, got: %v", err)
+	}
+}
