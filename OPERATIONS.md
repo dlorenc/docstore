@@ -212,6 +212,108 @@ curl -X PUT https://docstore.example.com/repos/acme/myrepo/-/roles/alice@example
 
 ---
 
+## OPA Policy Engine
+
+DocStore embeds [Open Policy Agent](https://www.openpolicyagent.org/) for fine-grained merge access control. Policies are Rego files stored in the repo itself under `.docstore/policy/`.
+
+### Writing Policies
+
+Every policy file must:
+1. Use `package docstore.<name>` (e.g. `package docstore.require_review`)
+2. Define a boolean `allow` rule (defaults to `false`)
+3. Optionally define a `reason` string rule for denial messages
+
+Use OPA v1 syntax (`import rego.v1`; `allow if { ... }`).
+
+**Example — require at least one approval:**
+
+```rego
+package docstore.require_review
+
+import rego.v1
+
+default allow := false
+
+allow if {
+    some rev in input.reviews
+    rev.status == "approved"
+}
+
+reason := "at least one review approval required before merging"
+```
+
+**Example — require a passing CI check:**
+
+```rego
+package docstore.require_ci
+
+import rego.v1
+
+default allow := false
+
+allow if {
+    some cr in input.check_runs
+    cr.check_name == "ci/build"
+    cr.status == "passed"
+}
+
+reason := "ci/build must pass before merging"
+```
+
+### Policy Input Schema
+
+On `POST /merge` (and `GET /branch/:name/status`), the server passes this input to every policy:
+
+```json
+{
+  "action": "merge",
+  "actor": "alice@example.com",
+  "actor_roles": ["maintainer"],
+  "repo": "acme/myrepo",
+  "branch": "feature/new-api",
+  "changed_paths": ["src/api.go", "src/api_test.go"],
+  "reviews": [
+    {"reviewer": "bob@example.com", "status": "approved", "sequence": 42}
+  ],
+  "check_runs": [
+    {"check_name": "ci/build", "status": "passed", "sequence": 42}
+  ],
+  "owners": {
+    "src/api.go": ["bob@example.com", "carol@example.com"],
+    "src/api_test.go": ["bob@example.com", "carol@example.com"]
+  },
+  "head_sequence": 42,
+  "base_sequence": 38
+}
+```
+
+- `reviews` and `check_runs` include **only current-head** entries; stale entries (from before the latest commit) are excluded automatically.
+- `owners` is keyed by file path. The server resolves each changed path to its effective owners via longest-prefix directory matching.
+
+### Bootstrap Mode
+
+When no `.docstore/policy/*.rego` files exist on `main`, all merges are permitted (subject only to role checks). This avoids a chicken-and-egg setup problem. Once the first policy file is committed, it takes effect immediately.
+
+### Cache Invalidation
+
+The server caches compiled policies and OWNERS maps per repo. The cache is invalidated after:
+- A successful `POST /merge` to main
+- A `POST /commit` that targets `main` directly
+
+### OWNERS Files
+
+`OWNERS` files live at any directory level in the repo. Format: one identity per line; `#` starts a comment; blank lines are ignored.
+
+```
+# src/OWNERS
+alice@example.com
+bob@example.com
+```
+
+Inheritance works by longest-prefix match: `src/pkg/OWNERS` takes precedence over `src/OWNERS` for files under `src/pkg/`. The root `OWNERS` (at repo root) is the fallback for all unmatched paths.
+
+---
+
 ## API Reference
 
 All endpoints (except `/healthz`) require authentication. Errors are returned as:
@@ -474,12 +576,14 @@ Commit one or more file changes to a branch.
   "message": "update access control docs",
   "files": [
     {"path": "docs/guide.md", "content": "<base64-encoded bytes>"},
+    {"path": "images/logo.png", "content": "<base64-encoded bytes>", "content_type": "image/png"},
     {"path": "old-file.txt"}
   ]
 }
 ```
 
 - `content` is the raw file bytes encoded as base64 (standard JSON encoding of `[]byte`)
+- `content_type` (optional) — MIME type for the file; omit for plain text files. The CLI sets this automatically for detected binary files.
 - A file entry with no `content` field (or `null`) is a **delete**
 - `author` in the request body is ignored; the server uses the IAP-authenticated identity
 
@@ -563,9 +667,12 @@ Get the content of a file on a branch at an optional sequence.
   "path": "docs/guide.md",
   "version_id": "<uuid>",
   "content_hash": "<sha256-hex>",
-  "content": "<base64-encoded bytes>"
+  "content": "<base64-encoded bytes>",
+  "content_type": "image/png"
 }
 ```
+
+- `content_type` is omitted when the file has no stored MIME type (i.e. plain text files).
 
 **Errors:** `404 Not Found`.
 
@@ -609,6 +716,7 @@ Compare a branch against its base sequence on `main`, showing what changed on ea
 {
   "branch_changes": [
     {"path": "docs/guide.md", "version_id": "<uuid>"},
+    {"path": "images/logo.png", "version_id": "<uuid>", "binary": true},
     {"path": "old-file.txt", "version_id": null}
   ],
   "main_changes": [
@@ -625,6 +733,7 @@ Compare a branch against its base sequence on `main`, showing what changed on ea
 ```
 
 - `version_id: null` means the file was deleted on that side
+- `binary: true` is set for files that have a stored `content_type` (omitted for text files)
 - `conflicts` is omitted when empty
 
 **Errors:** `400 Bad Request` (missing branch); `404 Not Found` (branch).
@@ -649,6 +758,15 @@ Merge a branch into `main`. Cannot merge `main` into itself.
 {"sequence": 46}
 ```
 
+**Response `403 Forbidden` (policy denied):**
+```json
+{
+  "policies": [
+    {"name": "require_review", "pass": false, "reason": "at least one approval required"}
+  ]
+}
+```
+
 **Response `409 Conflict` (merge conflicts):**
 ```json
 {
@@ -662,7 +780,7 @@ Merge a branch into `main`. Cannot merge `main` into itself.
 }
 ```
 
-**Errors:** `404 Not Found` (branch); `409 Conflict` (branch not active, or conflicts).
+**Errors:** `404 Not Found` (branch); `403 Forbidden` (policy denied); `409 Conflict` (branch not active, or conflicts).
 
 **RBAC:** maintainer or admin.
 
@@ -866,11 +984,28 @@ Remove an identity's role from the repo.
 
 ---
 
-### Branch Status (Not Implemented)
+### Branch Status
 
 #### `GET /repos/{name}/-/branch/{bname}/status`
 
-Returns `501 Not Implemented`. Intended for future policy evaluation (OPA integration).
+Evaluate all merge policies for a branch without actually merging. Useful for CI gates and UI indicators.
+
+**Response `200 OK`:**
+```json
+{
+  "mergeable": true,
+  "policies": [
+    {"name": "require_review", "pass": true, "reason": ""},
+    {"name": "require_ci",     "pass": true, "reason": ""}
+  ]
+}
+```
+
+- `mergeable` — `true` if all policies pass (or no policies are defined)
+- `policies` — one entry per loaded policy; empty array when in bootstrap mode
+- `reason` — human-readable denial reason when `pass` is `false`; empty string otherwise
+
+**RBAC:** reader or above.
 
 ---
 
@@ -950,6 +1085,7 @@ Immutable, content-addressed file versions. Identical content is stored once per
 | `path`         | `TEXT`       | File path (as stored in the commit)            |
 | `content`      | `BYTEA`      | Raw file bytes                                 |
 | `content_hash` | `TEXT`       | SHA256 hex digest of `content`                 |
+| `content_type` | `TEXT`       | MIME type (nullable; set for binary files)     |
 | `created_at`   | `TIMESTAMPTZ`|                                                |
 | `created_by`   | `TEXT`       | Identity                                       |
 | `repo`         | `TEXT`       | FK → `repos.name`                             |
@@ -1072,3 +1208,99 @@ The server uses the standard `log/slog` package for structured JSON logging. All
      -d '{"role": "admin"}'
    ```
 10. Initialize a local workspace: `ds init https://<url>/repos/acme/myrepo`
+
+---
+
+## CLI Reference
+
+The `ds` CLI wraps the DocStore API. All workspace commands require a `.docstore/` directory (created by `ds init`). Org, repo, and role management commands work without a workspace when a default remote URL is compiled in.
+
+### Building the CLI
+
+```bash
+make build-ds   # produces bin/ds with the default Cloud Run URL baked in
+```
+
+To override the compiled-in URL:
+
+```bash
+DEFAULT_REMOTE=https://your-server.example.com make build-ds
+```
+
+### Workspace Commands
+
+| Command | Description |
+|---|---|
+| `ds init [<url>]` | Initialize a workspace. URL optional if compiled-in default exists. |
+| `ds status` | Show local changes vs last synced state. |
+| `ds commit -m "msg"` | Commit all local changes; binary files detected automatically. |
+| `ds checkout <branch>` | Switch to an existing branch (requires clean working tree). |
+| `ds checkout -b <branch>` | Create and switch to a new branch. |
+| `ds pull` | Sync local files from the current branch on the server. |
+| `ds merge` | Merge current branch into main. |
+| `ds rebase` | Rebase current branch onto latest main. |
+| `ds resolve <path>` | Mark a rebase conflict as resolved. |
+| `ds diff` | Show branch diff; binary files shown as `[binary]`. |
+| `ds log [path] [--limit N]` | Show commit history. |
+| `ds show <seq> [path]` | Inspect a commit or file at a sequence. |
+
+### Review and CI Workflow
+
+| Command | Description |
+|---|---|
+| `ds branches [--status active\|merged\|abandoned]` | List branches with head/base sequences. |
+| `ds reviews [--branch <name>]` | List reviews; stale reviews (before latest commit) shown with `[stale]`. |
+| `ds review --status approved\|rejected [--body "..."] [--branch <name>]` | Submit a review. |
+| `ds checks [--branch <name>]` | List CI check runs; stale checks shown with `[stale]`. |
+| `ds check --name <name> --status passed\|failed [--branch <name>]` | Report a CI check result. |
+
+### Terminal UI
+
+```bash
+ds tui
+```
+
+A Bubble Tea terminal UI with:
+- **Branch list view** — active branches with review and CI summary; `j`/`k` to navigate
+- **Branch detail view** — Diff / Reviews / Checks panels; cycle with `Tab`
+  - Diff panel: `+`/`~`/`-` file list; expand inline with `Enter`; binary files shown as `[binary]`
+  - Reviews panel: one-per-reviewer with stale indicators; approval summary
+  - Checks panel: check runs with stale indicators
+- **Review overlay** — Approve / Reject toggle + optional body; `Esc` to cancel
+- **Inline merge** — `y`/`N` prompt; surfaces conflicts on failure
+- `R` to refresh; `q` to go back / quit
+
+### Importing a Git Repository
+
+```bash
+ds import-git <path-to-local-git-repo> [--mode squash|replay]
+```
+
+Imports the default branch of a local git repository into the docstore `main` branch.
+
+- `replay` (default) — one docstore commit per git commit (merge commits skipped); original author embedded in the message as `[git-author: email]`
+- `squash` — single commit with all files at HEAD; message prefixed with `[git-import]`
+
+Binary files are detected automatically. Deleted files are handled correctly.
+
+### Org / Repo / Role Management
+
+These commands work without a local workspace. They read the compiled-in default remote or accept `--remote <url>`.
+
+```bash
+# Orgs
+ds orgs                           # list all orgs
+ds orgs create <name>             # create an org
+ds orgs delete <name>             # delete an org (fails if org has repos)
+ds orgs repos <name>              # list repos in an org
+
+# Repos
+ds repos                          # list all repos
+ds repos create <owner> <name>    # create a repo (owner = org name)
+ds repos delete <owner>/<name>    # delete a repo
+
+# Roles (require a workspace or --remote)
+ds roles                          # list roles in current repo
+ds roles set <identity> <role>    # set role (reader|writer|maintainer|admin)
+ds roles delete <identity>        # remove a role
+```

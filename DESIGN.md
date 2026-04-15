@@ -24,6 +24,7 @@ Eight tables. Documents and file_commits are append-only. Branches are mutable (
 | path | text | e.g. `src/main.py` |
 | content | blob | file contents |
 | content_hash | sha256 | dedup + integrity |
+| content_type | text | MIME type (nullable; set for binary files, omitted for text) |
 | created_at | timestamp | |
 | created_by | text | author |
 
@@ -135,43 +136,87 @@ Three layers control what an authenticated identity can do.
 
 ### Policy Evaluation
 
-Every write endpoint (`/commit`, `/merge`, `/review`, `/check`, `/branch`) assembles an input document and evaluates it before proceeding. The input document schema:
+`POST /merge` assembles an input document and evaluates it against all loaded policies before proceeding. The input document schema:
 
 ```json
 {
   "action": "merge",
   "actor": "alice@example.com",
   "actor_roles": ["maintainer"],
+  "repo": "acme/myrepo",
   "branch": "feature/new-api",
   "changed_paths": ["src/api.go", "src/api_test.go"],
   "reviews": [
     {"reviewer": "bob@example.com", "status": "approved", "sequence": 42}
   ],
   "check_runs": [
-    {"check_name": "ci/build", "status": "passed", "reporter": "ci-bot@project.iam.gserviceaccount.com"}
+    {"check_name": "ci/build", "status": "passed", "sequence": 42}
   ],
   "owners": {
-    "src/": ["bob@example.com", "carol@example.com"]
+    "src/api.go": ["bob@example.com", "carol@example.com"],
+    "src/api_test.go": ["bob@example.com", "carol@example.com"]
   },
-  "head_sequence": 42
+  "head_sequence": 42,
+  "base_sequence": 38
 }
 ```
 
-Fields vary by action — `reviews` and `check_runs` are only populated for `/merge`, `changed_paths` is populated for `/commit` and `/merge`, etc.
+Field notes:
+- `actor_roles` — slice of role strings (e.g. `["maintainer"]`); empty slice if the actor has no role.
+- `reviews` — only reviews matching the current `head_sequence` are included; stale reviews (from before the last commit) are filtered out automatically.
+- `check_runs` — same staleness rule as reviews; each entry has `check_name`, `status`, and `sequence`.
+- `owners` — keyed by **file path** (not directory); each entry is the resolved owner list for that file after inheritance. E.g. `input.owners["src/api.go"]` returns the owners covering that file.
+- `action` — currently always `"merge"`.
+
+Policy evaluation currently only occurs on `POST /merge` and `GET /branch/:name/status`.
+
+### Writing Policies
+
+Policies are Rego files stored at `.docstore/policy/*.rego` on `main`. Every policy **must** declare its package using the `package docstore.<name>` convention (e.g. `package docstore.require_review`). The policy name exposed in API responses is derived from the last segment of the package path.
+
+A minimal policy looks like:
+
+```rego
+package docstore.require_review
+
+import rego.v1
+
+default allow := false
+
+allow if {
+    some rev in input.reviews
+    rev.status == "approved"
+}
+
+reason := "at least one approval required"
+```
+
+- `allow` (bool) — required. Defaults to `false`.
+- `reason` (string) — optional. Returned in the denial message when `allow` is `false`.
+
+OPA v1 syntax is required (use `if` in rule bodies, `import rego.v1`).
 
 ### Policy Storage
 
 Policies live in `.docstore/policy/*.rego` files in the repo on `main`. They are versioned documents like any other file and go through the same branch/review/merge workflow. This means policy changes require review and approval just like code changes.
 
-The server loads policies from the materialized `main` tree and caches them in memory. Policies are reloaded whenever main's `head_sequence` advances (on commit or merge to main). This ensures policies are always fresh with no staleness window, at the cost of a small reload on each main write.
+The server loads policies from the materialized `main` tree into a per-repo in-memory cache. The cache is invalidated whenever main's `head_sequence` advances (on a direct commit to main or a successful merge). This ensures policies stay fresh at the cost of a small reload on each main write.
 
-The bootstrap/fallback policy (used when no `.docstore/policy/*.rego` files exist) is wide open — all authenticated users can perform all actions, subject only to role checks in Layer 2. Policies are purely additive restrictions. This allows initial setup without a chicken-and-egg problem; the first policy commit then locks things down.
+The bootstrap mode (used when no `.docstore/policy/*.rego` files exist on main) allows all merges — only Layer 2 role checks apply. Policies are purely additive restrictions. This avoids the chicken-and-egg problem of needing a policy review to land the first policy.
 
 ### OWNERS Files
 
-`OWNERS` files are regular versioned documents that can exist at any directory level. Each contains a list of identities authorized to approve changes under that path. Ownership is inherited — a file at `src/OWNERS` covers `src/` and all subdirectories unless overridden by a more specific `OWNERS` file.
+`OWNERS` files are regular versioned documents at any directory level. Format: one identity per line; lines starting with `#` are comments; blank lines are ignored.
 
-At policy evaluation time, the engine reads OWNERS from the materialized `main` tree and builds the `owners` map in the input document. Policies can then require that at least one reviewer is a listed owner for each changed path.
+```
+# src/OWNERS
+alice@example.com
+bob@example.com
+```
+
+Ownership is inherited by longest-prefix match. If `src/pkg/OWNERS` exists, it takes precedence over `src/OWNERS` for files under `src/pkg/`. If no `OWNERS` file covers a path, the root `OWNERS` (if any) is used as a fallback; if there is no root `OWNERS`, `input.owners["path"]` is `null` for that file.
+
+At policy evaluation time, the engine reads all OWNERS files from the materialized `main` tree, builds the directory→owners map, then resolves each changed path to its effective owners. The result is placed in `input.owners` keyed by file path (not directory). Policies can then require that at least one reviewer is listed in the owners for each changed path.
 
 ## API
 
@@ -246,11 +291,11 @@ The pattern is `/repos/{full-repo-name}/-/{endpoint}`. The full repo name may co
 
 ### Repo-scoped writes
 
-`POST /repos/{name}/-/commit` — Commit one or more file changes atomically. Body: `{branch, files: [{path, content}], message}`. Policy-evaluated: the engine checks the actor's role and the target branch (e.g., direct commits to `main` can be blocked by policy). Allocates a single sequence number, writes one row to commits and one row per file to file_commits (all referencing that sequence), advances the branch head.
+`POST /repos/{name}/-/commit` — Commit one or more file changes atomically. Body: `{branch, files: [{path, content, content_type?}], message}`. The optional `content_type` field per file stores the MIME type (set automatically by the CLI for binary files; text files omit it). Policy-evaluated: the engine checks the actor's role and the target branch (e.g., direct commits to `main` can be blocked by policy). Allocates a single sequence number, writes one row to commits and one row per file to file_commits (all referencing that sequence), advances the branch head.
 
 `POST /repos/{name}/-/branch` — Create a branch. Body: `{name}`. Policy-evaluated. Sets `base_sequence` to main's current head.
 
-`POST /repos/{name}/-/merge` — Merge a branch into main. Body: `{branch}`. Policy-evaluated: the engine evaluates all merge policies (required reviews, passing checks, OWNERS approval) before proceeding. On policy failure, returns `{policies: [{name, pass, reason}]}` with a 403. **Staleness rule**: the server only includes reviews and check_runs whose `sequence` matches the branch's current `head_sequence` in the policy input. Any new commit to the branch advances `head_sequence`, which automatically invalidates all prior reviews and checks — policies see an empty list until the branch is re-reviewed and re-checked at the new head. The merge uses `base_sequence` from the branches table as the fork point:
+`POST /repos/{name}/-/merge` — Merge a branch into main. Body: `{branch}`. Policy-evaluated: the engine evaluates all merge policies (required reviews, passing checks, OWNERS approval) before proceeding. On policy failure, returns `{"policies": [{name, pass, reason}]}` with a `403`. On merge conflicts, returns `{"conflicts": [...]}` with a `409`. **Staleness rule**: the server only includes reviews and check_runs whose `sequence` matches the branch's current `head_sequence` in the policy input. Any new commit to the branch advances `head_sequence`, which automatically invalidates all prior reviews and checks — policies see an empty list until the branch is re-reviewed and re-checked at the new head. The merge uses `base_sequence` from the branches table as the fork point:
 
 1. **Branch changes**: find the latest version of each path changed on the branch since `base_sequence` (`WHERE branch = :branch AND sequence > :base_sequence`, `DISTINCT ON (path) ... ORDER BY path, sequence DESC`).
 2. **Main changes**: find the latest version of each path changed on main since `base_sequence` (same query shape against `branch = 'main'`).
@@ -272,8 +317,9 @@ The pattern is `/repos/{full-repo-name}/-/{endpoint}`. The full repo name may co
 A CLI that wraps the API. Working directory tracked via a `.docstore` config file containing the remote URL, repo name, and current branch.
 
 ```
-ds init <remote-url>
-ds checkout -b <branch>      # POST /repos/{repo}/-/branch
+# Workspace commands
+ds init [<remote-url>]        # initialize a workspace; URL optional if compiled-in default exists
+ds checkout -b <branch>       # POST /repos/{repo}/-/branch
 ds status                     # diff local fs against GET /repos/{repo}/-/tree
 ds commit -m "message"        # POST /repos/{repo}/-/commit with all changed files atomically
 ds log [path]                 # GET /repos/{repo}/-/file/:path/history or full branch log
@@ -283,9 +329,34 @@ ds rebase                     # POST /repos/{repo}/-/rebase
 ds pull                       # fetch latest tree for current branch, update local files
 ds checkout main              # switch branch, GET /repos/{repo}/-/tree to update local files
 ds show <sequence> [path]     # GET /repos/{repo}/-/commit/:seq or GET /repos/{repo}/-/file/:path?at=N
+
+# Review and CI workflow
+ds branches [--status active|merged|abandoned]         # list branches
+ds reviews [--branch <name>]                           # list reviews with stale indicators
+ds review --status approved|rejected [--body "..."] [--branch <name>]  # submit review
+ds checks [--branch <name>]                            # list check runs with stale indicators
+ds check --name <n> --status passed|failed [--branch <name>]           # report CI result
+
+# Terminal UI
+ds tui                        # Bubble Tea TUI with branch list, diff/review/check panels, inline merge
+
+# Import
+ds import-git <path> [--mode squash|replay]            # import a local git repo into docstore main
+
+# Org/repo/role management (no workspace required)
+ds orgs                       # list orgs
+ds orgs create <name>         # create an org
+ds orgs delete <name>         # delete an org
+ds orgs repos <name>          # list repos in an org
+ds repos                      # list all repos
+ds repos create <owner> <name># create a repo
+ds repos delete <name>        # delete a repo (full name, e.g. acme/myrepo)
+ds roles                      # list roles in current repo
+ds roles set <identity> <role># grant or update a role
+ds roles delete <identity>    # remove a role
 ```
 
-The CLI stores the base server URL and repo name (e.g. `default/default`) separately in `.docstore/config.json`. The `ds init` command accepts the repo name either embedded in the URL (`https://host/repos/acme/myrepo`) or via the `--repo` flag. The default repo is `default/default`.
+The CLI stores the base server URL and repo name (e.g. `default/default`) separately in `.docstore/config.json`. The `ds init` command accepts the repo name either embedded in the URL (`https://host/repos/acme/myrepo`) or via the `--repo` flag. The default repo is `default/default`. When `make build-ds` is used, a default remote URL is compiled in via `-ldflags`, allowing `ds init` to be called with no URL argument.
 
 **`ds pull` flow**:
 
