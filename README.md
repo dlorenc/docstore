@@ -90,11 +90,11 @@ ds init https://docstore.example.com/repos/myrepo --author alice@example.com
 
 ## CLI Reference
 
-### `ds init <remote-url> [--author <name>] [--repo <name>]`
+### `ds init [<remote-url>] [--author <name>] [--repo <name>]`
 
 Initialize a docstore workspace in the current directory.
 
-- `<remote-url>` — base server URL, optionally including the repo path (`https://host/repos/acme/myrepo`)
+- `<remote-url>` — base server URL, optionally including the repo path (`https://host/repos/acme/myrepo`). **Optional** when `make build-ds` was used — the default Cloud Run URL is compiled in.
 - `--author <name>` — identity to use for commits (defaults to OS username)
 - `--repo <name>` — full repo name `owner/name` (overrides any name embedded in the URL; defaults to `default/default`)
 
@@ -102,6 +102,9 @@ Creates `.docstore/config.json` and `.docstore/state.json`, then syncs files fro
 
 ```bash
 ds init https://docstore.example.com/repos/acme/docs --author jane@example.com
+
+# If built with make build-ds, the URL can be omitted:
+ds init --repo acme/docs
 ```
 
 ---
@@ -132,6 +135,8 @@ ds commit -m "update access control docs"
 ```
 
 The server assigns a monotonically increasing sequence number. The local state is updated after a successful commit so `ds status` shows clean.
+
+Binary files (images, PDFs, compiled assets, etc.) are detected automatically and committed with the appropriate `content_type` MIME type.
 
 ---
 
@@ -185,11 +190,12 @@ On success, switches the local workspace to `main` and syncs files. On conflict,
 
 ### `ds diff`
 
-Show what files changed on the current branch relative to its base, and what changed on `main` in the same window (potentially conflicting).
+Show what files changed on the current branch relative to its base, and what changed on `main` in the same window (potentially conflicting). Binary files are shown with a `[binary]` label instead of content.
 
 ```
 Changed files on 'feature/my-change':
   changed: docs/guide.md
+  changed: images/logo.png [binary]
   deleted: old-file.txt
 
 Changed files on main:
@@ -278,6 +284,104 @@ Repeat for each conflicting file, then continue with `ds rebase` or `ds merge`.
 
 ---
 
+### `ds branches [--status active|merged|abandoned]`
+
+List all branches with their head and base sequences.
+
+```bash
+ds branches
+ds branches --status active
+```
+
+---
+
+### `ds reviews [--branch <name>]`
+
+List reviews for the current branch (or `--branch <name>`). Stale reviews (before the latest commit) are marked `[stale]`.
+
+---
+
+### `ds review --status approved|rejected [--body "..."] [--branch <name>]`
+
+Submit a review for the current branch (or `--branch <name>`).
+
+```bash
+ds review --status approved
+ds review --status rejected --body "needs more tests"
+```
+
+A reviewer cannot approve their own commits.
+
+---
+
+### `ds checks [--branch <name>]`
+
+List CI check runs for the current branch. Stale checks are marked `[stale]`.
+
+---
+
+### `ds check --name <name> --status passed|failed [--branch <name>]`
+
+Report a CI check result.
+
+```bash
+ds check --name ci/build --status passed
+```
+
+---
+
+### `ds tui`
+
+Launch the Bubble Tea terminal UI for reviewing branches without leaving the terminal.
+
+- Branch list with review/CI summary columns; `j`/`k` to navigate
+- Branch detail panels: Diff / Reviews / Checks — cycle with `Tab`
+- Review overlay with Approve/Reject toggle; `Esc` to cancel
+- Inline merge prompt (`y`/`N`)
+- `R` to refresh; `q` to quit
+
+---
+
+### `ds import-git <path> [--mode squash|replay]`
+
+Import a local git repository's default branch into docstore `main`.
+
+- `replay` (default) — one docstore commit per git commit; original author embedded in message as `[git-author: email]`
+- `squash` — single commit with all files at HEAD
+
+```bash
+ds import-git /path/to/my-git-repo
+ds import-git /path/to/my-git-repo --mode squash
+```
+
+---
+
+### `ds orgs` / `ds repos` / `ds roles`
+
+Manage orgs, repos, and roles without a workspace. These commands use the compiled-in default remote or accept `--remote <url>`.
+
+```bash
+# Orgs
+ds orgs                          # list orgs
+ds orgs create acme              # create an org
+ds orgs delete acme              # delete an org
+ds orgs repos acme               # list repos in acme
+
+# Repos
+ds repos                         # list all repos
+ds repos create acme myrepo      # create acme/myrepo
+ds repos delete acme/myrepo      # delete acme/myrepo
+
+# Roles (require --remote or workspace context)
+ds roles                         # list roles in current repo
+ds roles set alice@example.com admin    # grant admin
+ds roles delete alice@example.com       # revoke role
+```
+
+Valid roles: `reader`, `writer`, `maintainer`, `admin`.
+
+---
+
 ## Branching and Merging
 
 DocStore uses a simple, linear branching model:
@@ -338,12 +442,15 @@ ds merge
 Repos live under orgs. An org must be created before a repo can be created in it.
 
 ```bash
-# Create an org
+# Using the CLI (recommended)
+ds orgs create acme
+ds repos create acme myrepo
+
+# Or via the API
 curl -X POST https://docstore.example.com/orgs \
   -H "Content-Type: application/json" \
   -d '{"name": "acme"}'
 
-# Create a repo in that org
 curl -X POST https://docstore.example.com/repos \
   -H "Content-Type: application/json" \
   -d '{"owner": "acme", "name": "myrepo"}'
