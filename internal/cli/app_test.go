@@ -1978,6 +1978,114 @@ func TestCheckSubmit_InvalidStatus(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// --branch override flag (ISSUE-9)
+// ---------------------------------------------------------------------------
+
+func TestReviews_ExplicitBranchOverride(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "/reviews") {
+			gotPath = r.URL.Path
+			json.NewEncoder(w).Encode([]model.Review{})
+			return
+		}
+		json.NewEncoder(w).Encode([]model.Branch{
+			{Name: "feature/other", HeadSequence: 3},
+		})
+	}))
+	defer srv.Close()
+
+	app, _ := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "main", "alice") // workspace is on "main"
+
+	app.Reviews("feature/other") // explicit --branch different from workspace branch
+	if !strings.Contains(gotPath, "feature") {
+		t.Errorf("expected URL to contain explicit branch name, got path: %s", gotPath)
+	}
+	if strings.Contains(gotPath, "main") {
+		t.Errorf("URL should not reference workspace branch 'main', got path: %s", gotPath)
+	}
+}
+
+func TestChecks_ExplicitBranchOverride(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "/checks") {
+			gotPath = r.URL.Path
+			json.NewEncoder(w).Encode([]model.CheckRun{})
+			return
+		}
+		json.NewEncoder(w).Encode([]model.Branch{
+			{Name: "feature/other", HeadSequence: 3},
+		})
+	}))
+	defer srv.Close()
+
+	app, _ := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "main", "alice")
+
+	app.Checks("feature/other")
+	if !strings.Contains(gotPath, "feature") {
+		t.Errorf("expected URL to contain explicit branch name, got path: %s", gotPath)
+	}
+	if strings.Contains(gotPath, "main") {
+		t.Errorf("URL should not reference workspace branch 'main', got path: %s", gotPath)
+	}
+}
+
+func TestReviewSubmit_ExplicitBranchOverride(t *testing.T) {
+	var gotReq model.CreateReviewRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && r.URL.Path == "/repos/default/default/-/review" {
+			json.NewDecoder(r.Body).Decode(&gotReq)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(model.CreateReviewResponse{ID: "r-override", Sequence: 7})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	app, _ := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "main", "alice") // workspace is on "main"
+
+	if err := app.Review("feature/other", "approved", "LGTM"); err != nil {
+		t.Fatal(err)
+	}
+	if gotReq.Branch != "feature/other" {
+		t.Errorf("branch in request body = %q, want %q", gotReq.Branch, "feature/other")
+	}
+}
+
+func TestCheckSubmit_ExplicitBranchOverride(t *testing.T) {
+	var gotReq model.CreateCheckRunRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && r.URL.Path == "/repos/default/default/-/check" {
+			json.NewDecoder(r.Body).Decode(&gotReq)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(model.CreateCheckRunResponse{ID: "c-override", Sequence: 7})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	app, _ := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "main", "alice") // workspace is on "main"
+
+	if err := app.Check("feature/other", "ci/build", "passed"); err != nil {
+		t.Fatal(err)
+	}
+	if gotReq.Branch != "feature/other" {
+		t.Errorf("branch in request body = %q, want %q", gotReq.Branch, "feature/other")
+	}
+}
+
 // mustParseTime parses a date string for use in tests.
 func mustParseTime(s string) time.Time {
 	t, err := time.Parse("2006-01-02", s)

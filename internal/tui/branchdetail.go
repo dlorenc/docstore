@@ -26,11 +26,12 @@ type branchDetailModel struct {
 	loading bool
 	err     error
 
-	diff     *model.DiffResponse
-	reviews  []model.Review
-	checks   []model.CheckRun
-	headSeq  int64
-	baseSeq  int64
+	diff          *model.DiffResponse
+	reviews       []model.Review
+	checks        []model.CheckRun
+	headSeq       int64
+	baseSeq       int64
+	baseTreePaths map[string]bool
 
 	activePanel    panel
 	diffCursor     int
@@ -71,6 +72,10 @@ func (m branchDetailModel) Update(msg tea.Msg) (branchDetailModel, tea.Cmd) {
 			if msg.String() == "esc" {
 				m.showReviewOverlay = false
 				return m, nil
+			}
+			if msg.String() == "ctrl+c" {
+				m.quit = true
+				return m, tea.Quit
 			}
 		case reviewSubmittedMsg:
 			if msg.err == nil {
@@ -133,6 +138,7 @@ func (m branchDetailModel) Update(msg tea.Msg) (branchDetailModel, tea.Cmd) {
 			m.checks = msg.checks
 			m.headSeq = msg.headSeq
 			m.baseSeq = msg.baseSeq
+			m.baseTreePaths = msg.baseTreePaths
 		}
 
 	case mergeResultMsg:
@@ -179,7 +185,7 @@ func (m branchDetailModel) Update(msg tea.Msg) (branchDetailModel, tea.Cmd) {
 
 		case "enter":
 			if m.activePanel == panelDiff && m.diff != nil {
-				files := diffFiles(m.diff)
+				files := diffFiles(m.diff, m.baseTreePaths)
 				if m.diffCursor >= 0 && m.diffCursor < len(files) {
 					m.expandedFiles[m.diffCursor] = !m.expandedFiles[m.diffCursor]
 				}
@@ -187,7 +193,7 @@ func (m branchDetailModel) Update(msg tea.Msg) (branchDetailModel, tea.Cmd) {
 
 		case "j", "down":
 			if m.activePanel == panelDiff && m.diff != nil {
-				files := diffFiles(m.diff)
+				files := diffFiles(m.diff, m.baseTreePaths)
 				if m.diffCursor < len(files)-1 {
 					m.diffCursor++
 				}
@@ -279,7 +285,7 @@ type diffFile struct {
 	changeType string // "+", "-", "~"
 }
 
-func diffFiles(d *model.DiffResponse) []diffFile {
+func diffFiles(d *model.DiffResponse, baseTreePaths map[string]bool) []diffFile {
 	if d == nil {
 		return nil
 	}
@@ -287,6 +293,8 @@ func diffFiles(d *model.DiffResponse) []diffFile {
 	for _, e := range d.BranchChanges {
 		if e.VersionID == nil {
 			files = append(files, diffFile{path: e.Path, changeType: "-"})
+		} else if len(baseTreePaths) > 0 && !baseTreePaths[e.Path] {
+			files = append(files, diffFile{path: e.Path, changeType: "+"})
 		} else {
 			files = append(files, diffFile{path: e.Path, changeType: "~"})
 		}
@@ -298,7 +306,7 @@ func (m branchDetailModel) renderDiff() string {
 	if m.diff == nil {
 		return "  No diff data.\n"
 	}
-	files := diffFiles(m.diff)
+	files := diffFiles(m.diff, m.baseTreePaths)
 	if len(files) == 0 {
 		return "  No changes on this branch.\n"
 	}

@@ -131,12 +131,13 @@ type branchesLoadedMsg struct {
 }
 
 type branchDetailLoadedMsg struct {
-	diff     *model.DiffResponse
-	reviews  []model.Review
-	checks   []model.CheckRun
-	headSeq  int64
-	baseSeq  int64
-	err      error
+	diff          *model.DiffResponse
+	reviews       []model.Review
+	checks        []model.CheckRun
+	headSeq       int64
+	baseSeq       int64
+	baseTreePaths map[string]bool
+	err           error
 }
 
 type mergeResultMsg struct {
@@ -179,13 +180,21 @@ func loadBranches(c *tuiClient) tea.Cmd {
 		for _, b := range branches {
 			s := branchSummary{branch: b}
 
-			// Fetch reviews.
+			// Fetch reviews (explicit close per iteration; deduplicate per reviewer).
 			rResp, rErr := c.get("/branch/" + url.PathEscape(b.Name) + "/reviews")
 			if rErr == nil {
-				defer rResp.Body.Close()
 				var reviews []model.Review
-				if jsonErr := json.NewDecoder(rResp.Body).Decode(&reviews); jsonErr == nil {
+				jsonErr := json.NewDecoder(rResp.Body).Decode(&reviews)
+				rResp.Body.Close()
+				if jsonErr == nil {
+					latest := make(map[string]model.Review)
 					for _, r := range reviews {
+						prev, ok := latest[r.Reviewer]
+						if !ok || r.CreatedAt.After(prev.CreatedAt) {
+							latest[r.Reviewer] = r
+						}
+					}
+					for _, r := range latest {
 						if r.Sequence == b.HeadSequence {
 							if r.Status == model.ReviewApproved {
 								s.approved++
@@ -197,12 +206,13 @@ func loadBranches(c *tuiClient) tea.Cmd {
 				}
 			}
 
-			// Fetch checks.
+			// Fetch checks (explicit close per iteration).
 			cResp, cErr := c.get("/branch/" + url.PathEscape(b.Name) + "/checks")
 			if cErr == nil {
-				defer cResp.Body.Close()
 				var checks []model.CheckRun
-				if jsonErr := json.NewDecoder(cResp.Body).Decode(&checks); jsonErr == nil {
+				jsonErr := json.NewDecoder(cResp.Body).Decode(&checks)
+				cResp.Body.Close()
+				if jsonErr == nil {
 					for _, ch := range checks {
 						if ch.Sequence == b.HeadSequence {
 							switch ch.Status {
@@ -227,8 +237,8 @@ func loadBranches(c *tuiClient) tea.Cmd {
 
 func loadBranchDetail(c *tuiClient, branchName string) tea.Cmd {
 	return func() tea.Msg {
-		// Get branch head/base.
-		bResp, err := c.get("/branches?status=active")
+		// BUG-7: Fetch all branches (not filtered by status) so merged/closed branches are found.
+		bResp, err := c.get("/branches")
 		if err != nil {
 			return branchDetailLoadedMsg{err: err}
 		}
@@ -257,6 +267,20 @@ func loadBranchDetail(c *tuiClient, branchName string) tea.Cmd {
 			return branchDetailLoadedMsg{err: err}
 		}
 
+		// BUG-5: Fetch the base tree to classify files as new (+) vs modified (~).
+		baseTreePaths := make(map[string]bool)
+		treeURL := fmt.Sprintf("/tree?branch=%s&at=%d", url.QueryEscape(branchName), baseSeq)
+		tResp, tErr := c.get(treeURL)
+		if tErr == nil {
+			var treeEntries []model.TreeEntry
+			if jsonErr := json.NewDecoder(tResp.Body).Decode(&treeEntries); jsonErr == nil {
+				for _, e := range treeEntries {
+					baseTreePaths[e.Path] = true
+				}
+			}
+			tResp.Body.Close()
+		}
+
 		// Reviews.
 		rResp, err := c.get("/branch/" + url.PathEscape(branchName) + "/reviews")
 		if err != nil {
@@ -280,11 +304,12 @@ func loadBranchDetail(c *tuiClient, branchName string) tea.Cmd {
 		}
 
 		return branchDetailLoadedMsg{
-			diff:    &diff,
-			reviews: reviews,
-			checks:  checks,
-			headSeq: headSeq,
-			baseSeq: baseSeq,
+			diff:          &diff,
+			reviews:       reviews,
+			checks:        checks,
+			headSeq:       headSeq,
+			baseSeq:       baseSeq,
+			baseTreePaths: baseTreePaths,
 		}
 	}
 }
