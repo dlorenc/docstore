@@ -1110,30 +1110,19 @@ func (s *server) handleMerge(w http.ResponseWriter, r *http.Request) {
 // Policy helpers
 // ---------------------------------------------------------------------------
 
-// evaluateMergePolicy evaluates all OPA policies for a pending merge.
-// Returns the failing PolicyResults (non-nil means denied), or nil if allowed.
-// Returns an error only for unexpected infrastructure failures.
-// When readStore or policyCache are nil, or no policies exist, the merge is allowed.
-func (s *server) evaluateMergePolicy(ctx context.Context, repo, branch, actor string) ([]model.PolicyResult, error) {
-	if s.policyCache == nil || s.readStore == nil {
-		return nil, nil
-	}
-
-	engine, owners, err := s.policyCache.Load(ctx, repo, s.readStore)
-	if err != nil {
-		return nil, err
-	}
-	if engine == nil {
-		return nil, nil // bootstrap mode
-	}
-
+// assembleMergeInput gathers all data needed for OPA policy evaluation and
+// returns a populated Input. Returns nil, nil if the branch does not exist
+// (callers should let the merge handler surface the 404). owners is the raw
+// directory→owners map from the policy cache; it is resolved per changed path
+// before being placed on the Input.
+func (s *server) assembleMergeInput(ctx context.Context, repo, branch, actor string, owners map[string][]string) (*policy.Input, error) {
 	// Collect branch info for head/base sequence.
 	branchInfo, err := s.readStore.GetBranch(ctx, repo, branch)
 	if err != nil {
 		return nil, fmt.Errorf("get branch info: %w", err)
 	}
 	if branchInfo == nil {
-		return nil, nil // branch not found — let the merge handler surface the error
+		return nil, nil // branch not found
 	}
 
 	// Collect changed paths.
@@ -1141,14 +1130,14 @@ func (s *server) evaluateMergePolicy(ctx context.Context, repo, branch, actor st
 	if err != nil {
 		return nil, fmt.Errorf("get diff: %w", err)
 	}
-	var paths []string
+	var changedPaths []string
 	if diff != nil {
 		for _, e := range diff.BranchChanges {
-			paths = append(paths, e.Path)
+			changedPaths = append(changedPaths, e.Path)
 		}
 	}
 
-	// Collect reviews and check runs at the current head sequence.
+	// Collect reviews filtered to the current head sequence (stale reviews excluded).
 	reviews, err := s.commitStore.ListReviews(ctx, repo, branch, &branchInfo.HeadSequence)
 	if err != nil {
 		return nil, fmt.Errorf("list reviews: %w", err)
@@ -1158,10 +1147,10 @@ func (s *server) evaluateMergePolicy(ctx context.Context, repo, branch, actor st
 		return nil, fmt.Errorf("list check runs: %w", err)
 	}
 
-	// Look up actor role (empty string if not assigned).
-	roleStr := ""
+	// Look up actor roles (empty slice if not assigned).
+	actorRoles := []string{}
 	if r, err := s.commitStore.GetRole(ctx, repo, actor); err == nil && r != nil {
-		roleStr = string(r.Role)
+		actorRoles = []string{string(r.Role)}
 	}
 
 	// Build OPA input.
@@ -1182,19 +1171,53 @@ func (s *server) evaluateMergePolicy(ctx context.Context, repo, branch, actor st
 		}
 	}
 
-	input := policy.Input{
-		Actor:     actor,
-		Role:      roleStr,
-		Paths:     paths,
-		Reviews:   reviewInputs,
-		CheckRuns: checkInputs,
-		Owners:    owners,
-		Branch:    branch,
-		HeadSeq:   branchInfo.HeadSequence,
-		BaseSeq:   branchInfo.BaseSequence,
+	// Resolve owners per changed path so policies can use input.owners["path"].
+	resolvedOwners := make(map[string][]string)
+	for _, p := range changedPaths {
+		resolvedOwners[p] = policy.ResolveOwners(owners, p)
 	}
 
-	results, err := engine.Evaluate(ctx, input)
+	return &policy.Input{
+		Actor:        actor,
+		ActorRoles:   actorRoles,
+		Action:       "merge",
+		Repo:         repo,
+		Branch:       branch,
+		ChangedPaths: changedPaths,
+		Reviews:      reviewInputs,
+		CheckRuns:    checkInputs,
+		Owners:       resolvedOwners,
+		HeadSeq:      branchInfo.HeadSequence,
+		BaseSeq:      branchInfo.BaseSequence,
+	}, nil
+}
+
+// evaluateMergePolicy evaluates all OPA policies for a pending merge.
+// Returns the failing PolicyResults (non-nil means denied), or nil if allowed.
+// Returns an error only for unexpected infrastructure failures.
+// When readStore or policyCache are nil, or no policies exist, the merge is allowed.
+func (s *server) evaluateMergePolicy(ctx context.Context, repo, branch, actor string) ([]model.PolicyResult, error) {
+	if s.policyCache == nil || s.readStore == nil {
+		return nil, nil
+	}
+
+	engine, owners, err := s.policyCache.Load(ctx, repo, s.readStore)
+	if err != nil {
+		return nil, err
+	}
+	if engine == nil {
+		return nil, nil // bootstrap mode
+	}
+
+	input, err := s.assembleMergeInput(ctx, repo, branch, actor, owners)
+	if err != nil {
+		return nil, err
+	}
+	if input == nil {
+		return nil, nil // branch not found — let the merge handler surface the error
+	}
+
+	results, err := engine.Evaluate(ctx, *input)
 	if err != nil {
 		return nil, fmt.Errorf("evaluate policies: %w", err)
 	}
@@ -1250,78 +1273,18 @@ func (s *server) handleBranchStatus(w http.ResponseWriter, r *http.Request, repo
 		return
 	}
 
-	// Collect branch info.
-	branchInfo, err := s.readStore.GetBranch(r.Context(), repo, branch)
+	input, err := s.assembleMergeInput(r.Context(), repo, branch, actor, owners)
 	if err != nil {
+		slog.Error("assemble merge input error", "op", "branch_status", "repo", repo, "branch", branch, "error", err)
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
-	if branchInfo == nil {
+	if input == nil {
 		writeError(w, http.StatusNotFound, "branch not found")
 		return
 	}
 
-	// Collect changed paths.
-	diff, err := s.readStore.GetDiff(r.Context(), repo, branch)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
-		return
-	}
-	var paths []string
-	if diff != nil {
-		for _, e := range diff.BranchChanges {
-			paths = append(paths, e.Path)
-		}
-	}
-
-	// Collect reviews and check runs at current head.
-	reviews, err := s.commitStore.ListReviews(r.Context(), repo, branch, &branchInfo.HeadSequence)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
-		return
-	}
-	checkRuns, err := s.commitStore.ListCheckRuns(r.Context(), repo, branch, &branchInfo.HeadSequence)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
-		return
-	}
-
-	// Actor role.
-	roleStr := ""
-	if role, err := s.commitStore.GetRole(r.Context(), repo, actor); err == nil && role != nil {
-		roleStr = string(role.Role)
-	}
-
-	reviewInputs := make([]policy.ReviewInput, len(reviews))
-	for i, rev := range reviews {
-		reviewInputs[i] = policy.ReviewInput{
-			Reviewer: rev.Reviewer,
-			Status:   string(rev.Status),
-			Sequence: rev.Sequence,
-		}
-	}
-	checkInputs := make([]policy.CheckRunInput, len(checkRuns))
-	for i, cr := range checkRuns {
-		checkInputs[i] = policy.CheckRunInput{
-			CheckName: cr.CheckName,
-			Status:    string(cr.Status),
-			Sequence:  cr.Sequence,
-		}
-	}
-
-	input := policy.Input{
-		Actor:     actor,
-		Role:      roleStr,
-		Paths:     paths,
-		Reviews:   reviewInputs,
-		CheckRuns: checkInputs,
-		Owners:    owners,
-		Branch:    branch,
-		HeadSeq:   branchInfo.HeadSequence,
-		BaseSeq:   branchInfo.BaseSequence,
-	}
-
-	results, err := engine.Evaluate(r.Context(), input)
+	results, err := engine.Evaluate(r.Context(), *input)
 	if err != nil {
 		slog.Error("policy evaluation error", "op", "branch_status", "repo", repo, "branch", branch, "error", err)
 		writeError(w, http.StatusInternalServerError, "policy evaluation error")

@@ -12,6 +12,8 @@ import (
 
 	"github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/model"
+	"github.com/dlorenc/docstore/internal/policy"
+	"github.com/dlorenc/docstore/internal/store"
 )
 
 // mockStore implements WriteStore for testing.
@@ -1794,5 +1796,453 @@ func TestHandleFileHistory_InvalidAfter(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Mock readStore and policyCache for policy handler tests
+// ---------------------------------------------------------------------------
+
+// mockReadStore implements the readStore interface for testing.
+type mockReadStore struct {
+	getBranchFn      func(ctx context.Context, repo, branch string) (*store.BranchInfo, error)
+	getDiffFn        func(ctx context.Context, repo, branch string) (*store.DiffResult, error)
+	materializeTreeFn func(ctx context.Context, repo, branch string, atSeq *int64, limit int, afterPath string) ([]store.TreeEntry, error)
+	getFileFn         func(ctx context.Context, repo, branch, path string, atSeq *int64) (*store.FileContent, error)
+	getFileHistoryFn  func(ctx context.Context, repo, branch, path string, limit int, afterSeq *int64) ([]store.FileHistoryEntry, error)
+	listBranchesFn    func(ctx context.Context, repo, statusFilter string) ([]store.BranchInfo, error)
+	getCommitFn       func(ctx context.Context, repo string, seq int64) (*store.CommitDetail, error)
+}
+
+func (m *mockReadStore) GetBranch(ctx context.Context, repo, branch string) (*store.BranchInfo, error) {
+	if m.getBranchFn != nil {
+		return m.getBranchFn(ctx, repo, branch)
+	}
+	return &store.BranchInfo{Name: branch, HeadSequence: 1, BaseSequence: 0, Status: "active"}, nil
+}
+
+func (m *mockReadStore) GetDiff(ctx context.Context, repo, branch string) (*store.DiffResult, error) {
+	if m.getDiffFn != nil {
+		return m.getDiffFn(ctx, repo, branch)
+	}
+	return &store.DiffResult{}, nil
+}
+
+func (m *mockReadStore) MaterializeTree(ctx context.Context, repo, branch string, atSeq *int64, limit int, afterPath string) ([]store.TreeEntry, error) {
+	if m.materializeTreeFn != nil {
+		return m.materializeTreeFn(ctx, repo, branch, atSeq, limit, afterPath)
+	}
+	return nil, nil
+}
+
+func (m *mockReadStore) GetFile(ctx context.Context, repo, branch, path string, atSeq *int64) (*store.FileContent, error) {
+	if m.getFileFn != nil {
+		return m.getFileFn(ctx, repo, branch, path, atSeq)
+	}
+	return nil, nil
+}
+
+func (m *mockReadStore) GetFileHistory(ctx context.Context, repo, branch, path string, limit int, afterSeq *int64) ([]store.FileHistoryEntry, error) {
+	if m.getFileHistoryFn != nil {
+		return m.getFileHistoryFn(ctx, repo, branch, path, limit, afterSeq)
+	}
+	return nil, nil
+}
+
+func (m *mockReadStore) ListBranches(ctx context.Context, repo, statusFilter string) ([]store.BranchInfo, error) {
+	if m.listBranchesFn != nil {
+		return m.listBranchesFn(ctx, repo, statusFilter)
+	}
+	return nil, nil
+}
+
+func (m *mockReadStore) GetCommit(ctx context.Context, repo string, seq int64) (*store.CommitDetail, error) {
+	if m.getCommitFn != nil {
+		return m.getCommitFn(ctx, repo, seq)
+	}
+	return nil, nil
+}
+
+// mockPolicyCache implements the policyCache interface for testing.
+type mockPolicyCache struct {
+	loadFn       func(ctx context.Context, repo string, st policy.ReadStore) (*policy.Engine, map[string][]string, error)
+	invalidateFn func(repo string)
+	invalidated  []string
+}
+
+func (m *mockPolicyCache) Load(ctx context.Context, repo string, st policy.ReadStore) (*policy.Engine, map[string][]string, error) {
+	if m.loadFn != nil {
+		return m.loadFn(ctx, repo, st)
+	}
+	return nil, nil, nil
+}
+
+func (m *mockPolicyCache) Invalidate(repo string) {
+	m.invalidated = append(m.invalidated, repo)
+	if m.invalidateFn != nil {
+		m.invalidateFn(repo)
+	}
+}
+
+// newTestHandler creates an http.Handler using injected stores and policy cache.
+// Used for handler-level policy tests that need custom readStore/policyCache.
+func newTestHandler(ws WriteStore, rs readStore, pc policyCache) http.Handler {
+	s := &server{
+		commitStore: ws,
+		readStore:   rs,
+		policyCache: pc,
+	}
+	return s.buildHandler(devID, devID, ws)
+}
+
+// mustBuildEngine compiles a test OPA policy and panics on error.
+func mustBuildEngine(t *testing.T, name, src string) *policy.Engine {
+	t.Helper()
+	engine, err := policy.NewEngine(context.Background(), map[string]string{
+		".docstore/policy/" + name + ".rego": src,
+	})
+	if err != nil {
+		t.Fatalf("compile policy: %v", err)
+	}
+	return engine
+}
+
+// ---------------------------------------------------------------------------
+// Handler policy tests
+// ---------------------------------------------------------------------------
+
+// TestHandleMerge_PolicyDeny verifies that a deny policy results in a 403.
+func TestHandleMerge_PolicyDeny(t *testing.T) {
+	engine := mustBuildEngine(t, "require_review", `
+package docstore.require_review
+default allow = false
+default reason = "a review is required"
+`)
+
+	ms := &mockStore{
+		mergeFn: func(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error) {
+			t.Fatal("merge should not be called when policy denies")
+			return nil, nil, nil
+		},
+		listReviewsFn:   func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.Review, error) { return nil, nil },
+		listCheckRunsFn: func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.CheckRun, error) { return nil, nil },
+	}
+	pc := &mockPolicyCache{
+		loadFn: func(ctx context.Context, repo string, _ policy.ReadStore) (*policy.Engine, map[string][]string, error) {
+			return engine, nil, nil
+		},
+	}
+	rs := &mockReadStore{}
+
+	srv := newTestHandler(ms, rs, pc)
+
+	body, _ := json.Marshal(model.MergeRequest{Branch: "feature/test"})
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/merge", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp model.MergePolicyError
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Policies) != 1 {
+		t.Fatalf("expected 1 policy result, got %d", len(resp.Policies))
+	}
+	if resp.Policies[0].Pass {
+		t.Error("expected policy to fail")
+	}
+}
+
+// TestHandleMerge_PolicyAllow verifies that an allowing policy lets the merge proceed.
+func TestHandleMerge_PolicyAllow(t *testing.T) {
+	engine := mustBuildEngine(t, "always_allow", `
+package docstore.always_allow
+default allow = true
+`)
+
+	ms := &mockStore{
+		mergeFn: func(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error) {
+			return &model.MergeResponse{Sequence: 5}, nil, nil
+		},
+		listReviewsFn:   func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.Review, error) { return nil, nil },
+		listCheckRunsFn: func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.CheckRun, error) { return nil, nil },
+	}
+	pc := &mockPolicyCache{
+		loadFn: func(ctx context.Context, repo string, _ policy.ReadStore) (*policy.Engine, map[string][]string, error) {
+			return engine, nil, nil
+		},
+	}
+	rs := &mockReadStore{}
+
+	srv := newTestHandler(ms, rs, pc)
+
+	body, _ := json.Marshal(model.MergeRequest{Branch: "feature/test"})
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/merge", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestHandleMerge_Bootstrap verifies that with no policies (nil engine) the merge proceeds normally.
+func TestHandleMerge_Bootstrap(t *testing.T) {
+	merged := false
+	ms := &mockStore{
+		mergeFn: func(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error) {
+			merged = true
+			return &model.MergeResponse{Sequence: 1}, nil, nil
+		},
+	}
+	// policyCache returns nil engine (bootstrap mode — no .rego files)
+	pc := &mockPolicyCache{
+		loadFn: func(ctx context.Context, repo string, _ policy.ReadStore) (*policy.Engine, map[string][]string, error) {
+			return nil, nil, nil
+		},
+	}
+	rs := &mockReadStore{}
+
+	srv := newTestHandler(ms, rs, pc)
+
+	body, _ := json.Marshal(model.MergeRequest{Branch: "feature/test"})
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/merge", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	if !merged {
+		t.Error("expected merge to be called in bootstrap mode")
+	}
+}
+
+// TestHandleBranchStatus_NotMergeable verifies that a denying policy gives {mergeable:false}.
+func TestHandleBranchStatus_NotMergeable(t *testing.T) {
+	engine := mustBuildEngine(t, "require_review", `
+package docstore.require_review
+default allow = false
+default reason = "a review is required"
+`)
+
+	ms := &mockStore{
+		listReviewsFn:   func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.Review, error) { return nil, nil },
+		listCheckRunsFn: func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.CheckRun, error) { return nil, nil },
+	}
+	pc := &mockPolicyCache{
+		loadFn: func(ctx context.Context, repo string, _ policy.ReadStore) (*policy.Engine, map[string][]string, error) {
+			return engine, nil, nil
+		},
+	}
+	rs := &mockReadStore{}
+
+	srv := newTestHandler(ms, rs, pc)
+
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/default/-/branch/feature/x/status", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp model.BranchStatusResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Mergeable {
+		t.Error("expected mergeable=false")
+	}
+	if len(resp.Policies) != 1 || resp.Policies[0].Pass {
+		t.Errorf("expected 1 failing policy, got: %+v", resp.Policies)
+	}
+}
+
+// TestHandleBranchStatus_Mergeable verifies that an allowing policy gives {mergeable:true}.
+func TestHandleBranchStatus_Mergeable(t *testing.T) {
+	engine := mustBuildEngine(t, "always_allow", `
+package docstore.always_allow
+default allow = true
+`)
+
+	ms := &mockStore{
+		listReviewsFn:   func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.Review, error) { return nil, nil },
+		listCheckRunsFn: func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.CheckRun, error) { return nil, nil },
+	}
+	pc := &mockPolicyCache{
+		loadFn: func(ctx context.Context, repo string, _ policy.ReadStore) (*policy.Engine, map[string][]string, error) {
+			return engine, nil, nil
+		},
+	}
+	rs := &mockReadStore{}
+
+	srv := newTestHandler(ms, rs, pc)
+
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/default/-/branch/feature/x/status", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp model.BranchStatusResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.Mergeable {
+		t.Errorf("expected mergeable=true, policies: %+v", resp.Policies)
+	}
+}
+
+// TestHandleMerge_StaleReview_Excluded verifies that when the handler calls
+// ListReviews with headSeq, only reviews at that sequence are passed to policy.
+// A stale review (seq < headSeq) results in no eligible reviews, so a
+// require-review policy denies the merge.
+func TestHandleMerge_StaleReview_Excluded(t *testing.T) {
+	engine := mustBuildEngine(t, "require_review", `
+package docstore.require_review
+default allow = false
+default reason = "at least one approval required"
+
+allow if {
+    count(input.reviews) > 0
+    input.reviews[_].status == "approved"
+}
+`)
+
+	const headSeq int64 = 5
+	ms := &mockStore{
+		mergeFn: func(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error) {
+			t.Fatal("merge should not be called when policy denies")
+			return nil, nil, nil
+		},
+		// ListReviews is called with atSeq=headSeq; the stale review at seq=3
+		// is filtered out by the DB (simulated here by returning empty).
+		listReviewsFn: func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.Review, error) {
+			if atSeq == nil || *atSeq != headSeq {
+				t.Errorf("expected ListReviews called with atSeq=%d, got %v", headSeq, atSeq)
+			}
+			// No review at head sequence — the stale review (seq=3) is not returned.
+			return []model.Review{}, nil
+		},
+		listCheckRunsFn: func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.CheckRun, error) {
+			return nil, nil
+		},
+	}
+	pc := &mockPolicyCache{
+		loadFn: func(ctx context.Context, repo string, _ policy.ReadStore) (*policy.Engine, map[string][]string, error) {
+			return engine, nil, nil
+		},
+	}
+	rs := &mockReadStore{
+		getBranchFn: func(ctx context.Context, repo, branch string) (*store.BranchInfo, error) {
+			return &store.BranchInfo{Name: branch, HeadSequence: headSeq, BaseSequence: 0, Status: "active"}, nil
+		},
+	}
+
+	srv := newTestHandler(ms, rs, pc)
+
+	body, _ := json.Marshal(model.MergeRequest{Branch: "feature/x"})
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/merge", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 (policy deny, no eligible reviews), got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp model.MergePolicyError
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Policies) == 0 || resp.Policies[0].Pass {
+		t.Errorf("expected policy deny, got: %+v", resp.Policies)
+	}
+}
+
+// TestHandleBranchStatus_NoSideEffects verifies that GET .../status does not
+// write to any DB table.
+func TestHandleBranchStatus_NoSideEffects(t *testing.T) {
+	engine := mustBuildEngine(t, "always_allow", `
+package docstore.always_allow
+default allow = true
+`)
+
+	writeCallCount := 0
+	writeDetector := func() {
+		writeCallCount++
+		t.Errorf("unexpected write operation called during branch status")
+	}
+
+	ms := &mockStore{
+		// Write operations that must NOT be called:
+		commitFn: func(ctx context.Context, req model.CommitRequest) (*model.CommitResponse, error) {
+			writeDetector()
+			return nil, nil
+		},
+		createBranchFn: func(ctx context.Context, req model.CreateBranchRequest) (*model.CreateBranchResponse, error) {
+			writeDetector()
+			return nil, nil
+		},
+		mergeFn: func(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error) {
+			writeDetector()
+			return nil, nil, nil
+		},
+		deleteBranchFn: func(ctx context.Context, repo, name string) error {
+			writeDetector()
+			return nil
+		},
+		rebaseFn: func(ctx context.Context, req model.RebaseRequest) (*model.RebaseResponse, []db.MergeConflict, error) {
+			writeDetector()
+			return nil, nil, nil
+		},
+		createReviewFn: func(ctx context.Context, repo, branch, reviewer string, status model.ReviewStatus, body string) (*model.Review, error) {
+			writeDetector()
+			return nil, nil
+		},
+		createCheckRunFn: func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string) (*model.CheckRun, error) {
+			writeDetector()
+			return nil, nil
+		},
+		setRoleFn: func(ctx context.Context, repo, identity string, role model.RoleType) error {
+			writeDetector()
+			return nil
+		},
+		deleteRoleFn: func(ctx context.Context, repo, identity string) error {
+			writeDetector()
+			return nil
+		},
+		purgeFn: func(ctx context.Context, req db.PurgeRequest) (*db.PurgeResult, error) {
+			writeDetector()
+			return nil, nil
+		},
+		// Read operations that may be called:
+		listReviewsFn:   func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.Review, error) { return nil, nil },
+		listCheckRunsFn: func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.CheckRun, error) { return nil, nil },
+	}
+	pc := &mockPolicyCache{
+		loadFn: func(ctx context.Context, repo string, _ policy.ReadStore) (*policy.Engine, map[string][]string, error) {
+			return engine, nil, nil
+		},
+	}
+	rs := &mockReadStore{}
+
+	srv := newTestHandler(ms, rs, pc)
+
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/default/-/branch/feature/x/status", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	if writeCallCount != 0 {
+		t.Errorf("branch status triggered %d write operation(s)", writeCallCount)
 	}
 }
