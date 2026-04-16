@@ -101,18 +101,23 @@ func updateCommitHash(ctx context.Context, tx *sql.Tx, repo string, seq int64, h
 }
 
 var (
-	ErrBranchNotFound  = errors.New("branch not found")
-	ErrBranchNotActive = errors.New("branch is not active")
-	ErrBranchExists    = errors.New("branch already exists")
-	ErrMergeConflict   = errors.New("merge conflict")
-	ErrRebaseConflict  = errors.New("rebase conflict")
-	ErrRepoNotFound    = errors.New("repo not found")
-	ErrRepoExists      = errors.New("repo already exists")
-	ErrOrgNotFound     = errors.New("org not found")
-	ErrOrgExists       = errors.New("org already exists")
-	ErrOrgHasRepos     = errors.New("org has repos")
-	ErrRoleNotFound    = errors.New("role not found")
-	ErrSelfApproval    = errors.New("reviewer cannot approve their own commits")
+	ErrBranchNotFound         = errors.New("branch not found")
+	ErrBranchNotActive        = errors.New("branch is not active")
+	ErrBranchExists           = errors.New("branch already exists")
+	ErrMergeConflict          = errors.New("merge conflict")
+	ErrRebaseConflict         = errors.New("rebase conflict")
+	ErrRepoNotFound           = errors.New("repo not found")
+	ErrRepoExists             = errors.New("repo already exists")
+	ErrOrgNotFound            = errors.New("org not found")
+	ErrOrgExists              = errors.New("org already exists")
+	ErrOrgHasRepos            = errors.New("org has repos")
+	ErrRoleNotFound           = errors.New("role not found")
+	ErrSelfApproval           = errors.New("reviewer cannot approve their own commits")
+	ErrOrgMemberNotFound      = errors.New("org member not found")
+	ErrInviteNotFound         = errors.New("invite not found")
+	ErrInviteExpired          = errors.New("invite expired")
+	ErrInviteAlreadyAccepted  = errors.New("invite already accepted")
+	ErrEmailMismatch          = errors.New("identity does not match invite email")
 )
 
 // rebaseFile is one file within a replayed commit group.
@@ -1218,19 +1223,46 @@ func (s *Store) ListCheckRuns(ctx context.Context, repo, branch string, atSeq *i
 }
 
 // GetRole returns the role for an identity in a repo, or ErrRoleNotFound.
+// It first checks the repo-scoped roles table. If no row is found, it falls
+// back to org_members for the repo's owning org: org owner → admin, org member → reader.
 func (s *Store) GetRole(ctx context.Context, repo, identity string) (*model.Role, error) {
 	var r model.Role
 	err := s.db.QueryRowContext(ctx,
 		"SELECT identity, role FROM roles WHERE repo = $1 AND identity = $2",
 		repo, identity,
 	).Scan(&r.Identity, &r.Role)
+	if err == nil {
+		return &r, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+
+	// Fall back to org membership for the repo's owning org.
+	var orgRoleStr string
+	err = s.db.QueryRowContext(ctx,
+		`SELECT om.role FROM org_members om
+		 JOIN repos r ON r.owner = om.org
+		 WHERE r.name = $1 AND om.identity = $2`,
+		repo, identity,
+	).Scan(&orgRoleStr)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrRoleNotFound
 		}
 		return nil, err
 	}
-	return &r, nil
+
+	var repoRole model.RoleType
+	switch orgRoleStr {
+	case "owner":
+		repoRole = model.RoleAdmin
+	case "member":
+		repoRole = model.RoleReader
+	default:
+		return nil, ErrRoleNotFound
+	}
+	return &model.Role{Identity: identity, Role: repoRole}, nil
 }
 
 // SetRole assigns or updates the role for an identity in a repo (upsert).
@@ -1456,6 +1488,209 @@ func (s *Store) Purge(ctx context.Context, req PurgeRequest) (*PurgeResult, erro
 
 	slog.Info("purge complete", "repo", req.Repo, "branches_purged", result.BranchesPurged, "docs_deleted", result.DocumentsDeleted)
 	return &result, nil
+}
+
+// ---------------------------------------------------------------------------
+// Org membership
+// ---------------------------------------------------------------------------
+
+// GetOrgMember returns an org member by org+identity, or ErrOrgMemberNotFound.
+func (s *Store) GetOrgMember(ctx context.Context, org, identity string) (*model.OrgMember, error) {
+	var m model.OrgMember
+	var roleStr string
+	err := s.db.QueryRowContext(ctx,
+		"SELECT org, identity, role, invited_by, created_at FROM org_members WHERE org = $1 AND identity = $2",
+		org, identity,
+	).Scan(&m.Org, &m.Identity, &roleStr, &m.InvitedBy, &m.CreatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrOrgMemberNotFound
+		}
+		return nil, err
+	}
+	m.Role = model.OrgRole(roleStr)
+	return &m, nil
+}
+
+// AddOrgMember inserts or updates an org member (upsert by org+identity).
+func (s *Store) AddOrgMember(ctx context.Context, org, identity string, role model.OrgRole, invitedBy string) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO org_members (org, identity, role, invited_by)
+		 VALUES ($1, $2, $3, $4)
+		 ON CONFLICT (org, identity) DO UPDATE SET role = $3, invited_by = $4`,
+		org, identity, string(role), invitedBy,
+	)
+	return err
+}
+
+// RemoveOrgMember removes a member from an org. Returns ErrOrgMemberNotFound if not found.
+func (s *Store) RemoveOrgMember(ctx context.Context, org, identity string) error {
+	result, err := s.db.ExecContext(ctx,
+		"DELETE FROM org_members WHERE org = $1 AND identity = $2",
+		org, identity,
+	)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrOrgMemberNotFound
+	}
+	return nil
+}
+
+// ListOrgMembers returns all members of an org ordered by identity.
+func (s *Store) ListOrgMembers(ctx context.Context, org string) ([]model.OrgMember, error) {
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT org, identity, role, invited_by, created_at FROM org_members WHERE org = $1 ORDER BY identity",
+		org,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var members []model.OrgMember
+	for rows.Next() {
+		var m model.OrgMember
+		var roleStr string
+		if err := rows.Scan(&m.Org, &m.Identity, &roleStr, &m.InvitedBy, &m.CreatedAt); err != nil {
+			return nil, err
+		}
+		m.Role = model.OrgRole(roleStr)
+		members = append(members, m)
+	}
+	return members, rows.Err()
+}
+
+// ---------------------------------------------------------------------------
+// Org invitations
+// ---------------------------------------------------------------------------
+
+// CreateInvite inserts a new org invitation and returns it.
+func (s *Store) CreateInvite(ctx context.Context, org, email string, role model.OrgRole, invitedBy, token string, expiresAt time.Time) (*model.OrgInvite, error) {
+	id := uuid.New().String()
+	var inv model.OrgInvite
+	var roleStr string
+	err := s.db.QueryRowContext(ctx,
+		`INSERT INTO org_invites (id, org, email, role, invited_by, token, expires_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)
+		 RETURNING id, org, email, role, invited_by, token, expires_at, created_at`,
+		id, org, email, string(role), invitedBy, token, expiresAt,
+	).Scan(&inv.ID, &inv.Org, &inv.Email, &roleStr, &inv.InvitedBy, &inv.Token, &inv.ExpiresAt, &inv.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("insert invite: %w", err)
+	}
+	inv.Role = model.OrgRole(roleStr)
+	return &inv, nil
+}
+
+// ListInvites returns pending (not accepted, not expired) invites for an org, ordered by created_at.
+func (s *Store) ListInvites(ctx context.Context, org string) ([]model.OrgInvite, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, org, email, role, invited_by, expires_at, created_at
+		 FROM org_invites
+		 WHERE org = $1 AND accepted_at IS NULL AND expires_at > now()
+		 ORDER BY created_at`,
+		org,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var invites []model.OrgInvite
+	for rows.Next() {
+		var inv model.OrgInvite
+		var roleStr string
+		if err := rows.Scan(&inv.ID, &inv.Org, &inv.Email, &roleStr, &inv.InvitedBy, &inv.ExpiresAt, &inv.CreatedAt); err != nil {
+			return nil, err
+		}
+		inv.Role = model.OrgRole(roleStr)
+		invites = append(invites, inv)
+	}
+	return invites, rows.Err()
+}
+
+// AcceptInvite accepts a pending invite: verifies the token, checks expiry and email match,
+// sets accepted_at, and upserts the identity into org_members — all in one transaction.
+func (s *Store) AcceptInvite(ctx context.Context, org, token, identity string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			slog.Error("tx rollback failed", "op", "accept_invite", "error", rollbackErr)
+		}
+	}()
+
+	var invID, email, roleStr string
+	var expiresAt time.Time
+	var acceptedAt sql.NullTime
+	err = tx.QueryRowContext(ctx,
+		`SELECT id, email, role, expires_at, accepted_at
+		 FROM org_invites WHERE org = $1 AND token = $2 FOR UPDATE`,
+		org, token,
+	).Scan(&invID, &email, &roleStr, &expiresAt, &acceptedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrInviteNotFound
+		}
+		return fmt.Errorf("fetch invite: %w", err)
+	}
+
+	if acceptedAt.Valid {
+		return ErrInviteAlreadyAccepted
+	}
+	if time.Now().After(expiresAt) {
+		return ErrInviteExpired
+	}
+	if email != identity {
+		return ErrEmailMismatch
+	}
+
+	// Mark accepted.
+	_, err = tx.ExecContext(ctx,
+		"UPDATE org_invites SET accepted_at = now() WHERE id = $1",
+		invID,
+	)
+	if err != nil {
+		return fmt.Errorf("update invite: %w", err)
+	}
+
+	// Upsert into org_members.
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO org_members (org, identity, role, invited_by)
+		 SELECT org, $1, role, invited_by FROM org_invites WHERE id = $2
+		 ON CONFLICT (org, identity) DO UPDATE SET role = EXCLUDED.role, invited_by = EXCLUDED.invited_by`,
+		identity, invID,
+	)
+	if err != nil {
+		return fmt.Errorf("add member: %w", err)
+	}
+
+	return tx.Commit()
+}
+
+// RevokeInvite deletes a pending invite by ID. Returns ErrInviteNotFound if not found.
+func (s *Store) RevokeInvite(ctx context.Context, org, inviteID string) error {
+	result, err := s.db.ExecContext(ctx,
+		"DELETE FROM org_invites WHERE id = $1 AND org = $2",
+		inviteID, org,
+	)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrInviteNotFound
+	}
+	return nil
 }
 
 // isDuplicateKeyError checks if a PostgreSQL error is a unique violation (23505).
