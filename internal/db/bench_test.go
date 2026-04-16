@@ -14,7 +14,7 @@ import (
 // verifying the hash chain for a repo with 100 commits on main.
 // The benchmark fails if any commit_hash does not match the recomputed value.
 func BenchmarkChainWalk_100Commits(b *testing.B) {
-	d := testutil.TestDB(b, RunMigrations)
+	d := testutil.TestDBFromShared(b, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	rs := store.New(d)
 	ctx := context.Background()

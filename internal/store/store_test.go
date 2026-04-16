@@ -73,7 +73,8 @@ func seed(t *testing.T, db *sql.DB) {
 }
 
 func TestMaterializeTree(t *testing.T) {
-	db := testutil.TestDB(t, dbpkg.RunMigrations)
+	t.Parallel()
+	db := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 	seed(t, db)
 	s := store.New(db)
 	ctx := context.Background()
@@ -196,7 +197,8 @@ func TestMaterializeTree(t *testing.T) {
 }
 
 func TestGetFile(t *testing.T) {
-	db := testutil.TestDB(t, dbpkg.RunMigrations)
+	t.Parallel()
+	db := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 	seed(t, db)
 	s := store.New(db)
 	ctx := context.Background()
@@ -253,7 +255,8 @@ func TestGetFile(t *testing.T) {
 }
 
 func TestGetFileHistory(t *testing.T) {
-	db := testutil.TestDB(t, dbpkg.RunMigrations)
+	t.Parallel()
+	db := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 	seed(t, db)
 	s := store.New(db)
 	ctx := context.Background()
@@ -368,7 +371,8 @@ func TestGetFileHistory(t *testing.T) {
 }
 
 func TestGetCommit(t *testing.T) {
-	db := testutil.TestDB(t, dbpkg.RunMigrations)
+	t.Parallel()
+	db := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 	seed(t, db)
 	s := store.New(db)
 	ctx := context.Background()
@@ -440,7 +444,8 @@ func TestGetCommit(t *testing.T) {
 }
 
 func TestListBranches(t *testing.T) {
-	db := testutil.TestDB(t, dbpkg.RunMigrations)
+	t.Parallel()
+	db := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 	seed(t, db)
 	s := store.New(db)
 	ctx := context.Background()
@@ -495,7 +500,8 @@ func TestListBranches(t *testing.T) {
 }
 
 func TestGetDiff(t *testing.T) {
-	db := testutil.TestDB(t, dbpkg.RunMigrations)
+	t.Parallel()
+	db := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 	seed(t, db)
 	s := store.New(db)
 	ctx := context.Background()
@@ -578,7 +584,8 @@ func TestGetDiff(t *testing.T) {
 }
 
 func TestGetDiff_WithConflict(t *testing.T) {
-	db := testutil.TestDB(t, dbpkg.RunMigrations)
+	t.Parallel()
+	db := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 	s := store.New(db)
 	ctx := context.Background()
 
@@ -635,7 +642,8 @@ func TestGetDiff_WithConflict(t *testing.T) {
 }
 
 func TestBranchTree(t *testing.T) {
-	db := testutil.TestDB(t, dbpkg.RunMigrations)
+	t.Parallel()
+	db := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 	seed(t, db)
 	s := store.New(db)
 	ctx := context.Background()
@@ -686,7 +694,7 @@ func TestBranchTree(t *testing.T) {
 // BenchmarkGetChain_100 measures the server-side GetChain query cost for a
 // repo with 100 commits on main.
 func BenchmarkGetChain_100(b *testing.B) {
-	db := testutil.TestDB(b, dbpkg.RunMigrations)
+	db := testutil.TestDBFromShared(b, sharedAdminDSN, dbpkg.RunMigrations)
 	ds := dbpkg.NewStore(db)
 	s := store.New(db)
 	ctx := context.Background()
