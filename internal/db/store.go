@@ -120,6 +120,7 @@ var (
 	ErrEmailMismatch          = errors.New("identity does not match invite email")
 	ErrReleaseNotFound        = errors.New("release not found")
 	ErrReleaseExists          = errors.New("release already exists")
+	ErrBranchDraft            = errors.New("branch is in draft state")
 )
 
 // rebaseFile is one file within a replayed commit group.
@@ -547,8 +548,8 @@ func (s *Store) CreateBranch(ctx context.Context, req model.CreateBranchRequest)
 
 	// Insert the new branch. Unique constraint on (repo, name) prevents duplicates.
 	_, err = tx.ExecContext(ctx,
-		"INSERT INTO branches (repo, name, head_sequence, base_sequence, status) VALUES ($1, $2, $3, $4, 'active')",
-		req.Repo, req.Name, mainHead, mainHead,
+		"INSERT INTO branches (repo, name, head_sequence, base_sequence, status, draft) VALUES ($1, $2, $3, $4, 'active', $5)",
+		req.Repo, req.Name, mainHead, mainHead, req.Draft,
 	)
 	if err != nil {
 		if isDuplicateKeyError(err) {
@@ -567,7 +568,28 @@ func (s *Store) CreateBranch(ctx context.Context, req model.CreateBranchRequest)
 	return &model.CreateBranchResponse{
 		Name:         req.Name,
 		BaseSequence: mainHead,
+		Draft:        req.Draft,
 	}, nil
+}
+
+// UpdateBranchDraft updates the draft flag on a branch.
+// Returns ErrBranchNotFound if the branch does not exist.
+func (s *Store) UpdateBranchDraft(ctx context.Context, repo, name string, draft bool) error {
+	res, err := s.db.ExecContext(ctx,
+		"UPDATE branches SET draft = $1 WHERE repo = $2 AND name = $3",
+		draft, repo, name,
+	)
+	if err != nil {
+		return fmt.Errorf("update branch draft: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	}
+	if n == 0 {
+		return ErrBranchNotFound
+	}
+	return nil
 }
 
 // Merge merges a branch into main. It detects conflicts (paths changed on
@@ -602,10 +624,11 @@ func (s *Store) Merge(ctx context.Context, req model.MergeRequest) (*model.Merge
 	// Lock the source branch.
 	var branchHead, baseSeq int64
 	var branchStatus string
+	var branchDraft bool
 	err = tx.QueryRowContext(ctx,
-		"SELECT head_sequence, base_sequence, status FROM branches WHERE repo = $1 AND name = $2 FOR UPDATE",
+		"SELECT head_sequence, base_sequence, status, draft FROM branches WHERE repo = $1 AND name = $2 FOR UPDATE",
 		req.Repo, req.Branch,
-	).Scan(&branchHead, &baseSeq, &branchStatus)
+	).Scan(&branchHead, &baseSeq, &branchStatus, &branchDraft)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil, ErrBranchNotFound
@@ -614,6 +637,9 @@ func (s *Store) Merge(ctx context.Context, req model.MergeRequest) (*model.Merge
 	}
 	if branchStatus != "active" {
 		return nil, nil, ErrBranchNotActive
+	}
+	if branchDraft {
+		return nil, nil, ErrBranchDraft
 	}
 
 	// Step 1: Find the latest version of each path changed on the branch since base_sequence.
