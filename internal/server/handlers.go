@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/dlorenc/docstore/internal/db"
+	"github.com/dlorenc/docstore/internal/events"
+	evtypes "github.com/dlorenc/docstore/internal/events/types"
 	"github.com/dlorenc/docstore/internal/model"
 	"github.com/dlorenc/docstore/internal/policy"
 	"github.com/dlorenc/docstore/internal/store"
@@ -237,6 +239,13 @@ func (s *server) handleReposPrefix(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
 
+	case endpoint == "events":
+		if r.Method == http.MethodGet {
+			s.handleSSERepoEvents(w, r)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+
 	default:
 		writeError(w, http.StatusNotFound, "not found")
 	}
@@ -273,6 +282,7 @@ func (s *server) handleCreateOrg(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	s.emit(r.Context(), evtypes.OrgCreated{Org: org.Name, CreatedBy: identity})
 	writeJSON(w, http.StatusCreated, org)
 }
 
@@ -320,6 +330,7 @@ func (s *server) handleDeleteOrg(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	s.emit(r.Context(), evtypes.OrgDeleted{Org: name, DeletedBy: IdentityFromContext(r.Context())})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -673,6 +684,13 @@ func (s *server) handleReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.emit(r.Context(), evtypes.ReviewSubmitted{
+		Repo:     repo,
+		Branch:   req.Branch,
+		Sequence: review.Sequence,
+		Reviewer: reviewer,
+		Status:   string(req.Status),
+	})
 	slog.Info("review submitted", "repo", repo, "branch", req.Branch, "reviewer", reviewer, "status", req.Status)
 	writeJSON(w, http.StatusCreated, model.CreateReviewResponse{
 		ID:       review.ID,
@@ -715,6 +733,14 @@ func (s *server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.emit(r.Context(), evtypes.CheckReported{
+		Repo:      repo,
+		Branch:    req.Branch,
+		Sequence:  cr.Sequence,
+		CheckName: req.CheckName,
+		Status:    string(req.Status),
+		Reporter:  reporter,
+	})
 	writeJSON(w, http.StatusCreated, model.CreateCheckRunResponse{
 		ID:       cr.ID,
 		Sequence: cr.Sequence,
@@ -909,7 +935,9 @@ func (s *server) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slog.Info("repo created", "repo", repo.Name, "by", IdentityFromContext(r.Context()))
+	identity := IdentityFromContext(r.Context())
+	s.emit(r.Context(), evtypes.RepoCreated{Repo: repo.Name, Owner: repo.Owner, CreatedBy: identity})
+	slog.Info("repo created", "repo", repo.Name, "by", identity)
 	writeJSON(w, http.StatusCreated, repo)
 }
 
@@ -957,7 +985,9 @@ func (s *server) handleDeleteRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slog.Info("repo deleted", "repo", name, "by", IdentityFromContext(r.Context()))
+	identity := IdentityFromContext(r.Context())
+	s.emit(r.Context(), evtypes.RepoDeleted{Repo: name, DeletedBy: identity})
+	slog.Info("repo deleted", "repo", name, "by", identity)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1227,7 +1257,14 @@ func (s *server) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slog.Info("branch created", "repo", repo, "branch", req.Name, "by", IdentityFromContext(r.Context()))
+	identity := IdentityFromContext(r.Context())
+	s.emit(r.Context(), evtypes.BranchCreated{
+		Repo:         repo,
+		Branch:       req.Name,
+		BaseSequence: resp.BaseSequence,
+		CreatedBy:    identity,
+	})
+	slog.Info("branch created", "repo", repo, "branch", req.Name, "by", identity)
 	writeJSON(w, http.StatusCreated, resp)
 }
 
@@ -1288,7 +1325,9 @@ func (s *server) handleDeleteBranch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slog.Info("branch deleted", "repo", repo, "branch", bname, "by", IdentityFromContext(r.Context()))
+	identity := IdentityFromContext(r.Context())
+	s.emit(r.Context(), evtypes.BranchAbandoned{Repo: repo, Branch: bname, AbandonedBy: identity})
+	slog.Info("branch deleted", "repo", repo, "branch", bname, "by", identity)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1336,7 +1375,14 @@ func (s *server) handleSetRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slog.Info("role assigned", "repo", repo, "identity", identity, "role", req.Role, "by", IdentityFromContext(r.Context()))
+	by := IdentityFromContext(r.Context())
+	s.emit(r.Context(), evtypes.RoleChanged{
+		Repo:      repo,
+		Identity:  identity,
+		Role:      string(req.Role),
+		ChangedBy: by,
+	})
+	slog.Info("role assigned", "repo", repo, "identity", identity, "role", req.Role, "by", by)
 	writeJSON(w, http.StatusOK, model.Role{Identity: identity, Role: req.Role})
 }
 
@@ -1361,7 +1407,14 @@ func (s *server) handleDeleteRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slog.Info("role removed", "repo", repo, "identity", identity, "by", IdentityFromContext(r.Context()))
+	by := IdentityFromContext(r.Context())
+	s.emit(r.Context(), evtypes.RoleChanged{
+		Repo:      repo,
+		Identity:  identity,
+		Role:      "", // empty means removed
+		ChangedBy: by,
+	})
+	slog.Info("role removed", "repo", repo, "identity", identity, "by", by)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1416,6 +1469,14 @@ func (s *server) handleRebase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.emit(r.Context(), evtypes.BranchRebased{
+		Repo:            repo,
+		Branch:          req.Branch,
+		NewBaseSequence: resp.NewBaseSequence,
+		NewHeadSequence: resp.NewHeadSequence,
+		CommitsReplayed: resp.CommitsReplayed,
+		RebasedBy:       req.Author,
+	})
 	slog.Info("branch rebased", "repo", repo, "branch", req.Branch, "by", req.Author, "commits_replayed", resp.CommitsReplayed)
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -1453,6 +1514,17 @@ func (s *server) handleMerge(w http.ResponseWriter, r *http.Request) {
 		return
 	} else if denied != nil {
 		slog.Warn("merge denied by policy", "repo", repo, "branch", req.Branch, "actor", req.Author)
+		// Collect policy names for event.
+		policyNames := make([]string, len(denied))
+		for i, p := range denied {
+			policyNames[i] = p.Name
+		}
+		s.emit(r.Context(), evtypes.MergeBlocked{
+			Repo:     repo,
+			Branch:   req.Branch,
+			Actor:    req.Author,
+			Policies: policyNames,
+		})
 		writeJSON(w, http.StatusForbidden, model.MergePolicyError{Policies: denied})
 		return
 	}
@@ -1490,6 +1562,12 @@ func (s *server) handleMerge(w http.ResponseWriter, r *http.Request) {
 		s.policyCache.Invalidate(repo)
 	}
 
+	s.emit(r.Context(), evtypes.BranchMerged{
+		Repo:     repo,
+		Branch:   req.Branch,
+		Sequence: resp.Sequence,
+		MergedBy: req.Author,
+	})
 	slog.Info("branch merged", "repo", repo, "branch", req.Branch, "by", req.Author, "sequence", resp.Sequence)
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -1952,4 +2030,196 @@ func (s *server) handleChain(w http.ResponseWriter, r *http.Request) {
 		entries = []store.ChainEntry{}
 	}
 	writeJSON(w, http.StatusOK, entries)
+}
+
+// ---------------------------------------------------------------------------
+// Event subscription handlers (admin only)
+// ---------------------------------------------------------------------------
+
+// handleCreateSubscription implements POST /subscriptions
+func (s *server) handleCreateSubscription(w http.ResponseWriter, r *http.Request) {
+	if !s.requireGlobalAdmin(w, r) {
+		return
+	}
+
+	var req model.CreateSubscriptionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Backend == "" {
+		writeError(w, http.StatusBadRequest, "backend is required")
+		return
+	}
+	if req.Backend != "webhook" {
+		writeError(w, http.StatusBadRequest, "only backend='webhook' is supported in Milestone 1")
+		return
+	}
+	if len(req.Config) == 0 {
+		writeError(w, http.StatusBadRequest, "config is required")
+		return
+	}
+	req.CreatedBy = IdentityFromContext(r.Context())
+
+	sub, err := s.commitStore.CreateSubscription(r.Context(), req)
+	if err != nil {
+		slog.Error("internal error", "op", "create_subscription", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	slog.Info("subscription created", "id", sub.ID, "backend", sub.Backend, "by", req.CreatedBy)
+	writeJSON(w, http.StatusCreated, sub)
+}
+
+// handleListSubscriptions implements GET /subscriptions
+func (s *server) handleListSubscriptions(w http.ResponseWriter, r *http.Request) {
+	if !s.requireGlobalAdmin(w, r) {
+		return
+	}
+
+	subs, err := s.commitStore.ListSubscriptions(r.Context())
+	if err != nil {
+		slog.Error("internal error", "op", "list_subscriptions", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	if subs == nil {
+		subs = []model.EventSubscription{}
+	}
+	writeJSON(w, http.StatusOK, model.ListSubscriptionsResponse{Subscriptions: subs})
+}
+
+// handleDeleteSubscription implements DELETE /subscriptions/{id}
+func (s *server) handleDeleteSubscription(w http.ResponseWriter, r *http.Request) {
+	if !s.requireGlobalAdmin(w, r) {
+		return
+	}
+
+	id := r.PathValue("id")
+	if err := s.commitStore.DeleteSubscription(r.Context(), id); err != nil {
+		switch {
+		case errors.Is(err, db.ErrSubscriptionNotFound):
+			writeError(w, http.StatusNotFound, "subscription not found")
+		default:
+			slog.Error("internal error", "op", "delete_subscription", "id", id, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+
+	slog.Info("subscription deleted", "id", id, "by", IdentityFromContext(r.Context()))
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleResumeSubscription implements POST /subscriptions/{id}/resume
+func (s *server) handleResumeSubscription(w http.ResponseWriter, r *http.Request) {
+	if !s.requireGlobalAdmin(w, r) {
+		return
+	}
+
+	id := r.PathValue("id")
+	if err := s.commitStore.ResumeSubscription(r.Context(), id); err != nil {
+		switch {
+		case errors.Is(err, db.ErrSubscriptionNotFound):
+			writeError(w, http.StatusNotFound, "subscription not found")
+		default:
+			slog.Error("internal error", "op", "resume_subscription", "id", id, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+
+	slog.Info("subscription resumed", "id", id, "by", IdentityFromContext(r.Context()))
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ---------------------------------------------------------------------------
+// SSE streaming handlers
+// ---------------------------------------------------------------------------
+
+// handleSSERepoEvents implements GET /repos/{name}/-/events
+// Streams CloudEvents for a specific repo. Optional ?types= comma-separated
+// full event type filter (e.g. "com.docstore.commit.created").
+func (s *server) handleSSERepoEvents(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
+	s.streamSSE(w, r, repo)
+}
+
+// handleSSEGlobalEvents implements GET /events (admin only)
+// Streams CloudEvents for all repos or a specific repo via ?repo= filter.
+func (s *server) handleSSEGlobalEvents(w http.ResponseWriter, r *http.Request) {
+	if !s.requireGlobalAdmin(w, r) {
+		return
+	}
+	// Optional repo filter.
+	repo := r.URL.Query().Get("repo")
+	if repo == "" {
+		repo = "*" // wildcard: receive events from all repos
+	}
+	s.streamSSE(w, r, repo)
+}
+
+// streamSSE is the shared SSE streaming implementation.
+// repo is the repo to subscribe to (or "*" for global admin stream).
+func (s *server) streamSSE(w http.ResponseWriter, r *http.Request, repo string) {
+	if s.broker == nil {
+		writeError(w, http.StatusServiceUnavailable, "event streaming not available")
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
+
+	// Parse optional type filter.
+	var types []string
+	if q := r.URL.Query().Get("types"); q != "" {
+		for _, t := range strings.Split(q, ",") {
+			t = strings.TrimSpace(t)
+			if t != "" {
+				types = append(types, t)
+			}
+		}
+	}
+
+	ch, unsub := s.broker.Subscribe(repo, types)
+	defer unsub()
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	keepAlive := time.NewTicker(15 * time.Second)
+	defer keepAlive.Stop()
+
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-keepAlive.C:
+			fmt.Fprint(w, ": keepalive\n\n")
+			flusher.Flush()
+		case e, ok := <-ch:
+			if !ok {
+				return
+			}
+			data, err := events.ToCloudEvent(e)
+			if err != nil {
+				slog.Error("SSE: serialize event failed", "error", err)
+				continue
+			}
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			flusher.Flush()
+		}
+	}
 }

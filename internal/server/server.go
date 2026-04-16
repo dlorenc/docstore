@@ -11,6 +11,8 @@ import (
 
 	"github.com/dlorenc/docstore/internal/blob"
 	"github.com/dlorenc/docstore/internal/db"
+	"github.com/dlorenc/docstore/internal/events"
+	evtypes "github.com/dlorenc/docstore/internal/events/types"
 	"github.com/dlorenc/docstore/internal/model"
 	"github.com/dlorenc/docstore/internal/policy"
 	"github.com/dlorenc/docstore/internal/store"
@@ -96,6 +98,12 @@ type WriteStore interface {
 	// CommitSequenceExists reports whether the given sequence number exists in
 	// the commits table for repo. Used to validate release sequence references.
 	CommitSequenceExists(ctx context.Context, repo string, sequence int64) (bool, error)
+
+	// Event subscription management
+	CreateSubscription(ctx context.Context, req model.CreateSubscriptionRequest) (*model.EventSubscription, error)
+	ListSubscriptions(ctx context.Context) ([]model.EventSubscription, error)
+	DeleteSubscription(ctx context.Context, id string) error
+	ResumeSubscription(ctx context.Context, id string) error
 }
 
 // CommitStore is an alias for backward compatibility with tests.
@@ -107,17 +115,28 @@ type CommitStore = WriteStore
 // writeStore provides write operations; pass nil if only read/health endpoints are needed.
 // database provides read operations; pass nil if only write/health endpoints are needed.
 func New(writeStore WriteStore, database *sql.DB, devIdentity, bootstrapAdmin string) http.Handler {
-	return newServer(writeStore, database, nil, devIdentity, bootstrapAdmin)
+	return newServer(writeStore, database, nil, nil, devIdentity, bootstrapAdmin)
 }
 
 // NewWithBlobStore is like New but also wires a BlobStore into the read store
 // so that files stored externally can be fetched by the file endpoint.
 func NewWithBlobStore(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, devIdentity, bootstrapAdmin string) http.Handler {
-	return newServer(writeStore, database, bs, devIdentity, bootstrapAdmin)
+	return newServer(writeStore, database, bs, nil, devIdentity, bootstrapAdmin)
 }
 
-func newServer(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, devIdentity, bootstrapAdmin string) http.Handler {
-	s := &server{commitStore: writeStore, policyCache: policy.NewCache()}
+// NewWithBroker is like NewWithBlobStore but also wires an event Broker.
+// Use this in production so mutation handlers can emit events.
+func NewWithBroker(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, broker *events.Broker, devIdentity, bootstrapAdmin string) http.Handler {
+	return newServer(writeStore, database, bs, broker, devIdentity, bootstrapAdmin)
+}
+
+func newServer(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, broker *events.Broker, devIdentity, bootstrapAdmin string) http.Handler {
+	s := &server{
+		commitStore: writeStore,
+		policyCache: policy.NewCache(),
+		broker:      broker,
+		globalAdmin: bootstrapAdmin,
+	}
 	if database != nil {
 		rs := store.New(database)
 		if bs != nil {
@@ -168,6 +187,15 @@ func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore Wri
 	//   GET  /repos/acme/myrepo          (bare: GET/DELETE a repo)
 	inner.Handle("/repos/", http.HandlerFunc(s.handleReposPrefix))
 
+	// Event subscription management (global, admin only).
+	inner.HandleFunc("POST /subscriptions", s.handleCreateSubscription)
+	inner.HandleFunc("GET /subscriptions", s.handleListSubscriptions)
+	inner.HandleFunc("DELETE /subscriptions/{id}", s.handleDeleteSubscription)
+	inner.HandleFunc("POST /subscriptions/{id}/resume", s.handleResumeSubscription)
+
+	// Global SSE stream (admin only).
+	inner.HandleFunc("GET /events", s.handleSSEGlobalEvents)
+
 	// Chain: IAPMiddleware → RBACMiddleware (when store present) → routes.
 	// IAP must run first to set identity in context before RBAC reads it.
 	var routed http.Handler = inner
@@ -182,6 +210,10 @@ type server struct {
 	commitStore CommitStore
 	readStore   readStore
 	policyCache policyCache
+	broker      *events.Broker
+	// globalAdmin is the identity that may manage global resources like
+	// event subscriptions. Corresponds to the --bootstrap-admin flag.
+	globalAdmin string
 }
 
 func (s *server) handleCommit(w http.ResponseWriter, r *http.Request) {
@@ -239,8 +271,39 @@ func (s *server) handleCommit(w http.ResponseWriter, r *http.Request) {
 		s.policyCache.Invalidate(repo)
 	}
 
+	s.emit(r.Context(), evtypes.CommitCreated{
+		Repo:      repo,
+		Branch:    req.Branch,
+		Sequence:  resp.Sequence,
+		Author:    req.Author,
+		Message:   req.Message,
+		FileCount: len(req.Files),
+	})
+
 	slog.Info("commit created", "repo", repo, "branch", req.Branch, "sequence", resp.Sequence, "files", len(req.Files), "author", req.Author)
 	writeJSON(w, http.StatusCreated, resp)
+}
+
+// emit publishes an event to the broker if one is configured.
+func (s *server) emit(ctx context.Context, e events.Event) {
+	if s.broker != nil {
+		s.broker.Emit(ctx, e)
+	}
+}
+
+// requireGlobalAdmin checks that the current identity is the global admin.
+// Returns false and writes 403 if not.
+func (s *server) requireGlobalAdmin(w http.ResponseWriter, r *http.Request) bool {
+	if s.globalAdmin == "" {
+		writeError(w, http.StatusForbidden, "forbidden: no global admin configured")
+		return false
+	}
+	identity := IdentityFromContext(r.Context())
+	if identity != s.globalAdmin {
+		writeError(w, http.StatusForbidden, "forbidden: global admin required")
+		return false
+	}
+	return true
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {

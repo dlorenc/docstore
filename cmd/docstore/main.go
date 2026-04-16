@@ -15,6 +15,7 @@ import (
 
 	"github.com/dlorenc/docstore/internal/blob"
 	"github.com/dlorenc/docstore/internal/db"
+	"github.com/dlorenc/docstore/internal/events"
 	"github.com/dlorenc/docstore/internal/server"
 )
 
@@ -122,7 +123,13 @@ func main() {
 
 	commitStore.SetBlobStore(bs, blobThreshold)
 
-	srv := server.NewWithBlobStore(commitStore, database, bs, *devIdentity, *bootstrapAdmin)
+	// Create the event broker and start the outbox dispatcher.
+	// The dispatcher runs until dispatchCancel is called on shutdown.
+	broker := events.NewBroker(database)
+	dispatchCtx, dispatchCancel := context.WithCancel(context.Background())
+	events.StartDispatcher(dispatchCtx, database)
+
+	srv := server.NewWithBroker(commitStore, database, bs, broker, *devIdentity, *bootstrapAdmin)
 
 	httpServer := &http.Server{
 		Addr:         ":" + port,
@@ -147,9 +154,12 @@ func main() {
 	<-quit
 	logger.Info("shutting down")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := httpServer.Shutdown(ctx); err != nil {
+	// Stop the outbox dispatcher.
+	dispatchCancel()
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		logger.Error("shutdown error", "error", err)
 		os.Exit(1)
 	}
