@@ -40,6 +40,8 @@ func StartSharedPostgres() (adminDSN string, cleanup func(), err error) {
 		postgres.WithDatabase("postgres"),
 		postgres.WithUsername("test"),
 		postgres.WithPassword("test"),
+		// Raise the connection limit so many parallel tests don't exhaust it.
+		testcontainers.WithCmdArgs("-c", "max_connections=500"),
 		testcontainers.WithWaitStrategy(
 			wait.ForLog("database system is ready to accept connections").
 				WithOccurrence(2).
@@ -77,10 +79,14 @@ func testDBFromDSN(t testing.TB, dsn string, migrate func(*sql.DB) error) *sql.D
 	t.Helper()
 
 	// Connect to the server using the provided DSN (admin connection).
+	// Limit the admin pool to a handful of connections — it only needs one
+	// at a time to run DDL (CREATE/DROP DATABASE).
 	admin, err := sql.Open("postgres", dsn)
 	if err != nil {
 		t.Fatalf("connect to postgres: %v", err)
 	}
+	admin.SetMaxOpenConns(3)
+	admin.SetMaxIdleConns(1)
 	defer admin.Close()
 
 	// Create a unique database for this test. The atomic counter prevents
@@ -89,18 +95,6 @@ func testDBFromDSN(t testing.TB, dsn string, migrate func(*sql.DB) error) *sql.D
 	if _, err := admin.Exec("CREATE DATABASE " + dbName); err != nil {
 		t.Fatalf("create test database %s: %v", dbName, err)
 	}
-	t.Cleanup(func() {
-		// Reconnect as admin to drop the test database.
-		c, err := sql.Open("postgres", dsn)
-		if err != nil {
-			t.Logf("reconnect to drop test db: %v", err)
-			return
-		}
-		defer c.Close()
-		if _, err := c.Exec("DROP DATABASE IF EXISTS " + dbName); err != nil {
-			t.Logf("drop test database %s: %v", dbName, err)
-		}
-	})
 
 	// Build a DSN for the new database by replacing the dbname parameter.
 	testDSN := replaceDBName(dsn, dbName)
@@ -108,7 +102,37 @@ func testDBFromDSN(t testing.TB, dsn string, migrate func(*sql.DB) error) *sql.D
 	if err != nil {
 		t.Fatalf("connect to test database %s: %v", dbName, err)
 	}
-	t.Cleanup(func() { d.Close() })
+	// Cap the per-test pool so many parallel tests don't exhaust Postgres
+	// max_connections. 5 open connections is ample for any single test.
+	d.SetMaxOpenConns(5)
+	d.SetMaxIdleConns(2)
+	d.SetConnMaxLifetime(30 * time.Second)
+
+	// Single cleanup closes the pool first, then terminates any lingering
+	// backend connections before dropping the database. Combining both steps
+	// in one function ensures correct ordering without relying on LIFO
+	// semantics and avoids the "database is being accessed by other users"
+	// error that can occur when pg_backend connections outlive d.Close().
+	t.Cleanup(func() {
+		d.Close()
+		c, err := sql.Open("postgres", dsn)
+		if err != nil {
+			t.Logf("reconnect to drop test db: %v", err)
+			return
+		}
+		defer c.Close()
+		c.SetMaxOpenConns(3)
+		c.SetMaxIdleConns(1)
+		// Terminate any remaining backend connections to the test database so
+		// that DROP DATABASE succeeds even if d.Close() left stragglers.
+		_, _ = c.Exec(
+			"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()",
+			dbName,
+		)
+		if _, err := c.Exec("DROP DATABASE IF EXISTS " + dbName); err != nil {
+			t.Logf("drop test database %s: %v", dbName, err)
+		}
+	})
 
 	if err := migrate(d); err != nil {
 		t.Fatalf("run migrations: %v", err)
