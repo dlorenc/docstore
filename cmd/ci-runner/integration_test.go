@@ -1,42 +1,40 @@
-//go:build integration
-
 package main
 
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"testing"
 
 	"github.com/dlorenc/docstore/internal/executor"
+	"github.com/dlorenc/docstore/internal/testutil"
 )
 
-// buildkitAddr returns the buildkitd address to use for integration tests.
-// If BUILDKIT_ADDR is set, it is used. Otherwise /run/buildkit/buildkitd.sock
-// is checked. If neither is available the test is skipped.
-func buildkitAddr(t *testing.T) string {
-	t.Helper()
-	if addr := os.Getenv("BUILDKIT_ADDR"); addr != "" {
-		return addr
+// pkgBuildkitAddr is the buildkitd address shared across all tests in this package.
+var pkgBuildkitAddr string
+
+func TestMain(m *testing.M) {
+	addr, cleanup, err := testutil.StartBuildkit()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "skipping ci-runner integration tests: could not start buildkit: %v\n", err)
+		os.Exit(0)
 	}
-	const defaultSock = "/run/buildkit/buildkitd.sock"
-	if _, err := os.Stat(defaultSock); err == nil {
-		return "unix://" + defaultSock
-	}
-	t.Skip("buildkitd not available: set BUILDKIT_ADDR or ensure /run/buildkit/buildkitd.sock exists")
-	return ""
+	pkgBuildkitAddr = addr
+	code := m.Run()
+	cleanup()
+	os.Exit(code)
 }
 
 // newIntegrationServer starts a ci-runner HTTP server connected to buildkitd
 // and returns its httptest.Server. Both are closed when the test finishes.
 func newIntegrationServer(t *testing.T) *httptest.Server {
 	t.Helper()
-	addr := buildkitAddr(t)
-	exec, err := executor.New(addr)
+	exec, err := executor.New(pkgBuildkitAddr)
 	if err != nil {
-		t.Skipf("cannot connect to buildkitd at %s: %v", addr, err)
+		t.Fatalf("cannot connect to buildkitd at %s: %v", pkgBuildkitAddr, err)
 	}
 	srv := httptest.NewServer(newMux(exec))
 	t.Cleanup(func() {
