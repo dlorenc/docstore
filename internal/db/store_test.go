@@ -15,7 +15,8 @@ import (
 )
 
 func TestCommit_SingleFile(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -55,7 +56,8 @@ func TestCommit_SingleFile(t *testing.T) {
 }
 
 func TestCommit_MultipleFiles(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -93,7 +95,8 @@ func TestCommit_MultipleFiles(t *testing.T) {
 }
 
 func TestCommit_ContentDedup(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -134,7 +137,8 @@ func TestCommit_ContentDedup(t *testing.T) {
 }
 
 func TestCommit_ContentDedupAcrossCommits(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -175,7 +179,8 @@ func TestCommit_ContentDedupAcrossCommits(t *testing.T) {
 }
 
 func TestCommit_SequenceIncrementsPerCommit(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -197,7 +202,8 @@ func TestCommit_SequenceIncrementsPerCommit(t *testing.T) {
 }
 
 func TestCommit_DeleteFile(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -247,7 +253,8 @@ func TestCommit_DeleteFile(t *testing.T) {
 }
 
 func TestCommit_BranchNotFound(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -264,7 +271,8 @@ func TestCommit_BranchNotFound(t *testing.T) {
 }
 
 func TestCommit_BranchNotActive(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -291,7 +299,8 @@ func TestCommit_BranchNotActive(t *testing.T) {
 // --- CreateBranch tests ---
 
 func TestCreateBranch_Success(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -335,7 +344,8 @@ func TestCreateBranch_Success(t *testing.T) {
 }
 
 func TestCreateBranch_Duplicate(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -353,7 +363,8 @@ func TestCreateBranch_Duplicate(t *testing.T) {
 // --- Merge tests ---
 
 func TestMerge_Success(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -447,7 +458,8 @@ func TestMerge_Success(t *testing.T) {
 }
 
 func TestMerge_Conflict(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -525,7 +537,8 @@ func TestMerge_Conflict(t *testing.T) {
 }
 
 func TestMerge_BranchNotFound(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -536,7 +549,8 @@ func TestMerge_BranchNotFound(t *testing.T) {
 }
 
 func TestMerge_BranchNotActive(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -555,7 +569,8 @@ func TestMerge_BranchNotActive(t *testing.T) {
 // --- DeleteBranch tests ---
 
 func TestDeleteBranch_Success(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -579,7 +594,8 @@ func TestDeleteBranch_Success(t *testing.T) {
 }
 
 func TestDeleteBranch_NotFound(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -590,7 +606,8 @@ func TestDeleteBranch_NotFound(t *testing.T) {
 }
 
 func TestDeleteBranch_AlreadyMerged(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -606,7 +623,8 @@ func TestDeleteBranch_AlreadyMerged(t *testing.T) {
 }
 
 func TestDeleteBranch_AlreadyAbandoned(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -622,7 +640,8 @@ func TestDeleteBranch_AlreadyAbandoned(t *testing.T) {
 }
 
 func TestMerge_EmptyBranch(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -657,7 +676,8 @@ func TestMerge_EmptyBranch(t *testing.T) {
 // --- Rebase tests ---
 
 func TestRebase_CleanNoConflict(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -726,7 +746,8 @@ func TestRebase_CleanNoConflict(t *testing.T) {
 }
 
 func TestRebase_UpdatesBaseSequence(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -800,7 +821,8 @@ func TestRebase_UpdatesBaseSequence(t *testing.T) {
 }
 
 func TestRebase_ReplaysAllCommits(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -881,7 +903,8 @@ func TestRebase_ReplaysAllCommits(t *testing.T) {
 }
 
 func TestRebase_EmptyBranch(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -941,7 +964,8 @@ func TestRebase_EmptyBranch(t *testing.T) {
 }
 
 func TestRebase_Conflict(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -1009,7 +1033,8 @@ func TestRebase_Conflict(t *testing.T) {
 }
 
 func TestRebase_ConflictIsAtomic(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -1096,7 +1121,8 @@ func TestRebase_ConflictIsAtomic(t *testing.T) {
 }
 
 func TestRebase_BranchNotFound(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -1107,7 +1133,8 @@ func TestRebase_BranchNotFound(t *testing.T) {
 }
 
 func TestRebase_AlreadyMerged(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -1123,7 +1150,8 @@ func TestRebase_AlreadyMerged(t *testing.T) {
 }
 
 func TestRebase_MainBranch(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -1134,7 +1162,8 @@ func TestRebase_MainBranch(t *testing.T) {
 }
 
 func TestRebase_ThenMerge(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -1220,7 +1249,8 @@ func TestRebase_ThenMerge(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCreateRepo_Success(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -1247,7 +1277,8 @@ func TestCreateRepo_Success(t *testing.T) {
 }
 
 func TestCreateRepo_Duplicate(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -1263,7 +1294,8 @@ func TestCreateRepo_Duplicate(t *testing.T) {
 }
 
 func TestDeleteRepo_RemovesAllData(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -1334,7 +1366,8 @@ func TestDeleteRepo_RemovesAllData(t *testing.T) {
 }
 
 func TestDeleteRepo_DoesNotAffectOtherRepo(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -1373,7 +1406,8 @@ func TestDeleteRepo_DoesNotAffectOtherRepo(t *testing.T) {
 }
 
 func TestDeleteRepo_NotFound(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -1389,7 +1423,8 @@ func TestDeleteRepo_NotFound(t *testing.T) {
 // positive invariant: after a successful CreateRepo the repo and its main branch
 // always exist together.
 func TestCreateRepo_IsAtomic(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -1419,7 +1454,8 @@ func TestCreateRepo_IsAtomic(t *testing.T) {
 // TestCreateBranch_RepoNotFound verifies that creating a branch for a repo that
 // does not exist returns ErrRepoNotFound rather than an opaque error.
 func TestCreateBranch_RepoNotFound(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -1434,7 +1470,8 @@ func TestCreateBranch_RepoNotFound(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRepoIsolation_Branches(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -1477,7 +1514,8 @@ func TestRepoIsolation_Branches(t *testing.T) {
 }
 
 func TestRepoIsolation_Commits(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -1528,7 +1566,8 @@ func TestRepoIsolation_Commits(t *testing.T) {
 }
 
 func TestRepoIsolation_Merge(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -1589,7 +1628,8 @@ func TestRepoIsolation_Merge(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCreateReview_Success(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -1622,7 +1662,8 @@ func TestCreateReview_Success(t *testing.T) {
 }
 
 func TestCreateReview_RecordedAtHeadSequence(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -1649,7 +1690,8 @@ func TestCreateReview_RecordedAtHeadSequence(t *testing.T) {
 }
 
 func TestCreateReview_StaleAfterCommit(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -1697,7 +1739,8 @@ func TestCreateReview_StaleAfterCommit(t *testing.T) {
 }
 
 func TestListReviews_ByBranch(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -1734,7 +1777,8 @@ func TestListReviews_ByBranch(t *testing.T) {
 }
 
 func TestCreateReview_SelfApproval(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -1756,7 +1800,8 @@ func TestCreateReview_SelfApproval(t *testing.T) {
 }
 
 func TestReviewRepoIsolation(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -1798,7 +1843,8 @@ func TestReviewRepoIsolation(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCreateCheckRun_Success(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -1821,7 +1867,8 @@ func TestCreateCheckRun_Success(t *testing.T) {
 }
 
 func TestCreateCheckRun_RecordedAtHeadSequence(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -1844,7 +1891,8 @@ func TestCreateCheckRun_RecordedAtHeadSequence(t *testing.T) {
 }
 
 func TestListCheckRuns_ByBranch(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -1867,7 +1915,8 @@ func TestListCheckRuns_ByBranch(t *testing.T) {
 }
 
 func TestListCheckRuns_LatestPerName(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -1900,7 +1949,8 @@ func TestListCheckRuns_LatestPerName(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestGetRole_Exists(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -1924,7 +1974,8 @@ func TestGetRole_Exists(t *testing.T) {
 }
 
 func TestGetRole_NotFound(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -1939,7 +1990,8 @@ func TestGetRole_NotFound(t *testing.T) {
 }
 
 func TestSetRole(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -1967,7 +2019,8 @@ func TestSetRole(t *testing.T) {
 }
 
 func TestDeleteRole(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -1995,7 +2048,8 @@ func TestDeleteRole(t *testing.T) {
 }
 
 func TestRoleIsolation(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -2053,7 +2107,8 @@ func makeOld(t *testing.T, db *sql.DB, repo, branch string) {
 }
 
 func TestPurge_DeletesMergedBranches(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -2112,7 +2167,8 @@ func TestPurge_DeletesMergedBranches(t *testing.T) {
 }
 
 func TestPurge_DeletesAbandonedBranches(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -2150,7 +2206,8 @@ func TestPurge_DeletesAbandonedBranches(t *testing.T) {
 }
 
 func TestPurge_RespectsOlderThan(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -2181,7 +2238,8 @@ func TestPurge_RespectsOlderThan(t *testing.T) {
 }
 
 func TestPurge_DoesNotTouchActiveBranches(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -2202,7 +2260,8 @@ func TestPurge_DoesNotTouchActiveBranches(t *testing.T) {
 }
 
 func TestPurge_DoesNotTouchMain(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -2235,7 +2294,8 @@ func TestPurge_DoesNotTouchMain(t *testing.T) {
 }
 
 func TestPurge_OrphanedDocumentsDeleted(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -2282,7 +2342,8 @@ func TestPurge_OrphanedDocumentsDeleted(t *testing.T) {
 }
 
 func TestPurge_SharedDocumentRetained(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -2337,7 +2398,8 @@ func TestPurge_SharedDocumentRetained(t *testing.T) {
 }
 
 func TestPurge_DeletesReviewsAndChecks(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -2382,7 +2444,8 @@ func TestPurge_DeletesReviewsAndChecks(t *testing.T) {
 }
 
 func TestPurge_DryRun(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -2435,10 +2498,11 @@ func TestPurge_DryRun(t *testing.T) {
 }
 
 func TestPurge_IsAtomic(t *testing.T) {
+	t.Parallel()
 	// Demonstrates that all deletes are committed together (or not at all).
 	// We use a pre-cancelled context so BeginTx fails before any deletions occur,
 	// verifying that no partial state is left behind.
-	d := testutil.TestDB(t, RunMigrations)
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -2490,7 +2554,8 @@ func TestPurge_IsAtomic(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMerge_MultipleConflicts(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -2577,7 +2642,8 @@ func TestMerge_MultipleConflicts(t *testing.T) {
 }
 
 func TestRebase_MultipleConflicts(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -2667,7 +2733,8 @@ func TestRebase_MultipleConflicts(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDeleteBranch_MainBranch(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -2687,7 +2754,8 @@ func TestDeleteBranch_MainBranch(t *testing.T) {
 }
 
 func TestMerge_AlreadyMergedBranch(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -2719,7 +2787,8 @@ func TestMerge_AlreadyMergedBranch(t *testing.T) {
 }
 
 func TestCommit_ToMergedBranch(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -2761,7 +2830,8 @@ func TestCommit_ToMergedBranch(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCreateOrg(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -2784,7 +2854,8 @@ func TestCreateOrg(t *testing.T) {
 }
 
 func TestCreateOrg_DefaultCreatedBy(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -2798,7 +2869,8 @@ func TestCreateOrg_DefaultCreatedBy(t *testing.T) {
 }
 
 func TestDeleteOrg(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -2818,7 +2890,8 @@ func TestDeleteOrg(t *testing.T) {
 }
 
 func TestDeleteOrg_NotFound(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -2829,7 +2902,8 @@ func TestDeleteOrg_NotFound(t *testing.T) {
 }
 
 func TestDeleteOrg_HasRepos(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -2847,7 +2921,8 @@ func TestDeleteOrg_HasRepos(t *testing.T) {
 }
 
 func TestListOrgRepos(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -2884,7 +2959,8 @@ func TestListOrgRepos(t *testing.T) {
 }
 
 func TestListRepos(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -2913,7 +2989,8 @@ func TestListRepos(t *testing.T) {
 }
 
 func TestGetRepo(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -2938,7 +3015,8 @@ func TestGetRepo(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestListRoles(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -2980,6 +3058,7 @@ func TestListRoles(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestIsForeignKeyViolation_NonPQError(t *testing.T) {
+	t.Parallel()
 	// A plain error should return false.
 	if isForeignKeyViolation(errors.New("some error")) {
 		t.Error("expected false for non-pq error")
@@ -2987,13 +3066,15 @@ func TestIsForeignKeyViolation_NonPQError(t *testing.T) {
 }
 
 func TestIsDuplicateKeyError_NonPQError(t *testing.T) {
+	t.Parallel()
 	if isDuplicateKeyError(errors.New("some error")) {
 		t.Error("expected false for non-pq error")
 	}
 }
 
 func TestIsForeignKeyViolation_FromDB(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -3018,6 +3099,7 @@ const expectedCommitHash = "54662b84dcaca30b108d9b779bec9ad8727f35db9e6742401aaa
 
 // TestComputeCommitHash verifies that computeCommitHash produces a stable SHA256 output.
 func TestComputeCommitHash(t *testing.T) {
+	t.Parallel()
 	ts := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	files := []chainFile{
 		{path: "b.txt", contentHash: "bbb"},
@@ -3088,7 +3170,8 @@ func TestComputeCommitHash(t *testing.T) {
 
 // TestCommit_HashIsSet verifies that Commit stores a non-empty commit_hash.
 func TestCommit_HashIsSet(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -3121,7 +3204,8 @@ func TestCommit_HashIsSet(t *testing.T) {
 
 // TestCommit_ChainLinks verifies that the second commit's hash links to the first.
 func TestCommit_ChainLinks(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
@@ -3191,7 +3275,8 @@ func TestCommit_ChainLinks(t *testing.T) {
 // TestCommit_PerBranchChain verifies that commits on different branches each
 // start their own chain from genesisHash, independently of each other.
 func TestCommit_PerBranchChain(t *testing.T) {
-	d := testutil.TestDB(t, RunMigrations)
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
