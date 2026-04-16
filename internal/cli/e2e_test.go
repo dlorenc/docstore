@@ -16,7 +16,7 @@ import (
 // instance running the full server handler with a real database.
 func newRealServer(t *testing.T) *httptest.Server {
 	t.Helper()
-	database := testutil.TestDB(t, dbpkg.RunMigrations)
+	database := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 	writeStore := dbpkg.NewStore(database)
 	handler := server.New(writeStore, database, "test@example.com", "test@example.com")
 	srv := httptest.NewServer(handler)
@@ -30,6 +30,7 @@ func newRealServer(t *testing.T) *httptest.Server {
 //	init → modify file → commit → checkout -b → add file → commit →
 //	diff → checkout main → merge → pull from second workspace → verify files
 func TestFullWorkflow(t *testing.T) {
+	t.Parallel()
 	srv := newRealServer(t)
 
 	// ── Workspace 1: init against empty server ────────────────────────────
@@ -195,6 +196,7 @@ func TestFullWorkflow(t *testing.T) {
 
 // TestCLILog_EndToEnd verifies that ds log returns commits in newest-first order.
 func TestCLILog_EndToEnd(t *testing.T) {
+	t.Parallel()
 	srv := newRealServer(t)
 
 	ws, out := newTestApp(t, srv)
@@ -232,6 +234,7 @@ func TestCLILog_EndToEnd(t *testing.T) {
 
 // TestCLIRebase_EndToEnd exercises the full rebase workflow with a real server.
 func TestCLIRebase_EndToEnd(t *testing.T) {
+	t.Parallel()
 	srv := newRealServer(t)
 
 	ws, _ := newTestApp(t, srv)
@@ -288,6 +291,7 @@ func TestCLIRebase_EndToEnd(t *testing.T) {
 // TestCLIResolve_EndToEnd exercises the resolve workflow: write conflict files,
 // create a resolved version, call Resolve, verify commit and cleanup.
 func TestCLIResolve_EndToEnd(t *testing.T) {
+	t.Parallel()
 	srv := newRealServer(t)
 
 	ws, _ := newTestApp(t, srv)
@@ -332,6 +336,7 @@ func TestCLIResolve_EndToEnd(t *testing.T) {
 
 // TestOrgs_EndToEnd verifies org creation, listing, and deletion via a real server.
 func TestOrgs_EndToEnd(t *testing.T) {
+	t.Parallel()
 	srv := newRealServer(t)
 	app, out := newTestApp(t, srv)
 	app.DefaultRemote = srv.URL
@@ -388,6 +393,7 @@ func TestOrgs_EndToEnd(t *testing.T) {
 
 // TestRepos_EndToEnd verifies repo creation, listing (global and per-org), and deletion.
 func TestRepos_EndToEnd(t *testing.T) {
+	t.Parallel()
 	srv := newRealServer(t)
 	app, out := newTestApp(t, srv)
 	app.DefaultRemote = srv.URL
@@ -445,6 +451,7 @@ func TestRepos_EndToEnd(t *testing.T) {
 
 // TestRoles_EndToEnd verifies role assignment, listing, and deletion via a real server.
 func TestRoles_EndToEnd(t *testing.T) {
+	t.Parallel()
 	srv := newRealServer(t)
 	app, out := newTestApp(t, srv)
 	app.DefaultRemote = srv.URL
@@ -498,6 +505,7 @@ func TestRoles_EndToEnd(t *testing.T) {
 
 // TestLoadRemote_Fallback verifies that loadRemote() uses DefaultRemote when no config exists.
 func TestLoadRemote_Fallback(t *testing.T) {
+	t.Parallel()
 	app, _ := newTestApp(t, nil)
 	app.DefaultRemote = "https://example.com"
 
@@ -512,6 +520,7 @@ func TestLoadRemote_Fallback(t *testing.T) {
 
 // TestLoadRemote_NoConfig verifies that loadRemote() errors when no config or DefaultRemote.
 func TestLoadRemote_NoConfig(t *testing.T) {
+	t.Parallel()
 	app, _ := newTestApp(t, nil)
 
 	_, err := app.loadRemote()
@@ -525,6 +534,7 @@ func TestLoadRemote_NoConfig(t *testing.T) {
 
 // TestRolesSet_InvalidRole verifies client-side role validation.
 func TestRolesSet_InvalidRole(t *testing.T) {
+	t.Parallel()
 	app, _ := newTestApp(t, nil)
 	initWorkspace(t, app, "http://localhost", "main", "alice")
 
