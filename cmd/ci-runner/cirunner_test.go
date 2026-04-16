@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dlorenc/docstore/internal/executor"
 	"github.com/dlorenc/docstore/internal/model"
@@ -152,7 +153,7 @@ func TestPostCheckRun_ServerError(t *testing.T) {
 func TestPostRunHandler_ReturnsRunID(t *testing.T) {
 	// Use a nil executor and logstore (the goroutine won't do anything useful
 	// but the handler itself should return 200 with a run_id immediately).
-	mux := newMux(nil, nil, "http://localhost:9999", &http.Client{})
+	mux := newMux(nil, nil, "http://localhost:9999", &http.Client{}, 30*time.Minute)
 
 	body := `{"repo":"default/myrepo","branch":"feature/x","head_sequence":42}`
 	req := httptest.NewRequest(http.MethodPost, "/run", strings.NewReader(body))
@@ -173,7 +174,7 @@ func TestPostRunHandler_ReturnsRunID(t *testing.T) {
 }
 
 func TestPostRunHandler_MissingRepo(t *testing.T) {
-	mux := newMux(nil, nil, "http://localhost:9999", &http.Client{})
+	mux := newMux(nil, nil, "http://localhost:9999", &http.Client{}, 30*time.Minute)
 
 	req := httptest.NewRequest(http.MethodPost, "/run", strings.NewReader(`{"branch":"feature/x"}`))
 	rec := httptest.NewRecorder()
@@ -185,7 +186,7 @@ func TestPostRunHandler_MissingRepo(t *testing.T) {
 }
 
 func TestPostRunHandler_MissingBranch(t *testing.T) {
-	mux := newMux(nil, nil, "http://localhost:9999", &http.Client{})
+	mux := newMux(nil, nil, "http://localhost:9999", &http.Client{}, 30*time.Minute)
 
 	req := httptest.NewRequest(http.MethodPost, "/run", strings.NewReader(`{"repo":"default/myrepo"}`))
 	rec := httptest.NewRecorder()

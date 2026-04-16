@@ -257,7 +257,7 @@ func runAsync(ctx context.Context, client *http.Client, exec *executor.Executor,
 // HTTP mux
 // ---------------------------------------------------------------------------
 
-func newMux(exec *executor.Executor, ls logstore.LogStore, docstoreURL string, client *http.Client) *http.ServeMux {
+func newMux(exec *executor.Executor, ls logstore.LogStore, docstoreURL string, client *http.Client, runTimeout time.Duration) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /run", func(w http.ResponseWriter, r *http.Request) {
 		var req runRequest
@@ -275,7 +275,11 @@ func newMux(exec *executor.Executor, ls logstore.LogStore, docstoreURL string, c
 		}
 
 		runID := uuid.New().String()
-		go runAsync(context.Background(), client, exec, ls, docstoreURL, req.Repo, req.Branch, req.HeadSequence)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), runTimeout)
+			defer cancel()
+			runAsync(ctx, client, exec, ls, docstoreURL, req.Repo, req.Branch, req.HeadSequence)
+		}()
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(runResponse{RunID: runID}) //nolint:errcheck
@@ -292,6 +296,7 @@ func main() {
 	port := flag.String("port", "8080", "HTTP listen port")
 	docstoreURL := flag.String("docstore-url", "", "Base URL of the docstore server (required)")
 	devIdentity := flag.String("dev-identity", "", "Identity header to send to docstore (local dev only)")
+	runTimeout := flag.Duration("run-timeout", 30*time.Minute, "Maximum duration for a single CI run")
 	flag.Parse()
 
 	if *docstoreURL == "" {
@@ -330,7 +335,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	mux := newMux(exec, ls, *docstoreURL, httpClient)
+	mux := newMux(exec, ls, *docstoreURL, httpClient, *runTimeout)
 
 	srv := &http.Server{
 		Addr:        ":" + *port,
