@@ -24,6 +24,7 @@ type readStore interface {
 	ListBranches(ctx context.Context, repo, statusFilter string) ([]store.BranchInfo, error)
 	GetDiff(ctx context.Context, repo, branch string) (*store.DiffResult, error)
 	GetCommit(ctx context.Context, repo string, seq int64) (*store.CommitDetail, error)
+	GetChain(ctx context.Context, repo string, from, to int64) ([]store.ChainEntry, error)
 }
 
 // policyCache is the interface for loading and invalidating OPA policy engines.

@@ -149,6 +149,13 @@ func (s *server) handleReposPrefix(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
 
+	case endpoint == "chain":
+		if r.Method == http.MethodGet {
+			s.handleChain(w, r)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+
 	case strings.HasPrefix(endpoint, "commit/"):
 		if r.Method == http.MethodGet {
 			r.SetPathValue("sequence", strings.TrimPrefix(endpoint, "commit/"))
@@ -1306,4 +1313,48 @@ func (s *server) handleBranchStatus(w http.ResponseWriter, r *http.Request, repo
 		Mergeable: mergeable,
 		Policies:  results,
 	})
+}
+
+// handleChain implements GET /repos/:name/-/chain?from=N&to=N
+// Returns commit metadata for sequences in [from, to] with commit hashes and file content hashes.
+func (s *server) handleChain(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
+	if s.readStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "read store not available")
+		return
+	}
+
+	fromStr := r.URL.Query().Get("from")
+	toStr := r.URL.Query().Get("to")
+	if fromStr == "" || toStr == "" {
+		writeError(w, http.StatusBadRequest, "from and to query parameters are required")
+		return
+	}
+	from, err := strconv.ParseInt(fromStr, 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid 'from' parameter")
+		return
+	}
+	to, err := strconv.ParseInt(toStr, 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid 'to' parameter")
+		return
+	}
+	if from > to {
+		writeError(w, http.StatusBadRequest, "'from' must be <= 'to'")
+		return
+	}
+
+	entries, err := s.readStore.GetChain(r.Context(), repo, from, to)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if entries == nil {
+		entries = []store.ChainEntry{}
+	}
+	writeJSON(w, http.StatusOK, entries)
 }
