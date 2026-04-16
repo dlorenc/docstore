@@ -38,6 +38,7 @@ commands:
   check --name <n> --status passed|failed [--branch <name>]  Report a CI check
   import-git <path> [--mode squash|replay]        Import a git repo into docstore main
   tui                                             Launch the terminal UI
+  purge --older-than <Nd> [--dry-run]             Purge old merged/abandoned branches
 
   orgs                                            List organizations
   orgs create <name>                              Create an organization
@@ -45,9 +46,16 @@ commands:
   orgs delete <name>                              Delete an organization
   orgs repos <name>                               List repos in an organization
 
+  repo list                                       List repositories
+  repo create <owner/name>                        Create a repository
+  repo get <owner/name>                           Get a repository
+  repo delete <owner/name>                        Delete a repository
+
   repos                                           List repositories
   repos create <owner> <name>                     Create a repository
   repos delete <name>                             Delete a repository (e.g. acme/myrepo)
+
+  branch delete <name>                            Delete a branch from the current repo
 
   roles                                           List roles for the current repo
   roles set <identity> <role>                     Set a role (reader/writer/maintainer/admin)
@@ -408,6 +416,82 @@ func main() {
 			fmt.Fprintln(os.Stderr, usage)
 			os.Exit(1)
 		}
+
+	case "repo":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: ds repo <list|create|get|delete> [args]")
+			os.Exit(1)
+		}
+		switch args[1] {
+		case "list":
+			err = app.Repos()
+		case "create":
+			if len(args) < 3 {
+				fmt.Fprintln(os.Stderr, "usage: ds repo create <owner/name>")
+				os.Exit(1)
+			}
+			fullName := args[2]
+			slash := strings.Index(fullName, "/")
+			if slash <= 0 || slash == len(fullName)-1 {
+				fmt.Fprintln(os.Stderr, "error: repo name must be in owner/name format")
+				os.Exit(1)
+			}
+			err = app.ReposCreate(fullName[:slash], fullName[slash+1:])
+		case "get":
+			if len(args) < 3 {
+				fmt.Fprintln(os.Stderr, "usage: ds repo get <owner/name>")
+				os.Exit(1)
+			}
+			err = app.RepoGet(args[2])
+		case "delete":
+			if len(args) < 3 {
+				fmt.Fprintln(os.Stderr, "usage: ds repo delete <owner/name>")
+				os.Exit(1)
+			}
+			err = app.ReposDelete(args[2])
+		default:
+			fmt.Fprintf(os.Stderr, "unknown repo subcommand: %s\n", args[1])
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(1)
+		}
+
+	case "branch":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: ds branch <delete> [args]")
+			os.Exit(1)
+		}
+		switch args[1] {
+		case "delete":
+			if len(args) < 3 {
+				fmt.Fprintln(os.Stderr, "usage: ds branch delete <name>")
+				os.Exit(1)
+			}
+			err = app.BranchDelete(args[2])
+		default:
+			fmt.Fprintf(os.Stderr, "unknown branch subcommand: %s\n", args[1])
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(1)
+		}
+
+	case "purge":
+		olderThan := ""
+		dryRun := false
+		for i := 1; i < len(args); i++ {
+			switch args[i] {
+			case "--older-than":
+				if i+1 < len(args) {
+					olderThan = args[i+1]
+					i++
+				}
+			case "--dry-run":
+				dryRun = true
+			}
+		}
+		if olderThan == "" {
+			fmt.Fprintln(os.Stderr, "usage: ds purge --older-than <Nd> [--dry-run]")
+			os.Exit(1)
+		}
+		err = app.Purge(olderThan, dryRun)
 
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)

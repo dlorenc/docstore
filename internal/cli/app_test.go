@@ -2784,3 +2784,186 @@ func TestPull_TOFU_NullHash(t *testing.T) {
 		t.Errorf("expected predates-hash-chain note in output, got: %s", out.String())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// RepoGet
+// ---------------------------------------------------------------------------
+
+func TestRepoGet_Success(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && r.URL.Path == "/repos/acme/myrepo" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(model.Repo{
+				Name:      "acme/myrepo",
+				Owner:     "acme",
+				CreatedBy: "alice",
+				CreatedAt: now,
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	app, out := newTestApp(t, srv)
+	app.DefaultRemote = srv.URL
+
+	if err := app.RepoGet("acme/myrepo"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "acme/myrepo") {
+		t.Errorf("expected repo name in output, got: %s", out.String())
+	}
+	if !strings.Contains(out.String(), "alice") {
+		t.Errorf("expected created_by in output, got: %s", out.String())
+	}
+}
+
+func TestRepoGet_NotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(model.ErrorResponse{Error: "not found"})
+	}))
+	defer srv.Close()
+
+	app, _ := newTestApp(t, srv)
+	app.DefaultRemote = srv.URL
+
+	err := app.RepoGet("acme/nope")
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Errorf("expected not found error, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// BranchDelete
+// ---------------------------------------------------------------------------
+
+func TestBranchDelete_Success(t *testing.T) {
+	var gotMethod, gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	app, out := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "main", "alice")
+
+	if err := app.BranchDelete("feature/x"); err != nil {
+		t.Fatal(err)
+	}
+
+	if gotMethod != "DELETE" {
+		t.Errorf("expected DELETE request, got %s", gotMethod)
+	}
+	if !strings.Contains(gotPath, "/branch/") {
+		t.Errorf("expected branch path, got %s", gotPath)
+	}
+	if !strings.Contains(out.String(), "Deleted branch 'feature/x'") {
+		t.Errorf("expected deletion message in output, got: %s", out.String())
+	}
+}
+
+func TestBranchDelete_NotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(model.ErrorResponse{Error: "branch not found"})
+	}))
+	defer srv.Close()
+
+	app, _ := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "main", "alice")
+
+	err := app.BranchDelete("nonexistent")
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Errorf("expected not found error, got: %v", err)
+	}
+}
+
+func TestBranchDelete_AlreadyMerged(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(model.ErrorResponse{Error: "branch is already merged or abandoned"})
+	}))
+	defer srv.Close()
+
+	app, _ := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "main", "alice")
+
+	err := app.BranchDelete("merged-branch")
+	if err == nil || !strings.Contains(err.Error(), "merged or abandoned") {
+		t.Errorf("expected merged/abandoned error, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Purge
+// ---------------------------------------------------------------------------
+
+func TestPurge_Success(t *testing.T) {
+	var gotReq model.PurgeRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && r.URL.Path == "/repos/default/default/-/purge" {
+			json.NewDecoder(r.Body).Decode(&gotReq)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(model.PurgeResponse{
+				BranchesPurged:     3,
+				FileCommitsDeleted: 12,
+				CommitsDeleted:     6,
+				DocumentsDeleted:   9,
+				ReviewsDeleted:     2,
+				CheckRunsDeleted:   4,
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	app, out := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "main", "alice")
+
+	if err := app.Purge("30d", false); err != nil {
+		t.Fatal(err)
+	}
+
+	if gotReq.OlderThan != "30d" {
+		t.Errorf("older_than = %q, want %q", gotReq.OlderThan, "30d")
+	}
+	if gotReq.DryRun {
+		t.Error("expected dry_run=false")
+	}
+	if !strings.Contains(out.String(), "branches purged") {
+		t.Errorf("expected purge summary in output, got: %s", out.String())
+	}
+}
+
+func TestPurge_DryRun(t *testing.T) {
+	var gotReq model.PurgeRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&gotReq)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(model.PurgeResponse{BranchesPurged: 1})
+	}))
+	defer srv.Close()
+
+	app, out := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "main", "alice")
+
+	if err := app.Purge("7d", true); err != nil {
+		t.Fatal(err)
+	}
+
+	if !gotReq.DryRun {
+		t.Error("expected dry_run=true")
+	}
+	if !strings.Contains(out.String(), "dry-run") {
+		t.Errorf("expected dry-run note in output, got: %s", out.String())
+	}
+}
