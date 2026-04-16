@@ -1732,6 +1732,7 @@ func (s *server) handleCreateRelease(w http.ResponseWriter, r *http.Request) {
 		}
 		branchInfo, err := s.readStore.GetBranch(r.Context(), repo, "main")
 		if err != nil || branchInfo == nil {
+			slog.Error("internal error", "op", "create_release_head", "repo", repo, "error", err)
 			writeError(w, http.StatusInternalServerError, "could not resolve main head sequence")
 			return
 		}
@@ -1779,6 +1780,7 @@ func (s *server) handleListReleases(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid pagination cursor")
 			return
 		}
+		slog.Error("internal error", "op", "list_releases", "repo", repo, "error", err)
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
@@ -1802,6 +1804,7 @@ func (s *server) handleGetRelease(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, db.ErrReleaseNotFound):
 			writeError(w, http.StatusNotFound, "release not found")
 		default:
+			slog.Error("internal error", "op", "get_release", "repo", repo, "release", releaseName, "error", err)
 			writeError(w, http.StatusInternalServerError, "query failed")
 		}
 		return
