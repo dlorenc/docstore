@@ -122,6 +122,7 @@ var (
 	ErrEmailMismatch          = errors.New("identity does not match invite email")
 	ErrReleaseNotFound        = errors.New("release not found")
 	ErrReleaseExists          = errors.New("release already exists")
+	ErrInvalidCursor          = errors.New("invalid pagination cursor")
 	ErrBranchDraft            = errors.New("branch is in draft state")
 )
 
@@ -1847,6 +1848,19 @@ func (s *Store) ListReleases(ctx context.Context, repo string, limit int, afterI
 			)
 		}
 	} else {
+		// Validate that the cursor ID actually exists before running the main query.
+		// If it doesn't exist, the subquery returns no rows and the WHERE condition
+		// would be vacuously false, returning all releases instead of an error.
+		var exists bool
+		if err := s.db.QueryRowContext(ctx,
+			`SELECT EXISTS(SELECT 1 FROM releases WHERE id = $1)`, afterID,
+		).Scan(&exists); err != nil {
+			return nil, fmt.Errorf("validate cursor: %w", err)
+		}
+		if !exists {
+			return nil, ErrInvalidCursor
+		}
+
 		// Use the row with id=afterID as the cursor.
 		if limit <= 0 {
 			rows, err = s.db.QueryContext(ctx,
@@ -1900,6 +1914,20 @@ func (s *Store) DeleteRelease(ctx context.Context, repo, name string) error {
 		return ErrReleaseNotFound
 	}
 	return nil
+}
+
+// CommitSequenceExists reports whether the given sequence number exists in the
+// commits table for the given repo.
+func (s *Store) CommitSequenceExists(ctx context.Context, repo string, sequence int64) (bool, error) {
+	var exists bool
+	err := s.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM commits WHERE repo = $1 AND sequence = $2)`,
+		repo, sequence,
+	).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("check commit sequence: %w", err)
+	}
+	return exists, nil
 }
 
 // isDuplicateKeyError checks if a PostgreSQL error is a unique violation (23505).
