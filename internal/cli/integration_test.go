@@ -49,7 +49,7 @@ func TestIntegrationPull_UpdatesFile(t *testing.T) {
 
 	// ws2: pull should update the file.
 	ws2Out.Reset()
-	if err := ws2.Pull(); err != nil {
+	if err := ws2.Pull(false); err != nil {
 		t.Fatalf("ws2 Pull: %v", err)
 	}
 
@@ -81,7 +81,7 @@ func TestIntegrationPull_NoOp(t *testing.T) {
 
 	// Pull again — nothing changed.
 	wsOut.Reset()
-	if err := ws.Pull(); err != nil {
+	if err := ws.Pull(false); err != nil {
 		t.Fatalf("Pull: %v", err)
 	}
 	if !strings.Contains(wsOut.String(), "0 downloaded") {
@@ -102,7 +102,7 @@ func TestIntegrationPull_DirtyBlocked(t *testing.T) {
 	// Create an uncommitted file — makes the tree dirty.
 	writeFile(t, ws, "uncommitted.txt", "not committed")
 
-	err := ws.Pull()
+	err := ws.Pull(false)
 	if err == nil {
 		t.Fatal("expected error for dirty tree, got nil")
 	}
@@ -144,7 +144,7 @@ func TestIntegrationPull_RemovesDeletedFile(t *testing.T) {
 	}
 
 	// ws2: pull should remove temp.txt from disk.
-	if err := ws2.Pull(); err != nil {
+	if err := ws2.Pull(false); err != nil {
 		t.Fatalf("ws2 Pull: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(ws2.Dir, "temp.txt")); !os.IsNotExist(err) {
