@@ -20,7 +20,7 @@ import (
 //
 // If the DOCSTORE_TEST_DSN environment variable is set, it is used instead of
 // starting a container (useful for local development with an existing server).
-func TestDB(t *testing.T, migrate func(*sql.DB) error) *sql.DB {
+func TestDB(t testing.TB, migrate func(*sql.DB) error) *sql.DB {
 	t.Helper()
 
 	// Allow override for local dev.
@@ -74,7 +74,7 @@ func TestDB(t *testing.T, migrate func(*sql.DB) error) *sql.DB {
 
 // testDBFromDSN is the legacy path: use a pre-existing PostgreSQL server via DSN.
 // It creates a unique database per test so parallel tests don't interfere.
-func testDBFromDSN(t *testing.T, dsn string, migrate func(*sql.DB) error) *sql.DB {
+func testDBFromDSN(t testing.TB, dsn string, migrate func(*sql.DB) error) *sql.DB {
 	t.Helper()
 
 	// Connect to the server using the provided DSN (admin connection).
