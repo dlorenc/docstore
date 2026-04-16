@@ -25,25 +25,8 @@ type runResponse struct {
 	Checks []executor.CheckResult `json:"checks"`
 }
 
-func main() {
-	buildkitAddr := flag.String("buildkit-addr", "unix:///run/buildkit/buildkitd.sock", "buildkitd socket address")
-	port := flag.String("port", "8080", "HTTP listen port")
-	flag.Parse()
-
-	var handler slog.Handler
-	if os.Getenv("LOG_FORMAT") == "text" {
-		handler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})
-	} else {
-		handler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})
-	}
-	slog.SetDefault(slog.New(handler))
-
-	exec, err := executor.New(*buildkitAddr)
-	if err != nil {
-		slog.Error("failed to connect to buildkitd", "addr", *buildkitAddr, "error", err)
-		os.Exit(1)
-	}
-
+// newMux returns an http.ServeMux wired to the given executor.
+func newMux(exec *executor.Executor) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /run", func(w http.ResponseWriter, r *http.Request) {
 		var req runRequest
@@ -84,6 +67,29 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(runResponse{Checks: results})
 	})
+	return mux
+}
+
+func main() {
+	buildkitAddr := flag.String("buildkit-addr", "unix:///run/buildkit/buildkitd.sock", "buildkitd socket address")
+	port := flag.String("port", "8080", "HTTP listen port")
+	flag.Parse()
+
+	var handler slog.Handler
+	if os.Getenv("LOG_FORMAT") == "text" {
+		handler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})
+	} else {
+		handler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})
+	}
+	slog.SetDefault(slog.New(handler))
+
+	exec, err := executor.New(*buildkitAddr)
+	if err != nil {
+		slog.Error("failed to connect to buildkitd", "addr", *buildkitAddr, "error", err)
+		os.Exit(1)
+	}
+
+	mux := newMux(exec)
 
 	srv := &http.Server{
 		Addr:        ":" + *port,
