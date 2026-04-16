@@ -109,6 +109,7 @@ CREATE TABLE check_runs (
     check_name TEXT NOT NULL,
     status     check_status NOT NULL,
     reporter   TEXT NOT NULL,
+    log_url    TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT check_runs_repo_branch_fk FOREIGN KEY (repo, branch) REFERENCES branches (repo, name)
 );

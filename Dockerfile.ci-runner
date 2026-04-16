@@ -1,0 +1,12 @@
+FROM moby/buildkit:v0.29.0 AS buildkit
+
+FROM golang:1.25 AS runner-build
+COPY . /src
+RUN go build -o /ci-runner ./cmd/ci-runner
+
+FROM debian:bookworm-slim
+COPY --from=buildkit    /usr/bin/buildkitd /usr/bin/buildkitd
+COPY --from=runner-build /ci-runner         /usr/bin/ci-runner
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]

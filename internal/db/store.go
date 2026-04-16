@@ -1196,7 +1196,8 @@ func (s *Store) ListReviews(ctx context.Context, repo, branch string, atSeq *int
 
 // CreateCheckRun records a CI check run for a branch at its current
 // head_sequence. Returns ErrBranchNotFound if the branch doesn't exist.
-func (s *Store) CreateCheckRun(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string) (*model.CheckRun, error) {
+// logURL is optional (may be nil) and stores a GCS URI or local file path.
+func (s *Store) CreateCheckRun(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string) (*model.CheckRun, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		slog.Error("tx begin failed", "op", "create_check_run", "error", err)
@@ -1222,11 +1223,15 @@ func (s *Store) CreateCheckRun(ctx context.Context, repo, branch, checkName stri
 
 	id := uuid.New().String()
 	var createdAt time.Time
+	var nullLogURL sql.NullString
+	if logURL != nil {
+		nullLogURL = sql.NullString{String: *logURL, Valid: true}
+	}
 	err = tx.QueryRowContext(ctx,
-		`INSERT INTO check_runs (id, repo, branch, sequence, check_name, status, reporter)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)
+		`INSERT INTO check_runs (id, repo, branch, sequence, check_name, status, reporter, log_url)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		 RETURNING created_at`,
-		id, repo, branch, headSeq, checkName, string(status), reporter,
+		id, repo, branch, headSeq, checkName, string(status), reporter, nullLogURL,
 	).Scan(&createdAt)
 	if err != nil {
 		return nil, fmt.Errorf("insert check_run: %w", err)
@@ -1243,6 +1248,7 @@ func (s *Store) CreateCheckRun(ctx context.Context, repo, branch, checkName stri
 		CheckName: checkName,
 		Status:    status,
 		Reporter:  reporter,
+		LogURL:    logURL,
 		CreatedAt: createdAt,
 	}, nil
 }
@@ -1251,7 +1257,7 @@ func (s *Store) CreateCheckRun(ctx context.Context, repo, branch, checkName stri
 // created_at DESC. If atSeq is non-nil, only check runs at that sequence are
 // returned.
 func (s *Store) ListCheckRuns(ctx context.Context, repo, branch string, atSeq *int64) ([]model.CheckRun, error) {
-	q := `SELECT id, sequence, check_name, status, reporter, created_at
+	q := `SELECT id, sequence, check_name, status, reporter, log_url, created_at
 	      FROM check_runs
 	      WHERE repo = $1 AND branch = $2`
 	args := []interface{}{repo, branch}
@@ -1272,10 +1278,14 @@ func (s *Store) ListCheckRuns(ctx context.Context, repo, branch string, atSeq *i
 		var cr model.CheckRun
 		cr.Branch = branch
 		var statusStr string
-		if err := rows.Scan(&cr.ID, &cr.Sequence, &cr.CheckName, &statusStr, &cr.Reporter, &cr.CreatedAt); err != nil {
+		var nullLogURL sql.NullString
+		if err := rows.Scan(&cr.ID, &cr.Sequence, &cr.CheckName, &statusStr, &cr.Reporter, &nullLogURL, &cr.CreatedAt); err != nil {
 			return nil, err
 		}
 		cr.Status = model.CheckRunStatus(statusStr)
+		if nullLogURL.Valid {
+			cr.LogURL = &nullLogURL.String
+		}
 		checkRuns = append(checkRuns, cr)
 	}
 	return checkRuns, rows.Err()
