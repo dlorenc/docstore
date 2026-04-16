@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dlorenc/docstore/api"
 	"github.com/dlorenc/docstore/internal/blob"
 )
 
@@ -448,21 +449,11 @@ func isBinaryContentType(ct string) bool {
 }
 
 // ChainEntry is one commit in the hash chain response.
-type ChainEntry struct {
-	Sequence   int64       `json:"sequence"`
-	Branch     string      `json:"branch"`
-	Author     string      `json:"author"`
-	Message    string      `json:"message"`
-	CreatedAt  time.Time   `json:"created_at"`
-	CommitHash *string     `json:"commit_hash"`
-	Files      []ChainFile `json:"files"`
-}
+// Aliased to api.ChainEntry so the public SDK and server agree on shape.
+type ChainEntry = api.ChainEntry
 
 // ChainFile is one file change within a ChainEntry.
-type ChainFile struct {
-	Path        string `json:"path"`
-	ContentHash string `json:"content_hash"`
-}
+type ChainFile = api.ChainFile
 
 // GetChain returns commit metadata for sequences in [from, to] inclusive,
 // ordered by sequence ascending. Each entry includes the commit_hash (if set)
