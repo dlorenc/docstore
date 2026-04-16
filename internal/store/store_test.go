@@ -3,9 +3,11 @@ package store_test
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"testing"
 
 	dbpkg "github.com/dlorenc/docstore/internal/db"
+	"github.com/dlorenc/docstore/internal/model"
 	"github.com/dlorenc/docstore/internal/store"
 	"github.com/dlorenc/docstore/internal/testutil"
 )
@@ -677,6 +679,40 @@ func TestBranchTree(t *testing.T) {
 	for _, want := range []string{"hello.txt", "new.txt", "world.txt"} {
 		if !paths[want] {
 			t.Errorf("expected %s in tree", want)
+		}
+	}
+}
+
+// BenchmarkGetChain_100 measures the server-side GetChain query cost for a
+// repo with 100 commits on main.
+func BenchmarkGetChain_100(b *testing.B) {
+	db := testutil.TestDB(b, dbpkg.RunMigrations)
+	ds := dbpkg.NewStore(db)
+	s := store.New(db)
+	ctx := context.Background()
+
+	const n = 100
+	for i := 1; i <= n; i++ {
+		_, err := ds.Commit(ctx, model.CommitRequest{
+			Repo:    "default/default",
+			Branch:  "main",
+			Files:   []model.FileChange{{Path: fmt.Sprintf("file%03d.txt", i), Content: []byte(fmt.Sprintf("content %d", i))}},
+			Message: fmt.Sprintf("commit %d", i),
+			Author:  "bench@example.com",
+		})
+		if err != nil {
+			b.Fatalf("setup commit %d: %v", i, err)
+		}
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		entries, err := s.GetChain(ctx, "default/default", 1, n)
+		if err != nil {
+			b.Fatalf("GetChain: %v", err)
+		}
+		if len(entries) != n {
+			b.Fatalf("expected %d entries, got %d", n, len(entries))
 		}
 	}
 }
