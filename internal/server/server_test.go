@@ -42,6 +42,15 @@ type mockStore struct {
 	listOrgsFn       func(ctx context.Context) ([]model.Org, error)
 	deleteOrgFn      func(ctx context.Context, name string) error
 	listOrgReposFn   func(ctx context.Context, owner string) ([]model.Repo, error)
+
+	getOrgMemberFn    func(ctx context.Context, org, identity string) (*model.OrgMember, error)
+	addOrgMemberFn    func(ctx context.Context, org, identity string, role model.OrgRole, invitedBy string) error
+	removeOrgMemberFn func(ctx context.Context, org, identity string) error
+	listOrgMembersFn  func(ctx context.Context, org string) ([]model.OrgMember, error)
+	createInviteFn    func(ctx context.Context, org, email string, role model.OrgRole, invitedBy, token string, expiresAt time.Time) (*model.OrgInvite, error)
+	listInvitesFn     func(ctx context.Context, org string) ([]model.OrgInvite, error)
+	acceptInviteFn    func(ctx context.Context, org, token, identity string) error
+	revokeInviteFn    func(ctx context.Context, org, inviteID string) error
 }
 
 func (m *mockStore) Commit(ctx context.Context, req model.CommitRequest) (*model.CommitResponse, error) {
@@ -210,6 +219,62 @@ func (m *mockStore) ListOrgRepos(ctx context.Context, owner string) ([]model.Rep
 		return m.listOrgReposFn(ctx, owner)
 	}
 	return []model.Repo{}, nil
+}
+
+func (m *mockStore) GetOrgMember(ctx context.Context, org, identity string) (*model.OrgMember, error) {
+	if m.getOrgMemberFn != nil {
+		return m.getOrgMemberFn(ctx, org, identity)
+	}
+	return nil, db.ErrOrgMemberNotFound
+}
+
+func (m *mockStore) AddOrgMember(ctx context.Context, org, identity string, role model.OrgRole, invitedBy string) error {
+	if m.addOrgMemberFn != nil {
+		return m.addOrgMemberFn(ctx, org, identity, role, invitedBy)
+	}
+	return nil
+}
+
+func (m *mockStore) RemoveOrgMember(ctx context.Context, org, identity string) error {
+	if m.removeOrgMemberFn != nil {
+		return m.removeOrgMemberFn(ctx, org, identity)
+	}
+	return db.ErrOrgMemberNotFound
+}
+
+func (m *mockStore) ListOrgMembers(ctx context.Context, org string) ([]model.OrgMember, error) {
+	if m.listOrgMembersFn != nil {
+		return m.listOrgMembersFn(ctx, org)
+	}
+	return []model.OrgMember{}, nil
+}
+
+func (m *mockStore) CreateInvite(ctx context.Context, org, email string, role model.OrgRole, invitedBy, token string, expiresAt time.Time) (*model.OrgInvite, error) {
+	if m.createInviteFn != nil {
+		return m.createInviteFn(ctx, org, email, role, invitedBy, token, expiresAt)
+	}
+	return &model.OrgInvite{ID: "test-invite-id", Token: token}, nil
+}
+
+func (m *mockStore) ListInvites(ctx context.Context, org string) ([]model.OrgInvite, error) {
+	if m.listInvitesFn != nil {
+		return m.listInvitesFn(ctx, org)
+	}
+	return []model.OrgInvite{}, nil
+}
+
+func (m *mockStore) AcceptInvite(ctx context.Context, org, token, identity string) error {
+	if m.acceptInviteFn != nil {
+		return m.acceptInviteFn(ctx, org, token, identity)
+	}
+	return nil
+}
+
+func (m *mockStore) RevokeInvite(ctx context.Context, org, inviteID string) error {
+	if m.revokeInviteFn != nil {
+		return m.revokeInviteFn(ctx, org, inviteID)
+	}
+	return nil
 }
 
 func TestHealthEndpoint(t *testing.T) {
@@ -2329,5 +2394,349 @@ func TestHandleChain_InvalidFrom(t *testing.T) {
 	h.ServeHTTP(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for invalid from, got %d", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Org membership handler tests
+// ---------------------------------------------------------------------------
+
+func TestHandleListOrgMembers_Forbidden(t *testing.T) {
+	ms := &mockStore{
+		getOrgFn: func(_ context.Context, name string) (*model.Org, error) {
+			return &model.Org{Name: name}, nil
+		},
+		// getOrgMemberFn not set → returns ErrOrgMemberNotFound → 403
+	}
+	h := newTestHandler(ms, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/orgs/acme/members", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403, got %d", w.Code)
+	}
+}
+
+func TestHandleListOrgMembers_Success(t *testing.T) {
+	members := []model.OrgMember{
+		{Org: "acme", Identity: devID, Role: model.OrgRoleOwner, InvitedBy: "system"},
+	}
+	ms := &mockStore{
+		getOrgFn: func(_ context.Context, name string) (*model.Org, error) {
+			return &model.Org{Name: name}, nil
+		},
+		getOrgMemberFn: func(_ context.Context, org, identity string) (*model.OrgMember, error) {
+			return &model.OrgMember{Org: org, Identity: identity, Role: model.OrgRoleOwner}, nil
+		},
+		listOrgMembersFn: func(_ context.Context, org string) ([]model.OrgMember, error) {
+			return members, nil
+		},
+	}
+	h := newTestHandler(ms, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/orgs/acme/members", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp model.OrgMembersResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Members) != 1 {
+		t.Errorf("expected 1 member, got %d", len(resp.Members))
+	}
+}
+
+func TestHandleAddOrgMember_OwnerRequired(t *testing.T) {
+	ms := &mockStore{
+		getOrgFn: func(_ context.Context, name string) (*model.Org, error) {
+			return &model.Org{Name: name}, nil
+		},
+		getOrgMemberFn: func(_ context.Context, org, identity string) (*model.OrgMember, error) {
+			// Identity is a member, not an owner.
+			return &model.OrgMember{Org: org, Identity: identity, Role: model.OrgRoleMember}, nil
+		},
+	}
+	h := newTestHandler(ms, nil, nil)
+
+	body := bytes.NewBufferString(`{"role":"member"}`)
+	req := httptest.NewRequest(http.MethodPost, "/orgs/acme/members/bob@example.com", body)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403, got %d", w.Code)
+	}
+}
+
+func TestHandleAddOrgMember_Success(t *testing.T) {
+	var captured struct{ identity, role string }
+	ms := &mockStore{
+		getOrgFn: func(_ context.Context, name string) (*model.Org, error) {
+			return &model.Org{Name: name}, nil
+		},
+		getOrgMemberFn: func(_ context.Context, org, identity string) (*model.OrgMember, error) {
+			return &model.OrgMember{Org: org, Identity: identity, Role: model.OrgRoleOwner}, nil
+		},
+		addOrgMemberFn: func(_ context.Context, org, identity string, role model.OrgRole, invitedBy string) error {
+			captured.identity = identity
+			captured.role = string(role)
+			return nil
+		},
+	}
+	h := newTestHandler(ms, nil, nil)
+
+	body := bytes.NewBufferString(`{"role":"member"}`)
+	req := httptest.NewRequest(http.MethodPost, "/orgs/acme/members/bob@example.com", body)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if captured.identity != "bob@example.com" {
+		t.Errorf("unexpected identity: %q", captured.identity)
+	}
+	if captured.role != "member" {
+		t.Errorf("unexpected role: %q", captured.role)
+	}
+}
+
+func TestHandleRemoveOrgMember_Success(t *testing.T) {
+	var removed string
+	ms := &mockStore{
+		getOrgFn: func(_ context.Context, name string) (*model.Org, error) {
+			return &model.Org{Name: name}, nil
+		},
+		getOrgMemberFn: func(_ context.Context, org, identity string) (*model.OrgMember, error) {
+			return &model.OrgMember{Org: org, Identity: identity, Role: model.OrgRoleOwner}, nil
+		},
+		removeOrgMemberFn: func(_ context.Context, org, identity string) error {
+			removed = identity
+			return nil
+		},
+	}
+	h := newTestHandler(ms, nil, nil)
+
+	req := httptest.NewRequest(http.MethodDelete, "/orgs/acme/members/bob@example.com", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Errorf("expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+	if removed != "bob@example.com" {
+		t.Errorf("unexpected removed identity: %q", removed)
+	}
+}
+
+func TestHandleRemoveOrgMember_NotFound(t *testing.T) {
+	ms := &mockStore{
+		getOrgFn: func(_ context.Context, name string) (*model.Org, error) {
+			return &model.Org{Name: name}, nil
+		},
+		getOrgMemberFn: func(_ context.Context, org, identity string) (*model.OrgMember, error) {
+			return &model.OrgMember{Org: org, Identity: identity, Role: model.OrgRoleOwner}, nil
+		},
+		removeOrgMemberFn: func(_ context.Context, org, identity string) error {
+			return db.ErrOrgMemberNotFound
+		},
+	}
+	h := newTestHandler(ms, nil, nil)
+
+	req := httptest.NewRequest(http.MethodDelete, "/orgs/acme/members/nobody@example.com", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Org invite handler tests
+// ---------------------------------------------------------------------------
+
+func TestHandleCreateInvite_Success(t *testing.T) {
+	ms := &mockStore{
+		getOrgFn: func(_ context.Context, name string) (*model.Org, error) {
+			return &model.Org{Name: name}, nil
+		},
+		getOrgMemberFn: func(_ context.Context, org, identity string) (*model.OrgMember, error) {
+			return &model.OrgMember{Org: org, Identity: identity, Role: model.OrgRoleOwner}, nil
+		},
+		createInviteFn: func(_ context.Context, org, email string, role model.OrgRole, invitedBy, token string, expiresAt time.Time) (*model.OrgInvite, error) {
+			return &model.OrgInvite{ID: "inv-1", Token: token}, nil
+		},
+	}
+	h := newTestHandler(ms, nil, nil)
+
+	body := bytes.NewBufferString(`{"email":"newuser@example.com","role":"member"}`)
+	req := httptest.NewRequest(http.MethodPost, "/orgs/acme/invites", body)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Errorf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp model.CreateInviteResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.ID != "inv-1" {
+		t.Errorf("unexpected id: %q", resp.ID)
+	}
+	if resp.Token == "" {
+		t.Error("expected non-empty token")
+	}
+}
+
+func TestHandleCreateInvite_InvalidRole(t *testing.T) {
+	ms := &mockStore{
+		getOrgFn: func(_ context.Context, name string) (*model.Org, error) {
+			return &model.Org{Name: name}, nil
+		},
+		getOrgMemberFn: func(_ context.Context, org, identity string) (*model.OrgMember, error) {
+			return &model.OrgMember{Org: org, Identity: identity, Role: model.OrgRoleOwner}, nil
+		},
+	}
+	h := newTestHandler(ms, nil, nil)
+
+	body := bytes.NewBufferString(`{"email":"newuser@example.com","role":"admin"}`)
+	req := httptest.NewRequest(http.MethodPost, "/orgs/acme/invites", body)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestHandleListInvites_Success(t *testing.T) {
+	invites := []model.OrgInvite{
+		{ID: "inv-1", Org: "acme", Email: "x@example.com", Role: model.OrgRoleMember, ExpiresAt: time.Now().Add(24 * time.Hour)},
+	}
+	ms := &mockStore{
+		getOrgFn: func(_ context.Context, name string) (*model.Org, error) {
+			return &model.Org{Name: name}, nil
+		},
+		getOrgMemberFn: func(_ context.Context, org, identity string) (*model.OrgMember, error) {
+			return &model.OrgMember{Org: org, Identity: identity, Role: model.OrgRoleOwner}, nil
+		},
+		listInvitesFn: func(_ context.Context, org string) ([]model.OrgInvite, error) {
+			return invites, nil
+		},
+	}
+	h := newTestHandler(ms, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/orgs/acme/invites", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp model.OrgInvitesResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Invites) != 1 {
+		t.Errorf("expected 1 invite, got %d", len(resp.Invites))
+	}
+}
+
+func TestHandleAcceptInvite_Success(t *testing.T) {
+	ms := &mockStore{
+		acceptInviteFn: func(_ context.Context, org, token, identity string) error {
+			return nil
+		},
+	}
+	h := newTestHandler(ms, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/orgs/acme/invites/mytoken123/accept", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Errorf("expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleAcceptInvite_EmailMismatch(t *testing.T) {
+	ms := &mockStore{
+		acceptInviteFn: func(_ context.Context, org, token, identity string) error {
+			return db.ErrEmailMismatch
+		},
+	}
+	h := newTestHandler(ms, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/orgs/acme/invites/mytoken123/accept", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403, got %d", w.Code)
+	}
+}
+
+func TestHandleAcceptInvite_Expired(t *testing.T) {
+	ms := &mockStore{
+		acceptInviteFn: func(_ context.Context, org, token, identity string) error {
+			return db.ErrInviteExpired
+		},
+	}
+	h := newTestHandler(ms, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/orgs/acme/invites/mytoken123/accept", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusGone {
+		t.Errorf("expected 410, got %d", w.Code)
+	}
+}
+
+func TestHandleRevokeInvite_Success(t *testing.T) {
+	var revokedID string
+	ms := &mockStore{
+		getOrgFn: func(_ context.Context, name string) (*model.Org, error) {
+			return &model.Org{Name: name}, nil
+		},
+		getOrgMemberFn: func(_ context.Context, org, identity string) (*model.OrgMember, error) {
+			return &model.OrgMember{Org: org, Identity: identity, Role: model.OrgRoleOwner}, nil
+		},
+		revokeInviteFn: func(_ context.Context, org, inviteID string) error {
+			revokedID = inviteID
+			return nil
+		},
+	}
+	h := newTestHandler(ms, nil, nil)
+
+	req := httptest.NewRequest(http.MethodDelete, "/orgs/acme/invites/inv-abc", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Errorf("expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+	if revokedID != "inv-abc" {
+		t.Errorf("unexpected revoked id: %q", revokedID)
+	}
+}
+
+func TestHandleRevokeInvite_NotFound(t *testing.T) {
+	ms := &mockStore{
+		getOrgFn: func(_ context.Context, name string) (*model.Org, error) {
+			return &model.Org{Name: name}, nil
+		},
+		getOrgMemberFn: func(_ context.Context, org, identity string) (*model.OrgMember, error) {
+			return &model.OrgMember{Org: org, Identity: identity, Role: model.OrgRoleOwner}, nil
+		},
+		revokeInviteFn: func(_ context.Context, org, inviteID string) error {
+			return db.ErrInviteNotFound
+		},
+	}
+	h := newTestHandler(ms, nil, nil)
+
+	req := httptest.NewRequest(http.MethodDelete, "/orgs/acme/invites/no-such-id", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w.Code)
 	}
 }
