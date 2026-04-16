@@ -60,6 +60,11 @@ type mockStore struct {
 	listReleasesFn         func(ctx context.Context, repo string, limit int, afterID string) ([]model.Release, error)
 	deleteReleaseFn        func(ctx context.Context, repo, name string) error
 	commitSequenceExistsFn func(ctx context.Context, repo string, sequence int64) (bool, error)
+
+	createSubscriptionFn func(ctx context.Context, req model.CreateSubscriptionRequest) (*model.EventSubscription, error)
+	listSubscriptionsFn  func(ctx context.Context) ([]model.EventSubscription, error)
+	deleteSubscriptionFn func(ctx context.Context, id string) error
+	resumeSubscriptionFn func(ctx context.Context, id string) error
 }
 
 func (m *mockStore) Commit(ctx context.Context, req model.CommitRequest) (*model.CommitResponse, error) {
@@ -326,6 +331,34 @@ func (m *mockStore) CommitSequenceExists(ctx context.Context, repo string, seque
 		return m.commitSequenceExistsFn(ctx, repo, sequence)
 	}
 	return true, nil
+}
+
+func (m *mockStore) CreateSubscription(ctx context.Context, req model.CreateSubscriptionRequest) (*model.EventSubscription, error) {
+	if m.createSubscriptionFn != nil {
+		return m.createSubscriptionFn(ctx, req)
+	}
+	return &model.EventSubscription{ID: "test-sub-id", Backend: req.Backend}, nil
+}
+
+func (m *mockStore) ListSubscriptions(ctx context.Context) ([]model.EventSubscription, error) {
+	if m.listSubscriptionsFn != nil {
+		return m.listSubscriptionsFn(ctx)
+	}
+	return []model.EventSubscription{}, nil
+}
+
+func (m *mockStore) DeleteSubscription(ctx context.Context, id string) error {
+	if m.deleteSubscriptionFn != nil {
+		return m.deleteSubscriptionFn(ctx, id)
+	}
+	return nil
+}
+
+func (m *mockStore) ResumeSubscription(ctx context.Context, id string) error {
+	if m.resumeSubscriptionFn != nil {
+		return m.resumeSubscriptionFn(ctx, id)
+	}
+	return nil
 }
 
 func TestHealthEndpoint(t *testing.T) {

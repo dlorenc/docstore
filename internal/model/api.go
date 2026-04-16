@@ -1,6 +1,9 @@
 package model
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // ---------------------------------------------------------------------------
 // Pagination
@@ -412,6 +415,30 @@ type CreateReleaseRequest struct {
 // ListReleasesResponse is the response for GET /repos/:name/-/releases.
 type ListReleasesResponse struct {
 	Releases []Release `json:"releases"`
+}
+
+// ---------------------------------------------------------------------------
+// POST /subscriptions / GET /subscriptions / DELETE /subscriptions/{id}
+// POST /subscriptions/{id}/resume
+// ---------------------------------------------------------------------------
+
+// CreateSubscriptionRequest is the body for POST /subscriptions.
+type CreateSubscriptionRequest struct {
+	// Repo is the repo to subscribe to (optional; nil means all repos).
+	Repo *string `json:"repo,omitempty"`
+	// EventTypes is the list of event types to subscribe to (optional; nil means all types).
+	EventTypes []string `json:"event_types,omitempty"`
+	// Backend must be "webhook" for Milestone 1.
+	Backend string `json:"backend"`
+	// Config is backend-specific: {"url":"https://...","secret":"..."}
+	Config json.RawMessage `json:"config"`
+	// CreatedBy is populated by the server from the IAP identity; not set by clients.
+	CreatedBy string `json:"-"`
+}
+
+// ListSubscriptionsResponse is the response for GET /subscriptions.
+type ListSubscriptionsResponse struct {
+	Subscriptions []EventSubscription `json:"subscriptions"`
 }
 
 // ---------------------------------------------------------------------------

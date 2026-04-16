@@ -74,6 +74,15 @@ func (rw *responseWriter) Write(b []byte) (int, error) {
 	return n, err
 }
 
+// Flush implements http.Flusher by forwarding to the underlying writer if it
+// supports flushing. This is required for SSE streaming to work through the
+// RequestLogger middleware.
+func (rw *responseWriter) Flush() {
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 // repoFromPath extracts the repo name from any /repos/:name... URL path.
 // Returns "" for non-repo paths.
 func repoFromPath(path string) string {
