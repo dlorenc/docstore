@@ -1706,6 +1706,17 @@ func (s *server) handleCreateRelease(w http.ResponseWriter, r *http.Request) {
 	var sequence int64
 	if req.Sequence != nil {
 		sequence = *req.Sequence
+		// Validate that the provided sequence actually exists in the commits table.
+		exists, err := s.commitStore.CommitSequenceExists(r.Context(), repo, sequence)
+		if err != nil {
+			slog.Error("internal error", "op", "create_release_seq_check", "repo", repo, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+			return
+		}
+		if !exists {
+			writeError(w, http.StatusBadRequest, "sequence not found")
+			return
+		}
 	} else {
 		if s.readStore == nil {
 			writeError(w, http.StatusServiceUnavailable, "read store not available")
@@ -1756,6 +1767,10 @@ func (s *server) handleListReleases(w http.ResponseWriter, r *http.Request) {
 
 	releases, err := s.commitStore.ListReleases(r.Context(), repo, limit, afterID)
 	if err != nil {
+		if errors.Is(err, db.ErrInvalidCursor) {
+			writeError(w, http.StatusBadRequest, "invalid pagination cursor")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
@@ -1768,6 +1783,9 @@ func (s *server) handleListReleases(w http.ResponseWriter, r *http.Request) {
 // handleGetRelease implements GET /repos/:name/-/releases/:release (reader+)
 func (s *server) handleGetRelease(w http.ResponseWriter, r *http.Request) {
 	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
 	releaseName := r.PathValue("release")
 
 	rel, err := s.commitStore.GetRelease(r.Context(), repo, releaseName)
@@ -1786,6 +1804,9 @@ func (s *server) handleGetRelease(w http.ResponseWriter, r *http.Request) {
 // handleDeleteRelease implements DELETE /repos/:name/-/releases/:release (admin only)
 func (s *server) handleDeleteRelease(w http.ResponseWriter, r *http.Request) {
 	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
 	releaseName := r.PathValue("release")
 
 	if err := s.commitStore.DeleteRelease(r.Context(), repo, releaseName); err != nil {
