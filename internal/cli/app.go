@@ -2,6 +2,7 @@
 package cli
 
 import (
+	"archive/tar"
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
@@ -796,12 +797,126 @@ func (a *App) Verify() error {
 }
 
 // syncTree fetches the full tree from the server and updates local files.
+// syncArchive performs an initial clone by fetching the archive endpoint and
+// extracting files directly. Returns (true, nil) on success, (false, nil) if
+// the server doesn't support archives (404), or (true, err) on any other error.
+func (a *App) syncArchive(cfg *Config, branch string, st *State) (bool, error) {
+	q := url.Values{}
+	q.Set("branch", branch)
+	resp, err := a.httpGet(cfg, repoBase(cfg)+"/archive?"+q.Encode())
+	if err != nil {
+		return true, fmt.Errorf("fetching archive: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return false, nil // server doesn't support archive endpoint
+	}
+	if resp.StatusCode != http.StatusOK {
+		return true, fmt.Errorf("archive: unexpected status %d", resp.StatusCode)
+	}
+
+	// Extract tar entries into the working directory.
+	tr := tar.NewReader(resp.Body)
+	extracted := 0
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return true, fmt.Errorf("reading archive: %w", err)
+		}
+		localPath := filepath.Join(a.Dir, filepath.FromSlash(hdr.Name))
+		if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
+			return true, err
+		}
+		content, err := io.ReadAll(tr)
+		if err != nil {
+			return true, fmt.Errorf("reading %s from archive: %w", hdr.Name, err)
+		}
+		if err := os.WriteFile(localPath, content, 0644); err != nil {
+			return true, err
+		}
+		extracted++
+	}
+
+	// Do one tree call to populate st.Files with content hashes.
+	serverFiles := make(map[string]string)
+	after := ""
+	for {
+		q := url.Values{}
+		q.Set("branch", branch)
+		q.Set("limit", "100")
+		if after != "" {
+			q.Set("after", after)
+		}
+		tresp, err := a.httpGet(cfg, repoBase(cfg)+"/tree?"+q.Encode())
+		if err != nil {
+			return true, fmt.Errorf("fetching tree after archive: %w", err)
+		}
+		var entries []treeEntry
+		if err := json.NewDecoder(tresp.Body).Decode(&entries); err != nil {
+			tresp.Body.Close()
+			return true, fmt.Errorf("decoding tree: %w", err)
+		}
+		tresp.Body.Close()
+
+		for _, e := range entries {
+			serverFiles[e.Path] = e.ContentHash
+		}
+		if len(entries) < 100 {
+			break
+		}
+		after = entries[len(entries)-1].Path
+	}
+
+	// Fetch branch head sequence.
+	brResp, err := a.httpGet(cfg, repoBase(cfg)+"/branches")
+	if err != nil {
+		return true, fmt.Errorf("fetching branches: %w", err)
+	}
+	var branches []model.Branch
+	if err := json.NewDecoder(brResp.Body).Decode(&branches); err != nil {
+		brResp.Body.Close()
+		return true, fmt.Errorf("decoding branches: %w", err)
+	}
+	brResp.Body.Close()
+	for _, b := range branches {
+		if b.Name == branch {
+			st.Sequence = b.HeadSequence
+			break
+		}
+	}
+
+	st.Branch = branch
+	st.Files = serverFiles
+	if err := a.saveState(st); err != nil {
+		return true, err
+	}
+
+	fmt.Fprintf(a.Out, "Synced branch '%s' (archive: %d files)\n", branch, extracted)
+	return true, nil
+}
+
 // skipVerify is accepted for API consistency with Pull but is unused here;
 // verification occurs in Pull after syncTree returns.
 func (a *App) syncTree(cfg *Config, branch string, skipVerify bool) error {
 	st, err := a.loadState()
 	if err != nil {
 		return err
+	}
+
+	// Fast path for initial clone: use archive endpoint if available.
+	if len(st.Files) == 0 {
+		ok, err := a.syncArchive(cfg, branch, st)
+		if err != nil {
+			return err
+		}
+		if ok {
+			return nil
+		}
+		// Server returned 404 for archive; fall through to tree+delta.
 	}
 
 	// Fetch full tree with pagination.
