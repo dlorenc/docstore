@@ -84,6 +84,12 @@ type WriteStore interface {
 
 	// Purge
 	Purge(ctx context.Context, req db.PurgeRequest) (*db.PurgeResult, error)
+
+	// Release management
+	CreateRelease(ctx context.Context, repo, name string, sequence int64, body, createdBy string) (*model.Release, error)
+	GetRelease(ctx context.Context, repo, name string) (*model.Release, error)
+	ListReleases(ctx context.Context, repo string, limit int, afterID string) ([]model.Release, error)
+	DeleteRelease(ctx context.Context, repo, name string) error
 }
 
 // CommitStore is an alias for backward compatibility with tests.

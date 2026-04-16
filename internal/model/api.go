@@ -380,6 +380,26 @@ type OrgInvitesResponse struct {
 }
 
 // ---------------------------------------------------------------------------
+// POST /repos/{owner}/{name}/-/releases
+// GET  /repos/{owner}/{name}/-/releases
+// GET  /repos/{owner}/{name}/-/releases/{name}
+// DELETE /repos/{owner}/{name}/-/releases/{name}
+// ---------------------------------------------------------------------------
+
+// CreateReleaseRequest is the body for POST /repos/:name/-/releases.
+// Sequence defaults to the current main head if omitted.
+type CreateReleaseRequest struct {
+	Name     string `json:"name"`
+	Sequence *int64 `json:"sequence,omitempty"`
+	Body     string `json:"body,omitempty"`
+}
+
+// ListReleasesResponse is the response for GET /repos/:name/-/releases.
+type ListReleasesResponse struct {
+	Releases []Release `json:"releases"`
+}
+
+// ---------------------------------------------------------------------------
 // Error
 // ---------------------------------------------------------------------------
 
