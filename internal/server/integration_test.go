@@ -1717,3 +1717,198 @@ func TestIntegrationPurge_FullFlow(t *testing.T) {
 		t.Error("merged.txt (from merged branch) must still be present on main")
 	}
 }
+
+// TestIntegrationReleases tests the full lifecycle: create, list, get, ?at= resolution, and delete.
+func TestIntegrationReleases(t *testing.T) {
+	t.Parallel()
+	database := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
+	seed(t, database)
+	handler := server.New(dbpkg.NewStore(database), database, "test@example.com", "test@example.com")
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	// Helper for authenticated requests.
+	doReq := func(method, url, body string) *http.Response {
+		t.Helper()
+		var reqBody *strings.Reader
+		if body != "" {
+			reqBody = strings.NewReader(body)
+		} else {
+			reqBody = strings.NewReader("")
+		}
+		req, err := http.NewRequest(method, url, reqBody)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, url, err)
+		}
+		return resp
+	}
+
+	base := srv.URL + "/repos/default/default/-"
+
+	// CREATE: explicit sequence.
+	resp := doReq(http.MethodPost, base+"/releases", `{"name":"v1.0","sequence":2,"body":"first release"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create release: expected 201, got %d", resp.StatusCode)
+	}
+	var created struct {
+		ID       string `json:"id"`
+		Name     string `json:"name"`
+		Sequence int64  `json:"sequence"`
+		Body     string `json:"body"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	if created.Name != "v1.0" {
+		t.Errorf("expected name=v1.0, got %s", created.Name)
+	}
+	if created.Sequence != 2 {
+		t.Errorf("expected sequence=2, got %d", created.Sequence)
+	}
+	if created.Body != "first release" {
+		t.Errorf("expected body='first release', got %s", created.Body)
+	}
+
+	// CREATE: duplicate name should conflict.
+	resp2 := doReq(http.MethodPost, base+"/releases", `{"name":"v1.0","sequence":1}`)
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusConflict {
+		t.Errorf("duplicate release: expected 409, got %d", resp2.StatusCode)
+	}
+
+	// CREATE: default sequence (omit sequence → uses main head = 4 from seed).
+	resp3 := doReq(http.MethodPost, base+"/releases", `{"name":"v2.0"}`)
+	defer resp3.Body.Close()
+	if resp3.StatusCode != http.StatusCreated {
+		t.Fatalf("create v2.0: expected 201, got %d", resp3.StatusCode)
+	}
+	var created2 struct {
+		Sequence int64 `json:"sequence"`
+	}
+	if err := json.NewDecoder(resp3.Body).Decode(&created2); err != nil {
+		t.Fatalf("decode v2.0 response: %v", err)
+	}
+	if created2.Sequence != 4 {
+		t.Errorf("expected default sequence=4 (main head), got %d", created2.Sequence)
+	}
+
+	// LIST: should see both releases, newest first.
+	listResp := doReq(http.MethodGet, base+"/releases", "")
+	defer listResp.Body.Close()
+	if listResp.StatusCode != http.StatusOK {
+		t.Fatalf("list releases: expected 200, got %d", listResp.StatusCode)
+	}
+	var listBody struct {
+		Releases []struct {
+			Name     string `json:"name"`
+			Sequence int64  `json:"sequence"`
+		} `json:"releases"`
+	}
+	if err := json.NewDecoder(listResp.Body).Decode(&listBody); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if len(listBody.Releases) != 2 {
+		t.Fatalf("expected 2 releases, got %d", len(listBody.Releases))
+	}
+	// Newest first: v2.0 (created later) should come first.
+	if listBody.Releases[0].Name != "v2.0" {
+		t.Errorf("expected newest release first (v2.0), got %s", listBody.Releases[0].Name)
+	}
+
+	// GET: single release.
+	getResp := doReq(http.MethodGet, base+"/releases/v1.0", "")
+	defer getResp.Body.Close()
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("get release: expected 200, got %d", getResp.StatusCode)
+	}
+	var getBody struct {
+		Name     string `json:"name"`
+		Sequence int64  `json:"sequence"`
+	}
+	if err := json.NewDecoder(getResp.Body).Decode(&getBody); err != nil {
+		t.Fatalf("decode get response: %v", err)
+	}
+	if getBody.Name != "v1.0" || getBody.Sequence != 2 {
+		t.Errorf("unexpected get response: %+v", getBody)
+	}
+
+	// GET: not found.
+	notFound := doReq(http.MethodGet, base+"/releases/nonexistent", "")
+	defer notFound.Body.Close()
+	if notFound.StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404 for nonexistent release, got %d", notFound.StatusCode)
+	}
+
+	// ?at= RESOLUTION: use release name on tree endpoint.
+	treeAtRelease := doReq(http.MethodGet, base+"/tree?at=v1.0", "")
+	defer treeAtRelease.Body.Close()
+	if treeAtRelease.StatusCode != http.StatusOK {
+		t.Fatalf("tree?at=v1.0: expected 200, got %d", treeAtRelease.StatusCode)
+	}
+	var treeEntries []struct {
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(treeAtRelease.Body).Decode(&treeEntries); err != nil {
+		t.Fatalf("decode tree at release: %v", err)
+	}
+	// At sequence 2 (v1.0), tree should have hello.txt and world.txt (deleted.txt added at seq=3).
+	treePaths := make(map[string]bool)
+	for _, e := range treeEntries {
+		treePaths[e.Path] = true
+	}
+	if !treePaths["hello.txt"] {
+		t.Error("expected hello.txt in tree at v1.0")
+	}
+	if treePaths["deleted.txt"] {
+		t.Error("deleted.txt should not be present in tree at v1.0 (added at seq=3)")
+	}
+
+	// ?at= RESOLUTION: invalid value returns 400.
+	badAt := doReq(http.MethodGet, base+"/tree?at=nonexistent-release", "")
+	defer badAt.Body.Close()
+	if badAt.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400 for unknown ?at= value, got %d", badAt.StatusCode)
+	}
+
+	// ?at= RESOLUTION: integer still works.
+	treeAtInt := doReq(http.MethodGet, base+"/tree?at=1", "")
+	defer treeAtInt.Body.Close()
+	if treeAtInt.StatusCode != http.StatusOK {
+		t.Errorf("tree?at=1: expected 200, got %d", treeAtInt.StatusCode)
+	}
+
+	// DELETE: remove v1.0.
+	delResp := doReq(http.MethodDelete, base+"/releases/v1.0", "")
+	defer delResp.Body.Close()
+	if delResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete release: expected 204, got %d", delResp.StatusCode)
+	}
+
+	// GET after delete: should 404.
+	afterDel := doReq(http.MethodGet, base+"/releases/v1.0", "")
+	defer afterDel.Body.Close()
+	if afterDel.StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404 after delete, got %d", afterDel.StatusCode)
+	}
+
+	// LIST after delete: only v2.0 remains.
+	listResp2 := doReq(http.MethodGet, base+"/releases", "")
+	defer listResp2.Body.Close()
+	var listBody2 struct {
+		Releases []struct{ Name string `json:"name"` } `json:"releases"`
+	}
+	if err := json.NewDecoder(listResp2.Body).Decode(&listBody2); err != nil {
+		t.Fatalf("decode list after delete: %v", err)
+	}
+	if len(listBody2.Releases) != 1 || listBody2.Releases[0].Name != "v2.0" {
+		t.Errorf("expected only v2.0 remaining, got %+v", listBody2.Releases)
+	}
+}

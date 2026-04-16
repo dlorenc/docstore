@@ -3637,3 +3637,106 @@ func TestGetRole_OrgFallback(t *testing.T) {
 		t.Errorf("expected explicit admin role to win, got %s", role.Role)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Release store tests
+// ---------------------------------------------------------------------------
+
+func TestRelease_CreateListGetDelete(t *testing.T) {
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	// Create a release.
+	rel, err := s.CreateRelease(ctx, "default/default", "v1.0", 5, "initial release", "alice@example.com")
+	if err != nil {
+		t.Fatalf("CreateRelease: %v", err)
+	}
+	if rel.Name != "v1.0" || rel.Sequence != 5 || rel.Body != "initial release" || rel.CreatedBy != "alice@example.com" {
+		t.Errorf("unexpected release: %+v", rel)
+	}
+	if rel.ID == "" {
+		t.Error("expected non-empty ID")
+	}
+
+	// Create a second release (different name).
+	rel2, err := s.CreateRelease(ctx, "default/default", "v2.0", 10, "", "bob@example.com")
+	if err != nil {
+		t.Fatalf("CreateRelease v2.0: %v", err)
+	}
+	if rel2.Name != "v2.0" || rel2.Sequence != 10 {
+		t.Errorf("unexpected v2.0: %+v", rel2)
+	}
+
+	// Duplicate name returns ErrReleaseExists.
+	_, err = s.CreateRelease(ctx, "default/default", "v1.0", 3, "", "carol@example.com")
+	if !errors.Is(err, ErrReleaseExists) {
+		t.Errorf("expected ErrReleaseExists, got %v", err)
+	}
+
+	// GetRelease returns the correct entry.
+	got, err := s.GetRelease(ctx, "default/default", "v1.0")
+	if err != nil {
+		t.Fatalf("GetRelease: %v", err)
+	}
+	if got.Sequence != 5 || got.Body != "initial release" {
+		t.Errorf("unexpected GetRelease result: %+v", got)
+	}
+
+	// GetRelease for unknown name returns ErrReleaseNotFound.
+	_, err = s.GetRelease(ctx, "default/default", "nonexistent")
+	if !errors.Is(err, ErrReleaseNotFound) {
+		t.Errorf("expected ErrReleaseNotFound, got %v", err)
+	}
+
+	// ListReleases returns both, newest first.
+	list, err := s.ListReleases(ctx, "default/default", 0, "")
+	if err != nil {
+		t.Fatalf("ListReleases: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("expected 2 releases, got %d", len(list))
+	}
+	// v2.0 was created after v1.0 so should appear first.
+	if list[0].Name != "v2.0" {
+		t.Errorf("expected v2.0 first (newest), got %s", list[0].Name)
+	}
+
+	// ListReleases with limit=1.
+	limited, err := s.ListReleases(ctx, "default/default", 1, "")
+	if err != nil {
+		t.Fatalf("ListReleases limit 1: %v", err)
+	}
+	if len(limited) != 1 {
+		t.Fatalf("expected 1 release, got %d", len(limited))
+	}
+	if limited[0].Name != "v2.0" {
+		t.Errorf("expected v2.0, got %s", limited[0].Name)
+	}
+
+	// ListReleases with afterID cursor (page 2).
+	page2, err := s.ListReleases(ctx, "default/default", 0, limited[0].ID)
+	if err != nil {
+		t.Fatalf("ListReleases page2: %v", err)
+	}
+	if len(page2) != 1 || page2[0].Name != "v1.0" {
+		t.Errorf("expected page2=[v1.0], got %+v", page2)
+	}
+
+	// DeleteRelease removes it.
+	if err := s.DeleteRelease(ctx, "default/default", "v1.0"); err != nil {
+		t.Fatalf("DeleteRelease: %v", err)
+	}
+
+	// Now GetRelease should return ErrReleaseNotFound.
+	_, err = s.GetRelease(ctx, "default/default", "v1.0")
+	if !errors.Is(err, ErrReleaseNotFound) {
+		t.Errorf("expected ErrReleaseNotFound after delete, got %v", err)
+	}
+
+	// DeleteRelease for unknown name returns ErrReleaseNotFound.
+	if err := s.DeleteRelease(ctx, "default/default", "nonexistent"); !errors.Is(err, ErrReleaseNotFound) {
+		t.Errorf("expected ErrReleaseNotFound, got %v", err)
+	}
+}
