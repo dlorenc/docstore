@@ -1,6 +1,7 @@
 package db
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -12,6 +13,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/dlorenc/docstore/internal/blob"
 	"github.com/dlorenc/docstore/internal/model"
 	"github.com/google/uuid"
 	"github.com/lib/pq"
@@ -144,12 +146,22 @@ type MergeConflict struct {
 
 // Store wraps a *sql.DB and provides transactional operations.
 type Store struct {
-	db *sql.DB
+	db            *sql.DB
+	blobStore     blob.BlobStore
+	blobThreshold int64
 }
 
 // NewStore returns a Store backed by the given database connection.
 func NewStore(db *sql.DB) *Store {
 	return &Store{db: db}
+}
+
+// SetBlobStore configures external blob storage. Files larger than
+// thresholdBytes are stored in bs instead of Postgres BYTEA.
+// A threshold of 0 disables external blob storage.
+func (s *Store) SetBlobStore(bs blob.BlobStore, thresholdBytes int64) {
+	s.blobStore = bs
+	s.blobThreshold = thresholdBytes
 }
 
 // CreateOrg creates a new org. Returns ErrOrgExists if the name is taken.
@@ -454,10 +466,26 @@ func (s *Store) Commit(ctx context.Context, req model.CommitRequest) (*model.Com
 				if f.ContentType != "" {
 					contentType = sql.NullString{String: f.ContentType, Valid: true}
 				}
+
+				// Decide: store inline in Postgres or in external blob store.
+				var dbContent []byte
+				var blobKey sql.NullString
+				if s.blobStore != nil && s.blobThreshold > 0 && int64(len(f.Content)) > s.blobThreshold {
+					// Upload to blob store BEFORE the DB INSERT so that if the
+					// DB operation fails the blob can be re-uploaded on retry.
+					if err := s.blobStore.Put(ctx, contentHash, bytes.NewReader(f.Content)); err != nil {
+						return nil, fmt.Errorf("upload blob: %w", err)
+					}
+					blobKey = sql.NullString{String: contentHash, Valid: true}
+					// dbContent stays nil — content column will be NULL in DB.
+				} else {
+					dbContent = f.Content
+				}
+
 				_, err = tx.ExecContext(ctx,
-					`INSERT INTO documents (repo, version_id, path, content, content_hash, content_type, created_at, created_by)
-					 VALUES ($1, $2, $3, $4, $5, $6, now(), $7)`,
-					req.Repo, existingID, f.Path, f.Content, contentHash, contentType, req.Author,
+					`INSERT INTO documents (repo, version_id, path, content, content_hash, content_type, blob_key, created_at, created_by)
+					 VALUES ($1, $2, $3, $4, $5, $6, $7, now(), $8)`,
+					req.Repo, existingID, f.Path, dbContent, contentHash, contentType, blobKey, req.Author,
 				)
 				if err != nil {
 					return nil, fmt.Errorf("insert document: %w", err)
@@ -1481,7 +1509,44 @@ func (s *Store) Purge(ctx context.Context, req PurgeRequest) (*PurgeResult, erro
 	}
 	result.CheckRunsDeleted, _ = res.RowsAffected()
 
-	// 5. Delete orphaned documents (not referenced by any remaining file_commits in the repo).
+	// 5. Collect blob_keys for orphaned documents before deleting them,
+	// then remove the blobs from the external store, then delete the DB rows.
+	orphanQuery := `
+		SELECT blob_key FROM documents
+		WHERE repo = $1
+		  AND blob_key IS NOT NULL
+		  AND version_id NOT IN (
+		      SELECT DISTINCT version_id FROM file_commits
+		      WHERE repo = $1 AND version_id IS NOT NULL
+		  )`
+	if s.blobStore != nil {
+		blobRows, berr := tx.QueryContext(ctx, orphanQuery, req.Repo)
+		if berr != nil {
+			return nil, fmt.Errorf("collect blob keys: %w", berr)
+		}
+		var blobKeys []string
+		for blobRows.Next() {
+			var key string
+			if berr := blobRows.Scan(&key); berr != nil {
+				blobRows.Close()
+				return nil, fmt.Errorf("scan blob key: %w", berr)
+			}
+			blobKeys = append(blobKeys, key)
+		}
+		blobRows.Close()
+		if berr := blobRows.Err(); berr != nil {
+			return nil, fmt.Errorf("iterate blob keys: %w", berr)
+		}
+
+		if !req.DryRun {
+			for _, key := range blobKeys {
+				if berr := s.blobStore.Delete(ctx, key); berr != nil {
+					return nil, fmt.Errorf("delete blob %s: %w", key, berr)
+				}
+			}
+		}
+	}
+
 	res, err = tx.ExecContext(ctx,
 		`DELETE FROM documents
 		 WHERE repo = $1
