@@ -609,6 +609,7 @@ func (s *Store) UpdateBranchDraft(ctx context.Context, repo, name string, draft 
 		draft, repo, name,
 	)
 	if err != nil {
+		slog.Error("update branch draft failed", "repo", repo, "branch", name, "error", err)
 		return fmt.Errorf("update branch draft: %w", err)
 	}
 	n, err := res.RowsAffected()
@@ -618,6 +619,7 @@ func (s *Store) UpdateBranchDraft(ctx context.Context, repo, name string, draft 
 	if n == 0 {
 		return ErrBranchNotFound
 	}
+	slog.Info("branch draft updated", "repo", repo, "branch", name, "draft", draft)
 	return nil
 }
 
@@ -1614,7 +1616,12 @@ func (s *Store) AddOrgMember(ctx context.Context, org, identity string, role mod
 		 ON CONFLICT (org, identity) DO UPDATE SET role = $3, invited_by = $4`,
 		org, identity, string(role), invitedBy,
 	)
-	return err
+	if err != nil {
+		slog.Error("add org member failed", "org", org, "identity", identity, "error", err)
+		return err
+	}
+	slog.Info("org member added", "org", org, "identity", identity, "role", role)
+	return nil
 }
 
 // RemoveOrgMember removes a member from an org. Returns ErrOrgMemberNotFound if not found.
@@ -1624,6 +1631,7 @@ func (s *Store) RemoveOrgMember(ctx context.Context, org, identity string) error
 		org, identity,
 	)
 	if err != nil {
+		slog.Error("remove org member failed", "org", org, "identity", identity, "error", err)
 		return err
 	}
 	n, err := result.RowsAffected()
@@ -1633,6 +1641,7 @@ func (s *Store) RemoveOrgMember(ctx context.Context, org, identity string) error
 	if n == 0 {
 		return ErrOrgMemberNotFound
 	}
+	slog.Info("org member removed", "org", org, "identity", identity)
 	return nil
 }
 
@@ -1675,9 +1684,11 @@ func (s *Store) CreateInvite(ctx context.Context, org, email string, role model.
 		id, org, email, string(role), invitedBy, token, expiresAt,
 	).Scan(&inv.ID, &inv.Org, &inv.Email, &roleStr, &inv.InvitedBy, &inv.Token, &inv.ExpiresAt, &inv.CreatedAt)
 	if err != nil {
+		slog.Error("create invite failed", "org", org, "email", email, "error", err)
 		return nil, fmt.Errorf("insert invite: %w", err)
 	}
 	inv.Role = model.OrgRole(roleStr)
+	slog.Info("invite created", "org", org, "email", email, "role", role)
 	return &inv, nil
 }
 
@@ -1710,8 +1721,10 @@ func (s *Store) ListInvites(ctx context.Context, org string) ([]model.OrgInvite,
 // AcceptInvite accepts a pending invite: verifies the token, checks expiry and email match,
 // sets accepted_at, and upserts the identity into org_members — all in one transaction.
 func (s *Store) AcceptInvite(ctx context.Context, org, token, identity string) error {
+	slog.Debug("accept invite started", "org", org)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
+		slog.Error("tx begin failed", "op", "accept_invite", "error", err)
 		return fmt.Errorf("begin tx: %w", err)
 	}
 	defer func() {
@@ -1765,7 +1778,11 @@ func (s *Store) AcceptInvite(ctx context.Context, org, token, identity string) e
 		return fmt.Errorf("add member: %w", err)
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	slog.Info("invite accepted", "org", org, "identity", identity)
+	return nil
 }
 
 // RevokeInvite deletes a pending invite by ID. Returns ErrInviteNotFound if not found.
@@ -1775,6 +1792,7 @@ func (s *Store) RevokeInvite(ctx context.Context, org, inviteID string) error {
 		inviteID, org,
 	)
 	if err != nil {
+		slog.Error("revoke invite failed", "org", org, "invite_id", inviteID, "error", err)
 		return err
 	}
 	n, err := result.RowsAffected()
@@ -1784,6 +1802,7 @@ func (s *Store) RevokeInvite(ctx context.Context, org, inviteID string) error {
 	if n == 0 {
 		return ErrInviteNotFound
 	}
+	slog.Info("invite revoked", "org", org, "invite_id", inviteID)
 	return nil
 }
 
@@ -1805,8 +1824,10 @@ func (s *Store) CreateRelease(ctx context.Context, repo, name string, sequence i
 		if isDuplicateKeyError(err) {
 			return nil, ErrReleaseExists
 		}
+		slog.Error("create release failed", "repo", repo, "name", name, "error", err)
 		return nil, fmt.Errorf("insert release: %w", err)
 	}
+	slog.Info("release created", "repo", repo, "name", name, "sequence", sequence, "by", createdBy)
 	return &rel, nil
 }
 
@@ -1904,6 +1925,7 @@ func (s *Store) DeleteRelease(ctx context.Context, repo, name string) error {
 		repo, name,
 	)
 	if err != nil {
+		slog.Error("delete release failed", "repo", repo, "name", name, "error", err)
 		return fmt.Errorf("delete release: %w", err)
 	}
 	n, err := result.RowsAffected()
@@ -1913,6 +1935,7 @@ func (s *Store) DeleteRelease(ctx context.Context, repo, name string) error {
 	if n == 0 {
 		return ErrReleaseNotFound
 	}
+	slog.Info("release deleted", "repo", repo, "name", name)
 	return nil
 }
 
