@@ -23,7 +23,7 @@ commands:
   commit -m "message"                             Commit all changes
   checkout -b <branch>                            Create and switch to a new branch
   checkout <branch>                               Switch to an existing branch
-  pull                                            Sync files from the server
+  pull [--skip-verify]                            Sync files from the server
   merge                                           Merge current branch into main
   diff                                            Show branch diff from server
   log [path] [--limit N]                          Show commit history (default limit 20)
@@ -146,7 +146,13 @@ func main() {
 		}
 
 	case "pull":
-		err = app.Pull()
+		skipVerify := false
+		for i := 1; i < len(args); i++ {
+			if args[i] == "--skip-verify" {
+				skipVerify = true
+			}
+		}
+		err = app.Pull(skipVerify)
 
 	case "merge":
 		err = app.Merge()
