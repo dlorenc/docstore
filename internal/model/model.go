@@ -2,7 +2,10 @@
 // described in DESIGN.md.
 package model
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // OrgRole represents the role of an org member.
 type OrgRole string
@@ -161,5 +164,18 @@ type Release struct {
 	Body      string    `json:"body,omitempty"`
 	CreatedBy string    `json:"created_by"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// EventSubscription is a webhook or Pub/Sub delivery target for events.
+type EventSubscription struct {
+	ID           string          `json:"id"`
+	Repo         *string         `json:"repo,omitempty"`
+	EventTypes   []string        `json:"event_types,omitempty"`
+	Backend      string          `json:"backend"`
+	Config       json.RawMessage `json:"config"`
+	CreatedAt    time.Time       `json:"created_at"`
+	CreatedBy    string          `json:"created_by"`
+	SuspendedAt  *time.Time      `json:"suspended_at,omitempty"`
+	FailureCount int             `json:"failure_count"`
 }
 

@@ -1165,6 +1165,18 @@ Index: `(repo, branch, sequence, check_name)`.
 
 ---
 
+## SSE Horizontal Scaling Limitation
+
+Server-Sent Events (SSE) fan-out (`GET /repos/{name}/-/events` and `GET /events`) is implemented in-process using an in-memory broker. This works correctly at `--max-instances=1` (e.g. a single Cloud Run instance).
+
+**If you scale beyond one instance**, SSE clients connected to different instances will only receive events emitted by *their* instance. Events emitted by instance A are not forwarded to SSE clients connected to instance B.
+
+To support SSE at multiple instances, replace the in-process `events.Broker` with a Pub/Sub-backed fan-out (Milestone 2 Pub/Sub backend provides the durability primitive; SSE fan-out would require an additional layer such as Redis Pub/Sub or a shared GCP Pub/Sub subscription).
+
+**Webhook delivery is not affected** — webhooks are delivered via the `event_outbox` database table and the dispatcher goroutine correctly uses `FOR UPDATE SKIP LOCKED` to prevent double-delivery across instances.
+
+---
+
 ## Monitoring
 
 ### Health check

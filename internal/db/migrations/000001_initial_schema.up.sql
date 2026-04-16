@@ -116,6 +116,39 @@ CREATE TABLE check_runs (
 
 CREATE INDEX idx_check_runs_repo_branch_seq_name ON check_runs (repo, branch, sequence, check_name);
 
+-- event_subscriptions: webhook (and future Pub/Sub) delivery targets
+-- repo NULL means all repos; event_types NULL means all event types.
+CREATE TABLE event_subscriptions (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    repo          TEXT REFERENCES repos(name),
+    event_types   TEXT[],
+    backend       TEXT NOT NULL CHECK (backend IN ('webhook', 'pubsub')),
+    config        JSONB NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_by    TEXT NOT NULL,
+    suspended_at  TIMESTAMPTZ,
+    failure_count INT NOT NULL DEFAULT 0
+);
+
+-- event_outbox: pending and delivered outbox rows for webhook delivery.
+-- Rows are cleaned up after 7 days.
+CREATE TABLE event_outbox (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event           JSONB NOT NULL,
+    subscription_id UUID REFERENCES event_subscriptions(id) ON DELETE CASCADE,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    attempts        INT NOT NULL DEFAULT 0,
+    next_attempt    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    delivered_at    TIMESTAMPTZ,
+    last_error      TEXT
+);
+
+CREATE INDEX idx_event_outbox_pending ON event_outbox (next_attempt)
+    WHERE delivered_at IS NULL AND attempts < 10;
+
+CREATE INDEX idx_event_subscriptions_active_webhook ON event_subscriptions (backend)
+    WHERE suspended_at IS NULL AND backend = 'webhook';
+
 -- Seed the default org, default repo, and main branch
 INSERT INTO orgs (name, created_by) VALUES ('default', 'system');
 INSERT INTO repos (name, owner, created_by) VALUES ('default/default', 'default', 'system');
