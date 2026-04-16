@@ -148,6 +148,7 @@ type CheckRun struct {
 	CheckName string         `json:"check_name"`
 	Status    CheckRunStatus `json:"status"`
 	Reporter  string         `json:"reporter"`
+	LogURL    *string        `json:"log_url,omitempty"`
 	CreatedAt time.Time      `json:"created_at"`
 }
 
