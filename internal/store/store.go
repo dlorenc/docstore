@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -229,6 +230,7 @@ type BranchInfo struct {
 	HeadSequence int64  `json:"head_sequence"`
 	BaseSequence int64  `json:"base_sequence"`
 	Status       string `json:"status"`
+	Draft        bool   `json:"draft"`
 }
 
 // DiffEntry represents a file changed on a branch relative to its base.
@@ -257,9 +259,9 @@ type DiffResult struct {
 func (s *Store) GetBranch(ctx context.Context, repo, branch string) (*BranchInfo, error) {
 	var b BranchInfo
 	err := s.db.QueryRowContext(ctx,
-		"SELECT name, head_sequence, base_sequence, status FROM branches WHERE repo = $1 AND name = $2",
+		"SELECT name, head_sequence, base_sequence, status, draft FROM branches WHERE repo = $1 AND name = $2",
 		repo, branch,
-	).Scan(&b.Name, &b.HeadSequence, &b.BaseSequence, &b.Status)
+	).Scan(&b.Name, &b.HeadSequence, &b.BaseSequence, &b.Status, &b.Draft)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -269,22 +271,26 @@ func (s *Store) GetBranch(ctx context.Context, repo, branch string) (*BranchInfo
 	return &b, nil
 }
 
-// ListBranches returns all branches in a repo, optionally filtered by status.
-func (s *Store) ListBranches(ctx context.Context, repo, statusFilter string) ([]BranchInfo, error) {
-	var rows *sql.Rows
-	var err error
+// ListBranches returns branches in a repo, optionally filtered by status.
+// includeDraft=true includes draft branches; onlyDraft=true returns only draft branches.
+// By default (both false), draft branches are excluded.
+func (s *Store) ListBranches(ctx context.Context, repo, statusFilter string, includeDraft, onlyDraft bool) ([]BranchInfo, error) {
+	q := "SELECT name, head_sequence, base_sequence, status, draft FROM branches WHERE repo = $1"
+	args := []interface{}{repo}
 
 	if statusFilter != "" {
-		rows, err = s.db.QueryContext(ctx,
-			"SELECT name, head_sequence, base_sequence, status FROM branches WHERE repo = $1 AND status = $2::branch_status ORDER BY name",
-			repo, statusFilter,
-		)
-	} else {
-		rows, err = s.db.QueryContext(ctx,
-			"SELECT name, head_sequence, base_sequence, status FROM branches WHERE repo = $1 ORDER BY name",
-			repo,
-		)
+		args = append(args, statusFilter)
+		q += " AND status = $" + strconv.Itoa(len(args)) + "::branch_status"
 	}
+
+	if onlyDraft {
+		q += " AND draft = true"
+	} else if !includeDraft {
+		q += " AND draft = false"
+	}
+	q += " ORDER BY name"
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -293,7 +299,7 @@ func (s *Store) ListBranches(ctx context.Context, repo, statusFilter string) ([]
 	var branches []BranchInfo
 	for rows.Next() {
 		var b BranchInfo
-		if err := rows.Scan(&b.Name, &b.HeadSequence, &b.BaseSequence, &b.Status); err != nil {
+		if err := rows.Scan(&b.Name, &b.HeadSequence, &b.BaseSequence, &b.Status, &b.Draft); err != nil {
 			return nil, err
 		}
 		branches = append(branches, b)

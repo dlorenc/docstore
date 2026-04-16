@@ -591,7 +591,7 @@ func TestCheckoutNew(t *testing.T) {
 	// Pre-populate state with existing files.
 	app.saveState(&State{Branch: "main", Sequence: 5, Files: map[string]string{"f.txt": "hash1"}})
 
-	if err := app.CheckoutNew("feature/test"); err != nil {
+	if err := app.CheckoutNew("feature/test", false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -618,6 +618,41 @@ func TestCheckoutNew(t *testing.T) {
 	}
 }
 
+func TestCheckoutNew_DraftFlag(t *testing.T) {
+	var gotDraft bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && r.URL.Path == "/repos/default/default/-/branch" {
+			var req model.CreateBranchRequest
+			json.NewDecoder(r.Body).Decode(&req)
+			gotDraft = req.Draft
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(model.CreateBranchResponse{
+				Name:         req.Name,
+				BaseSequence: 5,
+				Draft:        req.Draft,
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	app, out := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "main", "alice")
+	app.saveState(&State{Branch: "main", Sequence: 5})
+
+	if err := app.CheckoutNew("draft/wip", true); err != nil {
+		t.Fatal(err)
+	}
+	if !gotDraft {
+		t.Error("expected draft=true to be sent to server")
+	}
+	if !strings.Contains(out.String(), "draft branch") {
+		t.Errorf("expected 'draft branch' in output: %s", out.String())
+	}
+}
+
 func TestCheckoutNewServerError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -629,9 +664,66 @@ func TestCheckoutNewServerError(t *testing.T) {
 	app, _ := newTestApp(t, srv)
 	initWorkspace(t, app, srv.URL, "main", "alice")
 
-	err := app.CheckoutNew("existing-branch")
+	err := app.CheckoutNew("existing-branch", false)
 	if err == nil || !strings.Contains(err.Error(), "branch already exists") {
 		t.Errorf("expected 'branch already exists' error, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Ready (mark current branch as not draft)
+// ---------------------------------------------------------------------------
+
+func TestReady_Success(t *testing.T) {
+	var patchedBranch string
+	var patchedDraft *bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "PATCH" {
+			parts := strings.SplitN(r.URL.Path, "/branch/", 2)
+			if len(parts) == 2 {
+				patchedBranch = parts[1]
+			}
+			var req model.UpdateBranchRequest
+			json.NewDecoder(r.Body).Decode(&req)
+			d := req.Draft
+			patchedDraft = &d
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(model.UpdateBranchResponse{Name: patchedBranch, Draft: false})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	app, out := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "feature/my-branch", "alice")
+
+	if err := app.Ready(); err != nil {
+		t.Fatal(err)
+	}
+	if patchedBranch != "feature/my-branch" {
+		t.Errorf("expected PATCH for feature/my-branch, got %q", patchedBranch)
+	}
+	if patchedDraft == nil || *patchedDraft != false {
+		t.Errorf("expected draft=false in PATCH body, got %v", patchedDraft)
+	}
+	if !strings.Contains(out.String(), "marked as ready") {
+		t.Errorf("expected 'marked as ready' in output: %s", out.String())
+	}
+}
+
+func TestReady_OnMain(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	app, _ := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "main", "alice")
+
+	err := app.Ready()
+	if err == nil {
+		t.Error("expected error when on main branch")
 	}
 }
 
@@ -1675,7 +1767,7 @@ func TestBranches_ListsActive(t *testing.T) {
 	app, out := newTestApp(t, srv)
 	initWorkspace(t, app, srv.URL, "main", "alice")
 
-	if err := app.Branches("active"); err != nil {
+	if err := app.Branches("active", false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1703,7 +1795,7 @@ func TestBranches_DefaultStatusActive(t *testing.T) {
 	app, _ := newTestApp(t, srv)
 	initWorkspace(t, app, srv.URL, "main", "alice")
 
-	app.Branches("")
+	app.Branches("", false)
 	if gotStatus != "active" {
 		t.Errorf("expected status=active, got %q", gotStatus)
 	}
