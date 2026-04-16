@@ -1227,6 +1227,14 @@ func (s *server) handleUpdateBranch(w http.ResponseWriter, r *http.Request) {
 	repo := r.PathValue("name")
 	bname := r.PathValue("bname")
 
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
+	if bname == "main" {
+		writeError(w, http.StatusBadRequest, "cannot modify branch 'main'")
+		return
+	}
+
 	var req model.UpdateBranchRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
