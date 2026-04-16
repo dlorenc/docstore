@@ -46,3 +46,13 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build Docker image
         run: docker build -t docstore:ci .
+
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Run integration tests
+        run: go test -v -count=1 -timeout 300s ./internal/executor/... ./cmd/ci-runner/...
