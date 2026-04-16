@@ -766,3 +766,66 @@ func TestRBACMiddleware_ReaderUpgradedToWriter(t *testing.T) {
 	}
 }
 
+func TestRBACMiddleware_ReleasesAccess(t *testing.T) {
+	store := &mockRoleStore{
+		getRoleFn: func(_ context.Context, repo, identity string) (*model.Role, error) {
+			return &model.Role{Identity: identity, Role: model.RoleReader}, nil
+		},
+	}
+	h := rbacTestServer(store, "", "alice@example.com")
+
+	// Reader can GET /releases.
+	rec := rbacDo(t, h, http.MethodGet, "/repos/myrepo/myrepo/-/releases", "")
+	if rec.Code != http.StatusOK {
+		t.Errorf("reader GET releases: expected 200, got %d", rec.Code)
+	}
+
+	// Reader can GET /releases/<name>.
+	rec = rbacDo(t, h, http.MethodGet, "/repos/myrepo/myrepo/-/releases/v1.0", "")
+	if rec.Code != http.StatusOK {
+		t.Errorf("reader GET release: expected 200, got %d", rec.Code)
+	}
+
+	// Reader cannot POST /releases.
+	rec = rbacDo(t, h, http.MethodPost, "/repos/myrepo/myrepo/-/releases", `{"name":"v1.0","sequence":1}`)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("reader POST release: expected 403, got %d", rec.Code)
+	}
+
+	// Reader cannot DELETE /releases/<name>.
+	rec = rbacDo(t, h, http.MethodDelete, "/repos/myrepo/myrepo/-/releases/v1.0", "")
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("reader DELETE release: expected 403, got %d", rec.Code)
+	}
+
+	// Maintainer can create releases.
+	storeM := &mockRoleStore{
+		getRoleFn: func(_ context.Context, repo, identity string) (*model.Role, error) {
+			return &model.Role{Identity: identity, Role: model.RoleMaintainer}, nil
+		},
+	}
+	hM := rbacTestServer(storeM, "", "carol@example.com")
+	rec = rbacDo(t, hM, http.MethodPost, "/repos/myrepo/myrepo/-/releases", `{"name":"v1.0","sequence":1}`)
+	if rec.Code != http.StatusOK {
+		t.Errorf("maintainer POST release: expected 200, got %d", rec.Code)
+	}
+
+	// Maintainer cannot delete releases.
+	rec = rbacDo(t, hM, http.MethodDelete, "/repos/myrepo/myrepo/-/releases/v1.0", "")
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("maintainer DELETE release: expected 403, got %d", rec.Code)
+	}
+
+	// Admin can delete releases.
+	storeA := &mockRoleStore{
+		getRoleFn: func(_ context.Context, repo, identity string) (*model.Role, error) {
+			return &model.Role{Identity: identity, Role: model.RoleAdmin}, nil
+		},
+	}
+	hA := rbacTestServer(storeA, "", "admin@example.com")
+	rec = rbacDo(t, hA, http.MethodDelete, "/repos/myrepo/myrepo/-/releases/v1.0", "")
+	if rec.Code != http.StatusOK {
+		t.Errorf("admin DELETE release: expected 200, got %d", rec.Code)
+	}
+}
+

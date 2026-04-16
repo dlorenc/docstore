@@ -216,6 +216,16 @@ func roleAllows(role model.RoleType, method, subPath string, r *http.Request) bo
 		return role == model.RoleAdmin
 	}
 
+	// DELETE /releases/<name> — admin only.
+	if method == http.MethodDelete && strings.HasPrefix(subPath, "releases/") {
+		return role == model.RoleAdmin
+	}
+
+	// POST /releases — maintainer+.
+	if method == http.MethodPost && subPath == "releases" {
+		return role == model.RoleMaintainer || role == model.RoleAdmin
+	}
+
 	// All other GET endpoints — reader+.
 	if method == http.MethodGet {
 		return true

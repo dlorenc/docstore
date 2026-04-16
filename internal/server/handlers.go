@@ -158,6 +158,28 @@ func (s *server) handleReposPrefix(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
 
+	case endpoint == "releases":
+		switch r.Method {
+		case http.MethodGet:
+			s.handleListReleases(w, r)
+		case http.MethodPost:
+			s.handleCreateRelease(w, r)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+
+	case strings.HasPrefix(endpoint, "releases/"):
+		releaseName := strings.TrimPrefix(endpoint, "releases/")
+		r.SetPathValue("release", releaseName)
+		switch r.Method {
+		case http.MethodGet:
+			s.handleGetRelease(w, r)
+		case http.MethodDelete:
+			s.handleDeleteRelease(w, r)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+
 	case strings.HasPrefix(endpoint, "commit/"):
 		if r.Method == http.MethodGet {
 			r.SetPathValue("sequence", strings.TrimPrefix(endpoint, "commit/"))
@@ -942,10 +964,16 @@ func (s *server) handleTree(w http.ResponseWriter, r *http.Request) {
 	if v := r.URL.Query().Get("at"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid 'at' parameter")
-			return
+			// Try as release name.
+			rel, relErr := s.commitStore.GetRelease(r.Context(), repo, v)
+			if relErr != nil {
+				writeError(w, http.StatusBadRequest, "invalid 'at' parameter: not a sequence number or release name")
+				return
+			}
+			atSequence = &rel.Sequence
+		} else {
+			atSequence = &n
 		}
-		atSequence = &n
 	}
 
 	limit := 100
@@ -1003,10 +1031,16 @@ func (s *server) handleFileContent(w http.ResponseWriter, r *http.Request, repo,
 	if v := r.URL.Query().Get("at"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid 'at' parameter")
-			return
+			// Try as release name.
+			rel, relErr := s.commitStore.GetRelease(r.Context(), repo, v)
+			if relErr != nil {
+				writeError(w, http.StatusBadRequest, "invalid 'at' parameter: not a sequence number or release name")
+				return
+			}
+			atSequence = &rel.Sequence
+		} else {
+			atSequence = &n
 		}
-		atSequence = &n
 	}
 
 	fc, err := s.readStore.GetFile(r.Context(), repo, branch, path, atSequence)
@@ -1610,6 +1644,129 @@ func (s *server) handleBranchStatus(w http.ResponseWriter, r *http.Request, repo
 		Mergeable: mergeable,
 		Policies:  results,
 	})
+}
+
+// ---------------------------------------------------------------------------
+// Release handlers
+// ---------------------------------------------------------------------------
+
+// handleCreateRelease implements POST /repos/:name/-/releases (maintainer+)
+// Body: {name, sequence?, body?}. Sequence defaults to current main head if omitted.
+func (s *server) handleCreateRelease(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
+
+	var req model.CreateReleaseRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+
+	// Resolve sequence: default to main head if not provided.
+	var sequence int64
+	if req.Sequence != nil {
+		sequence = *req.Sequence
+	} else {
+		if s.readStore == nil {
+			writeError(w, http.StatusServiceUnavailable, "read store not available")
+			return
+		}
+		branchInfo, err := s.readStore.GetBranch(r.Context(), repo, "main")
+		if err != nil || branchInfo == nil {
+			writeError(w, http.StatusInternalServerError, "could not resolve main head sequence")
+			return
+		}
+		sequence = branchInfo.HeadSequence
+	}
+
+	createdBy := IdentityFromContext(r.Context())
+	rel, err := s.commitStore.CreateRelease(r.Context(), repo, req.Name, sequence, req.Body, createdBy)
+	if err != nil {
+		switch {
+		case errors.Is(err, db.ErrReleaseExists):
+			writeError(w, http.StatusConflict, "release already exists")
+		default:
+			slog.Error("internal error", "op", "create_release", "repo", repo, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+
+	slog.Info("release created", "repo", repo, "release", req.Name, "sequence", sequence, "by", createdBy)
+	writeJSON(w, http.StatusCreated, rel)
+}
+
+// handleListReleases implements GET /repos/:name/-/releases (reader+)
+func (s *server) handleListReleases(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
+
+	limit := 100
+	if v := r.URL.Query().Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			writeError(w, http.StatusBadRequest, "invalid 'limit' parameter")
+			return
+		}
+		limit = n
+	}
+	afterID := r.URL.Query().Get("after")
+
+	releases, err := s.commitStore.ListReleases(r.Context(), repo, limit, afterID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if releases == nil {
+		releases = []model.Release{}
+	}
+	writeJSON(w, http.StatusOK, model.ListReleasesResponse{Releases: releases})
+}
+
+// handleGetRelease implements GET /repos/:name/-/releases/:release (reader+)
+func (s *server) handleGetRelease(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	releaseName := r.PathValue("release")
+
+	rel, err := s.commitStore.GetRelease(r.Context(), repo, releaseName)
+	if err != nil {
+		switch {
+		case errors.Is(err, db.ErrReleaseNotFound):
+			writeError(w, http.StatusNotFound, "release not found")
+		default:
+			writeError(w, http.StatusInternalServerError, "query failed")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, rel)
+}
+
+// handleDeleteRelease implements DELETE /repos/:name/-/releases/:release (admin only)
+func (s *server) handleDeleteRelease(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	releaseName := r.PathValue("release")
+
+	if err := s.commitStore.DeleteRelease(r.Context(), repo, releaseName); err != nil {
+		switch {
+		case errors.Is(err, db.ErrReleaseNotFound):
+			writeError(w, http.StatusNotFound, "release not found")
+		default:
+			slog.Error("internal error", "op", "delete_release", "repo", repo, "release", releaseName, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+
+	slog.Info("release deleted", "repo", repo, "release", releaseName, "by", IdentityFromContext(r.Context()))
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleChain implements GET /repos/:name/-/chain?from=N&to=N
