@@ -53,6 +53,15 @@ func (e *Executor) Run(ctx context.Context, sourceDir string, cfg Config) ([]Che
 		wg.Add(1)
 		go func(i int, check Check) {
 			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					results[i] = CheckResult{
+						Name:   check.Name,
+						Status: "failed",
+						Logs:   fmt.Sprintf("panic: %v", r),
+					}
+				}
+			}()
 			results[i] = e.runCheck(ctx, sourceDir, check)
 		}(i, check)
 	}
@@ -60,17 +69,25 @@ func (e *Executor) Run(ctx context.Context, sourceDir string, cfg Config) ([]Che
 	return results, nil
 }
 
+// Close closes the underlying buildkit client.
+func (e *Executor) Close() error {
+	return e.client.Close()
+}
+
 // runCheck executes a single check and returns its result.
 func (e *Executor) runCheck(ctx context.Context, sourceDir string, check Check) CheckResult {
 	source := llb.Local("src")
 	state := llb.Image(check.Image).Dir("/src")
+	srcMount := source
 
 	for _, step := range check.Steps {
-		state = state.Run(
+		exec := state.Run(
 			llb.Args([]string{"sh", "-c", step}),
 			llb.WithCustomName(check.Name+": "+step),
-			llb.AddMount("/src", source),
-		).Root()
+			llb.AddMount("/src", srcMount),
+		)
+		state = exec.Root()
+		srcMount = exec.GetMount("/src")
 	}
 
 	def, err := state.Marshal(ctx, llb.LinuxAmd64)
