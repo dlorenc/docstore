@@ -77,4 +77,7 @@ type OrgInvitesResponse = api.OrgInvitesResponse
 type CreateReleaseRequest = api.CreateReleaseRequest
 type ListReleasesResponse = api.ListReleasesResponse
 
+type CreateSubscriptionRequest = api.CreateSubscriptionRequest
+type ListSubscriptionsResponse = api.ListSubscriptionsResponse
+
 type ErrorResponse = api.ErrorResponse

@@ -67,6 +67,7 @@ type Role = api.Role
 type Review = api.Review
 type CheckRun = api.CheckRun
 type Release = api.Release
+type EventSubscription = api.EventSubscription
 
 // ---------------------------------------------------------------------------
 // Internal-only types — not part of the HTTP wire surface.

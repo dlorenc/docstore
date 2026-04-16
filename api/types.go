@@ -9,7 +9,10 @@
 // package directly.
 package api
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // ---------------------------------------------------------------------------
 // Enumerations
@@ -141,6 +144,19 @@ type CheckRun struct {
 	Reporter  string         `json:"reporter"`
 	LogURL    *string        `json:"log_url,omitempty"`
 	CreatedAt time.Time      `json:"created_at"`
+}
+
+// EventSubscription is a webhook or Pub/Sub delivery target for events.
+type EventSubscription struct {
+	ID           string          `json:"id"`
+	Repo         *string         `json:"repo,omitempty"`
+	EventTypes   []string        `json:"event_types,omitempty"`
+	Backend      string          `json:"backend"`
+	Config       json.RawMessage `json:"config"`
+	CreatedAt    time.Time       `json:"created_at"`
+	CreatedBy    string          `json:"created_by"`
+	SuspendedAt  *time.Time      `json:"suspended_at,omitempty"`
+	FailureCount int             `json:"failure_count"`
 }
 
 // Release is a named immutable snapshot tied to a commit sequence.
@@ -429,8 +445,9 @@ type CreateCheckRunRequest struct {
 
 // CreateCheckRunResponse is the response for POST /check.
 type CreateCheckRunResponse struct {
-	ID       string `json:"id"`
-	Sequence int64  `json:"sequence"`
+	ID       string  `json:"id"`
+	Sequence int64   `json:"sequence"`
+	LogURL   *string `json:"log_url,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -568,6 +585,29 @@ type ChainEntry struct {
 type ChainFile struct {
 	Path        string `json:"path"`
 	ContentHash string `json:"content_hash"`
+}
+
+// ---------------------------------------------------------------------------
+// Event subscriptions
+// ---------------------------------------------------------------------------
+
+// CreateSubscriptionRequest is the body for POST /subscriptions.
+type CreateSubscriptionRequest struct {
+	// Repo is the repo to subscribe to (optional; nil means all repos).
+	Repo *string `json:"repo,omitempty"`
+	// EventTypes is the list of event types to subscribe to (optional; nil means all types).
+	EventTypes []string `json:"event_types,omitempty"`
+	// Backend must be "webhook" for Milestone 1.
+	Backend string `json:"backend"`
+	// Config is backend-specific: {"url":"https://...","secret":"..."}
+	Config json.RawMessage `json:"config"`
+	// CreatedBy is populated by the server from the IAP identity; not set by clients.
+	CreatedBy string `json:"-"`
+}
+
+// ListSubscriptionsResponse is the response for GET /subscriptions.
+type ListSubscriptionsResponse struct {
+	Subscriptions []EventSubscription `json:"subscriptions"`
 }
 
 // ---------------------------------------------------------------------------

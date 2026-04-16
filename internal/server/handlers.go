@@ -1,6 +1,7 @@
 package server
 
 import (
+	"archive/tar"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -9,11 +10,14 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/dlorenc/docstore/internal/db"
+	"github.com/dlorenc/docstore/internal/events"
+	evtypes "github.com/dlorenc/docstore/internal/events/types"
 	"github.com/dlorenc/docstore/internal/model"
 	"github.com/dlorenc/docstore/internal/policy"
 	"github.com/dlorenc/docstore/internal/store"
@@ -77,6 +81,13 @@ func (s *server) handleReposPrefix(w http.ResponseWriter, r *http.Request) {
 	case endpoint == "tree":
 		if r.Method == http.MethodGet {
 			s.handleTree(w, r)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+
+	case endpoint == "archive":
+		if r.Method == http.MethodGet {
+			s.handleArchive(w, r)
 		} else {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
@@ -229,6 +240,13 @@ func (s *server) handleReposPrefix(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
 
+	case endpoint == "events":
+		if r.Method == http.MethodGet {
+			s.handleSSERepoEvents(w, r)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+
 	default:
 		writeError(w, http.StatusNotFound, "not found")
 	}
@@ -265,6 +283,7 @@ func (s *server) handleCreateOrg(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	s.emit(r.Context(), evtypes.OrgCreated{Org: org.Name, CreatedBy: identity})
 	writeJSON(w, http.StatusCreated, org)
 }
 
@@ -312,6 +331,7 @@ func (s *server) handleDeleteOrg(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	s.emit(r.Context(), evtypes.OrgDeleted{Org: name, DeletedBy: IdentityFromContext(r.Context())})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -665,6 +685,13 @@ func (s *server) handleReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.emit(r.Context(), evtypes.ReviewSubmitted{
+		Repo:     repo,
+		Branch:   req.Branch,
+		Sequence: review.Sequence,
+		Reviewer: reviewer,
+		Status:   string(req.Status),
+	})
 	slog.Info("review submitted", "repo", repo, "branch", req.Branch, "reviewer", reviewer, "status", req.Status)
 	writeJSON(w, http.StatusCreated, model.CreateReviewResponse{
 		ID:       review.ID,
@@ -707,9 +734,18 @@ func (s *server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.emit(r.Context(), evtypes.CheckReported{
+		Repo:      repo,
+		Branch:    req.Branch,
+		Sequence:  cr.Sequence,
+		CheckName: req.CheckName,
+		Status:    string(req.Status),
+		Reporter:  reporter,
+	})
 	writeJSON(w, http.StatusCreated, model.CreateCheckRunResponse{
 		ID:       cr.ID,
 		Sequence: cr.Sequence,
+		LogURL:   req.LogURL,
 	})
 }
 
@@ -900,7 +936,9 @@ func (s *server) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slog.Info("repo created", "repo", repo.Name, "by", IdentityFromContext(r.Context()))
+	identity := IdentityFromContext(r.Context())
+	s.emit(r.Context(), evtypes.RepoCreated{Repo: repo.Name, Owner: repo.Owner, CreatedBy: identity})
+	slog.Info("repo created", "repo", repo.Name, "by", identity)
 	writeJSON(w, http.StatusCreated, repo)
 }
 
@@ -948,7 +986,9 @@ func (s *server) handleDeleteRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slog.Info("repo deleted", "repo", name, "by", IdentityFromContext(r.Context()))
+	identity := IdentityFromContext(r.Context())
+	s.emit(r.Context(), evtypes.RepoDeleted{Repo: name, DeletedBy: identity})
+	slog.Info("repo deleted", "repo", name, "by", identity)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1218,7 +1258,14 @@ func (s *server) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slog.Info("branch created", "repo", repo, "branch", req.Name, "by", IdentityFromContext(r.Context()))
+	identity := IdentityFromContext(r.Context())
+	s.emit(r.Context(), evtypes.BranchCreated{
+		Repo:         repo,
+		Branch:       req.Name,
+		BaseSequence: resp.BaseSequence,
+		CreatedBy:    identity,
+	})
+	slog.Info("branch created", "repo", repo, "branch", req.Name, "by", identity)
 	writeJSON(w, http.StatusCreated, resp)
 }
 
@@ -1279,7 +1326,9 @@ func (s *server) handleDeleteBranch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slog.Info("branch deleted", "repo", repo, "branch", bname, "by", IdentityFromContext(r.Context()))
+	identity := IdentityFromContext(r.Context())
+	s.emit(r.Context(), evtypes.BranchAbandoned{Repo: repo, Branch: bname, AbandonedBy: identity})
+	slog.Info("branch deleted", "repo", repo, "branch", bname, "by", identity)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1327,7 +1376,14 @@ func (s *server) handleSetRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slog.Info("role assigned", "repo", repo, "identity", identity, "role", req.Role, "by", IdentityFromContext(r.Context()))
+	by := IdentityFromContext(r.Context())
+	s.emit(r.Context(), evtypes.RoleChanged{
+		Repo:      repo,
+		Identity:  identity,
+		Role:      string(req.Role),
+		ChangedBy: by,
+	})
+	slog.Info("role assigned", "repo", repo, "identity", identity, "role", req.Role, "by", by)
 	writeJSON(w, http.StatusOK, model.Role{Identity: identity, Role: req.Role})
 }
 
@@ -1352,7 +1408,14 @@ func (s *server) handleDeleteRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slog.Info("role removed", "repo", repo, "identity", identity, "by", IdentityFromContext(r.Context()))
+	by := IdentityFromContext(r.Context())
+	s.emit(r.Context(), evtypes.RoleChanged{
+		Repo:      repo,
+		Identity:  identity,
+		Role:      "", // empty means removed
+		ChangedBy: by,
+	})
+	slog.Info("role removed", "repo", repo, "identity", identity, "by", by)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1407,6 +1470,14 @@ func (s *server) handleRebase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.emit(r.Context(), evtypes.BranchRebased{
+		Repo:            repo,
+		Branch:          req.Branch,
+		NewBaseSequence: resp.NewBaseSequence,
+		NewHeadSequence: resp.NewHeadSequence,
+		CommitsReplayed: resp.CommitsReplayed,
+		RebasedBy:       req.Author,
+	})
 	slog.Info("branch rebased", "repo", repo, "branch", req.Branch, "by", req.Author, "commits_replayed", resp.CommitsReplayed)
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -1444,6 +1515,17 @@ func (s *server) handleMerge(w http.ResponseWriter, r *http.Request) {
 		return
 	} else if denied != nil {
 		slog.Warn("merge denied by policy", "repo", repo, "branch", req.Branch, "actor", req.Author)
+		// Collect policy names for event.
+		policyNames := make([]string, len(denied))
+		for i, p := range denied {
+			policyNames[i] = p.Name
+		}
+		s.emit(r.Context(), evtypes.MergeBlocked{
+			Repo:     repo,
+			Branch:   req.Branch,
+			Actor:    req.Author,
+			Policies: policyNames,
+		})
 		writeJSON(w, http.StatusForbidden, model.MergePolicyError{Policies: denied})
 		return
 	}
@@ -1481,6 +1563,12 @@ func (s *server) handleMerge(w http.ResponseWriter, r *http.Request) {
 		s.policyCache.Invalidate(repo)
 	}
 
+	s.emit(r.Context(), evtypes.BranchMerged{
+		Repo:     repo,
+		Branch:   req.Branch,
+		Sequence: resp.Sequence,
+		MergedBy: req.Author,
+	})
 	slog.Info("branch merged", "repo", repo, "branch", req.Branch, "by", req.Author, "sequence", resp.Sequence)
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -1835,6 +1923,72 @@ func (s *server) handleDeleteRelease(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleArchive implements GET /repos/:name/-/archive?branch=X
+// Streams all files for the given branch as a tar archive.
+func (s *server) handleArchive(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
+	if s.readStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "read store not available")
+		return
+	}
+
+	branch := r.URL.Query().Get("branch")
+	if branch == "" {
+		writeError(w, http.StatusBadRequest, "branch parameter is required")
+		return
+	}
+
+	// Verify the branch exists before we start streaming.
+	bi, err := s.readStore.GetBranch(r.Context(), repo, branch)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if bi == nil {
+		writeError(w, http.StatusNotFound, "branch not found")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/x-tar")
+	tw := tar.NewWriter(w)
+	defer tw.Close()
+
+	afterPath := ""
+	for {
+		entries, err := s.readStore.MaterializeTree(r.Context(), repo, branch, nil, 100, afterPath)
+		if err != nil {
+			slog.Error("archive: materialize tree error", "repo", repo, "branch", branch, "error", err)
+			return
+		}
+		for _, entry := range entries {
+			fc, err := s.readStore.GetFile(r.Context(), repo, branch, entry.Path, nil)
+			if err != nil || fc == nil {
+				slog.Error("archive: get file error", "repo", repo, "branch", branch, "path", entry.Path, "error", err)
+				continue
+			}
+			hdr := &tar.Header{
+				Name:     entry.Path,
+				Size:     int64(len(fc.Content)),
+				Mode:     0644,
+				Typeflag: tar.TypeReg,
+			}
+			if err := tw.WriteHeader(hdr); err != nil {
+				return
+			}
+			if _, err := tw.Write(fc.Content); err != nil {
+				return
+			}
+		}
+		if len(entries) < 100 {
+			break
+		}
+		afterPath = entries[len(entries)-1].Path
+	}
+}
+
 // handleChain implements GET /repos/:name/-/chain?from=N&to=N
 // Returns commit metadata for sequences in [from, to] with commit hashes and file content hashes.
 func (s *server) handleChain(w http.ResponseWriter, r *http.Request) {
@@ -1877,4 +2031,217 @@ func (s *server) handleChain(w http.ResponseWriter, r *http.Request) {
 		entries = []store.ChainEntry{}
 	}
 	writeJSON(w, http.StatusOK, entries)
+}
+
+// ---------------------------------------------------------------------------
+// Event subscription handlers (admin only)
+// ---------------------------------------------------------------------------
+
+// handleCreateSubscription implements POST /subscriptions
+func (s *server) handleCreateSubscription(w http.ResponseWriter, r *http.Request) {
+	if !s.requireGlobalAdmin(w, r) {
+		return
+	}
+
+	var req model.CreateSubscriptionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Backend == "" {
+		writeError(w, http.StatusBadRequest, "backend is required")
+		return
+	}
+	if req.Backend != "webhook" {
+		writeError(w, http.StatusBadRequest, "only backend='webhook' is supported in Milestone 1")
+		return
+	}
+	if len(req.Config) == 0 {
+		writeError(w, http.StatusBadRequest, "config is required")
+		return
+	}
+
+	// Validate webhook config: url must be present and an http/https URL.
+	var webhookConfig map[string]string
+	if err := json.Unmarshal(req.Config, &webhookConfig); err != nil {
+		writeError(w, http.StatusBadRequest, "config must be a JSON object")
+		return
+	}
+	webhookURL, ok := webhookConfig["url"]
+	if !ok || webhookURL == "" {
+		writeError(w, http.StatusBadRequest, "config.url is required for webhook backend")
+		return
+	}
+	parsedURL, err := url.ParseRequestURI(webhookURL)
+	if err != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
+		writeError(w, http.StatusBadRequest, "config.url must be a valid http or https URL")
+		return
+	}
+	if webhookConfig["secret"] == "" {
+		slog.Warn("subscription created without webhook secret", "url", webhookURL)
+	}
+
+	req.CreatedBy = IdentityFromContext(r.Context())
+
+	sub, err := s.commitStore.CreateSubscription(r.Context(), req)
+	if err != nil {
+		slog.Error("internal error", "op", "create_subscription", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	slog.Info("subscription created", "id", sub.ID, "backend", sub.Backend, "by", req.CreatedBy)
+	writeJSON(w, http.StatusCreated, sub)
+}
+
+// handleListSubscriptions implements GET /subscriptions
+func (s *server) handleListSubscriptions(w http.ResponseWriter, r *http.Request) {
+	if !s.requireGlobalAdmin(w, r) {
+		return
+	}
+
+	subs, err := s.commitStore.ListSubscriptions(r.Context())
+	if err != nil {
+		slog.Error("internal error", "op", "list_subscriptions", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	if subs == nil {
+		subs = []model.EventSubscription{}
+	}
+	writeJSON(w, http.StatusOK, model.ListSubscriptionsResponse{Subscriptions: subs})
+}
+
+// handleDeleteSubscription implements DELETE /subscriptions/{id}
+func (s *server) handleDeleteSubscription(w http.ResponseWriter, r *http.Request) {
+	if !s.requireGlobalAdmin(w, r) {
+		return
+	}
+
+	id := r.PathValue("id")
+	if err := s.commitStore.DeleteSubscription(r.Context(), id); err != nil {
+		switch {
+		case errors.Is(err, db.ErrSubscriptionNotFound):
+			writeError(w, http.StatusNotFound, "subscription not found")
+		default:
+			slog.Error("internal error", "op", "delete_subscription", "id", id, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+
+	slog.Info("subscription deleted", "id", id, "by", IdentityFromContext(r.Context()))
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleResumeSubscription implements POST /subscriptions/{id}/resume
+func (s *server) handleResumeSubscription(w http.ResponseWriter, r *http.Request) {
+	if !s.requireGlobalAdmin(w, r) {
+		return
+	}
+
+	id := r.PathValue("id")
+	if err := s.commitStore.ResumeSubscription(r.Context(), id); err != nil {
+		switch {
+		case errors.Is(err, db.ErrSubscriptionNotFound):
+			writeError(w, http.StatusNotFound, "subscription not found")
+		default:
+			slog.Error("internal error", "op", "resume_subscription", "id", id, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+
+	slog.Info("subscription resumed", "id", id, "by", IdentityFromContext(r.Context()))
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ---------------------------------------------------------------------------
+// SSE streaming handlers
+// ---------------------------------------------------------------------------
+
+// handleSSERepoEvents implements GET /repos/{name}/-/events
+// Streams CloudEvents for a specific repo. Optional ?types= comma-separated
+// full event type filter (e.g. "com.docstore.commit.created").
+func (s *server) handleSSERepoEvents(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
+	s.streamSSE(w, r, repo)
+}
+
+// handleSSEGlobalEvents implements GET /events (admin only)
+// Streams CloudEvents for all repos or a specific repo via ?repo= filter.
+func (s *server) handleSSEGlobalEvents(w http.ResponseWriter, r *http.Request) {
+	if !s.requireGlobalAdmin(w, r) {
+		return
+	}
+	// Optional repo filter.
+	repo := r.URL.Query().Get("repo")
+	if repo == "" {
+		repo = "*" // wildcard: receive events from all repos
+	}
+	s.streamSSE(w, r, repo)
+}
+
+// streamSSE is the shared SSE streaming implementation.
+// repo is the repo to subscribe to (or "*" for global admin stream).
+func (s *server) streamSSE(w http.ResponseWriter, r *http.Request, repo string) {
+	if s.broker == nil {
+		writeError(w, http.StatusServiceUnavailable, "event streaming not available")
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
+
+	// Parse optional type filter.
+	var types []string
+	if q := r.URL.Query().Get("types"); q != "" {
+		for _, t := range strings.Split(q, ",") {
+			t = strings.TrimSpace(t)
+			if t != "" {
+				types = append(types, t)
+			}
+		}
+	}
+
+	ch, unsub := s.broker.Subscribe(repo, types)
+	defer unsub()
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	keepAlive := time.NewTicker(15 * time.Second)
+	defer keepAlive.Stop()
+
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-keepAlive.C:
+			fmt.Fprint(w, ": keepalive\n\n")
+			flusher.Flush()
+		case e, ok := <-ch:
+			if !ok {
+				return
+			}
+			data, err := events.ToCloudEvent(e)
+			if err != nil {
+				slog.Error("SSE: serialize event failed", "error", err)
+				continue
+			}
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			flusher.Flush()
+		}
+	}
 }

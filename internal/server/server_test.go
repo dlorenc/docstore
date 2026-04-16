@@ -1,10 +1,12 @@
 package server
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -58,6 +60,11 @@ type mockStore struct {
 	listReleasesFn         func(ctx context.Context, repo string, limit int, afterID string) ([]model.Release, error)
 	deleteReleaseFn        func(ctx context.Context, repo, name string) error
 	commitSequenceExistsFn func(ctx context.Context, repo string, sequence int64) (bool, error)
+
+	createSubscriptionFn func(ctx context.Context, req model.CreateSubscriptionRequest) (*model.EventSubscription, error)
+	listSubscriptionsFn  func(ctx context.Context) ([]model.EventSubscription, error)
+	deleteSubscriptionFn func(ctx context.Context, id string) error
+	resumeSubscriptionFn func(ctx context.Context, id string) error
 }
 
 func (m *mockStore) Commit(ctx context.Context, req model.CommitRequest) (*model.CommitResponse, error) {
@@ -324,6 +331,34 @@ func (m *mockStore) CommitSequenceExists(ctx context.Context, repo string, seque
 		return m.commitSequenceExistsFn(ctx, repo, sequence)
 	}
 	return true, nil
+}
+
+func (m *mockStore) CreateSubscription(ctx context.Context, req model.CreateSubscriptionRequest) (*model.EventSubscription, error) {
+	if m.createSubscriptionFn != nil {
+		return m.createSubscriptionFn(ctx, req)
+	}
+	return &model.EventSubscription{ID: "test-sub-id", Backend: req.Backend}, nil
+}
+
+func (m *mockStore) ListSubscriptions(ctx context.Context) ([]model.EventSubscription, error) {
+	if m.listSubscriptionsFn != nil {
+		return m.listSubscriptionsFn(ctx)
+	}
+	return []model.EventSubscription{}, nil
+}
+
+func (m *mockStore) DeleteSubscription(ctx context.Context, id string) error {
+	if m.deleteSubscriptionFn != nil {
+		return m.deleteSubscriptionFn(ctx, id)
+	}
+	return nil
+}
+
+func (m *mockStore) ResumeSubscription(ctx context.Context, id string) error {
+	if m.resumeSubscriptionFn != nil {
+		return m.resumeSubscriptionFn(ctx, id)
+	}
+	return nil
 }
 
 func TestHealthEndpoint(t *testing.T) {
@@ -3217,5 +3252,104 @@ func TestHandleCreateRelease_InvalidSequence(t *testing.T) {
 	h.ServeHTTP(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Archive endpoint tests
+// ---------------------------------------------------------------------------
+
+func TestHandleArchive_Success(t *testing.T) {
+	vid := "v1"
+	rs := &mockReadStore{
+		getBranchFn: func(_ context.Context, repo, branch string) (*store.BranchInfo, error) {
+			return &store.BranchInfo{Name: branch, HeadSequence: 1, BaseSequence: 0, Status: "active"}, nil
+		},
+		materializeTreeFn: func(_ context.Context, repo, branch string, atSeq *int64, limit int, afterPath string) ([]store.TreeEntry, error) {
+			if afterPath != "" {
+				return nil, nil // only one page
+			}
+			return []store.TreeEntry{
+				{Path: "main.go", VersionID: vid, ContentHash: "hash1"},
+				{Path: "sub/util.go", VersionID: "v2", ContentHash: "hash2"},
+			}, nil
+		},
+		getFileFn: func(_ context.Context, repo, branch, path string, atSeq *int64) (*store.FileContent, error) {
+			switch path {
+			case "main.go":
+				return &store.FileContent{Path: path, Content: []byte("package main")}, nil
+			case "sub/util.go":
+				return &store.FileContent{Path: path, Content: []byte("package sub")}, nil
+			}
+			return nil, nil
+		},
+	}
+	h := newTestHandler(&mockStore{}, rs, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/default/-/archive?branch=main", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/x-tar" {
+		t.Errorf("expected Content-Type application/x-tar, got %q", ct)
+	}
+
+	// Read the tar and verify entries.
+	tr := tar.NewReader(w.Body)
+	files := make(map[string]string)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("read tar: %v", err)
+		}
+		content, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatalf("read tar entry %s: %v", hdr.Name, err)
+		}
+		files[hdr.Name] = string(content)
+	}
+
+	if len(files) != 2 {
+		t.Fatalf("expected 2 files in archive, got %d", len(files))
+	}
+	if files["main.go"] != "package main" {
+		t.Errorf("main.go = %q, want \"package main\"", files["main.go"])
+	}
+	if files["sub/util.go"] != "package sub" {
+		t.Errorf("sub/util.go = %q, want \"package sub\"", files["sub/util.go"])
+	}
+}
+
+func TestHandleArchive_MissingBranch(t *testing.T) {
+	rs := &mockReadStore{}
+	h := newTestHandler(&mockStore{}, rs, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/default/-/archive", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleArchive_BranchNotFound(t *testing.T) {
+	rs := &mockReadStore{
+		getBranchFn: func(_ context.Context, repo, branch string) (*store.BranchInfo, error) {
+			return nil, nil // branch not found
+		},
+	}
+	h := newTestHandler(&mockStore{}, rs, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/default/-/archive?branch=nonexistent", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d: %s", w.Code, w.Body.String())
 	}
 }
