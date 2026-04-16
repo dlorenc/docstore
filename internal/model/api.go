@@ -267,6 +267,7 @@ type CreateCheckRunRequest struct {
 	Branch    string         `json:"branch"`
 	CheckName string         `json:"check_name"`
 	Status    CheckRunStatus `json:"status"`
+	LogURL    *string        `json:"log_url,omitempty"`
 }
 
 // CreateCheckRunResponse is the response for POST /check.

@@ -29,7 +29,7 @@ type mockStore struct {
 	getRepoFn       func(ctx context.Context, name string) (*model.Repo, error)
 	createReviewFn  func(ctx context.Context, repo, branch, reviewer string, status model.ReviewStatus, body string) (*model.Review, error)
 	listReviewsFn   func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.Review, error)
-	createCheckRunFn func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string) (*model.CheckRun, error)
+	createCheckRunFn func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string) (*model.CheckRun, error)
 	listCheckRunsFn  func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.CheckRun, error)
 	getRoleFn      func(ctx context.Context, repo, identity string) (*model.Role, error)
 	setRoleFn      func(ctx context.Context, repo, identity string, role model.RoleType) error
@@ -144,9 +144,9 @@ func (m *mockStore) ListReviews(ctx context.Context, repo, branch string, atSeq 
 	return nil, errors.New("not implemented")
 }
 
-func (m *mockStore) CreateCheckRun(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string) (*model.CheckRun, error) {
+func (m *mockStore) CreateCheckRun(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string) (*model.CheckRun, error) {
 	if m.createCheckRunFn != nil {
-		return m.createCheckRunFn(ctx, repo, branch, checkName, status, reporter)
+		return m.createCheckRunFn(ctx, repo, branch, checkName, status, reporter, logURL)
 	}
 	return nil, errors.New("not implemented")
 }
@@ -1404,7 +1404,7 @@ func TestHandleReview_BranchNotFound(t *testing.T) {
 func TestHandleCheck_Success(t *testing.T) {
 	const identity = "ci-bot@example.com"
 	store := &mockStore{
-		createCheckRunFn: func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string) (*model.CheckRun, error) {
+		createCheckRunFn: func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string) (*model.CheckRun, error) {
 			if repo != "default/default" {
 				t.Errorf("expected repo default, got %q", repo)
 			}
@@ -1447,7 +1447,7 @@ func TestHandleCheck_Success(t *testing.T) {
 
 func TestHandleCheck_BranchNotFound(t *testing.T) {
 	store := &mockStore{
-		createCheckRunFn: func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string) (*model.CheckRun, error) {
+		createCheckRunFn: func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string) (*model.CheckRun, error) {
 			return nil, db.ErrBranchNotFound
 		},
 	}
@@ -2519,7 +2519,7 @@ default allow = true
 			writeDetector()
 			return nil, nil
 		},
-		createCheckRunFn: func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string) (*model.CheckRun, error) {
+		createCheckRunFn: func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string) (*model.CheckRun, error) {
 			writeDetector()
 			return nil, nil
 		},
