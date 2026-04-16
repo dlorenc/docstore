@@ -4,6 +4,36 @@ package model
 
 import "time"
 
+// OrgRole represents the role of an org member.
+type OrgRole string
+
+const (
+	OrgRoleOwner  OrgRole = "owner"
+	OrgRoleMember OrgRole = "member"
+)
+
+// OrgMember is a member of an org with a specific role.
+type OrgMember struct {
+	Org       string    `json:"org"`
+	Identity  string    `json:"identity"`
+	Role      OrgRole   `json:"role"`
+	InvitedBy string    `json:"invited_by"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// OrgInvite is a pending or accepted invitation to join an org.
+type OrgInvite struct {
+	ID         string     `json:"id"`
+	Org        string     `json:"org"`
+	Email      string     `json:"email"`
+	Role       OrgRole    `json:"role"`
+	InvitedBy  string     `json:"invited_by"`
+	Token      string     `json:"token,omitempty"`
+	ExpiresAt  time.Time  `json:"expires_at"`
+	AcceptedAt *time.Time `json:"accepted_at,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+}
+
 // Org is a top-level namespace that owns one or more repos.
 type Org struct {
 	Name      string    `json:"name"`
