@@ -24,6 +24,7 @@ import (
 	"github.com/dlorenc/docstore/internal/tui"
 )
 
+
 // commitInfo is a local type for decoding GET /commit/:seq server responses.
 type commitInfo struct {
 	Sequence  int64            `json:"sequence"`
@@ -52,6 +53,66 @@ const configDir = ".docstore"
 const configFile = "config.json"
 const stateFile = "state.json"
 
+// chainEntry is the JSON shape returned by GET /-/chain.
+type chainEntry struct {
+	Sequence   int64       `json:"sequence"`
+	Branch     string      `json:"branch"`
+	Author     string      `json:"author"`
+	Message    string      `json:"message"`
+	CreatedAt  time.Time   `json:"created_at"`
+	CommitHash *string     `json:"commit_hash"`
+	Files      []chainFile `json:"files"`
+}
+
+// chainFile is one file in a chainEntry.
+type chainFile struct {
+	Path        string `json:"path"`
+	ContentHash string `json:"content_hash"`
+}
+
+// genesisHash is the all-zeros hash used as the previous-hash for the first chain entry.
+const genesisHash = "0000000000000000000000000000000000000000000000000000000000000000"
+
+// computeChainHash recomputes the SHA256 chain hash for a commit entry.
+// This must exactly match the server-side formula in internal/db/store.go.
+func computeChainHash(prevHash string, seq int64, repo, branch, author, message string, createdAt time.Time, files []chainFile) string {
+	h := sha256.New()
+	h.Write([]byte(prevHash + "\n"))
+	h.Write([]byte(fmt.Sprintf("%d\n", seq)))
+	h.Write([]byte(repo + "\n"))
+	h.Write([]byte(branch + "\n"))
+	h.Write([]byte(author + "\n"))
+	h.Write([]byte(message + "\n"))
+	h.Write([]byte(createdAt.UTC().Format(time.RFC3339Nano) + "\n"))
+	sorted := make([]chainFile, len(files))
+	copy(sorted, files)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Path < sorted[j].Path })
+	for _, f := range sorted {
+		h.Write([]byte(f.Path + ":" + f.ContentHash + "\n"))
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// fetchChain calls GET /-/chain?from=N&to=M and returns the decoded entries.
+func (a *App) fetchChain(cfg *Config, from, to int64) ([]chainEntry, error) {
+	q := url.Values{}
+	q.Set("from", fmt.Sprintf("%d", from))
+	q.Set("to", fmt.Sprintf("%d", to))
+	resp, err := a.httpGet(cfg, repoBase(cfg)+"/chain?"+q.Encode())
+	if err != nil {
+		return nil, fmt.Errorf("fetching chain: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, a.readError(resp)
+	}
+	var entries []chainEntry
+	if err := json.NewDecoder(resp.Body).Decode(&entries); err != nil {
+		return nil, fmt.Errorf("decoding chain: %w", err)
+	}
+	return entries, nil
+}
+
 // Config is the persistent CLI configuration stored in .docstore/config.json.
 type Config struct {
 	Remote string `json:"remote"`
@@ -62,9 +123,10 @@ type Config struct {
 
 // State tracks the last-synced tree for offline status.
 type State struct {
-	Branch   string            `json:"branch"`
-	Sequence int64             `json:"sequence"`
-	Files    map[string]string `json:"files"` // path -> content_hash
+	Branch     string            `json:"branch"`
+	Sequence   int64             `json:"sequence"`
+	Files      map[string]string `json:"files"`      // path -> content_hash
+	CommitHash string            `json:"commit_hash"` // tip commit_hash for chain verification; empty = not yet set
 }
 
 // App is the CLI application. All fields are injectable for testing.
@@ -432,6 +494,13 @@ func (a *App) Commit(message string) error {
 	st.Sequence = commitResp.Sequence
 	st.Branch = cfg.Branch
 
+	// Store the commit_hash returned directly in the response (FIX-1).
+	if commitResp.CommitHash != "" {
+		st.CommitHash = commitResp.CommitHash
+	} else {
+		fmt.Fprintf(a.Out, "warning: server did not return commit_hash, chain verification may be incomplete\n")
+	}
+
 	if err := a.saveState(st); err != nil {
 		return err
 	}
@@ -508,6 +577,9 @@ func (a *App) Checkout(branch string) error {
 }
 
 // Pull syncs local files from the current branch on the server.
+// If state has a stored CommitHash, it verifies the chain from the stored
+// sequence to the new head before updating state. On first pull (no stored
+// CommitHash), it uses TOFU and stores the tip's commit_hash.
 func (a *App) Pull() error {
 	cfg, err := a.loadConfig()
 	if err != nil {
@@ -523,7 +595,171 @@ func (a *App) Pull() error {
 		return fmt.Errorf("uncommitted changes -- commit or discard first")
 	}
 
-	return a.syncTree(cfg, cfg.Branch)
+	// Save old state before sync (for chain verification).
+	oldState, err := a.loadState()
+	if err != nil {
+		return err
+	}
+
+	if err := a.syncTree(cfg, cfg.Branch); err != nil {
+		return err
+	}
+
+	// Load updated state (syncTree saved it).
+	newState, err := a.loadState()
+	if err != nil {
+		return err
+	}
+
+	// Chain verification / TOFU.
+	if newState.Sequence == 0 {
+		// No commits yet; nothing to verify.
+		return nil
+	}
+
+	if oldState.CommitHash == "" {
+		// TOFU: fetch the tip commit's hash and store it.
+		entries, err := a.fetchChain(cfg, newState.Sequence, newState.Sequence)
+		if err != nil {
+			// Non-fatal: chain endpoint may not be available on older servers.
+			fmt.Fprintf(a.Out, "warning: could not fetch chain for TOFU: %v\n", err)
+			return nil
+		}
+		if len(entries) > 0 && entries[0].CommitHash != nil {
+			newState.CommitHash = *entries[0].CommitHash
+			return a.saveState(newState)
+		}
+		// Tip has NULL commit_hash (pre-feature commit); keep CommitHash empty
+		// so we retry TOFU on the next pull until a hashed tip is available.
+		if len(entries) > 0 {
+			fmt.Fprintf(a.Out, "note: current tip (seq %d) predates hash chain feature; chain verification will begin on next commit\n", entries[0].Sequence)
+		}
+		return nil
+	}
+
+	// Verification: old state has a known commit hash; verify the chain forward.
+	if oldState.Sequence == newState.Sequence {
+		// Nothing changed; no verification needed.
+		return nil
+	}
+
+	// Fetch from oldState.Sequence (inclusive) to newState.Sequence.
+	// The first entry is our anchor: its stored commit_hash must match oldState.CommitHash.
+	entries, err := a.fetchChain(cfg, oldState.Sequence, newState.Sequence)
+	if err != nil {
+		return fmt.Errorf("chain fetch for verification: %w", err)
+	}
+
+	if len(entries) == 0 {
+		return nil
+	}
+
+	// Anchor check: the server's hash for oldState.Sequence must match what we stored.
+	anchor := entries[0]
+	if anchor.CommitHash == nil {
+		// Pre-feature commit at anchor; treat as reset.
+		fmt.Fprintf(a.Out, "note: skipping pre-feature commit at sequence %d (no commit_hash)\n", anchor.Sequence)
+	} else if *anchor.CommitHash != oldState.CommitHash {
+		return fmt.Errorf("chain integrity error at sequence %d: anchor hash changed (stored %s, server %s)",
+			anchor.Sequence, oldState.CommitHash, *anchor.CommitHash)
+	}
+
+	// Verify chain linkage for entries after the anchor.
+	// Only process entries on the current branch (per-branch chain semantics).
+	prevHash := oldState.CommitHash
+	if anchor.CommitHash == nil {
+		prevHash = genesisHash
+	}
+	skippedBoundary := false
+	for _, e := range entries[1:] {
+		if e.Branch != cfg.Branch {
+			// Skip commits on other branches; each branch has its own independent chain.
+			continue
+		}
+		if e.CommitHash == nil {
+			if !skippedBoundary {
+				fmt.Fprintf(a.Out, "note: skipping pre-feature commit at sequence %d (no commit_hash)\n", e.Sequence)
+				skippedBoundary = true
+			}
+			prevHash = genesisHash
+			continue
+		}
+		computed := computeChainHash(prevHash, e.Sequence, cfg.Repo, e.Branch, e.Author, e.Message, e.CreatedAt, e.Files)
+		if computed != *e.CommitHash {
+			return fmt.Errorf("chain integrity error at sequence %d: expected %s got %s", e.Sequence, computed, *e.CommitHash)
+		}
+		prevHash = *e.CommitHash
+	}
+
+	newState.CommitHash = prevHash
+	return a.saveState(newState)
+}
+
+// Verify walks the commit chain from the first non-NULL commit_hash on the current
+// branch to the server's current head and prints per-commit verification status to a.Out.
+func (a *App) Verify() error {
+	cfg, err := a.loadConfig()
+	if err != nil {
+		return err
+	}
+
+	// Fetch the current branch head from the server (not from local state) so
+	// we don't miss commits made after the last pull (FIX-3).
+	headSeq, err := a.branchHeadSequence(cfg, cfg.Branch)
+	if err != nil {
+		return fmt.Errorf("fetching branch head: %w", err)
+	}
+	if headSeq == 0 {
+		fmt.Fprintf(a.Out, "No commits to verify.\n")
+		return nil
+	}
+
+	// Fetch the full chain from sequence 1 to server head.
+	entries, err := a.fetchChain(cfg, 1, headSeq)
+	if err != nil {
+		return fmt.Errorf("fetching chain: %w", err)
+	}
+
+	if len(entries) == 0 {
+		fmt.Fprintf(a.Out, "No commits to verify.\n")
+		return nil
+	}
+
+	prevHash := genesisHash
+	foundFirst := false
+	var verifyErr error
+	for _, e := range entries {
+		// Skip commits on other branches; each branch has its own independent chain.
+		if e.Branch != cfg.Branch {
+			continue
+		}
+		if e.CommitHash == nil {
+			fmt.Fprintf(a.Out, "seq %-4d  SKIP  (no commit_hash)  %s\n", e.Sequence, e.Message)
+			// Reset prevHash so the next hashed commit starts a new chain segment.
+			prevHash = genesisHash
+			continue
+		}
+		if !foundFirst {
+			// The first non-NULL commit on this branch is the chain anchor; accept its hash as-is.
+			foundFirst = true
+			prevHash = *e.CommitHash
+			fmt.Fprintf(a.Out, "seq %-4d  OK    %.16s  %s\n", e.Sequence, *e.CommitHash, e.Message)
+			continue
+		}
+		computed := computeChainHash(prevHash, e.Sequence, cfg.Repo, e.Branch, e.Author, e.Message, e.CreatedAt, e.Files)
+		if computed == *e.CommitHash {
+			prevHash = *e.CommitHash
+			fmt.Fprintf(a.Out, "seq %-4d  OK    %.16s  %s\n", e.Sequence, *e.CommitHash, e.Message)
+		} else {
+			fmt.Fprintf(a.Out, "seq %-4d  FAIL  (expected %.16s got %.16s)  %s\n",
+				e.Sequence, computed, *e.CommitHash, e.Message)
+			prevHash = *e.CommitHash // continue verifying remaining chain
+			if verifyErr == nil {
+				verifyErr = fmt.Errorf("chain integrity error at sequence %d", e.Sequence)
+			}
+		}
+	}
+	return verifyErr
 }
 
 // syncTree fetches the full tree from the server and updates local files.
