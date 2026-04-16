@@ -494,13 +494,12 @@ func (a *App) Commit(message string) error {
 	st.Sequence = commitResp.Sequence
 	st.Branch = cfg.Branch
 
-	// Fetch and store the commit_hash for this new commit.
-	if chainEntries, err := a.fetchChain(cfg, commitResp.Sequence, commitResp.Sequence); err == nil {
-		if len(chainEntries) > 0 && chainEntries[0].CommitHash != nil {
-			st.CommitHash = *chainEntries[0].CommitHash
-		}
+	// Store the commit_hash returned directly in the response (FIX-1).
+	if commitResp.CommitHash != "" {
+		st.CommitHash = commitResp.CommitHash
+	} else {
+		fmt.Fprintf(a.Out, "warning: server did not return commit_hash, chain verification may be incomplete\n")
 	}
-	// Non-fatal if chain fetch fails (e.g. server doesn't support endpoint yet).
 
 	if err := a.saveState(st); err != nil {
 		return err
@@ -630,6 +629,11 @@ func (a *App) Pull() error {
 			newState.CommitHash = *entries[0].CommitHash
 			return a.saveState(newState)
 		}
+		// Tip has NULL commit_hash (pre-feature commit); keep CommitHash empty
+		// so we retry TOFU on the next pull until a hashed tip is available.
+		if len(entries) > 0 {
+			fmt.Fprintf(a.Out, "note: current tip (seq %d) predates hash chain feature; chain verification will begin on next commit\n", entries[0].Sequence)
+		}
 		return nil
 	}
 
@@ -661,12 +665,17 @@ func (a *App) Pull() error {
 	}
 
 	// Verify chain linkage for entries after the anchor.
+	// Only process entries on the current branch (per-branch chain semantics).
 	prevHash := oldState.CommitHash
 	if anchor.CommitHash == nil {
 		prevHash = genesisHash
 	}
 	skippedBoundary := false
 	for _, e := range entries[1:] {
+		if e.Branch != cfg.Branch {
+			// Skip commits on other branches; each branch has its own independent chain.
+			continue
+		}
 		if e.CommitHash == nil {
 			if !skippedBoundary {
 				fmt.Fprintf(a.Out, "note: skipping pre-feature commit at sequence %d (no commit_hash)\n", e.Sequence)
@@ -686,25 +695,27 @@ func (a *App) Pull() error {
 	return a.saveState(newState)
 }
 
-// Verify walks the commit chain from the first non-NULL commit_hash to the current
-// head and prints per-commit verification status to a.Out.
+// Verify walks the commit chain from the first non-NULL commit_hash on the current
+// branch to the server's current head and prints per-commit verification status to a.Out.
 func (a *App) Verify() error {
 	cfg, err := a.loadConfig()
 	if err != nil {
 		return err
 	}
-	st, err := a.loadState()
-	if err != nil {
-		return err
-	}
 
-	if st.Sequence == 0 {
+	// Fetch the current branch head from the server (not from local state) so
+	// we don't miss commits made after the last pull (FIX-3).
+	headSeq, err := a.branchHeadSequence(cfg, cfg.Branch)
+	if err != nil {
+		return fmt.Errorf("fetching branch head: %w", err)
+	}
+	if headSeq == 0 {
 		fmt.Fprintf(a.Out, "No commits to verify.\n")
 		return nil
 	}
 
-	// Fetch the full chain from sequence 1 to head.
-	entries, err := a.fetchChain(cfg, 1, st.Sequence)
+	// Fetch the full chain from sequence 1 to server head.
+	entries, err := a.fetchChain(cfg, 1, headSeq)
 	if err != nil {
 		return fmt.Errorf("fetching chain: %w", err)
 	}
@@ -718,6 +729,10 @@ func (a *App) Verify() error {
 	foundFirst := false
 	var verifyErr error
 	for _, e := range entries {
+		// Skip commits on other branches; each branch has its own independent chain.
+		if e.Branch != cfg.Branch {
+			continue
+		}
 		if e.CommitHash == nil {
 			fmt.Fprintf(a.Out, "seq %-4d  SKIP  (no commit_hash)  %s\n", e.Sequence, e.Message)
 			// Reset prevHash so the next hashed commit starts a new chain segment.
@@ -725,7 +740,7 @@ func (a *App) Verify() error {
 			continue
 		}
 		if !foundFirst {
-			// The first non-NULL commit is the chain anchor; accept its hash as-is.
+			// The first non-NULL commit on this branch is the chain anchor; accept its hash as-is.
 			foundFirst = true
 			prevHash = *e.CommitHash
 			fmt.Fprintf(a.Out, "seq %-4d  OK    %.16s  %s\n", e.Sequence, *e.CommitHash, e.Message)

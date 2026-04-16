@@ -3008,6 +3008,14 @@ func TestIsForeignKeyViolation_FromDB(t *testing.T) {
 // Hash chain tests
 // ---------------------------------------------------------------------------
 
+// expectedCommitHash is a regression sentinel: the known SHA256 for the fixed
+// test inputs used in TestComputeCommitHash. If the hash formula changes, this
+// constant must be updated deliberately (it catches accidental formula drift).
+// Inputs: prevHash=genesisHash, seq=1, repo="myorg/repo", branch="main",
+// author="alice", message="first commit", ts=2024-01-01T00:00:00Z,
+// files=[{a.txt:aaa},{b.txt:bbb}] (sorted alphabetically by path).
+const expectedCommitHash = "54662b84dcaca30b108d9b779bec9ad8727f35db9e6742401aaa5d09a5a5b987"
+
 // TestComputeCommitHash verifies that computeCommitHash produces a stable SHA256 output.
 func TestComputeCommitHash(t *testing.T) {
 	ts := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -3019,6 +3027,11 @@ func TestComputeCommitHash(t *testing.T) {
 	got := computeCommitHash(genesisHash, 1, "myorg/repo", "main", "alice", "first commit", ts, files)
 	if len(got) != 64 {
 		t.Fatalf("expected 64-char hex string, got %q (len=%d)", got, len(got))
+	}
+
+	// Regression sentinel: any formula change will break this even if both sides are updated.
+	if got != expectedCommitHash {
+		t.Errorf("hash formula changed: got %s, want %s", got, expectedCommitHash)
 	}
 
 	// Recomputing with the same inputs must produce the same hash.
@@ -3146,5 +3159,131 @@ func TestCommit_ChainLinks(t *testing.T) {
 	}
 	if hash1.String == hash2.String {
 		t.Error("expected different hashes for different commits")
+	}
+
+	// Verify actual chain linkage: recompute hash2 using hash1 as prevHash and
+	// compare to the stored value. This proves the chain links correctly, not just
+	// that the two hashes differ.
+	var author2, message2 string
+	var createdAt2 time.Time
+	if err := d.QueryRowContext(ctx,
+		"SELECT author, message, created_at FROM commits WHERE sequence = $1", resp2.Sequence,
+	).Scan(&author2, &message2, &createdAt2); err != nil {
+		t.Fatalf("query commit2 metadata: %v", err)
+	}
+	// Get content hash for a.txt at seq2 (b.txt is the new file, but we need the files committed in resp2).
+	// resp2 committed b.txt; get its content hash from documents.
+	var contentHash2 sql.NullString
+	if err := d.QueryRowContext(ctx,
+		`SELECT d.content_hash FROM file_commits fc
+		 JOIN documents d ON d.version_id = fc.version_id AND d.repo = fc.repo
+		 WHERE fc.sequence = $1 AND fc.path = 'b.txt'`, resp2.Sequence,
+	).Scan(&contentHash2); err != nil {
+		t.Fatalf("query content hash for b.txt: %v", err)
+	}
+	hashFiles2 := []chainFile{{path: "b.txt", contentHash: contentHash2.String}}
+	recomputed2 := computeCommitHash(hash1.String, resp2.Sequence, "default/default", "main", author2, message2, createdAt2, hashFiles2)
+	if recomputed2 != hash2.String {
+		t.Errorf("chain linkage broken: recomputed hash2=%s, stored hash2=%s", recomputed2, hash2.String)
+	}
+}
+
+// TestCommit_PerBranchChain verifies that commits on different branches each
+// start their own chain from genesisHash, independently of each other.
+func TestCommit_PerBranchChain(t *testing.T) {
+	d := testutil.TestDB(t, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	// Commit to main.
+	mainResp, err := s.Commit(ctx, model.CommitRequest{
+		Repo:    "default/default",
+		Branch:  "main",
+		Files:   []model.FileChange{{Path: "base.txt", Content: []byte("base")}},
+		Message: "main first",
+		Author:  "alice@example.com",
+	})
+	if err != nil {
+		t.Fatalf("main commit: %v", err)
+	}
+
+	// Create a feature branch and commit to it.
+	if _, err = s.CreateBranch(ctx, model.CreateBranchRequest{Repo: "default/default", Name: "feature/x"}); err != nil {
+		t.Fatalf("create branch: %v", err)
+	}
+	featureResp, err := s.Commit(ctx, model.CommitRequest{
+		Repo:    "default/default",
+		Branch:  "feature/x",
+		Files:   []model.FileChange{{Path: "feat.txt", Content: []byte("feat")}},
+		Message: "feature first",
+		Author:  "bob@example.com",
+	})
+	if err != nil {
+		t.Fatalf("feature commit: %v", err)
+	}
+
+	// Retrieve both commit hashes from the DB.
+	var mainHash, featureHash sql.NullString
+	if err := d.QueryRowContext(ctx, "SELECT commit_hash FROM commits WHERE sequence = $1", mainResp.Sequence).Scan(&mainHash); err != nil {
+		t.Fatalf("query main hash: %v", err)
+	}
+	if err := d.QueryRowContext(ctx, "SELECT commit_hash FROM commits WHERE sequence = $1", featureResp.Sequence).Scan(&featureHash); err != nil {
+		t.Fatalf("query feature hash: %v", err)
+	}
+	if !mainHash.Valid || !featureHash.Valid {
+		t.Fatal("expected both hashes to be set")
+	}
+
+	// Both commits should be the first on their respective branches, so both
+	// prevHash values should be genesisHash. Retrieve metadata to recompute.
+	type commitMeta struct {
+		author, message string
+		createdAt       time.Time
+	}
+	getMeta := func(seq int64) commitMeta {
+		t.Helper()
+		var m commitMeta
+		if err := d.QueryRowContext(ctx,
+			"SELECT author, message, created_at FROM commits WHERE sequence = $1", seq,
+		).Scan(&m.author, &m.message, &m.createdAt); err != nil {
+			t.Fatalf("query meta seq=%d: %v", seq, err)
+		}
+		return m
+	}
+	getContentHash := func(seq int64, path string) string {
+		t.Helper()
+		var h sql.NullString
+		if err := d.QueryRowContext(ctx,
+			`SELECT d.content_hash FROM file_commits fc
+			 JOIN documents d ON d.version_id = fc.version_id AND d.repo = fc.repo
+			 WHERE fc.sequence = $1 AND fc.path = $2`, seq, path,
+		).Scan(&h); err != nil {
+			t.Fatalf("query content hash seq=%d path=%s: %v", seq, path, err)
+		}
+		return h.String
+	}
+
+	mainMeta := getMeta(mainResp.Sequence)
+	featureMeta := getMeta(featureResp.Sequence)
+
+	// Main commit: prevHash must be genesisHash (first on main).
+	expectedMain := computeCommitHash(genesisHash, mainResp.Sequence, "default/default", "main",
+		mainMeta.author, mainMeta.message, mainMeta.createdAt,
+		[]chainFile{{path: "base.txt", contentHash: getContentHash(mainResp.Sequence, "base.txt")}})
+	if expectedMain != mainHash.String {
+		t.Errorf("main chain: expected %s, got %s", expectedMain, mainHash.String)
+	}
+
+	// Feature commit: prevHash must be genesisHash (first on feature/x, independent of main).
+	expectedFeature := computeCommitHash(genesisHash, featureResp.Sequence, "default/default", "feature/x",
+		featureMeta.author, featureMeta.message, featureMeta.createdAt,
+		[]chainFile{{path: "feat.txt", contentHash: getContentHash(featureResp.Sequence, "feat.txt")}})
+	if expectedFeature != featureHash.String {
+		t.Errorf("feature chain: expected %s, got %s", expectedFeature, featureHash.String)
+	}
+
+	// The two branch chains are independent — their hashes should differ.
+	if mainHash.String == featureHash.String {
+		t.Error("expected different hashes for commits on different branches")
 	}
 }

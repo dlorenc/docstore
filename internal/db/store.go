@@ -50,14 +50,17 @@ func computeCommitHash(prevHash string, seq int64, repo, branch, author, message
 }
 
 // fetchPrevCommitHash fetches the commit_hash of the most recent commit before seq
-// in the given repo. Returns genesisHash if no previous commit exists or if the
-// previous commit has a NULL commit_hash (pre-feature commit).
-func fetchPrevCommitHash(ctx context.Context, tx *sql.Tx, repo string, seq int64) (string, error) {
+// on the same branch. Returns genesisHash if no previous commit exists on this branch
+// or if the previous commit has a NULL commit_hash (pre-feature commit).
+// Using per-branch lookup ensures same-branch commits form a coherent linear chain;
+// different branches have independent chains and are not subject to cross-branch races.
+func fetchPrevCommitHash(ctx context.Context, tx *sql.Tx, repo, branch string, seq int64) (string, error) {
 	var prevNull sql.NullString
 	err := tx.QueryRowContext(ctx,
 		`SELECT commit_hash FROM commits
-		 WHERE repo = $1 AND sequence = (SELECT MAX(sequence) FROM commits WHERE repo = $1 AND sequence < $2)`,
-		repo, seq,
+		 WHERE repo = $1 AND branch = $2
+		   AND sequence = (SELECT MAX(sequence) FROM commits WHERE repo = $1 AND branch = $2 AND sequence < $3)`,
+		repo, branch, seq,
 	).Scan(&prevNull)
 	if errors.Is(err, sql.ErrNoRows) {
 		return genesisHash, nil
@@ -485,12 +488,12 @@ func (s *Store) Commit(ctx context.Context, req model.CommitRequest) (*model.Com
 		return nil, fmt.Errorf("update branch head: %w", err)
 	}
 
-	// Compute and store commit_hash.
-	prevHash, err := fetchPrevCommitHash(ctx, tx, req.Repo, newSeq)
+	// Compute and store commit_hash (per-branch chain).
+	prevHash, err := fetchPrevCommitHash(ctx, tx, req.Repo, req.Branch, newSeq)
 	if err != nil {
 		return nil, err
 	}
-	sort.Slice(hashFiles, func(i, j int) bool { return hashFiles[i].path < hashFiles[j].path })
+	// computeCommitHash sorts files internally; no pre-sort needed.
 	commitHash := computeCommitHash(prevHash, newSeq, req.Repo, req.Branch, req.Author, req.Message, commitCreatedAt, hashFiles)
 	if err := updateCommitHash(ctx, tx, req.Repo, newSeq, commitHash); err != nil {
 		return nil, fmt.Errorf("store commit hash: %w", err)
@@ -501,8 +504,9 @@ func (s *Store) Commit(ctx context.Context, req model.CommitRequest) (*model.Com
 	}
 
 	return &model.CommitResponse{
-		Sequence: newSeq,
-		Files:    results,
+		Sequence:   newSeq,
+		Files:      results,
+		CommitHash: commitHash,
 	}, nil
 }
 
@@ -691,8 +695,8 @@ func (s *Store) Merge(ctx context.Context, req model.MergeRequest) (*model.Merge
 		return nil, nil, fmt.Errorf("update branch status: %w", err)
 	}
 
-	// Compute and store commit_hash for the merge commit.
-	prevHash, err := fetchPrevCommitHash(ctx, tx, req.Repo, newSeq)
+	// Compute and store commit_hash for the merge commit (per-branch: main chain).
+	prevHash, err := fetchPrevCommitHash(ctx, tx, req.Repo, "main", newSeq)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -704,7 +708,7 @@ func (s *Store) Merge(ctx context.Context, req model.MergeRequest) (*model.Merge
 		}
 		hashFiles = append(hashFiles, chainFile{path: path, contentHash: contentHash})
 	}
-	sort.Slice(hashFiles, func(i, j int) bool { return hashFiles[i].path < hashFiles[j].path })
+	// computeCommitHash sorts files internally; no pre-sort needed.
 	mergeHash := computeCommitHash(prevHash, newSeq, req.Repo, "main", req.Author, mergeMsg, mergeCreatedAt, hashFiles)
 	if err := updateCommitHash(ctx, tx, req.Repo, newSeq, mergeHash); err != nil {
 		return nil, nil, fmt.Errorf("store merge commit hash: %w", err)
@@ -849,8 +853,8 @@ func (s *Store) Rebase(ctx context.Context, req model.RebaseRequest) (*model.Reb
 			}
 		}
 
-		// Compute and store commit_hash for this replayed commit.
-		prevHash, err := fetchPrevCommitHash(ctx, tx, req.Repo, newSeq)
+		// Compute and store commit_hash for this replayed commit (per-branch chain).
+		prevHash, err := fetchPrevCommitHash(ctx, tx, req.Repo, req.Branch, newSeq)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -862,7 +866,7 @@ func (s *Store) Rebase(ctx context.Context, req model.RebaseRequest) (*model.Reb
 			}
 			hashFiles = append(hashFiles, chainFile{path: f.path, contentHash: contentHash})
 		}
-		sort.Slice(hashFiles, func(i, j int) bool { return hashFiles[i].path < hashFiles[j].path })
+		// computeCommitHash sorts files internally; no pre-sort needed.
 		rebaseHash := computeCommitHash(prevHash, newSeq, req.Repo, req.Branch, author, rebaseMsg, rebaseCreatedAt, hashFiles)
 		if err := updateCommitHash(ctx, tx, req.Repo, newSeq, rebaseHash); err != nil {
 			return nil, nil, fmt.Errorf("store rebase commit hash: %w", err)

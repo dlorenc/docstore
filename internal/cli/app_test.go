@@ -2671,6 +2671,9 @@ func TestVerify_HappyPath(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/default/default/-/branches":
+			// Verify() now fetches the server head instead of using st.Sequence (FIX-3).
+			json.NewEncoder(w).Encode([]model.Branch{{Name: "main", HeadSequence: 2}})
 		case r.Method == "GET" && r.URL.Path == "/repos/default/default/-/chain":
 			json.NewEncoder(w).Encode([]chainEntry{e1, e2})
 		default:
@@ -2681,6 +2684,7 @@ func TestVerify_HappyPath(t *testing.T) {
 
 	app, out := newTestApp(t, srv)
 	initWorkspace(t, app, srv.URL, "main", "alice")
+	// st.Sequence is no longer used by Verify() (FIX-3), but still saved for completeness.
 	st := &State{Branch: "main", Sequence: 2, Files: make(map[string]string)}
 	if err := app.saveState(st); err != nil {
 		t.Fatal(err)
@@ -2693,5 +2697,90 @@ func TestVerify_HappyPath(t *testing.T) {
 	// First entry is the anchor (no recomputation); second is verified.
 	if !strings.Contains(output, "OK") {
 		t.Errorf("expected OK in output: %s", output)
+	}
+}
+
+// TestPull_AnchorTampered verifies that Pull() returns a chain integrity error
+// when the server reports a different commit_hash for the anchor sequence than
+// what the client has stored in state (FIX-7).
+func TestPull_AnchorTampered(t *testing.T) {
+	ts := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	e1 := newChainEntry(genesisHash, 1, "default/default", "main", "alice", "first", ts)
+
+	// Server returns a tampered hash for the anchor sequence.
+	tamperedHash := "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+	e1Tampered := chainEntry{
+		Sequence:   1,
+		Branch:     "main",
+		Author:     "alice",
+		Message:    "first",
+		CreatedAt:  ts,
+		CommitHash: &tamperedHash,
+		Files:      []chainFile{},
+	}
+
+	srv := newPullServer(t, "main", 2, []chainEntry{e1Tampered})
+	defer srv.Close()
+
+	app, _ := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "main", "alice")
+
+	// Pre-seed state with the legitimate hash from e1.
+	st := &State{Branch: "main", Sequence: 1, Files: make(map[string]string), CommitHash: *e1.CommitHash}
+	if err := app.saveState(st); err != nil {
+		t.Fatal(err)
+	}
+
+	err := app.Pull()
+	if err == nil {
+		t.Fatal("expected chain integrity error for tampered anchor, got nil")
+	}
+	if !strings.Contains(err.Error(), "chain integrity error") {
+		t.Errorf("expected 'chain integrity error' in error, got: %v", err)
+	}
+}
+
+// TestPull_TOFU_NullHash verifies that the TOFU path prints a note and keeps
+// CommitHash empty when the tip commit has a NULL commit_hash (pre-feature commit).
+// This ensures the client retries TOFU on subsequent pulls rather than silently
+// skipping verification forever (FIX-4).
+func TestPull_TOFU_NullHash(t *testing.T) {
+	// Entry with nil CommitHash (simulates a pre-feature commit).
+	nullEntry := chainEntry{
+		Sequence:   1,
+		Branch:     "main",
+		Author:     "alice",
+		Message:    "legacy commit",
+		CreatedAt:  time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		CommitHash: nil,
+		Files:      []chainFile{},
+	}
+
+	srv := newPullServer(t, "main", 1, []chainEntry{nullEntry})
+	defer srv.Close()
+
+	app, out := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "main", "alice")
+	// No stored CommitHash — TOFU path.
+	if err := app.saveState(&State{Branch: "main", Sequence: 0, Files: make(map[string]string)}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := app.Pull(); err != nil {
+		t.Fatalf("Pull: unexpected error: %v", err)
+	}
+
+	// CommitHash must remain empty so TOFU is retried next pull.
+	st, err := app.loadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.CommitHash != "" {
+		t.Errorf("expected CommitHash to remain empty, got %q", st.CommitHash)
+	}
+
+	// A note explaining the situation should have been printed.
+	if !strings.Contains(out.String(), "predates hash chain feature") {
+		t.Errorf("expected predates-hash-chain note in output, got: %s", out.String())
 	}
 }
