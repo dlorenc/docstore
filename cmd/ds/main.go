@@ -41,6 +41,7 @@ commands:
 
   orgs                                            List organizations
   orgs create <name>                              Create an organization
+  orgs get <name>                                 Get details for an organization
   orgs delete <name>                              Delete an organization
   orgs repos <name>                               List repos in an organization
 
@@ -305,6 +306,12 @@ func main() {
 					os.Exit(1)
 				}
 				err = app.OrgsCreate(args[2])
+			case "get":
+				if len(args) < 3 {
+					fmt.Fprintln(os.Stderr, "usage: ds orgs get <name>")
+					os.Exit(1)
+				}
+				err = app.OrgsGet(args[2])
 			case "delete":
 				if len(args) < 3 {
 					fmt.Fprintln(os.Stderr, "usage: ds orgs delete <name>")
