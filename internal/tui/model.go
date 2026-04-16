@@ -4,6 +4,8 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"net/url"
 
@@ -26,33 +28,90 @@ type tuiClient struct {
 	remote     string
 	repo       string
 	author     string
+	debug      *log.Logger // nil when DS_TUI_DEBUG is unset
 }
 
 func (c *tuiClient) repoBase() string {
 	return c.remote + "/repos/" + c.repo + "/-"
 }
 
+func (c *tuiClient) debugf(format string, args ...interface{}) {
+	if c.debug != nil {
+		c.debug.Printf(format, args...)
+	}
+}
+
 func (c *tuiClient) get(path string) (*http.Response, error) {
-	req, err := http.NewRequest("GET", c.repoBase()+path, nil)
+	fullURL := c.repoBase() + path
+	req, err := http.NewRequest("GET", fullURL, nil)
 	if err != nil {
+		c.debugf("GET %s: build request: %v", fullURL, err)
 		return nil, err
 	}
 	req.Header.Set("X-DocStore-Identity", c.author)
-	return c.httpClient.Do(req)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		c.debugf("GET %s: %v", fullURL, err)
+		return nil, err
+	}
+	c.debugf("GET %s -> %d", fullURL, resp.StatusCode)
+	return resp, nil
 }
 
 func (c *tuiClient) postJSON(path string, body interface{}) (*http.Response, error) {
+	fullURL := c.repoBase() + path
 	data, err := json.Marshal(body)
 	if err != nil {
+		c.debugf("POST %s: marshal body: %v", fullURL, err)
 		return nil, err
 	}
-	req, err := http.NewRequest("POST", c.repoBase()+path, jsonBody(data))
+	req, err := http.NewRequest("POST", fullURL, jsonBody(data))
 	if err != nil {
+		c.debugf("POST %s: build request: %v", fullURL, err)
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-DocStore-Identity", c.author)
-	return c.httpClient.Do(req)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		c.debugf("POST %s: %v", fullURL, err)
+		return nil, err
+	}
+	c.debugf("POST %s -> %d", fullURL, resp.StatusCode)
+	return resp, nil
+}
+
+// decodeJSON decodes a successful (2xx) response body into target. On non-2xx
+// it reads the body, tries to parse it as model.ErrorResponse, and returns a
+// formatted error that includes the status code and server message. This
+// prevents callers from mis-decoding an error envelope as their expected type
+// (e.g. decoding `{"error":"..."}` as `[]model.CheckRun`).
+//
+// The caller retains responsibility for closing resp.Body.
+func (c *tuiClient) decodeJSON(resp *http.Response, target interface{}) error {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		var errResp model.ErrorResponse
+		msg := ""
+		if jsonErr := json.Unmarshal(body, &errResp); jsonErr == nil && errResp.Error != "" {
+			msg = errResp.Error
+		} else if len(body) > 0 {
+			msg = string(body)
+		}
+		c.debugf("decodeJSON: HTTP %d: %s", resp.StatusCode, msg)
+		if msg == "" {
+			return fmt.Errorf("server returned HTTP %d", resp.StatusCode)
+		}
+		return fmt.Errorf("server returned HTTP %d: %s", resp.StatusCode, msg)
+	}
+	if target == nil {
+		return nil
+	}
+	if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
+		c.debugf("decodeJSON: decode %T: %v", target, err)
+		return fmt.Errorf("decoding response: %w", err)
+	}
+	return nil
 }
 
 // topModel is the root Bubble Tea model; it routes to sub-models based on the active view.
@@ -172,8 +231,8 @@ func loadBranches(c *tuiClient) tea.Cmd {
 		defer resp.Body.Close()
 
 		var branches []model.Branch
-		if err := json.NewDecoder(resp.Body).Decode(&branches); err != nil {
-			return branchesLoadedMsg{err: fmt.Errorf("decoding branches: %w", err)}
+		if err := c.decodeJSON(resp, &branches); err != nil {
+			return branchesLoadedMsg{err: fmt.Errorf("loading branches: %w", err)}
 		}
 
 		summaries := make([]branchSummary, 0, len(branches))
@@ -184,7 +243,7 @@ func loadBranches(c *tuiClient) tea.Cmd {
 			rResp, rErr := c.get("/branch/" + url.PathEscape(b.Name) + "/reviews")
 			if rErr == nil {
 				var reviews []model.Review
-				jsonErr := json.NewDecoder(rResp.Body).Decode(&reviews)
+				jsonErr := c.decodeJSON(rResp, &reviews)
 				rResp.Body.Close()
 				if jsonErr == nil {
 					latest := make(map[string]model.Review)
@@ -210,7 +269,7 @@ func loadBranches(c *tuiClient) tea.Cmd {
 			cResp, cErr := c.get("/branch/" + url.PathEscape(b.Name) + "/checks")
 			if cErr == nil {
 				var checks []model.CheckRun
-				jsonErr := json.NewDecoder(cResp.Body).Decode(&checks)
+				jsonErr := c.decodeJSON(cResp, &checks)
 				cResp.Body.Close()
 				if jsonErr == nil {
 					for _, ch := range checks {
@@ -244,7 +303,7 @@ func loadBranchDetail(c *tuiClient, branchName string) tea.Cmd {
 		}
 		defer bResp.Body.Close()
 		var allBranches []model.Branch
-		if err := json.NewDecoder(bResp.Body).Decode(&allBranches); err != nil {
+		if err := c.decodeJSON(bResp, &allBranches); err != nil {
 			return branchDetailLoadedMsg{err: err}
 		}
 		var headSeq, baseSeq int64
@@ -263,7 +322,7 @@ func loadBranchDetail(c *tuiClient, branchName string) tea.Cmd {
 		}
 		defer dResp.Body.Close()
 		var diff model.DiffResponse
-		if err := json.NewDecoder(dResp.Body).Decode(&diff); err != nil {
+		if err := c.decodeJSON(dResp, &diff); err != nil {
 			return branchDetailLoadedMsg{err: err}
 		}
 
@@ -282,7 +341,7 @@ func loadBranchDetail(c *tuiClient, branchName string) tea.Cmd {
 				break
 			}
 			var treeEntries []model.TreeEntry
-			jsonErr := json.NewDecoder(tResp.Body).Decode(&treeEntries)
+			jsonErr := c.decodeJSON(tResp, &treeEntries)
 			tResp.Body.Close()
 			if jsonErr != nil {
 				break
@@ -303,8 +362,8 @@ func loadBranchDetail(c *tuiClient, branchName string) tea.Cmd {
 		}
 		defer rResp.Body.Close()
 		var reviews []model.Review
-		if err := json.NewDecoder(rResp.Body).Decode(&reviews); err != nil {
-			return branchDetailLoadedMsg{err: err}
+		if err := c.decodeJSON(rResp, &reviews); err != nil {
+			return branchDetailLoadedMsg{err: fmt.Errorf("loading reviews: %w", err)}
 		}
 
 		// Checks.
@@ -314,8 +373,8 @@ func loadBranchDetail(c *tuiClient, branchName string) tea.Cmd {
 		}
 		defer cResp.Body.Close()
 		var checks []model.CheckRun
-		if err := json.NewDecoder(cResp.Body).Decode(&checks); err != nil {
-			return branchDetailLoadedMsg{err: err}
+		if err := c.decodeJSON(cResp, &checks); err != nil {
+			return branchDetailLoadedMsg{err: fmt.Errorf("loading checks: %w", err)}
 		}
 
 		return branchDetailLoadedMsg{
