@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/model"
@@ -42,6 +43,18 @@ type WriteStore interface {
 	ListOrgs(ctx context.Context) ([]model.Org, error)
 	DeleteOrg(ctx context.Context, name string) error
 	ListOrgRepos(ctx context.Context, owner string) ([]model.Repo, error)
+
+	// Org membership
+	GetOrgMember(ctx context.Context, org, identity string) (*model.OrgMember, error)
+	AddOrgMember(ctx context.Context, org, identity string, role model.OrgRole, invitedBy string) error
+	RemoveOrgMember(ctx context.Context, org, identity string) error
+	ListOrgMembers(ctx context.Context, org string) ([]model.OrgMember, error)
+
+	// Org invitations
+	CreateInvite(ctx context.Context, org, email string, role model.OrgRole, invitedBy, token string, expiresAt time.Time) (*model.OrgInvite, error)
+	ListInvites(ctx context.Context, org string) ([]model.OrgInvite, error)
+	AcceptInvite(ctx context.Context, org, token, identity string) error
+	RevokeInvite(ctx context.Context, org, inviteID string) error
 
 	// Repo management
 	CreateRepo(ctx context.Context, req model.CreateRepoRequest) (*model.Repo, error)
@@ -106,6 +119,17 @@ func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore Wri
 	inner.HandleFunc("GET /orgs/{org}", s.handleGetOrg)
 	inner.HandleFunc("DELETE /orgs/{org}", s.handleDeleteOrg)
 	inner.HandleFunc("GET /orgs/{org}/repos", s.handleListOrgRepos)
+
+	// Org membership endpoints
+	inner.HandleFunc("GET /orgs/{org}/members", s.handleListOrgMembers)
+	inner.HandleFunc("POST /orgs/{org}/members/{identity}", s.handleAddOrgMember)
+	inner.HandleFunc("DELETE /orgs/{org}/members/{identity}", s.handleRemoveOrgMember)
+
+	// Org invite endpoints
+	inner.HandleFunc("GET /orgs/{org}/invites", s.handleListInvites)
+	inner.HandleFunc("POST /orgs/{org}/invites", s.handleCreateInvite)
+	inner.HandleFunc("POST /orgs/{org}/invites/{token}/accept", s.handleAcceptInvite)
+	inner.HandleFunc("DELETE /orgs/{org}/invites/{id}", s.handleRevokeInvite)
 
 	// Repo list and create (no trailing slash — exact matches)
 	inner.HandleFunc("POST /repos", s.handleCreateRepo)
