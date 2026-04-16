@@ -462,7 +462,7 @@ func TestListBranches(t *testing.T) {
 	}
 
 	t.Run("all branches", func(t *testing.T) {
-		branches, err := s.ListBranches(ctx, "default/default", "")
+		branches, err := s.ListBranches(ctx, "default/default", "", false, false)
 		if err != nil {
 			t.Fatalf("ListBranches: %v", err)
 		}
@@ -476,7 +476,7 @@ func TestListBranches(t *testing.T) {
 	})
 
 	t.Run("filter active", func(t *testing.T) {
-		branches, err := s.ListBranches(ctx, "default/default", "active")
+		branches, err := s.ListBranches(ctx, "default/default", "active", false, false)
 		if err != nil {
 			t.Fatalf("ListBranches: %v", err)
 		}
@@ -486,7 +486,7 @@ func TestListBranches(t *testing.T) {
 	})
 
 	t.Run("filter merged", func(t *testing.T) {
-		branches, err := s.ListBranches(ctx, "default/default", "merged")
+		branches, err := s.ListBranches(ctx, "default/default", "merged", false, false)
 		if err != nil {
 			t.Fatalf("ListBranches: %v", err)
 		}
@@ -495,6 +495,45 @@ func TestListBranches(t *testing.T) {
 		}
 		if branches[0].Name != "feature/merged" {
 			t.Errorf("expected feature/merged, got %s", branches[0].Name)
+		}
+	})
+
+	t.Run("draft branches only", func(t *testing.T) {
+		// Insert a draft branch.
+		if _, err := db.Exec(`INSERT INTO branches (repo, name, head_sequence, base_sequence, status, draft) VALUES ('default/default', 'draft/wip', 5, 2, 'active', true)`); err != nil {
+			t.Fatalf("seed draft branch: %v", err)
+		}
+		// Default excludes drafts.
+		branches, err := s.ListBranches(ctx, "default/default", "active", false, false)
+		if err != nil {
+			t.Fatalf("ListBranches: %v", err)
+		}
+		for _, b := range branches {
+			if b.Draft {
+				t.Errorf("expected no draft branches in default listing, got %s", b.Name)
+			}
+		}
+		// onlyDraft=true returns only drafts.
+		drafts, err := s.ListBranches(ctx, "default/default", "active", false, true)
+		if err != nil {
+			t.Fatalf("ListBranches draft: %v", err)
+		}
+		if len(drafts) != 1 || drafts[0].Name != "draft/wip" {
+			t.Errorf("expected 1 draft branch, got %+v", drafts)
+		}
+		// includeDraft=true includes drafts.
+		all, err := s.ListBranches(ctx, "default/default", "active", true, false)
+		if err != nil {
+			t.Fatalf("ListBranches includeDraft: %v", err)
+		}
+		hasDraft := false
+		for _, b := range all {
+			if b.Name == "draft/wip" {
+				hasDraft = true
+			}
+		}
+		if !hasDraft {
+			t.Errorf("expected draft/wip in includeDraft listing, got %+v", all)
 		}
 	})
 }

@@ -510,13 +510,13 @@ func (a *App) Commit(message string) error {
 }
 
 // CheckoutNew creates a new branch and switches to it.
-func (a *App) CheckoutNew(branch string) error {
+func (a *App) CheckoutNew(branch string, draft bool) error {
 	cfg, err := a.loadConfig()
 	if err != nil {
 		return err
 	}
 
-	req := model.CreateBranchRequest{Name: branch}
+	req := model.CreateBranchRequest{Name: branch, Draft: draft}
 	resp, err := a.postJSON(cfg, repoBase(cfg)+"/branch", req)
 	if err != nil {
 		return err
@@ -548,7 +548,36 @@ func (a *App) CheckoutNew(branch string) error {
 		return err
 	}
 
-	fmt.Fprintf(a.Out, "Switched to new branch '%s' (base sequence %d)\n", branch, branchResp.BaseSequence)
+	if draft {
+		fmt.Fprintf(a.Out, "Switched to new draft branch '%s' (base sequence %d)\n", branch, branchResp.BaseSequence)
+	} else {
+		fmt.Fprintf(a.Out, "Switched to new branch '%s' (base sequence %d)\n", branch, branchResp.BaseSequence)
+	}
+	return nil
+}
+
+// Ready marks the current branch as not draft (ready to merge).
+func (a *App) Ready() error {
+	cfg, err := a.loadConfig()
+	if err != nil {
+		return err
+	}
+	if cfg.Branch == "" || cfg.Branch == "main" {
+		return fmt.Errorf("no branch checked out (or on main)")
+	}
+
+	req := model.UpdateBranchRequest{Draft: false}
+	resp, err := a.patchJSON(cfg, repoBase(cfg)+"/branch/"+cfg.Branch, req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return a.readError(resp)
+	}
+
+	fmt.Fprintf(a.Out, "Branch '%s' marked as ready\n", cfg.Branch)
 	return nil
 }
 
@@ -1085,6 +1114,21 @@ func (a *App) postJSON(cfg *Config, urlStr string, body interface{}) (*http.Resp
 	return a.HTTP.Do(req)
 }
 
+// patchJSON sends a PATCH request with a JSON body and the X-DocStore-Identity header set.
+func (a *App) patchJSON(cfg *Config, urlStr string, body interface{}) (*http.Response, error) {
+	data, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequest("PATCH", urlStr, bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-DocStore-Identity", cfg.Author)
+	return a.HTTP.Do(req)
+}
+
 // readError extracts an error message from an API error response.
 func (a *App) readError(resp *http.Response) error {
 	body, _ := io.ReadAll(resp.Body)
@@ -1407,7 +1451,7 @@ func (a *App) fetchFileBytesForBranch(cfg *Config, path, branch string) ([]byte,
 }
 
 // Branches lists branches for the current repo, filtered by status (default: active).
-func (a *App) Branches(status string) error {
+func (a *App) Branches(status string, onlyDraft bool) error {
 	cfg, err := a.loadConfig()
 	if err != nil {
 		return err
@@ -1418,6 +1462,9 @@ func (a *App) Branches(status string) error {
 
 	q := url.Values{}
 	q.Set("status", status)
+	if onlyDraft {
+		q.Set("draft", "true")
+	}
 	resp, err := a.httpGet(cfg, repoBase(cfg)+"/branches?"+q.Encode())
 	if err != nil {
 		return fmt.Errorf("fetching branches: %w", err)
@@ -1433,10 +1480,14 @@ func (a *App) Branches(status string) error {
 		return fmt.Errorf("decoding branches: %w", err)
 	}
 
-	fmt.Fprintf(a.Out, "%-30s %-6s %-6s %-10s\n", "BRANCH", "HEAD", "BASE", "STATUS")
+	fmt.Fprintf(a.Out, "%-30s %-6s %-6s %-10s %-5s\n", "BRANCH", "HEAD", "BASE", "STATUS", "DRAFT")
 	for _, b := range branches {
-		fmt.Fprintf(a.Out, "%-30s %-6d %-6d %-10s\n",
-			b.Name, b.HeadSequence, b.BaseSequence, string(b.Status))
+		draft := ""
+		if b.Draft {
+			draft = "yes"
+		}
+		fmt.Fprintf(a.Out, "%-30s %-6d %-6d %-10s %-5s\n",
+			b.Name, b.HeadSequence, b.BaseSequence, string(b.Status), draft)
 	}
 	return nil
 }

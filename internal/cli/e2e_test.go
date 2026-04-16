@@ -88,7 +88,7 @@ func TestFullWorkflow(t *testing.T) {
 	// ── Back on workspace 1: checkout a new branch ────────────────────────
 
 	ws1Out.Reset()
-	if err := ws1.CheckoutNew("feature/add-guide"); err != nil {
+	if err := ws1.CheckoutNew("feature/add-guide", false); err != nil {
 		t.Fatalf("ws1 CheckoutNew: %v", err)
 	}
 	if !strings.Contains(ws1Out.String(), "Switched to new branch 'feature/add-guide'") {
@@ -249,7 +249,7 @@ func TestCLIRebase_EndToEnd(t *testing.T) {
 	}
 
 	// Create a feature branch and commit.
-	if err := ws.CheckoutNew("feature/rebase-test"); err != nil {
+	if err := ws.CheckoutNew("feature/rebase-test", false); err != nil {
 		t.Fatalf("CheckoutNew: %v", err)
 	}
 	writeFile(t, ws, "feature.txt", "feature content")
@@ -300,7 +300,7 @@ func TestCLIResolve_EndToEnd(t *testing.T) {
 	}
 
 	// Create a branch so we can commit to it.
-	if err := ws.CheckoutNew("feature/resolve-test"); err != nil {
+	if err := ws.CheckoutNew("feature/resolve-test", false); err != nil {
 		t.Fatalf("CheckoutNew: %v", err)
 	}
 
