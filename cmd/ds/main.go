@@ -32,7 +32,7 @@ commands:
   resolve <path>                                  Resolve a merge/rebase conflict
   verify                                          Verify commit chain integrity
   ready                                           Mark current branch as ready (not draft)
-  branches [--status active|merged|abandoned] [--draft]  List branches
+  branches [--status active|merged|abandoned] [--draft] [--include-draft]  List branches
   reviews [--branch <name>]                       List reviews for a branch
   review --status approved|rejected [--body "…"] [--branch <name>]  Submit a review
   checks [--branch <name>]                        List check runs for a branch
@@ -230,15 +230,18 @@ func main() {
 	case "branches":
 		status := "active"
 		onlyDraft := false
+		includeDraft := false
 		for i := 1; i < len(args); i++ {
 			if args[i] == "--status" && i+1 < len(args) {
 				status = args[i+1]
 				i++
 			} else if args[i] == "--draft" {
 				onlyDraft = true
+			} else if args[i] == "--include-draft" {
+				includeDraft = true
 			}
 		}
-		err = app.Branches(status, onlyDraft)
+		err = app.Branches(status, onlyDraft, includeDraft)
 
 	case "reviews":
 		branch := ""
