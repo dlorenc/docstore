@@ -350,7 +350,7 @@ func (a *App) Init(remote, repo, author string) error {
 	}
 
 	// Fetch files from the server.
-	if err := a.syncTree(cfg, "main"); err != nil {
+	if err := a.syncTree(cfg, "main", false); err != nil {
 		return err
 	}
 
@@ -573,14 +573,15 @@ func (a *App) Checkout(branch string) error {
 		return err
 	}
 
-	return a.syncTree(cfg, branch)
+	return a.syncTree(cfg, branch, false)
 }
 
 // Pull syncs local files from the current branch on the server.
 // If state has a stored CommitHash, it verifies the chain from the stored
 // sequence to the new head before updating state. On first pull (no stored
 // CommitHash), it uses TOFU and stores the tip's commit_hash.
-func (a *App) Pull() error {
+// If skipVerify is true, chain verification is skipped but state is still updated normally.
+func (a *App) Pull(skipVerify bool) error {
 	cfg, err := a.loadConfig()
 	if err != nil {
 		return err
@@ -601,7 +602,7 @@ func (a *App) Pull() error {
 		return err
 	}
 
-	if err := a.syncTree(cfg, cfg.Branch); err != nil {
+	if err := a.syncTree(cfg, cfg.Branch, skipVerify); err != nil {
 		return err
 	}
 
@@ -612,6 +613,9 @@ func (a *App) Pull() error {
 	}
 
 	// Chain verification / TOFU.
+	if skipVerify {
+		return nil
+	}
 	if newState.Sequence == 0 {
 		// No commits yet; nothing to verify.
 		return nil
@@ -763,7 +767,9 @@ func (a *App) Verify() error {
 }
 
 // syncTree fetches the full tree from the server and updates local files.
-func (a *App) syncTree(cfg *Config, branch string) error {
+// skipVerify is accepted for API consistency with Pull but is unused here;
+// verification occurs in Pull after syncTree returns.
+func (a *App) syncTree(cfg *Config, branch string, skipVerify bool) error {
 	st, err := a.loadState()
 	if err != nil {
 		return err
@@ -929,7 +935,7 @@ func (a *App) Merge() error {
 	if err := a.saveConfig(cfg); err != nil {
 		return err
 	}
-	return a.syncTree(cfg, "main")
+	return a.syncTree(cfg, "main", false)
 }
 
 // Diff shows the diff for the current branch relative to its base.

@@ -799,7 +799,7 @@ func TestPull(t *testing.T) {
 	writeFile(t, app, "updated.txt", oldContent)
 	app.saveState(&State{Branch: "feature/x", Files: map[string]string{"updated.txt": HashBytes([]byte(oldContent))}})
 
-	if err := app.Pull(); err != nil {
+	if err := app.Pull(false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -855,7 +855,7 @@ func TestPullSkipsUnchanged(t *testing.T) {
 	writeFile(t, app, "same.txt", sameContent)
 	app.saveState(&State{Branch: "main", Files: map[string]string{"same.txt": sameHash}})
 
-	if err := app.Pull(); err != nil {
+	if err := app.Pull(false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -875,7 +875,7 @@ func TestPullDirtyTree(t *testing.T) {
 	// Add a new untracked file — makes the tree dirty.
 	writeFile(t, app, "new.txt", "new content")
 
-	err := app.Pull()
+	err := app.Pull(false)
 	if err == nil || !strings.Contains(err.Error(), "uncommitted changes") {
 		t.Errorf("expected 'uncommitted changes' error, got: %v", err)
 	}
@@ -898,7 +898,7 @@ func TestSyncTreeUpdatesSequence(t *testing.T) {
 	app, _ := newTestApp(t, srv)
 	initWorkspace(t, app, srv.URL, "main", "alice")
 
-	if err := app.Pull(); err != nil {
+	if err := app.Pull(false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2579,7 +2579,7 @@ func TestPull_TOFU(t *testing.T) {
 	app, _ := newTestApp(t, srv)
 	initWorkspace(t, app, srv.URL, "main", "alice")
 
-	if err := app.Pull(); err != nil {
+	if err := app.Pull(false); err != nil {
 		t.Fatalf("Pull: %v", err)
 	}
 
@@ -2614,7 +2614,7 @@ func TestPull_VerificationSuccess(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := app.Pull(); err != nil {
+	if err := app.Pull(false); err != nil {
 		t.Fatalf("Pull: %v", err)
 	}
 
@@ -2652,7 +2652,7 @@ func TestPull_VerificationFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := app.Pull()
+	err := app.Pull(false)
 	if err == nil {
 		t.Fatal("expected chain integrity error, got nil")
 	}
@@ -2731,7 +2731,7 @@ func TestPull_AnchorTampered(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := app.Pull()
+	err := app.Pull(false)
 	if err == nil {
 		t.Fatal("expected chain integrity error for tampered anchor, got nil")
 	}
@@ -2766,7 +2766,7 @@ func TestPull_TOFU_NullHash(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := app.Pull(); err != nil {
+	if err := app.Pull(false); err != nil {
 		t.Fatalf("Pull: unexpected error: %v", err)
 	}
 
@@ -2965,5 +2965,51 @@ func TestPurge_DryRun(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "dry-run") {
 		t.Errorf("expected dry-run note in output, got: %s", out.String())
+	}
+}
+
+// TestPull_SkipVerify verifies that Pull(skipVerify=true) updates state normally
+// but skips chain verification even when the chain would fail.
+func TestPull_SkipVerify(t *testing.T) {
+	ts := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	e1 := newChainEntry(genesisHash, 1, "default/default", "main", "alice", "first", ts)
+
+	// Build a second entry with a deliberately wrong hash.
+	badHash := "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+	e2Wrong := chainEntry{
+		Sequence:   2,
+		Branch:     "main",
+		Author:     "alice",
+		Message:    "second",
+		CreatedAt:  ts.Add(time.Second),
+		CommitHash: &badHash,
+		Files:      []chainFile{},
+	}
+
+	// The server has a bad chain that would normally cause a verification error.
+	srv := newPullServer(t, "main", 2, []chainEntry{e1, e2Wrong})
+	defer srv.Close()
+
+	app, _ := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "main", "alice")
+
+	// Pre-seed state so verification would be triggered (non-empty CommitHash).
+	st := &State{Branch: "main", Sequence: 1, Files: make(map[string]string), CommitHash: *e1.CommitHash}
+	if err := app.saveState(st); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pull with skipVerify=true must succeed despite the bad chain.
+	if err := app.Pull(true); err != nil {
+		t.Fatalf("Pull(skipVerify=true): unexpected error: %v", err)
+	}
+
+	// State should be updated to the new sequence.
+	newSt, err := app.loadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newSt.Sequence != 2 {
+		t.Errorf("state.Sequence = %d, want 2", newSt.Sequence)
 	}
 }
