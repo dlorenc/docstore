@@ -7,11 +7,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
 	_ "github.com/lib/pq"
 
+	"github.com/dlorenc/docstore/internal/blob"
 	"github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/server"
 )
@@ -72,7 +74,55 @@ func main() {
 	logger.Info("migrations complete")
 
 	commitStore := db.NewStore(database)
-	srv := server.New(commitStore, database, *devIdentity, *bootstrapAdmin)
+
+	// Initialize external blob store from environment variables.
+	//   DOCSTORE_BLOB_STORE=gcs|local   (default: local)
+	//   DOCSTORE_BLOB_BUCKET=my-bucket  (required for gcs)
+	//   DOCSTORE_BLOB_THRESHOLD_BYTES=1048576 (default 1 MB)
+	//   DOCSTORE_BLOB_LOCAL_DIR=/tmp/docstore-blobs
+	var bs blob.BlobStore
+	blobStoreType := os.Getenv("DOCSTORE_BLOB_STORE")
+	blobThreshold := int64(1 << 20) // default 1 MB
+	if threshStr := os.Getenv("DOCSTORE_BLOB_THRESHOLD_BYTES"); threshStr != "" {
+		if v, err := strconv.ParseInt(threshStr, 10, 64); err == nil {
+			blobThreshold = v
+		}
+	}
+
+	switch blobStoreType {
+	case "gcs":
+		bucket := os.Getenv("DOCSTORE_BLOB_BUCKET")
+		if bucket == "" {
+			logger.Error("DOCSTORE_BLOB_BUCKET is required when DOCSTORE_BLOB_STORE=gcs")
+			os.Exit(1)
+		}
+		gcsStore, err := blob.NewGCSBlobStore(context.Background(), bucket)
+		if err != nil {
+			logger.Error("failed to create GCS blob store", "error", err)
+			os.Exit(1)
+		}
+		bs = gcsStore
+		logger.Info("blob store configured", "backend", "gcs", "bucket", bucket, "threshold_bytes", blobThreshold)
+	case "", "local":
+		localDir := os.Getenv("DOCSTORE_BLOB_LOCAL_DIR")
+		if localDir == "" {
+			localDir = "/tmp/docstore-blobs"
+		}
+		localStore, err := blob.NewLocalBlobStore(localDir)
+		if err != nil {
+			logger.Error("failed to create local blob store", "error", err)
+			os.Exit(1)
+		}
+		bs = localStore
+		logger.Info("blob store configured", "backend", "local", "dir", localDir, "threshold_bytes", blobThreshold)
+	default:
+		logger.Error("unknown DOCSTORE_BLOB_STORE value", "value", blobStoreType)
+		os.Exit(1)
+	}
+
+	commitStore.SetBlobStore(bs, blobThreshold)
+
+	srv := server.NewWithBlobStore(commitStore, database, bs, *devIdentity, *bootstrapAdmin)
 
 	httpServer := &http.Server{
 		Addr:         ":" + port,

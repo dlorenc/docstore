@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/dlorenc/docstore/internal/blob"
 	"github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/model"
 	"github.com/dlorenc/docstore/internal/policy"
@@ -102,9 +103,23 @@ type CommitStore = WriteStore
 // writeStore provides write operations; pass nil if only read/health endpoints are needed.
 // database provides read operations; pass nil if only write/health endpoints are needed.
 func New(writeStore WriteStore, database *sql.DB, devIdentity, bootstrapAdmin string) http.Handler {
+	return newServer(writeStore, database, nil, devIdentity, bootstrapAdmin)
+}
+
+// NewWithBlobStore is like New but also wires a BlobStore into the read store
+// so that files stored externally can be fetched by the file endpoint.
+func NewWithBlobStore(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, devIdentity, bootstrapAdmin string) http.Handler {
+	return newServer(writeStore, database, bs, devIdentity, bootstrapAdmin)
+}
+
+func newServer(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, devIdentity, bootstrapAdmin string) http.Handler {
 	s := &server{commitStore: writeStore, policyCache: policy.NewCache()}
 	if database != nil {
-		s.readStore = store.New(database)
+		rs := store.New(database)
+		if bs != nil {
+			rs.SetBlobStore(bs)
+		}
+		s.readStore = rs
 	}
 	return s.buildHandler(devIdentity, bootstrapAdmin, writeStore)
 }

@@ -3,19 +3,30 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/dlorenc/docstore/internal/blob"
 )
 
 // Store provides read queries against the docstore database.
 type Store struct {
-	db *sql.DB
+	db        *sql.DB
+	blobStore blob.BlobStore
 }
 
 // New creates a Store backed by the given database connection.
 func New(db *sql.DB) *Store {
 	return &Store{db: db}
+}
+
+// SetBlobStore configures the external blob store used when fetching
+// files whose content is stored outside Postgres.
+func (s *Store) SetBlobStore(bs blob.BlobStore) {
+	s.blobStore = bs
 }
 
 // TreeEntry is a single file in a materialized tree.
@@ -127,7 +138,7 @@ func (s *Store) GetFile(ctx context.Context, repo, branch, path string, atSequen
 WITH branch_info AS (
     SELECT base_sequence FROM branches WHERE repo = $1 AND name = $2
 )
-SELECT fc.version_id, d.content_hash, d.content, d.content_type
+SELECT fc.version_id, d.content_hash, d.content, d.content_type, d.blob_key
 FROM file_commits fc
 CROSS JOIN branch_info bi
 LEFT JOIN documents d ON d.version_id = fc.version_id AND d.repo = $1
@@ -150,8 +161,9 @@ LIMIT 1`
 	var contentHash sql.NullString
 	var content []byte
 	var contentType sql.NullString
+	var blobKey sql.NullString
 
-	err := s.db.QueryRowContext(ctx, q, repo, branch, path, at).Scan(&versionID, &contentHash, &content, &contentType)
+	err := s.db.QueryRowContext(ctx, q, repo, branch, path, at).Scan(&versionID, &contentHash, &content, &contentType, &blobKey)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -162,6 +174,22 @@ LIMIT 1`
 	// version_id NULL means the file was deleted at this point.
 	if !versionID.Valid {
 		return nil, nil
+	}
+
+	// If the document is stored in an external blob store, fetch it now.
+	if blobKey.Valid && blobKey.String != "" {
+		if s.blobStore == nil {
+			return nil, fmt.Errorf("document %s requires blob store but none is configured", versionID.String)
+		}
+		rc, err := s.blobStore.Get(ctx, blobKey.String)
+		if err != nil {
+			return nil, fmt.Errorf("fetch blob %s: %w", blobKey.String, err)
+		}
+		defer rc.Close()
+		content, err = io.ReadAll(rc)
+		if err != nil {
+			return nil, fmt.Errorf("read blob %s: %w", blobKey.String, err)
+		}
 	}
 
 	return &FileContent{
