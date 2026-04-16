@@ -2525,3 +2525,262 @@ func TestImportGitDefaultMode(t *testing.T) {
 		t.Fatalf("expected 1 commit request, got %d", len(capturedReqs))
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Chain verification / pull tests
+// ---------------------------------------------------------------------------
+
+// buildChainHash replicates the server-side hash formula for tests.
+func buildChainHash(prevHash string, seq int64, repo, branch, author, message string, createdAt time.Time, files []chainFile) string {
+	return computeChainHash(prevHash, seq, repo, branch, author, message, createdAt, files)
+}
+
+// newChainEntry builds a minimal chainEntry with a correct commit_hash for testing.
+func newChainEntry(prevHash string, seq int64, repo, branch, author, msg string, ts time.Time) chainEntry {
+	hash := buildChainHash(prevHash, seq, repo, branch, author, msg, ts, nil)
+	return chainEntry{
+		Sequence:   seq,
+		Branch:     branch,
+		Author:     author,
+		Message:    msg,
+		CreatedAt:  ts,
+		CommitHash: &hash,
+		Files:      []chainFile{},
+	}
+}
+
+// newPullServer builds a mock HTTP server that handles the standard pull flow:
+// tree listing, branches (with headSeq), and a chain endpoint returning entries.
+func newPullServer(t *testing.T, branch string, headSeq int64, chainEntries []chainEntry) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/default/default/-/tree":
+			json.NewEncoder(w).Encode([]treeEntry{})
+		case r.Method == "GET" && r.URL.Path == "/repos/default/default/-/branches":
+			json.NewEncoder(w).Encode([]model.Branch{{Name: branch, HeadSequence: headSeq}})
+		case r.Method == "GET" && r.URL.Path == "/repos/default/default/-/chain":
+			json.NewEncoder(w).Encode(chainEntries)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+}
+
+// TestPull_TOFU verifies that the first pull (no stored CommitHash) stores the tip hash.
+func TestPull_TOFU(t *testing.T) {
+	ts := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	e1 := newChainEntry(genesisHash, 1, "default/default", "main", "alice", "first", ts)
+
+	srv := newPullServer(t, "main", 1, []chainEntry{e1})
+	defer srv.Close()
+
+	app, _ := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "main", "alice")
+
+	if err := app.Pull(); err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+
+	st, err := app.loadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.CommitHash == "" {
+		t.Fatal("expected CommitHash to be set after TOFU pull")
+	}
+	if st.CommitHash != *e1.CommitHash {
+		t.Errorf("expected CommitHash %q, got %q", *e1.CommitHash, st.CommitHash)
+	}
+}
+
+// TestPull_VerificationSuccess verifies that a subsequent pull with a valid chain passes.
+func TestPull_VerificationSuccess(t *testing.T) {
+	ts := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	e1 := newChainEntry(genesisHash, 1, "default/default", "main", "alice", "first", ts)
+	ts2 := ts.Add(time.Second)
+	e2 := newChainEntry(*e1.CommitHash, 2, "default/default", "main", "alice", "second", ts2)
+
+	srv := newPullServer(t, "main", 2, []chainEntry{e1, e2})
+	defer srv.Close()
+
+	app, _ := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "main", "alice")
+
+	// Pre-seed state as if we already did a TOFU pull at seq 1.
+	st := &State{Branch: "main", Sequence: 1, Files: make(map[string]string), CommitHash: *e1.CommitHash}
+	if err := app.saveState(st); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := app.Pull(); err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+
+	st2, _ := app.loadState()
+	if st2.CommitHash != *e2.CommitHash {
+		t.Errorf("expected updated CommitHash %q, got %q", *e2.CommitHash, st2.CommitHash)
+	}
+}
+
+// TestPull_VerificationFailure verifies that a wrong hash causes an error.
+func TestPull_VerificationFailure(t *testing.T) {
+	ts := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	e1 := newChainEntry(genesisHash, 1, "default/default", "main", "alice", "first", ts)
+	ts2 := ts.Add(time.Second)
+	// Build a second entry with a wrong hash.
+	badHash := "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+	e2Wrong := chainEntry{
+		Sequence:   2,
+		Branch:     "main",
+		Author:     "alice",
+		Message:    "second",
+		CreatedAt:  ts2,
+		CommitHash: &badHash,
+		Files:      []chainFile{},
+	}
+
+	srv := newPullServer(t, "main", 2, []chainEntry{e1, e2Wrong})
+	defer srv.Close()
+
+	app, _ := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "main", "alice")
+
+	st := &State{Branch: "main", Sequence: 1, Files: make(map[string]string), CommitHash: *e1.CommitHash}
+	if err := app.saveState(st); err != nil {
+		t.Fatal(err)
+	}
+
+	err := app.Pull()
+	if err == nil {
+		t.Fatal("expected chain integrity error, got nil")
+	}
+	if !strings.Contains(err.Error(), "chain integrity error") {
+		t.Errorf("expected 'chain integrity error' in error, got: %v", err)
+	}
+}
+
+// TestVerify_HappyPath verifies ds verify prints OK for a valid chain.
+func TestVerify_HappyPath(t *testing.T) {
+	ts := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	e1 := newChainEntry(genesisHash, 1, "default/default", "main", "alice", "first", ts)
+	ts2 := ts.Add(time.Second)
+	e2 := newChainEntry(*e1.CommitHash, 2, "default/default", "main", "alice", "second", ts2)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/default/default/-/branches":
+			// Verify() now fetches the server head instead of using st.Sequence (FIX-3).
+			json.NewEncoder(w).Encode([]model.Branch{{Name: "main", HeadSequence: 2}})
+		case r.Method == "GET" && r.URL.Path == "/repos/default/default/-/chain":
+			json.NewEncoder(w).Encode([]chainEntry{e1, e2})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	app, out := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "main", "alice")
+	// st.Sequence is no longer used by Verify() (FIX-3), but still saved for completeness.
+	st := &State{Branch: "main", Sequence: 2, Files: make(map[string]string)}
+	if err := app.saveState(st); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := app.Verify(); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	output := out.String()
+	// First entry is the anchor (no recomputation); second is verified.
+	if !strings.Contains(output, "OK") {
+		t.Errorf("expected OK in output: %s", output)
+	}
+}
+
+// TestPull_AnchorTampered verifies that Pull() returns a chain integrity error
+// when the server reports a different commit_hash for the anchor sequence than
+// what the client has stored in state (FIX-7).
+func TestPull_AnchorTampered(t *testing.T) {
+	ts := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	e1 := newChainEntry(genesisHash, 1, "default/default", "main", "alice", "first", ts)
+
+	// Server returns a tampered hash for the anchor sequence.
+	tamperedHash := "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+	e1Tampered := chainEntry{
+		Sequence:   1,
+		Branch:     "main",
+		Author:     "alice",
+		Message:    "first",
+		CreatedAt:  ts,
+		CommitHash: &tamperedHash,
+		Files:      []chainFile{},
+	}
+
+	srv := newPullServer(t, "main", 2, []chainEntry{e1Tampered})
+	defer srv.Close()
+
+	app, _ := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "main", "alice")
+
+	// Pre-seed state with the legitimate hash from e1.
+	st := &State{Branch: "main", Sequence: 1, Files: make(map[string]string), CommitHash: *e1.CommitHash}
+	if err := app.saveState(st); err != nil {
+		t.Fatal(err)
+	}
+
+	err := app.Pull()
+	if err == nil {
+		t.Fatal("expected chain integrity error for tampered anchor, got nil")
+	}
+	if !strings.Contains(err.Error(), "chain integrity error") {
+		t.Errorf("expected 'chain integrity error' in error, got: %v", err)
+	}
+}
+
+// TestPull_TOFU_NullHash verifies that the TOFU path prints a note and keeps
+// CommitHash empty when the tip commit has a NULL commit_hash (pre-feature commit).
+// This ensures the client retries TOFU on subsequent pulls rather than silently
+// skipping verification forever (FIX-4).
+func TestPull_TOFU_NullHash(t *testing.T) {
+	// Entry with nil CommitHash (simulates a pre-feature commit).
+	nullEntry := chainEntry{
+		Sequence:   1,
+		Branch:     "main",
+		Author:     "alice",
+		Message:    "legacy commit",
+		CreatedAt:  time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		CommitHash: nil,
+		Files:      []chainFile{},
+	}
+
+	srv := newPullServer(t, "main", 1, []chainEntry{nullEntry})
+	defer srv.Close()
+
+	app, out := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "main", "alice")
+	// No stored CommitHash — TOFU path.
+	if err := app.saveState(&State{Branch: "main", Sequence: 0, Files: make(map[string]string)}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := app.Pull(); err != nil {
+		t.Fatalf("Pull: unexpected error: %v", err)
+	}
+
+	// CommitHash must remain empty so TOFU is retried next pull.
+	st, err := app.loadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.CommitHash != "" {
+		t.Errorf("expected CommitHash to remain empty, got %q", st.CommitHash)
+	}
+
+	// A note explaining the situation should have been printed.
+	if !strings.Contains(out.String(), "predates hash chain feature") {
+		t.Errorf("expected predates-hash-chain note in output, got: %s", out.String())
+	}
+}

@@ -413,6 +413,89 @@ func isBinaryContentType(ct string) bool {
 	return ct != "" && !strings.HasPrefix(ct, "text/")
 }
 
+// ChainEntry is one commit in the hash chain response.
+type ChainEntry struct {
+	Sequence   int64       `json:"sequence"`
+	Branch     string      `json:"branch"`
+	Author     string      `json:"author"`
+	Message    string      `json:"message"`
+	CreatedAt  time.Time   `json:"created_at"`
+	CommitHash *string     `json:"commit_hash"`
+	Files      []ChainFile `json:"files"`
+}
+
+// ChainFile is one file change within a ChainEntry.
+type ChainFile struct {
+	Path        string `json:"path"`
+	ContentHash string `json:"content_hash"`
+}
+
+// GetChain returns commit metadata for sequences in [from, to] inclusive,
+// ordered by sequence ascending. Each entry includes the commit_hash (if set)
+// and the files changed in that commit with their content hashes.
+func (s *Store) GetChain(ctx context.Context, repo string, from, to int64) ([]ChainEntry, error) {
+	const q = `
+SELECT c.sequence, c.branch, c.author, c.message, c.created_at, c.commit_hash,
+       fc.path, d.content_hash
+FROM commits c
+LEFT JOIN file_commits fc ON fc.sequence = c.sequence AND fc.repo = c.repo
+LEFT JOIN documents d ON d.version_id = fc.version_id AND d.repo = c.repo
+WHERE c.repo = $1 AND c.sequence >= $2 AND c.sequence <= $3
+ORDER BY c.sequence ASC, fc.path ASC`
+
+	rows, err := s.db.QueryContext(ctx, q, repo, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var entries []ChainEntry
+	var cur *ChainEntry
+	for rows.Next() {
+		var seq int64
+		var branch, author, message string
+		var createdAt time.Time
+		var commitHash sql.NullString
+		var path sql.NullString
+		var contentHash sql.NullString
+
+		if err := rows.Scan(&seq, &branch, &author, &message, &createdAt, &commitHash, &path, &contentHash); err != nil {
+			return nil, err
+		}
+
+		if cur == nil || cur.Sequence != seq {
+			if cur != nil {
+				entries = append(entries, *cur)
+			}
+			var chPtr *string
+			if commitHash.Valid {
+				v := commitHash.String
+				chPtr = &v
+			}
+			cur = &ChainEntry{
+				Sequence:   seq,
+				Branch:     branch,
+				Author:     author,
+				Message:    message,
+				CreatedAt:  createdAt,
+				CommitHash: chPtr,
+				Files:      []ChainFile{},
+			}
+		}
+
+		if path.Valid {
+			cur.Files = append(cur.Files, ChainFile{
+				Path:        path.String,
+				ContentHash: contentHash.String, // empty string for deletes (NULL content_hash)
+			})
+		}
+	}
+	if cur != nil {
+		entries = append(entries, *cur)
+	}
+	return entries, rows.Err()
+}
+
 // GetCommit returns all file changes in a single atomic commit (by sequence) within a repo.
 // Returns nil, nil if no commit exists with that sequence in the repo.
 func (s *Store) GetCommit(ctx context.Context, repo string, sequence int64) (*CommitDetail, error) {
