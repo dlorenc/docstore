@@ -353,6 +353,20 @@ func TestOrgs_EndToEnd(t *testing.T) {
 		t.Errorf("expected 'e2eorg' in listing, got: %s", out.String())
 	}
 
+	// Get org — should return details.
+	out.Reset()
+	if err := app.OrgsGet("e2eorg"); err != nil {
+		t.Fatalf("OrgsGet: %v", err)
+	}
+	if !strings.Contains(out.String(), "e2eorg") {
+		t.Errorf("expected 'e2eorg' in get output, got: %s", out.String())
+	}
+
+	// Get non-existent org — should error.
+	if err := app.OrgsGet("nosuchorg"); err == nil {
+		t.Error("expected error for missing org, got nil")
+	}
+
 	// Delete org.
 	out.Reset()
 	if err := app.OrgsDelete("e2eorg"); err != nil {
