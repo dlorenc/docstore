@@ -22,7 +22,7 @@ type readStore interface {
 	GetFile(ctx context.Context, repo, branch, path string, atSeq *int64) (*store.FileContent, error)
 	GetFileHistory(ctx context.Context, repo, branch, path string, limit int, afterSeq *int64) ([]store.FileHistoryEntry, error)
 	GetBranch(ctx context.Context, repo, branch string) (*store.BranchInfo, error)
-	ListBranches(ctx context.Context, repo, statusFilter string) ([]store.BranchInfo, error)
+	ListBranches(ctx context.Context, repo, statusFilter string, includeDraft, onlyDraft bool) ([]store.BranchInfo, error)
 	GetDiff(ctx context.Context, repo, branch string) (*store.DiffResult, error)
 	GetCommit(ctx context.Context, repo string, seq int64) (*store.CommitDetail, error)
 	GetChain(ctx context.Context, repo string, from, to int64) ([]store.ChainEntry, error)
@@ -65,6 +65,7 @@ type WriteStore interface {
 	// Branch and commit operations (all repo-scoped via req.Repo / explicit repo param)
 	Commit(ctx context.Context, req model.CommitRequest) (*model.CommitResponse, error)
 	CreateBranch(ctx context.Context, req model.CreateBranchRequest) (*model.CreateBranchResponse, error)
+	UpdateBranchDraft(ctx context.Context, repo, name string, draft bool) error
 	Merge(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error)
 	DeleteBranch(ctx context.Context, repo, name string) error
 	Rebase(ctx context.Context, req model.RebaseRequest) (*model.RebaseResponse, []db.MergeConflict, error)
