@@ -238,13 +238,19 @@ func TestWebhook_HMACSignatureValid(t *testing.T) {
 	db.Exec(`INSERT INTO roles (repo, identity, role) VALUES ('default/default', 'test@example.com', 'admin') ON CONFLICT DO NOTHING`)
 
 	const secret = "my-hmac-secret"
-	var sigHeader string
-	var body []byte
+	type capturedRequest struct {
+		sig  string
+		body []byte
+	}
+	captured := make(chan capturedRequest, 1)
 
 	webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sigHeader = r.Header.Get("X-DocStore-Signature")
-		body = make([]byte, r.ContentLength)
-		r.Body.Read(body)
+		b := make([]byte, r.ContentLength)
+		r.Body.Read(b)
+		select {
+		case captured <- capturedRequest{sig: r.Header.Get("X-DocStore-Signature"), body: b}:
+		default:
+		}
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer webhook.Close()
@@ -272,20 +278,19 @@ func TestWebhook_HMACSignatureValid(t *testing.T) {
 	}
 
 	// Wait for webhook.
-	deadline := time.Now().Add(15 * time.Second)
-	for time.Now().Before(deadline) && sigHeader == "" {
-		time.Sleep(100 * time.Millisecond)
-	}
-	if sigHeader == "" {
+	var cap capturedRequest
+	select {
+	case cap = <-captured:
+	case <-time.After(15 * time.Second):
 		t.Fatal("webhook not received within timeout")
 	}
 
 	// Verify HMAC.
 	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write(body)
+	mac.Write(cap.body)
 	expected := "sha256=" + hex.EncodeToString(mac.Sum(nil))
-	if sigHeader != expected {
-		t.Errorf("HMAC mismatch: got %q, expected %q", sigHeader, expected)
+	if cap.sig != expected {
+		t.Errorf("HMAC mismatch: got %q, expected %q", cap.sig, expected)
 	}
 }
 
@@ -296,10 +301,11 @@ func TestWebhook_RetriedOnFailure(t *testing.T) {
 	db.Exec(`INSERT INTO roles (repo, identity, role) VALUES ('default/default', 'test@example.com', 'admin') ON CONFLICT DO NOTHING`)
 
 	var callCount int64
-	fail := true
+	var fail atomic.Bool
+	fail.Store(true)
 	webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt64(&callCount, 1)
-		if fail {
+		if fail.Load() {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
@@ -336,7 +342,7 @@ func TestWebhook_RetriedOnFailure(t *testing.T) {
 	}
 
 	// Now succeed.
-	fail = false
+	fail.Store(false)
 
 	// Reset next_attempt so the dispatcher retries immediately.
 	db.ExecContext(context.Background(), `UPDATE event_outbox SET next_attempt = now() - interval '1 second'`)
