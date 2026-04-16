@@ -1,6 +1,7 @@
 package server
 
 import (
+	"archive/tar"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -77,6 +78,13 @@ func (s *server) handleReposPrefix(w http.ResponseWriter, r *http.Request) {
 	case endpoint == "tree":
 		if r.Method == http.MethodGet {
 			s.handleTree(w, r)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+
+	case endpoint == "archive":
+		if r.Method == http.MethodGet {
+			s.handleArchive(w, r)
 		} else {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
@@ -710,6 +718,7 @@ func (s *server) handleCheck(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, model.CreateCheckRunResponse{
 		ID:       cr.ID,
 		Sequence: cr.Sequence,
+		LogURL:   req.LogURL,
 	})
 }
 
@@ -1833,6 +1842,72 @@ func (s *server) handleDeleteRelease(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("release deleted", "repo", repo, "release", releaseName, "by", IdentityFromContext(r.Context()))
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleArchive implements GET /repos/:name/-/archive?branch=X
+// Streams all files for the given branch as a tar archive.
+func (s *server) handleArchive(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
+	if s.readStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "read store not available")
+		return
+	}
+
+	branch := r.URL.Query().Get("branch")
+	if branch == "" {
+		writeError(w, http.StatusBadRequest, "branch parameter is required")
+		return
+	}
+
+	// Verify the branch exists before we start streaming.
+	bi, err := s.readStore.GetBranch(r.Context(), repo, branch)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if bi == nil {
+		writeError(w, http.StatusNotFound, "branch not found")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/x-tar")
+	tw := tar.NewWriter(w)
+	defer tw.Close()
+
+	afterPath := ""
+	for {
+		entries, err := s.readStore.MaterializeTree(r.Context(), repo, branch, nil, 100, afterPath)
+		if err != nil {
+			slog.Error("archive: materialize tree error", "repo", repo, "branch", branch, "error", err)
+			return
+		}
+		for _, entry := range entries {
+			fc, err := s.readStore.GetFile(r.Context(), repo, branch, entry.Path, nil)
+			if err != nil || fc == nil {
+				slog.Error("archive: get file error", "repo", repo, "branch", branch, "path", entry.Path, "error", err)
+				continue
+			}
+			hdr := &tar.Header{
+				Name:     entry.Path,
+				Size:     int64(len(fc.Content)),
+				Mode:     0644,
+				Typeflag: tar.TypeReg,
+			}
+			if err := tw.WriteHeader(hdr); err != nil {
+				return
+			}
+			if _, err := tw.Write(fc.Content); err != nil {
+				return
+			}
+		}
+		if len(entries) < 100 {
+			break
+		}
+		afterPath = entries[len(entries)-1].Path
+	}
 }
 
 // handleChain implements GET /repos/:name/-/chain?from=N&to=N
