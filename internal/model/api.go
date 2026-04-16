@@ -272,8 +272,9 @@ type CreateCheckRunRequest struct {
 
 // CreateCheckRunResponse is the response for POST /check.
 type CreateCheckRunResponse struct {
-	ID       string `json:"id"`
-	Sequence int64  `json:"sequence"`
+	ID       string  `json:"id"`
+	Sequence int64   `json:"sequence"`
+	LogURL   *string `json:"log_url,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

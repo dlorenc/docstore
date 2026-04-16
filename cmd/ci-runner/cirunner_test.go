@@ -1,6 +1,8 @@
 package main
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -153,7 +155,7 @@ func TestPostCheckRun_ServerError(t *testing.T) {
 func TestPostRunHandler_ReturnsRunID(t *testing.T) {
 	// Use a nil executor and logstore (the goroutine won't do anything useful
 	// but the handler itself should return 200 with a run_id immediately).
-	mux := newMux(nil, nil, "http://localhost:9999", &http.Client{}, 30*time.Minute)
+	mux := newMux(context.Background(), nil, nil, "http://localhost:9999", &http.Client{}, 30*time.Minute)
 
 	body := `{"repo":"default/myrepo","branch":"feature/x","head_sequence":42}`
 	req := httptest.NewRequest(http.MethodPost, "/run", strings.NewReader(body))
@@ -174,7 +176,7 @@ func TestPostRunHandler_ReturnsRunID(t *testing.T) {
 }
 
 func TestPostRunHandler_MissingRepo(t *testing.T) {
-	mux := newMux(nil, nil, "http://localhost:9999", &http.Client{}, 30*time.Minute)
+	mux := newMux(context.Background(), nil, nil, "http://localhost:9999", &http.Client{}, 30*time.Minute)
 
 	req := httptest.NewRequest(http.MethodPost, "/run", strings.NewReader(`{"branch":"feature/x"}`))
 	rec := httptest.NewRecorder()
@@ -186,7 +188,7 @@ func TestPostRunHandler_MissingRepo(t *testing.T) {
 }
 
 func TestPostRunHandler_MissingBranch(t *testing.T) {
-	mux := newMux(nil, nil, "http://localhost:9999", &http.Client{}, 30*time.Minute)
+	mux := newMux(context.Background(), nil, nil, "http://localhost:9999", &http.Client{}, 30*time.Minute)
 
 	req := httptest.NewRequest(http.MethodPost, "/run", strings.NewReader(`{"repo":"default/myrepo"}`))
 	rec := httptest.NewRecorder()
@@ -201,30 +203,44 @@ func TestPostRunHandler_MissingBranch(t *testing.T) {
 // pullBranchSource tests
 // ---------------------------------------------------------------------------
 
-func TestPullBranchSource_DownloadsFiles(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/repos/default/myrepo/-/tree":
-			entries := []treeEntry{
-				{Path: "main.go", VersionID: "v1"},
-				{Path: "sub/util.go", VersionID: "v2"},
-			}
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(entries) //nolint:errcheck
-
-		case r.URL.Path == "/repos/default/myrepo/-/file/main.go":
-			resp := model.FileResponse{Path: "main.go", Content: []byte("package main")}
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(resp) //nolint:errcheck
-
-		case r.URL.Path == "/repos/default/myrepo/-/file/sub/util.go":
-			resp := model.FileResponse{Path: "sub/util.go", Content: []byte("package sub")}
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(resp) //nolint:errcheck
-
-		default:
-			http.NotFound(w, r)
+// buildTestTar constructs an in-memory tar archive from a map of path→content.
+func buildTestTar(t *testing.T, files map[string][]byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for name, content := range files {
+		hdr := &tar.Header{
+			Name:     name,
+			Size:     int64(len(content)),
+			Mode:     0644,
+			Typeflag: tar.TypeReg,
 		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatalf("tar header %s: %v", name, err)
+		}
+		if _, err := tw.Write(content); err != nil {
+			t.Fatalf("tar write %s: %v", name, err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("tar close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func TestPullBranchSource_DownloadsFiles(t *testing.T) {
+	tarData := buildTestTar(t, map[string][]byte{
+		"main.go":     []byte("package main"),
+		"sub/util.go": []byte("package sub"),
+	})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/default/myrepo/-/archive" {
+			w.Header().Set("Content-Type", "application/x-tar")
+			w.Write(tarData) //nolint:errcheck
+			return
+		}
+		http.NotFound(w, r)
 	}))
 	defer srv.Close()
 

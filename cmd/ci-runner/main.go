@@ -1,11 +1,13 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -86,77 +88,50 @@ func fetchConfig(ctx context.Context, client *http.Client, docstoreURL, repo str
 	return &cfg, nil
 }
 
-// treeEntry is a single entry from GET /-/tree.
-type treeEntry struct {
-	Path      string `json:"path"`
-	VersionID string `json:"version_id"`
-}
-
 // pullBranchSource materialises the given branch into a new temp directory
 // and returns its path. The caller is responsible for os.RemoveAll.
+// It uses the /-/archive endpoint to fetch all files in a single request.
 func pullBranchSource(ctx context.Context, client *http.Client, docstoreURL, repo, branch string) (string, error) {
 	tempDir, err := os.MkdirTemp("", "ci-runner-src-*")
 	if err != nil {
 		return "", fmt.Errorf("create temp dir: %w", err)
 	}
 
-	// Paginate through the full tree.
-	var entries []treeEntry
-	afterPath := ""
-	for {
-		treeURL := fmt.Sprintf("%s/repos/%s/-/tree?branch=%s&limit=100",
-			docstoreURL, repo, url.QueryEscape(branch))
-		if afterPath != "" {
-			treeURL += "&after=" + url.QueryEscape(afterPath)
-		}
+	archiveURL := fmt.Sprintf("%s/repos/%s/-/archive?branch=%s",
+		docstoreURL, repo, url.QueryEscape(branch))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, archiveURL, nil)
+	if err != nil {
+		return tempDir, fmt.Errorf("create archive request: %w", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return tempDir, fmt.Errorf("fetch archive: %w", err)
+	}
+	defer resp.Body.Close()
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, treeURL, nil)
-		if err != nil {
-			return tempDir, fmt.Errorf("create tree request: %w", err)
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			return tempDir, fmt.Errorf("fetch tree: %w", err)
-		}
-		var page []treeEntry
-		if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
-			resp.Body.Close()
-			return tempDir, fmt.Errorf("decode tree: %w", err)
-		}
-		resp.Body.Close()
-
-		entries = append(entries, page...)
-		if len(page) < 100 {
-			break
-		}
-		afterPath = page[len(page)-1].Path
+	if resp.StatusCode != http.StatusOK {
+		return tempDir, fmt.Errorf("fetch archive: unexpected status %d", resp.StatusCode)
 	}
 
-	// Download each file.
-	for _, e := range entries {
-		fileURL := fmt.Sprintf("%s/repos/%s/-/file/%s?branch=%s",
-			docstoreURL, repo, e.Path, url.QueryEscape(branch))
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, fileURL, nil)
+	tr := tar.NewReader(resp.Body)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
 		if err != nil {
-			return tempDir, fmt.Errorf("create file request for %s: %w", e.Path, err)
+			return tempDir, fmt.Errorf("read archive: %w", err)
 		}
-		resp, err := client.Do(req)
-		if err != nil {
-			return tempDir, fmt.Errorf("fetch file %s: %w", e.Path, err)
-		}
-		var fileResp model.FileResponse
-		if err := json.NewDecoder(resp.Body).Decode(&fileResp); err != nil {
-			resp.Body.Close()
-			return tempDir, fmt.Errorf("decode file %s: %w", e.Path, err)
-		}
-		resp.Body.Close()
-
-		destPath := filepath.Join(tempDir, filepath.FromSlash(e.Path))
+		destPath := filepath.Join(tempDir, filepath.FromSlash(hdr.Name))
 		if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
-			return tempDir, fmt.Errorf("create dir for %s: %w", e.Path, err)
+			return tempDir, fmt.Errorf("create dir for %s: %w", hdr.Name, err)
 		}
-		if err := os.WriteFile(destPath, fileResp.Content, 0o644); err != nil {
-			return tempDir, fmt.Errorf("write file %s: %w", e.Path, err)
+		content, err := io.ReadAll(tr)
+		if err != nil {
+			return tempDir, fmt.Errorf("read archive entry %s: %w", hdr.Name, err)
+		}
+		if err := os.WriteFile(destPath, content, 0o644); err != nil {
+			return tempDir, fmt.Errorf("write file %s: %w", hdr.Name, err)
 		}
 	}
 
@@ -191,12 +166,26 @@ func postCheckRun(ctx context.Context, client *http.Client, docstoreURL, repo st
 // ---------------------------------------------------------------------------
 
 func runAsync(ctx context.Context, client *http.Client, exec *executor.Executor, ls logstore.LogStore, docstoreURL, repo, branch string, headSeq int64) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("runAsync panic", "repo", repo, "branch", branch, "panic", r)
+		}
+	}()
+
 	slog.Info("run started", "repo", repo, "branch", branch, "head_seq", headSeq)
 
 	// 1. Fetch config from main branch.
 	cfg, err := fetchConfig(ctx, client, docstoreURL, repo)
 	if err != nil {
 		slog.Error("fetch config failed", "repo", repo, "branch", branch, "error", err)
+		// Post a synthetic failed check so the failure is visible in docstore.
+		msg := err.Error()
+		_ = postCheckRun(ctx, client, docstoreURL, repo, model.CreateCheckRunRequest{
+			Branch:    branch,
+			CheckName: "ci/config",
+			Status:    model.CheckRunFailed,
+			LogURL:    &msg,
+		})
 		return
 	}
 
@@ -257,7 +246,7 @@ func runAsync(ctx context.Context, client *http.Client, exec *executor.Executor,
 // HTTP mux
 // ---------------------------------------------------------------------------
 
-func newMux(exec *executor.Executor, ls logstore.LogStore, docstoreURL string, client *http.Client, runTimeout time.Duration) *http.ServeMux {
+func newMux(serverCtx context.Context, exec *executor.Executor, ls logstore.LogStore, docstoreURL string, client *http.Client, runTimeout time.Duration) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /run", func(w http.ResponseWriter, r *http.Request) {
 		var req runRequest
@@ -276,7 +265,7 @@ func newMux(exec *executor.Executor, ls logstore.LogStore, docstoreURL string, c
 
 		runID := uuid.New().String()
 		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), runTimeout)
+			ctx, cancel := context.WithTimeout(serverCtx, runTimeout)
 			defer cancel()
 			runAsync(ctx, client, exec, ls, docstoreURL, req.Repo, req.Branch, req.HeadSequence)
 		}()
@@ -335,7 +324,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	mux := newMux(exec, ls, *docstoreURL, httpClient, *runTimeout)
+	// serverCtx is cancelled on shutdown so in-flight runAsync goroutines can
+	// detect the signal and stop gracefully.
+	serverCtx, serverCancel := context.WithCancel(context.Background())
+	defer serverCancel()
+
+	mux := newMux(serverCtx, exec, ls, *docstoreURL, httpClient, *runTimeout)
 
 	srv := &http.Server{
 		Addr:        ":" + *port,
@@ -358,12 +352,14 @@ func main() {
 	<-quit
 	slog.Info("shutting down")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := srv.Shutdown(ctx); err != nil {
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("shutdown error", "error", err)
 		os.Exit(1)
 	}
+	// Cancel serverCtx after HTTP shutdown so runAsync goroutines stop.
+	serverCancel()
 	if err := exec.Close(); err != nil {
 		slog.Error("executor close error", "error", err)
 	}
