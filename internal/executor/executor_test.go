@@ -2,37 +2,36 @@ package executor_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
 
 	"github.com/dlorenc/docstore/internal/executor"
+	"github.com/dlorenc/docstore/internal/testutil"
 )
 
-// buildkitAddr returns the buildkitd address to use for tests.
-// If BUILDKIT_ADDR is set, it is used. Otherwise /run/buildkit/buildkitd.sock
-// is checked. If neither is available the test is skipped.
-func buildkitAddr(t *testing.T) string {
-	t.Helper()
-	if addr := os.Getenv("BUILDKIT_ADDR"); addr != "" {
-		return addr
+// pkgBuildkitAddr is the buildkitd address shared across all tests in this package.
+var pkgBuildkitAddr string
+
+func TestMain(m *testing.M) {
+	addr, cleanup, err := testutil.StartBuildkit()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "skipping executor tests: could not start buildkit: %v\n", err)
+		os.Exit(0)
 	}
-	const defaultSock = "/run/buildkit/buildkitd.sock"
-	if _, err := os.Stat(defaultSock); err == nil {
-		return "unix://" + defaultSock
-	}
-	t.Skip("buildkitd not available: set BUILDKIT_ADDR or ensure /run/buildkit/buildkitd.sock exists")
-	return ""
+	pkgBuildkitAddr = addr
+	code := m.Run()
+	cleanup()
+	os.Exit(code)
 }
 
-// newExecutor creates an Executor for tests, skipping if buildkitd is
-// unreachable.
+// newExecutor creates an Executor for tests using the package-level buildkitd address.
 func newExecutor(t *testing.T) *executor.Executor {
 	t.Helper()
-	addr := buildkitAddr(t)
-	exec, err := executor.New(addr)
+	exec, err := executor.New(pkgBuildkitAddr)
 	if err != nil {
-		t.Skipf("cannot connect to buildkitd at %s: %v", addr, err)
+		t.Fatalf("cannot connect to buildkitd at %s: %v", pkgBuildkitAddr, err)
 	}
 	return exec
 }
