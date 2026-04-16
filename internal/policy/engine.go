@@ -44,6 +44,7 @@ type Input struct {
 	Action       string              `json:"action"`
 	Repo         string              `json:"repo"`
 	Branch       string              `json:"branch"`
+	Draft        bool                `json:"draft"`
 	ChangedPaths []string            `json:"changed_paths"`
 	Reviews      []ReviewInput       `json:"reviews"`
 	CheckRuns    []CheckRunInput     `json:"check_runs"`

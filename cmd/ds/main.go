@@ -21,7 +21,7 @@ commands:
   init [<remote-url>] [--author <name>]          Initialize a docstore workspace
   status                                          Show changed files
   commit -m "message"                             Commit all changes
-  checkout -b <branch>                            Create and switch to a new branch
+  checkout -b <branch> [--draft]                 Create and switch to a new branch
   checkout <branch>                               Switch to an existing branch
   pull [--skip-verify]                            Sync files from the server
   merge                                           Merge current branch into main
@@ -31,7 +31,8 @@ commands:
   rebase                                          Rebase current branch onto main
   resolve <path>                                  Resolve a merge/rebase conflict
   verify                                          Verify commit chain integrity
-  branches [--status active|merged|abandoned]     List branches
+  ready                                           Mark current branch as ready (not draft)
+  branches [--status active|merged|abandoned] [--draft]  List branches
   reviews [--branch <name>]                       List reviews for a branch
   review --status approved|rejected [--body "…"] [--branch <name>]  Submit a review
   checks [--branch <name>]                        List check runs for a branch
@@ -145,15 +146,21 @@ func main() {
 
 	case "checkout":
 		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "usage: ds checkout [-b] <branch>")
+			fmt.Fprintln(os.Stderr, "usage: ds checkout [-b] <branch> [--draft]")
 			os.Exit(1)
 		}
 		if args[1] == "-b" {
 			if len(args) < 3 {
-				fmt.Fprintln(os.Stderr, "usage: ds checkout -b <branch>")
+				fmt.Fprintln(os.Stderr, "usage: ds checkout -b <branch> [--draft]")
 				os.Exit(1)
 			}
-			err = app.CheckoutNew(args[2])
+			draft := false
+			for i := 3; i < len(args); i++ {
+				if args[i] == "--draft" {
+					draft = true
+				}
+			}
+			err = app.CheckoutNew(args[2], draft)
 		} else {
 			err = app.Checkout(args[1])
 		}
@@ -222,13 +229,16 @@ func main() {
 
 	case "branches":
 		status := "active"
+		onlyDraft := false
 		for i := 1; i < len(args); i++ {
 			if args[i] == "--status" && i+1 < len(args) {
 				status = args[i+1]
 				i++
+			} else if args[i] == "--draft" {
+				onlyDraft = true
 			}
 		}
-		err = app.Branches(status)
+		err = app.Branches(status, onlyDraft)
 
 	case "reviews":
 		branch := ""
@@ -601,6 +611,9 @@ func main() {
 			fmt.Fprintln(os.Stderr, usage)
 			os.Exit(1)
 		}
+
+	case "ready":
+		err = app.Ready()
 
 	case "purge":
 		olderThan := ""

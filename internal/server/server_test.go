@@ -51,6 +51,7 @@ type mockStore struct {
 	listInvitesFn     func(ctx context.Context, org string) ([]model.OrgInvite, error)
 	acceptInviteFn    func(ctx context.Context, org, token, identity string) error
 	revokeInviteFn    func(ctx context.Context, org, inviteID string) error
+	updateBranchDraftFn func(ctx context.Context, repo, name string, draft bool) error
 
 	createReleaseFn func(ctx context.Context, repo, name string, sequence int64, body, createdBy string) (*model.Release, error)
 	getReleaseFn    func(ctx context.Context, repo, name string) (*model.Release, error)
@@ -67,6 +68,13 @@ func (m *mockStore) CreateBranch(ctx context.Context, req model.CreateBranchRequ
 		return m.createBranchFn(ctx, req)
 	}
 	return nil, errors.New("not implemented")
+}
+
+func (m *mockStore) UpdateBranchDraft(ctx context.Context, repo, name string, draft bool) error {
+	if m.updateBranchDraftFn != nil {
+		return m.updateBranchDraftFn(ctx, repo, name, draft)
+	}
+	return nil
 }
 
 func (m *mockStore) Merge(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error) {
@@ -784,6 +792,145 @@ func TestHandleMerge_BranchNotActive(t *testing.T) {
 
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("expected 409, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleMerge_DraftBranch(t *testing.T) {
+	store := &mockStore{
+		mergeFn: func(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error) {
+			return nil, nil, db.ErrBranchDraft
+		},
+	}
+	srv := New(store, nil, devID, devID)
+
+	body, _ := json.Marshal(model.MergeRequest{Branch: "draft/wip"})
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/merge", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	var errResp model.ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&errResp); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if errResp.Error != "branch is in draft state" {
+		t.Errorf("expected 'branch is in draft state' error, got %q", errResp.Error)
+	}
+}
+
+func TestHandleCreateBranch_DraftFlag(t *testing.T) {
+	var gotDraft bool
+	store := &mockStore{
+		createBranchFn: func(ctx context.Context, req model.CreateBranchRequest) (*model.CreateBranchResponse, error) {
+			gotDraft = req.Draft
+			return &model.CreateBranchResponse{Name: req.Name, BaseSequence: 5, Draft: req.Draft}, nil
+		},
+	}
+	srv := New(store, nil, devID, devID)
+
+	body, _ := json.Marshal(model.CreateBranchRequest{Name: "draft/wip", Draft: true})
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/branch", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	if !gotDraft {
+		t.Error("expected draft=true to be passed to store")
+	}
+}
+
+func TestHandleUpdateBranch_MarkReady(t *testing.T) {
+	var gotRepo, gotName string
+	var gotDraft bool
+	store := &mockStore{
+		updateBranchDraftFn: func(ctx context.Context, repo, name string, draft bool) error {
+			gotRepo = repo
+			gotName = name
+			gotDraft = draft
+			return nil
+		},
+	}
+	srv := New(store, nil, devID, devID)
+
+	body, _ := json.Marshal(model.UpdateBranchRequest{Draft: false})
+	req := httptest.NewRequest(http.MethodPatch, "/repos/default/default/-/branch/draft/wip", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	if gotRepo != "default/default" {
+		t.Errorf("expected repo default/default, got %q", gotRepo)
+	}
+	if gotName != "draft/wip" {
+		t.Errorf("expected branch draft/wip, got %q", gotName)
+	}
+	if gotDraft != false {
+		t.Errorf("expected draft=false, got true")
+	}
+}
+
+func TestHandleUpdateBranch_NotFound(t *testing.T) {
+	store := &mockStore{
+		updateBranchDraftFn: func(ctx context.Context, repo, name string, draft bool) error {
+			return db.ErrBranchNotFound
+		},
+	}
+	srv := New(store, nil, devID, devID)
+
+	body, _ := json.Marshal(model.UpdateBranchRequest{Draft: false})
+	req := httptest.NewRequest(http.MethodPatch, "/repos/default/default/-/branch/nonexistent", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleBranches_DraftFilter(t *testing.T) {
+	var gotIncludeDraft, gotOnlyDraft bool
+	rs := &mockReadStore{
+		getBranchFn: func(ctx context.Context, repo, branch string) (*store.BranchInfo, error) {
+			return &store.BranchInfo{Name: "main", Status: "active"}, nil
+		},
+		listBranchesFn: func(ctx context.Context, repo, statusFilter string, includeDraft, onlyDraft bool) ([]store.BranchInfo, error) {
+			gotIncludeDraft = includeDraft
+			gotOnlyDraft = onlyDraft
+			return []store.BranchInfo{{Name: "draft/wip", Status: "active", Draft: true}}, nil
+		},
+	}
+	srv := newTestHandler(&mockStore{}, rs, nil)
+
+	// Test ?draft=true
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/default/-/branches?draft=true", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	if !gotOnlyDraft {
+		t.Error("expected onlyDraft=true to be passed to store")
+	}
+
+	// Test ?include_draft=true
+	gotIncludeDraft = false
+	gotOnlyDraft = false
+	req = httptest.NewRequest(http.MethodGet, "/repos/default/default/-/branches?include_draft=true", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if !gotIncludeDraft {
+		t.Error("expected includeDraft=true to be passed to store")
+	}
+	if gotOnlyDraft {
+		t.Error("expected onlyDraft=false when only include_draft is set")
 	}
 }
 
@@ -1908,7 +2055,7 @@ type mockReadStore struct {
 	materializeTreeFn func(ctx context.Context, repo, branch string, atSeq *int64, limit int, afterPath string) ([]store.TreeEntry, error)
 	getFileFn         func(ctx context.Context, repo, branch, path string, atSeq *int64) (*store.FileContent, error)
 	getFileHistoryFn  func(ctx context.Context, repo, branch, path string, limit int, afterSeq *int64) ([]store.FileHistoryEntry, error)
-	listBranchesFn    func(ctx context.Context, repo, statusFilter string) ([]store.BranchInfo, error)
+	listBranchesFn    func(ctx context.Context, repo, statusFilter string, includeDraft, onlyDraft bool) ([]store.BranchInfo, error)
 	getCommitFn       func(ctx context.Context, repo string, seq int64) (*store.CommitDetail, error)
 	getChainFn        func(ctx context.Context, repo string, from, to int64) ([]store.ChainEntry, error)
 }
@@ -1948,9 +2095,9 @@ func (m *mockReadStore) GetFileHistory(ctx context.Context, repo, branch, path s
 	return nil, nil
 }
 
-func (m *mockReadStore) ListBranches(ctx context.Context, repo, statusFilter string) ([]store.BranchInfo, error) {
+func (m *mockReadStore) ListBranches(ctx context.Context, repo, statusFilter string, includeDraft, onlyDraft bool) ([]store.BranchInfo, error) {
 	if m.listBranchesFn != nil {
-		return m.listBranchesFn(ctx, repo, statusFilter)
+		return m.listBranchesFn(ctx, repo, statusFilter, includeDraft, onlyDraft)
 	}
 	return nil, nil
 }
