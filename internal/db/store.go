@@ -118,6 +118,8 @@ var (
 	ErrInviteExpired          = errors.New("invite expired")
 	ErrInviteAlreadyAccepted  = errors.New("invite already accepted")
 	ErrEmailMismatch          = errors.New("identity does not match invite email")
+	ErrReleaseNotFound        = errors.New("release not found")
+	ErrReleaseExists          = errors.New("release already exists")
 )
 
 // rebaseFile is one file within a replayed commit group.
@@ -1689,6 +1691,122 @@ func (s *Store) RevokeInvite(ctx context.Context, org, inviteID string) error {
 	}
 	if n == 0 {
 		return ErrInviteNotFound
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Release management
+// ---------------------------------------------------------------------------
+
+// CreateRelease inserts a new release row. Returns ErrReleaseExists if the
+// (repo, name) pair is already taken.
+func (s *Store) CreateRelease(ctx context.Context, repo, name string, sequence int64, body, createdBy string) (*model.Release, error) {
+	var rel model.Release
+	err := s.db.QueryRowContext(ctx,
+		`INSERT INTO releases (repo, name, sequence, body, created_by)
+		 VALUES ($1, $2, $3, NULLIF($4, ''), $5)
+		 RETURNING id, repo, name, sequence, COALESCE(body, ''), created_by, created_at`,
+		repo, name, sequence, body, createdBy,
+	).Scan(&rel.ID, &rel.Repo, &rel.Name, &rel.Sequence, &rel.Body, &rel.CreatedBy, &rel.CreatedAt)
+	if err != nil {
+		if isDuplicateKeyError(err) {
+			return nil, ErrReleaseExists
+		}
+		return nil, fmt.Errorf("insert release: %w", err)
+	}
+	return &rel, nil
+}
+
+// GetRelease returns the named release for a repo, or ErrReleaseNotFound.
+func (s *Store) GetRelease(ctx context.Context, repo, name string) (*model.Release, error) {
+	var rel model.Release
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, repo, name, sequence, COALESCE(body, ''), created_by, created_at
+		 FROM releases WHERE repo = $1 AND name = $2`,
+		repo, name,
+	).Scan(&rel.ID, &rel.Repo, &rel.Name, &rel.Sequence, &rel.Body, &rel.CreatedBy, &rel.CreatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrReleaseNotFound
+		}
+		return nil, err
+	}
+	return &rel, nil
+}
+
+// ListReleases returns all releases for a repo ordered newest first.
+// limit controls the page size (0 → no limit); afterID is a cursor (UUID) for
+// keyset pagination (exclusive lower bound on created_at).
+func (s *Store) ListReleases(ctx context.Context, repo string, limit int, afterID string) ([]model.Release, error) {
+	var rows *sql.Rows
+	var err error
+	if afterID == "" {
+		if limit <= 0 {
+			rows, err = s.db.QueryContext(ctx,
+				`SELECT id, repo, name, sequence, COALESCE(body, ''), created_by, created_at
+				 FROM releases WHERE repo = $1 ORDER BY created_at DESC, id DESC`,
+				repo,
+			)
+		} else {
+			rows, err = s.db.QueryContext(ctx,
+				`SELECT id, repo, name, sequence, COALESCE(body, ''), created_by, created_at
+				 FROM releases WHERE repo = $1 ORDER BY created_at DESC, id DESC LIMIT $2`,
+				repo, limit,
+			)
+		}
+	} else {
+		// Use the row with id=afterID as the cursor.
+		if limit <= 0 {
+			rows, err = s.db.QueryContext(ctx,
+				`SELECT id, repo, name, sequence, COALESCE(body, ''), created_by, created_at
+				 FROM releases
+				 WHERE repo = $1
+				   AND (created_at, id) < (SELECT created_at, id FROM releases WHERE id = $2)
+				 ORDER BY created_at DESC, id DESC`,
+				repo, afterID,
+			)
+		} else {
+			rows, err = s.db.QueryContext(ctx,
+				`SELECT id, repo, name, sequence, COALESCE(body, ''), created_by, created_at
+				 FROM releases
+				 WHERE repo = $1
+				   AND (created_at, id) < (SELECT created_at, id FROM releases WHERE id = $2)
+				 ORDER BY created_at DESC, id DESC LIMIT $3`,
+				repo, afterID, limit,
+			)
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var releases []model.Release
+	for rows.Next() {
+		var rel model.Release
+		if err := rows.Scan(&rel.ID, &rel.Repo, &rel.Name, &rel.Sequence, &rel.Body, &rel.CreatedBy, &rel.CreatedAt); err != nil {
+			return nil, err
+		}
+		releases = append(releases, rel)
+	}
+	return releases, rows.Err()
+}
+
+// DeleteRelease removes a release by name. Returns ErrReleaseNotFound if not found.
+func (s *Store) DeleteRelease(ctx context.Context, repo, name string) error {
+	result, err := s.db.ExecContext(ctx,
+		"DELETE FROM releases WHERE repo = $1 AND name = $2",
+		repo, name,
+	)
+	if err != nil {
+		return fmt.Errorf("delete release: %w", err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrReleaseNotFound
 	}
 	return nil
 }

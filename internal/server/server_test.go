@@ -51,6 +51,11 @@ type mockStore struct {
 	listInvitesFn     func(ctx context.Context, org string) ([]model.OrgInvite, error)
 	acceptInviteFn    func(ctx context.Context, org, token, identity string) error
 	revokeInviteFn    func(ctx context.Context, org, inviteID string) error
+
+	createReleaseFn func(ctx context.Context, repo, name string, sequence int64, body, createdBy string) (*model.Release, error)
+	getReleaseFn    func(ctx context.Context, repo, name string) (*model.Release, error)
+	listReleasesFn  func(ctx context.Context, repo string, limit int, afterID string) ([]model.Release, error)
+	deleteReleaseFn func(ctx context.Context, repo, name string) error
 }
 
 func (m *mockStore) Commit(ctx context.Context, req model.CommitRequest) (*model.CommitResponse, error) {
@@ -275,6 +280,34 @@ func (m *mockStore) RevokeInvite(ctx context.Context, org, inviteID string) erro
 		return m.revokeInviteFn(ctx, org, inviteID)
 	}
 	return nil
+}
+
+func (m *mockStore) CreateRelease(ctx context.Context, repo, name string, sequence int64, body, createdBy string) (*model.Release, error) {
+	if m.createReleaseFn != nil {
+		return m.createReleaseFn(ctx, repo, name, sequence, body, createdBy)
+	}
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockStore) GetRelease(ctx context.Context, repo, name string) (*model.Release, error) {
+	if m.getReleaseFn != nil {
+		return m.getReleaseFn(ctx, repo, name)
+	}
+	return nil, db.ErrReleaseNotFound
+}
+
+func (m *mockStore) ListReleases(ctx context.Context, repo string, limit int, afterID string) ([]model.Release, error) {
+	if m.listReleasesFn != nil {
+		return m.listReleasesFn(ctx, repo, limit, afterID)
+	}
+	return []model.Release{}, nil
+}
+
+func (m *mockStore) DeleteRelease(ctx context.Context, repo, name string) error {
+	if m.deleteReleaseFn != nil {
+		return m.deleteReleaseFn(ctx, repo, name)
+	}
+	return db.ErrReleaseNotFound
 }
 
 func TestHealthEndpoint(t *testing.T) {
@@ -2734,6 +2767,176 @@ func TestHandleRevokeInvite_NotFound(t *testing.T) {
 	h := newTestHandler(ms, nil, nil)
 
 	req := httptest.NewRequest(http.MethodDelete, "/orgs/acme/invites/no-such-id", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Release handler unit tests
+// ---------------------------------------------------------------------------
+
+func TestHandleCreateRelease(t *testing.T) {
+	ms := &mockStore{
+		getRepoFn: func(_ context.Context, name string) (*model.Repo, error) {
+			return &model.Repo{Name: name}, nil
+		},
+		createReleaseFn: func(_ context.Context, repo, name string, sequence int64, body, createdBy string) (*model.Release, error) {
+			return &model.Release{ID: "test-id", Repo: repo, Name: name, Sequence: sequence, Body: body, CreatedBy: createdBy}, nil
+		},
+	}
+	h := newTestHandler(ms, nil, nil)
+
+	body := `{"name":"v1.0","sequence":5,"body":"initial"}`
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/releases", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp model.Release
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Name != "v1.0" || resp.Sequence != 5 {
+		t.Errorf("unexpected response: %+v", resp)
+	}
+}
+
+func TestHandleCreateRelease_MissingName(t *testing.T) {
+	ms := &mockStore{
+		getRepoFn: func(_ context.Context, name string) (*model.Repo, error) {
+			return &model.Repo{Name: name}, nil
+		},
+	}
+	h := newTestHandler(ms, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/releases", bytes.NewBufferString(`{"sequence":1}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestHandleCreateRelease_Conflict(t *testing.T) {
+	ms := &mockStore{
+		getRepoFn: func(_ context.Context, name string) (*model.Repo, error) {
+			return &model.Repo{Name: name}, nil
+		},
+		createReleaseFn: func(_ context.Context, _, _ string, _ int64, _, _ string) (*model.Release, error) {
+			return nil, db.ErrReleaseExists
+		},
+	}
+	h := newTestHandler(ms, nil, nil)
+
+	body := `{"name":"v1.0","sequence":1}`
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/releases", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusConflict {
+		t.Errorf("expected 409, got %d", w.Code)
+	}
+}
+
+func TestHandleListReleases(t *testing.T) {
+	ms := &mockStore{
+		getRepoFn: func(_ context.Context, name string) (*model.Repo, error) {
+			return &model.Repo{Name: name}, nil
+		},
+		listReleasesFn: func(_ context.Context, repo string, limit int, afterID string) ([]model.Release, error) {
+			return []model.Release{
+				{ID: "id1", Repo: repo, Name: "v2.0", Sequence: 10},
+				{ID: "id2", Repo: repo, Name: "v1.0", Sequence: 5},
+			}, nil
+		},
+	}
+	h := newTestHandler(ms, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/default/-/releases", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp model.ListReleasesResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Releases) != 2 {
+		t.Fatalf("expected 2 releases, got %d", len(resp.Releases))
+	}
+	if resp.Releases[0].Name != "v2.0" {
+		t.Errorf("expected v2.0 first, got %s", resp.Releases[0].Name)
+	}
+}
+
+func TestHandleGetRelease(t *testing.T) {
+	ms := &mockStore{
+		getReleaseFn: func(_ context.Context, repo, name string) (*model.Release, error) {
+			return &model.Release{ID: "id1", Repo: repo, Name: name, Sequence: 7}, nil
+		},
+	}
+	h := newTestHandler(ms, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/default/-/releases/v1.0", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp model.Release
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Sequence != 7 {
+		t.Errorf("expected sequence=7, got %d", resp.Sequence)
+	}
+}
+
+func TestHandleGetRelease_NotFound(t *testing.T) {
+	ms := &mockStore{}
+	h := newTestHandler(ms, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/default/-/releases/nope", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestHandleDeleteRelease(t *testing.T) {
+	var deleted string
+	ms := &mockStore{
+		deleteReleaseFn: func(_ context.Context, repo, name string) error {
+			deleted = name
+			return nil
+		},
+	}
+	h := newTestHandler(ms, nil, nil)
+
+	req := httptest.NewRequest(http.MethodDelete, "/repos/default/default/-/releases/v1.0", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+	if deleted != "v1.0" {
+		t.Errorf("expected v1.0 to be deleted, got %q", deleted)
+	}
+}
+
+func TestHandleDeleteRelease_NotFound(t *testing.T) {
+	ms := &mockStore{}
+	h := newTestHandler(ms, nil, nil)
+
+	req := httptest.NewRequest(http.MethodDelete, "/repos/default/default/-/releases/missing", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 	if w.Code != http.StatusNotFound {
