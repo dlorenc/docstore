@@ -30,6 +30,7 @@ commands:
   show <sequence> [path]                          Show commit or file at a sequence
   rebase                                          Rebase current branch onto main
   resolve <path>                                  Resolve a merge/rebase conflict
+  verify                                          Verify commit chain integrity
   branches [--status active|merged|abandoned]     List branches
   reviews [--branch <name>]                       List reviews for a branch
   review --status approved|rejected [--body "…"] [--branch <name>]  Submit a review
@@ -176,6 +177,9 @@ func main() {
 
 	case "rebase":
 		err = app.Rebase()
+
+	case "verify":
+		err = app.Verify()
 
 	case "resolve":
 		if len(args) < 2 {

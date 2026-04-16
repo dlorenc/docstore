@@ -53,12 +53,15 @@ CREATE TABLE branches (
 
 -- commits: global monotonic sequence allocation, one row per atomic commit
 CREATE TABLE commits (
-    sequence   BIGSERIAL PRIMARY KEY,
-    branch     TEXT NOT NULL,
-    message    TEXT NOT NULL,
-    author     TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    repo       TEXT NOT NULL DEFAULT 'default/default' REFERENCES repos (name)
+    sequence         BIGSERIAL PRIMARY KEY,
+    branch           TEXT NOT NULL,
+    message          TEXT NOT NULL,
+    author           TEXT NOT NULL,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    repo             TEXT NOT NULL DEFAULT 'default/default' REFERENCES repos (name),
+    commit_hash      TEXT,
+    rekor_uuid       TEXT,
+    signature_bundle JSONB
 );
 
 -- file_commits: core event log, one row per file change within a commit

@@ -158,8 +158,9 @@ type CommitFileResult struct {
 
 // CommitResponse is the response for POST /commit.
 type CommitResponse struct {
-	Sequence int64              `json:"sequence"`
-	Files    []CommitFileResult `json:"files"`
+	Sequence   int64              `json:"sequence"`
+	Files      []CommitFileResult `json:"files"`
+	CommitHash string             `json:"commit_hash,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
