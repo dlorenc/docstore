@@ -92,6 +92,10 @@ type WriteStore interface {
 	GetRelease(ctx context.Context, repo, name string) (*model.Release, error)
 	ListReleases(ctx context.Context, repo string, limit int, afterID string) ([]model.Release, error)
 	DeleteRelease(ctx context.Context, repo, name string) error
+
+	// CommitSequenceExists reports whether the given sequence number exists in
+	// the commits table for repo. Used to validate release sequence references.
+	CommitSequenceExists(ctx context.Context, repo string, sequence int64) (bool, error)
 }
 
 // CommitStore is an alias for backward compatibility with tests.
