@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -124,6 +125,7 @@ var (
 	ErrReleaseExists          = errors.New("release already exists")
 	ErrInvalidCursor          = errors.New("invalid pagination cursor")
 	ErrBranchDraft            = errors.New("branch is in draft state")
+	ErrSubscriptionNotFound   = errors.New("subscription not found")
 )
 
 // rebaseFile is one file within a replayed commit group.
@@ -1979,4 +1981,118 @@ func isForeignKeyViolation(err error) bool {
 		return pqErr.Code == "23503"
 	}
 	return false
+}
+
+// ---------------------------------------------------------------------------
+// Event subscription store methods
+// ---------------------------------------------------------------------------
+
+// CreateSubscription inserts a new event subscription.
+func (s *Store) CreateSubscription(ctx context.Context, req model.CreateSubscriptionRequest) (*model.EventSubscription, error) {
+	config, err := req.Config.MarshalJSON()
+	if err != nil {
+		return nil, fmt.Errorf("marshal config: %w", err)
+	}
+
+	var id string
+	var createdAt time.Time
+	err = s.db.QueryRowContext(ctx, `
+		INSERT INTO event_subscriptions (repo, event_types, backend, config, created_by)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id, created_at`,
+		req.Repo,
+		pq.Array(req.EventTypes),
+		req.Backend,
+		config,
+		req.CreatedBy,
+	).Scan(&id, &createdAt)
+	if err != nil {
+		return nil, fmt.Errorf("create subscription: %w", err)
+	}
+
+	sub := &model.EventSubscription{
+		ID:         id,
+		Repo:       req.Repo,
+		EventTypes: req.EventTypes,
+		Backend:    req.Backend,
+		Config:     req.Config,
+		CreatedAt:  createdAt,
+		CreatedBy:  req.CreatedBy,
+	}
+	return sub, nil
+}
+
+// ListSubscriptions returns all event subscriptions. If repo is non-nil,
+// only subscriptions matching that repo (or global ones) are returned.
+func (s *Store) ListSubscriptions(ctx context.Context) ([]model.EventSubscription, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, repo, event_types, backend, config, created_at, created_by, suspended_at, failure_count
+		FROM event_subscriptions
+		ORDER BY created_at`)
+	if err != nil {
+		return nil, fmt.Errorf("list subscriptions: %w", err)
+	}
+	defer rows.Close()
+
+	var subs []model.EventSubscription
+	for rows.Next() {
+		var sub model.EventSubscription
+		var repo sql.NullString
+		var eventTypes pq.StringArray
+		var suspendedAt sql.NullTime
+		var configBytes []byte
+		if err := rows.Scan(&sub.ID, &repo, &eventTypes, &sub.Backend,
+			&configBytes, &sub.CreatedAt, &sub.CreatedBy, &suspendedAt, &sub.FailureCount); err != nil {
+			return nil, fmt.Errorf("scan subscription: %w", err)
+		}
+		if repo.Valid {
+			sub.Repo = &repo.String
+		}
+		if len(eventTypes) > 0 {
+			sub.EventTypes = []string(eventTypes)
+		}
+		if suspendedAt.Valid {
+			sub.SuspendedAt = &suspendedAt.Time
+		}
+		sub.Config = json.RawMessage(configBytes)
+		subs = append(subs, sub)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate subscriptions: %w", err)
+	}
+	return subs, nil
+}
+
+// DeleteSubscription deletes a subscription by ID.
+func (s *Store) DeleteSubscription(ctx context.Context, id string) error {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM event_subscriptions WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("delete subscription: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	}
+	if n == 0 {
+		return ErrSubscriptionNotFound
+	}
+	return nil
+}
+
+// ResumeSubscription clears the suspended_at on a subscription.
+func (s *Store) ResumeSubscription(ctx context.Context, id string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE event_subscriptions SET suspended_at = NULL, failure_count = 0 WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("resume subscription: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	}
+	if n == 0 {
+		return ErrSubscriptionNotFound
+	}
+	return nil
 }
