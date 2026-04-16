@@ -214,6 +214,9 @@ func (s *server) handleReposPrefix(w http.ResponseWriter, r *http.Request) {
 		case http.MethodDelete:
 			r.SetPathValue("bname", bpath)
 			s.handleDeleteBranch(w, r)
+		case http.MethodPatch:
+			r.SetPathValue("bname", bpath)
+			s.handleUpdateBranch(w, r)
 		case http.MethodGet:
 			if strings.HasSuffix(bpath, "/status") {
 				branchName := strings.TrimSuffix(bpath, "/status")
@@ -1116,15 +1119,17 @@ func (s *server) handleGetCommit(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, detail)
 }
 
-// handleBranches implements GET /repos/:name/branches?status=active
+// handleBranches implements GET /repos/:name/branches?status=active[&include_draft=true][&draft=true]
 func (s *server) handleBranches(w http.ResponseWriter, r *http.Request) {
 	repo := r.PathValue("name")
 	if !s.validateRepo(w, r, repo) {
 		return
 	}
 	statusFilter := r.URL.Query().Get("status")
+	includeDraft := r.URL.Query().Get("include_draft") == "true"
+	onlyDraft := r.URL.Query().Get("draft") == "true"
 
-	branches, err := s.readStore.ListBranches(r.Context(), repo, statusFilter)
+	branches, err := s.readStore.ListBranches(r.Context(), repo, statusFilter, includeDraft, onlyDraft)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -1215,6 +1220,32 @@ func (s *server) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("branch created", "repo", repo, "branch", req.Name, "by", IdentityFromContext(r.Context()))
 	writeJSON(w, http.StatusCreated, resp)
+}
+
+// handleUpdateBranch implements PATCH /repos/:name/branch/:bname
+func (s *server) handleUpdateBranch(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	bname := r.PathValue("bname")
+
+	var req model.UpdateBranchRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if err := s.commitStore.UpdateBranchDraft(r.Context(), repo, bname, req.Draft); err != nil {
+		switch {
+		case errors.Is(err, db.ErrBranchNotFound):
+			writeError(w, http.StatusNotFound, "branch not found")
+		default:
+			slog.Error("internal error", "op", "update_branch", "repo", repo, "branch", bname, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+
+	slog.Info("branch updated", "repo", repo, "branch", bname, "draft", req.Draft, "by", IdentityFromContext(r.Context()))
+	writeJSON(w, http.StatusOK, model.UpdateBranchResponse{Name: bname, Draft: req.Draft})
 }
 
 // handleDeleteBranch implements DELETE /repos/:name/branch/{bname}
@@ -1428,6 +1459,8 @@ func (s *server) handleMerge(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "branch not found")
 		case errors.Is(err, db.ErrBranchNotActive):
 			writeError(w, http.StatusConflict, "branch is not active")
+		case errors.Is(err, db.ErrBranchDraft):
+			writeError(w, http.StatusConflict, "branch is in draft state")
 		default:
 			slog.Error("internal error", "op", "merge", "repo", repo, "branch", req.Branch, "error", err)
 			writeError(w, http.StatusInternalServerError, "internal server error")
@@ -1521,6 +1554,7 @@ func (s *server) assembleMergeInput(ctx context.Context, repo, branch, actor str
 		Action:       "merge",
 		Repo:         repo,
 		Branch:       branch,
+		Draft:        branchInfo.Draft,
 		ChangedPaths: changedPaths,
 		Reviews:      reviewInputs,
 		CheckRuns:    checkInputs,

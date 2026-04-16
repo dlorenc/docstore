@@ -184,7 +184,7 @@ func TestIntegrationCheckout_BranchCycle(t *testing.T) {
 	}
 
 	// Create feature branch and add feature.txt.
-	if err := ws.CheckoutNew("feature/cycle"); err != nil {
+	if err := ws.CheckoutNew("feature/cycle", false); err != nil {
 		t.Fatalf("CheckoutNew: %v", err)
 	}
 	cfg, _ := ws.loadConfig()
@@ -242,7 +242,7 @@ func TestIntegrationCheckout_DirtyBlocked(t *testing.T) {
 	}
 
 	// Create a branch so there is somewhere to switch to.
-	if err := ws.CheckoutNew("other-branch"); err != nil {
+	if err := ws.CheckoutNew("other-branch", false); err != nil {
 		t.Fatalf("CheckoutNew: %v", err)
 	}
 	if err := ws.Checkout("main"); err != nil {
@@ -279,7 +279,7 @@ func TestIntegrationCheckout_BranchIsolation(t *testing.T) {
 	}
 
 	// Branch-a: add file-a.txt.
-	if err := ws.CheckoutNew("branch-a"); err != nil {
+	if err := ws.CheckoutNew("branch-a", false); err != nil {
 		t.Fatalf("CheckoutNew branch-a: %v", err)
 	}
 	writeFile(t, ws, "file-a.txt", "for branch-a")
@@ -291,7 +291,7 @@ func TestIntegrationCheckout_BranchIsolation(t *testing.T) {
 	if err := ws.Checkout("main"); err != nil {
 		t.Fatalf("Checkout main: %v", err)
 	}
-	if err := ws.CheckoutNew("branch-b"); err != nil {
+	if err := ws.CheckoutNew("branch-b", false); err != nil {
 		t.Fatalf("CheckoutNew branch-b: %v", err)
 	}
 	writeFile(t, ws, "file-b.txt", "for branch-b")
@@ -338,7 +338,7 @@ func TestIntegrationMerge_Success(t *testing.T) {
 	}
 
 	// Create feature branch and add feature.txt.
-	if err := ws.CheckoutNew("feature/merge-test"); err != nil {
+	if err := ws.CheckoutNew("feature/merge-test", false); err != nil {
 		t.Fatalf("CheckoutNew: %v", err)
 	}
 	writeFile(t, ws, "feature.txt", "feature content")
@@ -395,7 +395,7 @@ func TestIntegrationMerge_Conflict(t *testing.T) {
 	}
 
 	// Create feature branch, modify shared.txt.
-	if err := ws.CheckoutNew("feature/conflict-merge"); err != nil {
+	if err := ws.CheckoutNew("feature/conflict-merge", false); err != nil {
 		t.Fatalf("CheckoutNew: %v", err)
 	}
 	writeFile(t, ws, "shared.txt", "branch version")
@@ -451,7 +451,7 @@ func TestIntegrationRebase_Success(t *testing.T) {
 	}
 
 	// Create feature branch and add feature.txt.
-	if err := ws.CheckoutNew("feature/rebase-test"); err != nil {
+	if err := ws.CheckoutNew("feature/rebase-test", false); err != nil {
 		t.Fatalf("CheckoutNew: %v", err)
 	}
 	writeFile(t, ws, "feature.txt", "feature")
@@ -513,7 +513,7 @@ func TestIntegrationRebase_Conflict(t *testing.T) {
 	}
 
 	// Create feature branch, modify conflict.txt.
-	if err := ws.CheckoutNew("feature/rebase-conflict"); err != nil {
+	if err := ws.CheckoutNew("feature/rebase-conflict", false); err != nil {
 		t.Fatalf("CheckoutNew: %v", err)
 	}
 	writeFile(t, ws, "conflict.txt", "branch changes")
@@ -578,7 +578,7 @@ func TestIntegrationRebaseAndMerge(t *testing.T) {
 	}
 
 	// Create feature branch and add feature.txt.
-	if err := ws.CheckoutNew("feature/rebase-merge"); err != nil {
+	if err := ws.CheckoutNew("feature/rebase-merge", false); err != nil {
 		t.Fatalf("CheckoutNew: %v", err)
 	}
 	writeFile(t, ws, "feature.txt", "feature")
@@ -801,7 +801,7 @@ func TestIntegrationBinaryFile(t *testing.T) {
 	}
 
 	// Create a feature branch so the binary file shows up in diff.
-	if err := ws.CheckoutNew("feature/binary"); err != nil {
+	if err := ws.CheckoutNew("feature/binary", false); err != nil {
 		t.Fatalf("CheckoutNew: %v", err)
 	}
 

@@ -169,14 +169,27 @@ type CommitResponse struct {
 
 // CreateBranchRequest is the body for POST /repos/:name/branch.
 type CreateBranchRequest struct {
-	Repo string `json:"repo,omitempty"`
-	Name string `json:"name"`
+	Repo  string `json:"repo,omitempty"`
+	Name  string `json:"name"`
+	Draft bool   `json:"draft,omitempty"`
 }
 
 // CreateBranchResponse is the response for POST /branch.
 type CreateBranchResponse struct {
 	Name         string `json:"name"`
 	BaseSequence int64  `json:"base_sequence"`
+	Draft        bool   `json:"draft,omitempty"`
+}
+
+// UpdateBranchRequest is the body for PATCH /repos/:name/branch/:name.
+type UpdateBranchRequest struct {
+	Draft bool `json:"draft"`
+}
+
+// UpdateBranchResponse is the response for PATCH /repos/:name/branch/:name.
+type UpdateBranchResponse struct {
+	Name  string `json:"name"`
+	Draft bool   `json:"draft"`
 }
 
 // ---------------------------------------------------------------------------

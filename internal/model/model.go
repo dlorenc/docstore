@@ -118,6 +118,7 @@ type Branch struct {
 	HeadSequence int64        `json:"head_sequence"`
 	BaseSequence int64        `json:"base_sequence"`
 	Status       BranchStatus `json:"status"`
+	Draft        bool         `json:"draft"`
 }
 
 // Role maps an identity to a coarse-grained permission level.
