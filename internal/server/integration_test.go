@@ -58,7 +58,8 @@ func seed(t *testing.T, db *sql.DB) {
 }
 
 func TestIntegrationTreeEndpoint(t *testing.T) {
-	db := testutil.TestDB(t, dbpkg.RunMigrations)
+	t.Parallel()
+	db := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 	seed(t, db)
 	handler := server.New(dbpkg.NewStore(db), db, "test@example.com", "test@example.com")
 	srv := httptest.NewServer(handler)
@@ -85,7 +86,8 @@ func TestIntegrationTreeEndpoint(t *testing.T) {
 }
 
 func TestIntegrationFileEndpoint(t *testing.T) {
-	db := testutil.TestDB(t, dbpkg.RunMigrations)
+	t.Parallel()
+	db := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 	seed(t, db)
 	handler := server.New(dbpkg.NewStore(db), db, "test@example.com", "test@example.com")
 	srv := httptest.NewServer(handler)
@@ -168,7 +170,8 @@ func TestIntegrationFileEndpoint(t *testing.T) {
 }
 
 func TestIntegrationBranchesEndpoint(t *testing.T) {
-	database := testutil.TestDB(t, dbpkg.RunMigrations)
+	t.Parallel()
+	database := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 	seed(t, database)
 
 	// Add feature branch.
@@ -224,7 +227,8 @@ func TestIntegrationBranchesEndpoint(t *testing.T) {
 }
 
 func TestIntegrationDiffEndpoint(t *testing.T) {
-	database := testutil.TestDB(t, dbpkg.RunMigrations)
+	t.Parallel()
+	database := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 	seed(t, database)
 
 	// Create a branch with changes.
@@ -297,7 +301,8 @@ func TestIntegrationDiffEndpoint(t *testing.T) {
 }
 
 func TestIntegrationCommitEndpoint(t *testing.T) {
-	db := testutil.TestDB(t, dbpkg.RunMigrations)
+	t.Parallel()
+	db := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 	seed(t, db)
 	handler := server.New(nil, db, "test@example.com", "")
 	srv := httptest.NewServer(handler)
@@ -353,7 +358,8 @@ func TestIntegrationCommitEndpoint(t *testing.T) {
 }
 
 func TestIntegrationDeleteBranch(t *testing.T) {
-	database := testutil.TestDB(t, dbpkg.RunMigrations)
+	t.Parallel()
+	database := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 	seed(t, database)
 
 	writeStore := dbpkg.NewStore(database)
@@ -431,7 +437,8 @@ func TestIntegrationDeleteBranch(t *testing.T) {
 }
 
 func TestIntegrationRebase_FullFlow(t *testing.T) {
-	database := testutil.TestDB(t, dbpkg.RunMigrations)
+	t.Parallel()
+	database := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 	writeStore := dbpkg.NewStore(database)
 	handler := server.New(writeStore, database, "test@example.com", "test@example.com")
 	srv := httptest.NewServer(handler)
@@ -541,6 +548,7 @@ func TestIntegrationRebase_FullFlow(t *testing.T) {
 // TestHTTP_AuthRequired verifies that write endpoints return 401 when no IAP JWT
 // is present and the server is not in dev mode.
 func TestHTTP_AuthRequired(t *testing.T) {
+	t.Parallel()
 	// No devIdentity → real IAP auth enforced.
 	handler := server.New(nil, nil, "", "")
 	srv := httptest.NewServer(handler)
@@ -570,8 +578,9 @@ func TestHTTP_AuthRequired(t *testing.T) {
 // TestHTTP_AuthIdentityUsedAsAuthor verifies that the authenticated identity
 // (set via dev mode) is recorded as the commit author, not any value in the body.
 func TestHTTP_AuthIdentityUsedAsAuthor(t *testing.T) {
+	t.Parallel()
 	const identity = "alice@example.com"
-	database := testutil.TestDB(t, dbpkg.RunMigrations)
+	database := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 	writeStore := dbpkg.NewStore(database)
 	handler := server.New(writeStore, database, identity, identity)
 	srv := httptest.NewServer(handler)
@@ -612,7 +621,8 @@ func TestHTTP_AuthIdentityUsedAsAuthor(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleCreateRepo_Success(t *testing.T) {
-	database := testutil.TestDB(t, dbpkg.RunMigrations)
+	t.Parallel()
+	database := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 	writeStore := dbpkg.NewStore(database)
 	handler := server.New(writeStore, database, "test@example.com", "test@example.com")
 	srv := httptest.NewServer(handler)
@@ -631,7 +641,8 @@ func TestHandleCreateRepo_Success(t *testing.T) {
 }
 
 func TestHandleCreateRepo_Duplicate(t *testing.T) {
-	database := testutil.TestDB(t, dbpkg.RunMigrations)
+	t.Parallel()
+	database := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 	writeStore := dbpkg.NewStore(database)
 	handler := server.New(writeStore, database, "test@example.com", "test@example.com")
 	srv := httptest.NewServer(handler)
@@ -651,7 +662,8 @@ func TestHandleCreateRepo_Duplicate(t *testing.T) {
 }
 
 func TestHandleDeleteRepo_Success(t *testing.T) {
-	database := testutil.TestDB(t, dbpkg.RunMigrations)
+	t.Parallel()
+	database := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 	writeStore := dbpkg.NewStore(database)
 	handler := server.New(writeStore, database, "test@example.com", "test@example.com")
 	srv := httptest.NewServer(handler)
@@ -678,7 +690,8 @@ func TestHandleDeleteRepo_Success(t *testing.T) {
 }
 
 func TestHandleDeleteRepo_NotFound(t *testing.T) {
-	database := testutil.TestDB(t, dbpkg.RunMigrations)
+	t.Parallel()
+	database := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 	writeStore := dbpkg.NewStore(database)
 	handler := server.New(writeStore, database, "test@example.com", "test@example.com")
 	srv := httptest.NewServer(handler)
@@ -696,7 +709,8 @@ func TestHandleDeleteRepo_NotFound(t *testing.T) {
 }
 
 func TestHandleListRepos(t *testing.T) {
-	database := testutil.TestDB(t, dbpkg.RunMigrations)
+	t.Parallel()
+	database := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 	writeStore := dbpkg.NewStore(database)
 	handler := server.New(writeStore, database, "test@example.com", "test@example.com")
 	srv := httptest.NewServer(handler)
@@ -732,7 +746,8 @@ func TestHandleListRepos(t *testing.T) {
 }
 
 func TestIntegrationMultiRepo_FullIsolation(t *testing.T) {
-	database := testutil.TestDB(t, dbpkg.RunMigrations)
+	t.Parallel()
+	database := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 	writeStore := dbpkg.NewStore(database)
 	handler := server.New(writeStore, database, "test@example.com", "test@example.com")
 	srv := httptest.NewServer(handler)
@@ -808,7 +823,8 @@ func TestIntegrationMultiRepo_FullIsolation(t *testing.T) {
 }
 
 func TestIntegrationDeleteRepo_CleansUp(t *testing.T) {
-	database := testutil.TestDB(t, dbpkg.RunMigrations)
+	t.Parallel()
+	database := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 	writeStore := dbpkg.NewStore(database)
 	handler := server.New(writeStore, database, "test@example.com", "test@example.com")
 	srv := httptest.NewServer(handler)
@@ -866,7 +882,8 @@ func TestIntegrationDeleteRepo_CleansUp(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestIntegrationReviewFlow(t *testing.T) {
-	database := testutil.TestDB(t, dbpkg.RunMigrations)
+	t.Parallel()
+	database := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 	writeStore := dbpkg.NewStore(database)
 	handler := server.New(writeStore, database, "alice@example.com", "alice@example.com")
 	srv := httptest.NewServer(handler)
@@ -973,7 +990,8 @@ func TestIntegrationReviewFlow(t *testing.T) {
 }
 
 func TestIntegrationCheckRunFlow(t *testing.T) {
-	database := testutil.TestDB(t, dbpkg.RunMigrations)
+	t.Parallel()
+	database := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 	writeStore := dbpkg.NewStore(database)
 	handler := server.New(writeStore, database, "ci-bot@example.com", "ci-bot@example.com")
 	srv := httptest.NewServer(handler)
@@ -1033,7 +1051,8 @@ func TestIntegrationCheckRunFlow(t *testing.T) {
 }
 
 func TestIntegrationReviewRepoIsolation(t *testing.T) {
-	database := testutil.TestDB(t, dbpkg.RunMigrations)
+	t.Parallel()
+	database := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 	writeStore := dbpkg.NewStore(database)
 	// alice is the reviewer; bob is the committer so alice can approve
 	handler := server.New(writeStore, database, "alice@example.com", "alice@example.com")
@@ -1091,7 +1110,8 @@ func TestIntegrationReviewRepoIsolation(t *testing.T) {
 // TestIntegrationRBAC_FullFlow exercises the complete bootstrap → role assignment
 // → role-constrained operations flow.
 func TestIntegrationRBAC_FullFlow(t *testing.T) {
-	database := testutil.TestDB(t, dbpkg.RunMigrations)
+	t.Parallel()
+	database := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 	writeStore := dbpkg.NewStore(database)
 
 	const bootstrapAdmin = "admin@example.com"
@@ -1203,7 +1223,8 @@ func TestIntegrationRBAC_FullFlow(t *testing.T) {
 // TestIntegrationRBAC_CrossRepoIsolation verifies that a role in repo-a
 // grants no access to repo-b.
 func TestIntegrationRBAC_CrossRepoIsolation(t *testing.T) {
-	database := testutil.TestDB(t, dbpkg.RunMigrations)
+	t.Parallel()
+	database := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 	writeStore := dbpkg.NewStore(database)
 
 	const bootstrapAdmin = "admin@example.com"
@@ -1276,7 +1297,8 @@ func TestIntegrationRBAC_CrossRepoIsolation(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestIntegrationMerge_ConflictBody(t *testing.T) {
-	database := testutil.TestDB(t, dbpkg.RunMigrations)
+	t.Parallel()
+	database := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 	writeStore := dbpkg.NewStore(database)
 	handler := server.New(writeStore, database, "test@example.com", "test@example.com")
 	srv := httptest.NewServer(handler)
@@ -1357,7 +1379,8 @@ func TestIntegrationMerge_ConflictBody(t *testing.T) {
 }
 
 func TestIntegrationRebase_ConflictBody(t *testing.T) {
-	database := testutil.TestDB(t, dbpkg.RunMigrations)
+	t.Parallel()
+	database := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 	writeStore := dbpkg.NewStore(database)
 	handler := server.New(writeStore, database, "test@example.com", "test@example.com")
 	srv := httptest.NewServer(handler)
@@ -1442,7 +1465,8 @@ func TestIntegrationRebase_ConflictBody(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestIntegrationBranchLifecycle_MergeAfterMerge(t *testing.T) {
-	database := testutil.TestDB(t, dbpkg.RunMigrations)
+	t.Parallel()
+	database := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 	writeStore := dbpkg.NewStore(database)
 	handler := server.New(writeStore, database, "test@example.com", "test@example.com")
 	srv := httptest.NewServer(handler)
@@ -1485,7 +1509,8 @@ func TestIntegrationBranchLifecycle_MergeAfterMerge(t *testing.T) {
 }
 
 func TestIntegrationBranchLifecycle_CommitAfterMerge(t *testing.T) {
-	database := testutil.TestDB(t, dbpkg.RunMigrations)
+	t.Parallel()
+	database := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 	writeStore := dbpkg.NewStore(database)
 	handler := server.New(writeStore, database, "test@example.com", "test@example.com")
 	srv := httptest.NewServer(handler)
@@ -1526,7 +1551,8 @@ func TestIntegrationBranchLifecycle_CommitAfterMerge(t *testing.T) {
 }
 
 func TestIntegrationBranchLifecycle_RebaseMain(t *testing.T) {
-	database := testutil.TestDB(t, dbpkg.RunMigrations)
+	t.Parallel()
+	database := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 	writeStore := dbpkg.NewStore(database)
 	handler := server.New(writeStore, database, "test@example.com", "test@example.com")
 	srv := httptest.NewServer(handler)
@@ -1544,7 +1570,8 @@ func TestIntegrationBranchLifecycle_RebaseMain(t *testing.T) {
 }
 
 func TestIntegrationPurge_FullFlow(t *testing.T) {
-	database := testutil.TestDB(t, dbpkg.RunMigrations)
+	t.Parallel()
+	database := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 	writeStore := dbpkg.NewStore(database)
 	handler := server.New(writeStore, database, "test@example.com", "test@example.com")
 	srv := httptest.NewServer(handler)
