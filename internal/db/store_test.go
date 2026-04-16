@@ -3740,3 +3740,15 @@ func TestRelease_CreateListGetDelete(t *testing.T) {
 		t.Errorf("expected ErrReleaseNotFound, got %v", err)
 	}
 }
+
+func TestListReleases_InvalidCursor(t *testing.T) {
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	_, err := s.ListReleases(ctx, "default/default", 10, "00000000-0000-0000-0000-000000000000")
+	if !errors.Is(err, ErrInvalidCursor) {
+		t.Errorf("expected ErrInvalidCursor, got %v", err)
+	}
+}

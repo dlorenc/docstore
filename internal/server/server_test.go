@@ -53,10 +53,11 @@ type mockStore struct {
 	revokeInviteFn    func(ctx context.Context, org, inviteID string) error
 	updateBranchDraftFn func(ctx context.Context, repo, name string, draft bool) error
 
-	createReleaseFn func(ctx context.Context, repo, name string, sequence int64, body, createdBy string) (*model.Release, error)
-	getReleaseFn    func(ctx context.Context, repo, name string) (*model.Release, error)
-	listReleasesFn  func(ctx context.Context, repo string, limit int, afterID string) ([]model.Release, error)
-	deleteReleaseFn func(ctx context.Context, repo, name string) error
+	createReleaseFn        func(ctx context.Context, repo, name string, sequence int64, body, createdBy string) (*model.Release, error)
+	getReleaseFn           func(ctx context.Context, repo, name string) (*model.Release, error)
+	listReleasesFn         func(ctx context.Context, repo string, limit int, afterID string) ([]model.Release, error)
+	deleteReleaseFn        func(ctx context.Context, repo, name string) error
+	commitSequenceExistsFn func(ctx context.Context, repo string, sequence int64) (bool, error)
 }
 
 func (m *mockStore) Commit(ctx context.Context, req model.CommitRequest) (*model.CommitResponse, error) {
@@ -316,6 +317,13 @@ func (m *mockStore) DeleteRelease(ctx context.Context, repo, name string) error 
 		return m.deleteReleaseFn(ctx, repo, name)
 	}
 	return db.ErrReleaseNotFound
+}
+
+func (m *mockStore) CommitSequenceExists(ctx context.Context, repo string, sequence int64) (bool, error) {
+	if m.commitSequenceExistsFn != nil {
+		return m.commitSequenceExistsFn(ctx, repo, sequence)
+	}
+	return true, nil
 }
 
 func TestHealthEndpoint(t *testing.T) {
@@ -3088,5 +3096,77 @@ func TestHandleDeleteRelease_NotFound(t *testing.T) {
 	h.ServeHTTP(w, req)
 	if w.Code != http.StatusNotFound {
 		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestHandleGetRelease_RepoNotFound(t *testing.T) {
+	ms := &mockStore{
+		getRepoFn: func(_ context.Context, name string) (*model.Repo, error) {
+			return nil, db.ErrRepoNotFound
+		},
+	}
+	h := newTestHandler(ms, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/repos/ghost/ghost/-/releases/v1.0", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestHandleDeleteRelease_RepoNotFound(t *testing.T) {
+	ms := &mockStore{
+		getRepoFn: func(_ context.Context, name string) (*model.Repo, error) {
+			return nil, db.ErrRepoNotFound
+		},
+	}
+	h := newTestHandler(ms, nil, nil)
+
+	req := httptest.NewRequest(http.MethodDelete, "/repos/ghost/ghost/-/releases/v1.0", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestHandleListReleases_InvalidCursor(t *testing.T) {
+	ms := &mockStore{
+		getRepoFn: func(_ context.Context, name string) (*model.Repo, error) {
+			return &model.Repo{Name: name}, nil
+		},
+		listReleasesFn: func(_ context.Context, repo string, limit int, afterID string) ([]model.Release, error) {
+			return nil, db.ErrInvalidCursor
+		},
+	}
+	h := newTestHandler(ms, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/default/-/releases?after=does-not-exist", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleCreateRelease_InvalidSequence(t *testing.T) {
+	ms := &mockStore{
+		getRepoFn: func(_ context.Context, name string) (*model.Repo, error) {
+			return &model.Repo{Name: name}, nil
+		},
+		commitSequenceExistsFn: func(_ context.Context, repo string, sequence int64) (bool, error) {
+			return false, nil
+		},
+	}
+	h := newTestHandler(ms, nil, nil)
+
+	body := `{"name":"v1.0","sequence":9999}`
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/releases", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
 	}
 }
