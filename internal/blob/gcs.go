@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 
 	"cloud.google.com/go/storage"
 )
@@ -30,11 +31,14 @@ func (s *GCSBlobStore) Put(ctx context.Context, key string, r io.Reader) error {
 	w := s.client.Bucket(s.bucket).Object(key).NewWriter(ctx)
 	if _, err := io.Copy(w, r); err != nil {
 		w.Close() //nolint:errcheck
+		slog.Error("blob put failed", "key", key, "backend", "gcs", "error", err)
 		return fmt.Errorf("gcs upload: %w", err)
 	}
 	if err := w.Close(); err != nil {
+		slog.Error("blob put failed", "key", key, "backend", "gcs", "error", err)
 		return fmt.Errorf("gcs close writer: %w", err)
 	}
+	slog.Debug("blob put", "key", key, "backend", "gcs")
 	return nil
 }
 
@@ -42,6 +46,9 @@ func (s *GCSBlobStore) Put(ctx context.Context, key string, r io.Reader) error {
 func (s *GCSBlobStore) Get(ctx context.Context, key string) (io.ReadCloser, error) {
 	r, err := s.client.Bucket(s.bucket).Object(key).NewReader(ctx)
 	if err != nil {
+		if !errors.Is(err, storage.ErrObjectNotExist) {
+			slog.Error("blob get failed", "key", key, "backend", "gcs", "error", err)
+		}
 		return nil, fmt.Errorf("gcs download: %w", err)
 	}
 	return r, nil
@@ -67,7 +74,9 @@ func (s *GCSBlobStore) Delete(ctx context.Context, key string) error {
 		return nil
 	}
 	if err != nil {
+		slog.Error("blob delete failed", "key", key, "backend", "gcs", "error", err)
 		return fmt.Errorf("gcs delete: %w", err)
 	}
+	slog.Debug("blob delete", "key", key, "backend", "gcs")
 	return nil
 }
