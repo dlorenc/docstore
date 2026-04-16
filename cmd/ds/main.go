@@ -71,7 +71,12 @@ commands:
 
   role list                                       List roles for the current repo
   role set <identity> <role>                      Set a role (reader/writer/maintainer/admin)
-  role delete <identity>                          Delete a role assignment`
+  role delete <identity>                          Delete a role assignment
+
+  release create <name> [--sequence N] [--notes 'text']  Create a named release
+  release list                                           List releases
+  release show <name>                                    Show release metadata and tree
+  release delete <name>                                  Delete a release (admin only)`
 
 func main() {
 	if len(os.Args) < 2 {
@@ -616,6 +621,60 @@ func main() {
 			os.Exit(1)
 		}
 		err = app.Purge(olderThan, dryRun)
+
+	case "release":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: ds release <create|list|show|delete> [args]")
+			os.Exit(1)
+		}
+		switch args[1] {
+		case "create":
+			if len(args) < 3 {
+				fmt.Fprintln(os.Stderr, "usage: ds release create <name> [--sequence N] [--notes 'text']")
+				os.Exit(1)
+			}
+			relName := args[2]
+			var sequence int64
+			notes := ""
+			for i := 3; i < len(args); i++ {
+				switch args[i] {
+				case "--sequence":
+					if i+1 < len(args) {
+						n, convErr := strconv.ParseInt(args[i+1], 10, 64)
+						if convErr != nil || n < 0 {
+							fmt.Fprintln(os.Stderr, "usage: ds release create <name> [--sequence N] [--notes 'text']")
+							os.Exit(1)
+						}
+						sequence = n
+						i++
+					}
+				case "--notes":
+					if i+1 < len(args) {
+						notes = args[i+1]
+						i++
+					}
+				}
+			}
+			err = app.ReleaseCreate(relName, sequence, notes)
+		case "list":
+			err = app.ReleaseList()
+		case "show":
+			if len(args) < 3 {
+				fmt.Fprintln(os.Stderr, "usage: ds release show <name>")
+				os.Exit(1)
+			}
+			err = app.ReleaseShow(args[2])
+		case "delete":
+			if len(args) < 3 {
+				fmt.Fprintln(os.Stderr, "usage: ds release delete <name>")
+				os.Exit(1)
+			}
+			err = app.ReleaseDelete(args[2])
+		default:
+			fmt.Fprintf(os.Stderr, "unknown release subcommand: %s\n", args[1])
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(1)
+		}
 
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)

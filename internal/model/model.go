@@ -150,3 +150,14 @@ type CheckRun struct {
 	CreatedAt time.Time      `json:"created_at"`
 }
 
+// Release is a named immutable snapshot tied to a commit sequence.
+type Release struct {
+	ID        string    `json:"id"`
+	Repo      string    `json:"repo"`
+	Name      string    `json:"name"`
+	Sequence  int64     `json:"sequence"`
+	Body      string    `json:"body,omitempty"`
+	CreatedBy string    `json:"created_by"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
