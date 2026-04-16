@@ -346,6 +346,26 @@ func TestWebhookHandler_InvalidSignature(t *testing.T) {
 	}
 }
 
+func TestWebhookHandler_MissingSignature(t *testing.T) {
+	const secret = "test-secret"
+	mux := newMux(context.Background(), nil, nil, "http://localhost:9999", &http.Client{}, 30*time.Minute, secret)
+
+	body := buildWebhookBody(t, "com.docstore.commit.created", map[string]any{
+		"repo":   "default/myrepo",
+		"branch": "feature/x",
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/cloudevents+json")
+	// No X-DocStore-Signature header
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
 func TestWebhookHandler_UnknownEventType(t *testing.T) {
 	mux := newMux(context.Background(), nil, nil, "http://localhost:9999", &http.Client{}, 30*time.Minute, "")
 

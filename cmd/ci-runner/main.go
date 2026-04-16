@@ -101,6 +101,16 @@ func (r *runRegistry) fail(runID, errMsg string) {
 	}
 }
 
+func (r *runRegistry) cleanup() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for id, s := range r.runs {
+		if s.State != "running" && time.Since(s.StartedAt) > time.Hour {
+			delete(r.runs, id)
+		}
+	}
+}
+
 func (r *runRegistry) get(runID string) (*RunStatus, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -376,7 +386,11 @@ func registerWebhookSubscription(ctx context.Context, client *http.Client, docst
 		if err := json.NewDecoder(resp.Body).Decode(&listResp); err == nil {
 			for _, sub := range listResp.Subscriptions {
 				var cfg map[string]string
-				if err := json.Unmarshal(sub.Config, &cfg); err == nil && cfg["url"] == webhookURL {
+				if err := json.Unmarshal(sub.Config, &cfg); err != nil {
+					slog.Warn("webhook registration: failed to parse subscription config", "id", sub.ID, "error", err)
+					continue
+				}
+				if cfg["url"] == webhookURL {
 					slog.Info("webhook subscription already registered", "id", sub.ID, "url", webhookURL)
 					return
 				}
@@ -418,6 +432,20 @@ func registerWebhookSubscription(ctx context.Context, client *http.Client, docst
 
 func newMux(serverCtx context.Context, exec *executor.Executor, ls logstore.LogStore, docstoreURL string, client *http.Client, runTimeout time.Duration, webhookSecret string) *http.ServeMux {
 	reg := newRunRegistry()
+
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-serverCtx.Done():
+				return
+			case <-ticker.C:
+				reg.cleanup()
+			}
+		}
+	}()
+
 	mux := http.NewServeMux()
 
 	// POST /run — manual trigger (existing endpoint).

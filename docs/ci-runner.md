@@ -212,6 +212,7 @@ until [ -S /run/buildkit/buildkitd.sock ]; do sleep 0.1; done
 ```bash
 go run ./cmd/ci-runner \
   --buildkit-addr unix:///run/buildkit/buildkitd.sock \
+  --docstore-url http://localhost:8000 \
   --port 8080
 ```
 
@@ -310,7 +311,7 @@ The e2e test (`cmd/ci-runner/e2e_test.go`) requires Docker to start real postgre
 
 ```bash
 # Run the e2e test (requires Docker)
-go test ./cmd/ci-runner/ -tags=e2e -run TestE2E -v -timeout=5m
+go test ./cmd/ci-runner/ -tags=e2e -run TestE2E_WebhookTriggersRun -v -timeout=5m
 ```
 
 The test:
