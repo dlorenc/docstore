@@ -345,6 +345,41 @@ type PurgeResponse struct {
 }
 
 // ---------------------------------------------------------------------------
+// POST /orgs/{org}/members/{identity} / DELETE /orgs/{org}/members/{identity} / GET /orgs/{org}/members
+// ---------------------------------------------------------------------------
+
+// AddOrgMemberRequest is the body for POST /orgs/{org}/members/{identity}.
+type AddOrgMemberRequest struct {
+	Role OrgRole `json:"role"`
+}
+
+// OrgMembersResponse is the response for GET /orgs/{org}/members.
+type OrgMembersResponse struct {
+	Members []OrgMember `json:"members"`
+}
+
+// ---------------------------------------------------------------------------
+// POST /orgs/{org}/invites / GET /orgs/{org}/invites / DELETE /orgs/{org}/invites/{id}
+// ---------------------------------------------------------------------------
+
+// CreateInviteRequest is the body for POST /orgs/{org}/invites.
+type CreateInviteRequest struct {
+	Email string  `json:"email"`
+	Role  OrgRole `json:"role"`
+}
+
+// CreateInviteResponse is the response for POST /orgs/{org}/invites.
+type CreateInviteResponse struct {
+	ID    string `json:"id"`
+	Token string `json:"token"`
+}
+
+// OrgInvitesResponse is the response for GET /orgs/{org}/invites.
+type OrgInvitesResponse struct {
+	Invites []OrgInvite `json:"invites"`
+}
+
+// ---------------------------------------------------------------------------
 // Error
 // ---------------------------------------------------------------------------
 
