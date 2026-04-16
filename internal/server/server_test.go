@@ -901,6 +901,55 @@ func TestHandleUpdateBranch_NotFound(t *testing.T) {
 	}
 }
 
+func TestHandleUpdateBranch_RepoNotFound(t *testing.T) {
+	store := &mockStore{
+		getRepoFn: func(ctx context.Context, name string) (*model.Repo, error) {
+			return nil, db.ErrRepoNotFound
+		},
+	}
+	srv := New(store, nil, devID, devID)
+
+	body, _ := json.Marshal(model.UpdateBranchRequest{Draft: false})
+	req := httptest.NewRequest(http.MethodPatch, "/repos/default/default/-/branch/feature/x", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleUpdateBranch_CannotPatchMain(t *testing.T) {
+	srv := New(&mockStore{}, nil, devID, devID)
+
+	body, _ := json.Marshal(model.UpdateBranchRequest{Draft: false})
+	req := httptest.NewRequest(http.MethodPatch, "/repos/default/default/-/branch/main", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleUpdateBranch_ReaderForbidden(t *testing.T) {
+	store := &mockStore{
+		getRoleFn: func(ctx context.Context, repo, identity string) (*model.Role, error) {
+			return &model.Role{Identity: identity, Role: model.RoleReader}, nil
+		},
+	}
+	srv := New(store, nil, "reader@example.com", "")
+
+	body, _ := json.Marshal(model.UpdateBranchRequest{Draft: false})
+	req := httptest.NewRequest(http.MethodPatch, "/repos/default/default/-/branch/feature/x", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestHandleBranches_DraftFilter(t *testing.T) {
 	var gotIncludeDraft, gotOnlyDraft bool
 	rs := &mockReadStore{

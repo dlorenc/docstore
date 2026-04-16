@@ -1767,7 +1767,7 @@ func TestBranches_ListsActive(t *testing.T) {
 	app, out := newTestApp(t, srv)
 	initWorkspace(t, app, srv.URL, "main", "alice")
 
-	if err := app.Branches("active", false); err != nil {
+	if err := app.Branches("active", false, false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1795,9 +1795,33 @@ func TestBranches_DefaultStatusActive(t *testing.T) {
 	app, _ := newTestApp(t, srv)
 	initWorkspace(t, app, srv.URL, "main", "alice")
 
-	app.Branches("", false)
+	app.Branches("", false, false)
 	if gotStatus != "active" {
 		t.Errorf("expected status=active, got %q", gotStatus)
+	}
+}
+
+func TestBranches_IncludeDraft(t *testing.T) {
+	var gotIncludeDraft, gotDraft string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotIncludeDraft = r.URL.Query().Get("include_draft")
+		gotDraft = r.URL.Query().Get("draft")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]model.Branch{})
+	}))
+	defer srv.Close()
+
+	app, _ := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "main", "alice")
+
+	if err := app.Branches("active", false, true); err != nil {
+		t.Fatal(err)
+	}
+	if gotIncludeDraft != "true" {
+		t.Errorf("expected include_draft=true, got %q", gotIncludeDraft)
+	}
+	if gotDraft != "" {
+		t.Errorf("expected draft param absent, got %q", gotDraft)
 	}
 }
 
