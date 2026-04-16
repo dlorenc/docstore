@@ -1,6 +1,8 @@
 package main
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -70,25 +72,15 @@ func (md *mockDocstore) handle(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(resp) //nolint:errcheck
 
-	case strings.Contains(path, "/-/tree"):
-		// List source files from the temp dir.
-		entries, _ := listFiles(md.sourceDir)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(entries) //nolint:errcheck
-
-	case strings.Contains(path, "/-/file/"):
-		// Extract relative file path from URL.
-		// URL pattern: /repos/{repo}/-/file/{path}
-		idx := strings.Index(path, "/-/file/")
-		relPath := path[idx+len("/-/file/"):]
-		content, err := os.ReadFile(fmt.Sprintf("%s/%s", md.sourceDir, relPath))
+	case strings.HasSuffix(path, "/-/archive"):
+		// Build and serve a tar archive of all files in sourceDir.
+		tarData, err := buildDirTar(md.sourceDir)
 		if err != nil {
-			http.NotFound(w, r)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		resp := model.FileResponse{Path: relPath, Content: content}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp) //nolint:errcheck
+		w.Header().Set("Content-Type", "application/x-tar")
+		w.Write(tarData) //nolint:errcheck
 
 	case strings.HasSuffix(path, "/-/check"):
 		var req model.CreateCheckRunRequest
@@ -105,6 +97,54 @@ func (md *mockDocstore) handle(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// buildDirTar creates an in-memory tar archive from all files under dir.
+func buildDirTar(dir string) ([]byte, error) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	err := walkDirTar(tw, dir, dir)
+	if err != nil {
+		return nil, err
+	}
+	if err := tw.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func walkDirTar(tw *tar.Writer, root, current string) error {
+	infos, err := os.ReadDir(current)
+	if err != nil {
+		return err
+	}
+	for _, info := range infos {
+		full := current + "/" + info.Name()
+		if info.IsDir() {
+			if err := walkDirTar(tw, root, full); err != nil {
+				return err
+			}
+		} else {
+			rel := strings.TrimPrefix(full, root+"/")
+			content, err := os.ReadFile(full)
+			if err != nil {
+				return err
+			}
+			hdr := &tar.Header{
+				Name:     rel,
+				Size:     int64(len(content)),
+				Mode:     0644,
+				Typeflag: tar.TypeReg,
+			}
+			if err := tw.WriteHeader(hdr); err != nil {
+				return err
+			}
+			if _, err := tw.Write(content); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (md *mockDocstore) waitForCheckName(t *testing.T, checkName string, timeout time.Duration) *model.CreateCheckRunRequest {
@@ -126,32 +166,6 @@ func (md *mockDocstore) waitForCheckName(t *testing.T, checkName string, timeout
 	return nil
 }
 
-// listFiles returns treeEntry objects for all files under dir.
-func listFiles(dir string) ([]treeEntry, error) {
-	var entries []treeEntry
-	err := walkDir(dir, dir, &entries)
-	return entries, err
-}
-
-func walkDir(root, current string, entries *[]treeEntry) error {
-	infos, err := os.ReadDir(current)
-	if err != nil {
-		return err
-	}
-	for _, info := range infos {
-		full := current + "/" + info.Name()
-		if info.IsDir() {
-			if err := walkDir(root, full, entries); err != nil {
-				return err
-			}
-		} else {
-			rel := strings.TrimPrefix(full, root+"/")
-			*entries = append(*entries, treeEntry{Path: rel, VersionID: "v1"})
-		}
-	}
-	return nil
-}
-
 // newIntegrationServer starts a ci-runner HTTP server connected to buildkitd
 // and the given mock docstore server. The test server and executor are closed
 // when the test ends.
@@ -162,7 +176,7 @@ func newIntegrationServer(t *testing.T, docstoreURL string) *httptest.Server {
 		t.Fatalf("cannot connect to buildkitd at %s: %v", pkgBuildkitAddr, err)
 	}
 	ls, _ := logstore.NewLocalLogStore(t.TempDir())
-	srv := httptest.NewServer(newMux(exec, ls, docstoreURL, &http.Client{}))
+	srv := httptest.NewServer(newMux(context.Background(), exec, ls, docstoreURL, &http.Client{}, 30*time.Minute))
 	t.Cleanup(func() {
 		srv.Close()
 		exec.Close() //nolint:errcheck
