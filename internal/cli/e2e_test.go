@@ -171,7 +171,7 @@ func TestFullWorkflow(t *testing.T) {
 
 	// ── Workspace 2: pull to get the merged changes ───────────────────────
 
-	if err := ws2.Pull(); err != nil {
+	if err := ws2.Pull(false); err != nil {
 		t.Fatalf("ws2 Pull: %v", err)
 	}
 
