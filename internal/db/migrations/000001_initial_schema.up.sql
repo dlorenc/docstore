@@ -146,6 +146,9 @@ CREATE TABLE event_outbox (
 CREATE INDEX idx_event_outbox_pending ON event_outbox (next_attempt)
     WHERE delivered_at IS NULL AND attempts < 10;
 
+CREATE INDEX idx_event_subscriptions_active_webhook ON event_subscriptions (backend)
+    WHERE suspended_at IS NULL AND backend = 'webhook';
+
 -- Seed the default org, default repo, and main branch
 INSERT INTO orgs (name, created_by) VALUES ('default', 'system');
 INSERT INTO repos (name, owner, created_by) VALUES ('default/default', 'default', 'system');

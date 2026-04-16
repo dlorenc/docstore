@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -2059,6 +2060,27 @@ func (s *server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "config is required")
 		return
 	}
+
+	// Validate webhook config: url must be present and an http/https URL.
+	var webhookConfig map[string]string
+	if err := json.Unmarshal(req.Config, &webhookConfig); err != nil {
+		writeError(w, http.StatusBadRequest, "config must be a JSON object")
+		return
+	}
+	webhookURL, ok := webhookConfig["url"]
+	if !ok || webhookURL == "" {
+		writeError(w, http.StatusBadRequest, "config.url is required for webhook backend")
+		return
+	}
+	parsedURL, err := url.ParseRequestURI(webhookURL)
+	if err != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
+		writeError(w, http.StatusBadRequest, "config.url must be a valid http or https URL")
+		return
+	}
+	if webhookConfig["secret"] == "" {
+		slog.Warn("subscription created without webhook secret", "url", webhookURL)
+	}
+
 	req.CreatedBy = IdentityFromContext(r.Context())
 
 	sub, err := s.commitStore.CreateSubscription(r.Context(), req)

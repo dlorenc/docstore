@@ -95,6 +95,7 @@ func claimOutboxBatch(ctx context.Context, db *sql.DB, batchSize int) ([]outboxR
 	defer sqlRows.Close()
 
 	var batch []outboxRow
+	var ids []string
 	for sqlRows.Next() {
 		var r outboxRow
 		var webhookURL, webhookSecret sql.NullString
@@ -105,9 +106,22 @@ func claimOutboxBatch(ctx context.Context, db *sql.DB, batchSize int) ([]outboxR
 		r.WebhookURL = webhookURL.String
 		r.WebhookSecret = webhookSecret.String
 		batch = append(batch, r)
+		ids = append(ids, r.ID)
 	}
 	if err := sqlRows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate outbox rows: %w", err)
+	}
+
+	// Mark claimed rows as in-flight within the same transaction so a slow
+	// delivery cannot be double-processed by a concurrent poller.
+	if len(ids) > 0 {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE event_outbox SET next_attempt = now() + interval '5 minutes'
+			 WHERE id = ANY($1)`,
+			pq.Array(ids),
+		); err != nil {
+			return nil, fmt.Errorf("mark in-flight: %w", err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
