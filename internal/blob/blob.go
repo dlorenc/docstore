@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 )
@@ -41,11 +42,14 @@ func (s *LocalBlobStore) keyPath(key string) string {
 func (s *LocalBlobStore) Put(_ context.Context, key string, r io.Reader) error {
 	data, err := io.ReadAll(r)
 	if err != nil {
+		slog.Error("blob put failed", "key", key, "backend", "local", "error", err)
 		return fmt.Errorf("read blob data: %w", err)
 	}
 	if err := os.WriteFile(s.keyPath(key), data, 0o644); err != nil {
+		slog.Error("blob put failed", "key", key, "backend", "local", "error", err)
 		return fmt.Errorf("write blob: %w", err)
 	}
+	slog.Debug("blob put", "key", key, "backend", "local")
 	return nil
 }
 
@@ -53,6 +57,9 @@ func (s *LocalBlobStore) Put(_ context.Context, key string, r io.Reader) error {
 func (s *LocalBlobStore) Get(_ context.Context, key string) (io.ReadCloser, error) {
 	f, err := os.Open(s.keyPath(key))
 	if err != nil {
+		if !os.IsNotExist(err) {
+			slog.Error("blob get failed", "key", key, "backend", "local", "error", err)
+		}
 		return nil, fmt.Errorf("open blob: %w", err)
 	}
 	return f, nil
@@ -76,5 +83,10 @@ func (s *LocalBlobStore) Delete(_ context.Context, key string) error {
 	if os.IsNotExist(err) {
 		return nil
 	}
-	return err
+	if err != nil {
+		slog.Error("blob delete failed", "key", key, "backend", "local", "error", err)
+		return err
+	}
+	slog.Debug("blob delete", "key", key, "backend", "local")
+	return nil
 }
