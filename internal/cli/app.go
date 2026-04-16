@@ -1942,6 +1942,33 @@ func (a *App) OrgsCreate(name string) error {
 	return nil
 }
 
+// OrgsGet fetches and prints details for a single organization.
+func (a *App) OrgsGet(name string) error {
+	remote, err := a.loadRemote()
+	if err != nil {
+		return err
+	}
+	resp, err := a.doGET(remote + "/orgs/" + name)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return fmt.Errorf("org '%s' not found", name)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return a.readError(resp)
+	}
+	var org model.Org
+	if err := json.NewDecoder(resp.Body).Decode(&org); err != nil {
+		return fmt.Errorf("decoding response: %w", err)
+	}
+	fmt.Fprintf(a.Out, "Name:       %s\n", org.Name)
+	fmt.Fprintf(a.Out, "Created by: %s\n", org.CreatedBy)
+	fmt.Fprintf(a.Out, "Created at: %s\n", org.CreatedAt.Format("2006-01-02"))
+	return nil
+}
+
 // OrgsDelete deletes an organization (fails if it still has repos).
 func (a *App) OrgsDelete(name string) error {
 	remote, err := a.loadRemote()
