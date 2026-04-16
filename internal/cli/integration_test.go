@@ -14,6 +14,7 @@ import (
 // TestIntegrationPull_UpdatesFile verifies that pull downloads a file committed
 // by another workspace and updates the local working directory.
 func TestIntegrationPull_UpdatesFile(t *testing.T) {
+	t.Parallel()
 	srv := newRealServer(t)
 
 	// ws1: commit a file to main.
@@ -68,6 +69,7 @@ func TestIntegrationPull_UpdatesFile(t *testing.T) {
 // TestIntegrationPull_NoOp verifies that pull with no remote changes
 // succeeds without downloading any files.
 func TestIntegrationPull_NoOp(t *testing.T) {
+	t.Parallel()
 	srv := newRealServer(t)
 
 	ws, wsOut := newTestApp(t, srv)
@@ -92,6 +94,7 @@ func TestIntegrationPull_NoOp(t *testing.T) {
 // TestIntegrationPull_DirtyBlocked verifies that pull with uncommitted local
 // changes returns an error.
 func TestIntegrationPull_DirtyBlocked(t *testing.T) {
+	t.Parallel()
 	srv := newRealServer(t)
 
 	ws, _ := newTestApp(t, srv)
@@ -114,6 +117,7 @@ func TestIntegrationPull_DirtyBlocked(t *testing.T) {
 // TestIntegrationPull_RemovesDeletedFile verifies that pull removes a file
 // that has been deleted on the server (committed with nil content).
 func TestIntegrationPull_RemovesDeletedFile(t *testing.T) {
+	t.Parallel()
 	srv := newRealServer(t)
 
 	// ws1: commit a file then delete it.
@@ -165,6 +169,7 @@ func TestIntegrationPull_RemovesDeletedFile(t *testing.T) {
 // then switches to the feature branch again — verifying that files are properly
 // restored on each checkout and that branch isolation holds.
 func TestIntegrationCheckout_BranchCycle(t *testing.T) {
+	t.Parallel()
 	srv := newRealServer(t)
 
 	ws, _ := newTestApp(t, srv)
@@ -228,6 +233,7 @@ func TestIntegrationCheckout_BranchCycle(t *testing.T) {
 // TestIntegrationCheckout_DirtyBlocked verifies that checking out a branch
 // when the working tree is dirty returns an error.
 func TestIntegrationCheckout_DirtyBlocked(t *testing.T) {
+	t.Parallel()
 	srv := newRealServer(t)
 
 	ws, _ := newTestApp(t, srv)
@@ -258,6 +264,7 @@ func TestIntegrationCheckout_DirtyBlocked(t *testing.T) {
 // TestIntegrationCheckout_BranchIsolation verifies that two branches with
 // different files do not leak files into each other.
 func TestIntegrationCheckout_BranchIsolation(t *testing.T) {
+	t.Parallel()
 	srv := newRealServer(t)
 
 	ws, _ := newTestApp(t, srv)
@@ -316,6 +323,7 @@ func TestIntegrationCheckout_BranchIsolation(t *testing.T) {
 // TestIntegrationMerge_Success exercises the full branch→commit→merge workflow
 // and verifies that the working directory ends up on main with all files.
 func TestIntegrationMerge_Success(t *testing.T) {
+	t.Parallel()
 	srv := newRealServer(t)
 
 	ws, wsOut := newTestApp(t, srv)
@@ -372,6 +380,7 @@ func TestIntegrationMerge_Success(t *testing.T) {
 // TestIntegrationMerge_Conflict verifies that merging two branches that both
 // modified the same file reports a conflict error gracefully.
 func TestIntegrationMerge_Conflict(t *testing.T) {
+	t.Parallel()
 	srv := newRealServer(t)
 
 	ws, wsOut := newTestApp(t, srv)
@@ -427,6 +436,7 @@ func TestIntegrationMerge_Conflict(t *testing.T) {
 // TestIntegrationRebase_Success verifies that rebase replays branch commits
 // onto the current main head and updates the state sequence.
 func TestIntegrationRebase_Success(t *testing.T) {
+	t.Parallel()
 	srv := newRealServer(t)
 
 	ws, wsOut := newTestApp(t, srv)
@@ -488,6 +498,7 @@ func TestIntegrationRebase_Success(t *testing.T) {
 // TestIntegrationRebase_Conflict verifies that a rebase conflict writes
 // .main and .branch files to disk with the correct content.
 func TestIntegrationRebase_Conflict(t *testing.T) {
+	t.Parallel()
 	srv := newRealServer(t)
 
 	ws, _ := newTestApp(t, srv)
@@ -552,6 +563,7 @@ func TestIntegrationRebase_Conflict(t *testing.T) {
 // TestIntegrationRebaseAndMerge verifies the full rebase-then-merge workflow:
 // rebase a branch onto advanced main, then merge — all files end up on main.
 func TestIntegrationRebaseAndMerge(t *testing.T) {
+	t.Parallel()
 	srv := newRealServer(t)
 
 	ws, _ := newTestApp(t, srv)
@@ -616,6 +628,7 @@ func TestIntegrationRebaseAndMerge(t *testing.T) {
 // TestIntegrationLog_MultipleCommits commits three files with distinct messages
 // and verifies all three appear in log output in newest-first order.
 func TestIntegrationLog_MultipleCommits(t *testing.T) {
+	t.Parallel()
 	srv := newRealServer(t)
 
 	ws, wsOut := newTestApp(t, srv)
@@ -659,6 +672,7 @@ func TestIntegrationLog_MultipleCommits(t *testing.T) {
 // TestIntegrationLog_FilePath verifies that ds log <path> only shows commits
 // that touched the specified file.
 func TestIntegrationLog_FilePath(t *testing.T) {
+	t.Parallel()
 	srv := newRealServer(t)
 
 	ws, wsOut := newTestApp(t, srv)
@@ -709,6 +723,7 @@ func TestIntegrationLog_FilePath(t *testing.T) {
 // TestIntegrationShow_Sequence commits a file and verifies that Show for that
 // sequence returns the correct commit metadata and file list.
 func TestIntegrationShow_Sequence(t *testing.T) {
+	t.Parallel()
 	srv := newRealServer(t)
 
 	ws, wsOut := newTestApp(t, srv)
@@ -748,6 +763,7 @@ func TestIntegrationShow_Sequence(t *testing.T) {
 // TestIntegrationShow_FileContent verifies that Show with a path parameter
 // returns the file's content at the given sequence.
 func TestIntegrationShow_FileContent(t *testing.T) {
+	t.Parallel()
 	srv := newRealServer(t)
 
 	ws, wsOut := newTestApp(t, srv)
@@ -776,6 +792,7 @@ func TestIntegrationShow_FileContent(t *testing.T) {
 // TestIntegrationBinaryFile verifies that committing a binary file succeeds and
 // that ds diff shows [binary] for that file on the branch diff.
 func TestIntegrationBinaryFile(t *testing.T) {
+	t.Parallel()
 	srv := newRealServer(t)
 
 	ws, wsOut := newTestApp(t, srv)
