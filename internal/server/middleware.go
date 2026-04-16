@@ -253,6 +253,11 @@ func roleAllows(role model.RoleType, method, subPath string, r *http.Request) bo
 		return role == model.RoleMaintainer || role == model.RoleAdmin
 	}
 
+	// PATCH /branch/* (draft promotion) — writer+.
+	if method == http.MethodPatch && strings.HasPrefix(subPath, "branch/") {
+		return role == model.RoleWriter || role == model.RoleMaintainer || role == model.RoleAdmin
+	}
+
 	return false
 }
 

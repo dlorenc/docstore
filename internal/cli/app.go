@@ -1451,7 +1451,7 @@ func (a *App) fetchFileBytesForBranch(cfg *Config, path, branch string) ([]byte,
 }
 
 // Branches lists branches for the current repo, filtered by status (default: active).
-func (a *App) Branches(status string, onlyDraft bool) error {
+func (a *App) Branches(status string, onlyDraft bool, includeDraft bool) error {
 	cfg, err := a.loadConfig()
 	if err != nil {
 		return err
@@ -1464,6 +1464,9 @@ func (a *App) Branches(status string, onlyDraft bool) error {
 	q.Set("status", status)
 	if onlyDraft {
 		q.Set("draft", "true")
+	}
+	if includeDraft {
+		q.Set("include_draft", "true")
 	}
 	resp, err := a.httpGet(cfg, repoBase(cfg)+"/branches?"+q.Encode())
 	if err != nil {
