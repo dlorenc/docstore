@@ -1,95 +1,77 @@
-// Package model defines the data types for all six database tables
-// described in DESIGN.md.
+// Package model defines data types for the docstore server.
+//
+// Wire-facing types (anything that crosses the HTTP boundary) live in the
+// public github.com/dlorenc/docstore/api package and are re-exported here as
+// type aliases so existing server/CLI code that imports this package keeps
+// working. Internal-only types (storage-layer rows that never appear on the
+// wire) remain defined here.
 package model
 
 import (
-	"encoding/json"
 	"time"
+
+	"github.com/dlorenc/docstore/api"
 )
 
-// OrgRole represents the role of an org member.
-type OrgRole string
+// ---------------------------------------------------------------------------
+// Wire-type aliases — canonical definitions in github.com/dlorenc/docstore/api.
+// ---------------------------------------------------------------------------
+
+type OrgRole = api.OrgRole
 
 const (
-	OrgRoleOwner  OrgRole = "owner"
-	OrgRoleMember OrgRole = "member"
+	OrgRoleOwner  = api.OrgRoleOwner
+	OrgRoleMember = api.OrgRoleMember
 )
 
-// OrgMember is a member of an org with a specific role.
-type OrgMember struct {
-	Org       string    `json:"org"`
-	Identity  string    `json:"identity"`
-	Role      OrgRole   `json:"role"`
-	InvitedBy string    `json:"invited_by"`
-	CreatedAt time.Time `json:"created_at"`
-}
+type OrgMember = api.OrgMember
+type OrgInvite = api.OrgInvite
+type Org = api.Org
+type Repo = api.Repo
 
-// OrgInvite is a pending or accepted invitation to join an org.
-type OrgInvite struct {
-	ID         string     `json:"id"`
-	Org        string     `json:"org"`
-	Email      string     `json:"email"`
-	Role       OrgRole    `json:"role"`
-	InvitedBy  string     `json:"invited_by"`
-	Token      string     `json:"token,omitempty"`
-	ExpiresAt  time.Time  `json:"expires_at"`
-	AcceptedAt *time.Time `json:"accepted_at,omitempty"`
-	CreatedAt  time.Time  `json:"created_at"`
-}
-
-// Org is a top-level namespace that owns one or more repos.
-type Org struct {
-	Name      string    `json:"name"`
-	CreatedAt time.Time `json:"created_at"`
-	CreatedBy string    `json:"created_by"`
-}
-
-// Repo is a named tenant that owns its own isolated set of branches and commits.
-// Name is the full path (e.g. "acme/myrepo" or "acme/team/subrepo").
-// Owner is the first path segment, i.e. the org name.
-type Repo struct {
-	Name      string    `json:"name"`
-	Owner     string    `json:"owner"`
-	CreatedAt time.Time `json:"created_at"`
-	CreatedBy string    `json:"created_by"`
-}
-
-// BranchStatus represents the lifecycle state of a branch.
-type BranchStatus string
+type BranchStatus = api.BranchStatus
 
 const (
-	BranchStatusActive    BranchStatus = "active"
-	BranchStatusMerged    BranchStatus = "merged"
-	BranchStatusAbandoned BranchStatus = "abandoned"
+	BranchStatusActive    = api.BranchStatusActive
+	BranchStatusMerged    = api.BranchStatusMerged
+	BranchStatusAbandoned = api.BranchStatusAbandoned
 )
 
-// RoleType represents coarse-grained permission levels.
-type RoleType string
+type RoleType = api.RoleType
 
 const (
-	RoleReader     RoleType = "reader"
-	RoleWriter     RoleType = "writer"
-	RoleMaintainer RoleType = "maintainer"
-	RoleAdmin      RoleType = "admin"
+	RoleReader     = api.RoleReader
+	RoleWriter     = api.RoleWriter
+	RoleMaintainer = api.RoleMaintainer
+	RoleAdmin      = api.RoleAdmin
 )
 
-// ReviewStatus represents the outcome of a review.
-type ReviewStatus string
+type ReviewStatus = api.ReviewStatus
 
 const (
-	ReviewApproved  ReviewStatus = "approved"
-	ReviewRejected  ReviewStatus = "rejected"
-	ReviewDismissed ReviewStatus = "dismissed"
+	ReviewApproved  = api.ReviewApproved
+	ReviewRejected  = api.ReviewRejected
+	ReviewDismissed = api.ReviewDismissed
 )
 
-// CheckRunStatus represents the state of a CI check run.
-type CheckRunStatus string
+type CheckRunStatus = api.CheckRunStatus
 
 const (
-	CheckRunPending CheckRunStatus = "pending"
-	CheckRunPassed  CheckRunStatus = "passed"
-	CheckRunFailed  CheckRunStatus = "failed"
+	CheckRunPending = api.CheckRunPending
+	CheckRunPassed  = api.CheckRunPassed
+	CheckRunFailed  = api.CheckRunFailed
 )
+
+type Branch = api.Branch
+type Role = api.Role
+type Review = api.Review
+type CheckRun = api.CheckRun
+type Release = api.Release
+type EventSubscription = api.EventSubscription
+
+// ---------------------------------------------------------------------------
+// Internal-only types — not part of the HTTP wire surface.
+// ---------------------------------------------------------------------------
 
 // Document stores an immutable file version. Every save creates a new row.
 type Document struct {
@@ -114,68 +96,3 @@ type FileCommit struct {
 	Author    string    `json:"author"`
 	CreatedAt time.Time `json:"created_at"`
 }
-
-// Branch is a named pointer to a sequence.
-type Branch struct {
-	Name         string       `json:"name"`
-	HeadSequence int64        `json:"head_sequence"`
-	BaseSequence int64        `json:"base_sequence"`
-	Status       BranchStatus `json:"status"`
-	Draft        bool         `json:"draft"`
-}
-
-// Role maps an identity to a coarse-grained permission level.
-type Role struct {
-	Identity string   `json:"identity"`
-	Role     RoleType `json:"role"`
-}
-
-// Review records an approval or rejection scoped to a branch at a
-// specific head sequence.
-type Review struct {
-	ID        string       `json:"id"`
-	Branch    string       `json:"branch"`
-	Reviewer  string       `json:"reviewer"`
-	Sequence  int64        `json:"sequence"`
-	Status    ReviewStatus `json:"status"`
-	Body      string       `json:"body,omitempty"`
-	CreatedAt time.Time    `json:"created_at"`
-}
-
-// CheckRun stores an external CI status report for a branch at a
-// specific head sequence.
-type CheckRun struct {
-	ID        string         `json:"id"`
-	Branch    string         `json:"branch"`
-	Sequence  int64          `json:"sequence"`
-	CheckName string         `json:"check_name"`
-	Status    CheckRunStatus `json:"status"`
-	Reporter  string         `json:"reporter"`
-	LogURL    *string        `json:"log_url,omitempty"`
-	CreatedAt time.Time      `json:"created_at"`
-}
-
-// Release is a named immutable snapshot tied to a commit sequence.
-type Release struct {
-	ID        string    `json:"id"`
-	Repo      string    `json:"repo"`
-	Name      string    `json:"name"`
-	Sequence  int64     `json:"sequence"`
-	Body      string    `json:"body,omitempty"`
-	CreatedBy string    `json:"created_by"`
-	CreatedAt time.Time `json:"created_at"`
-}
-
-// EventSubscription is a webhook or Pub/Sub delivery target for events.
-type EventSubscription struct {
-	ID           string          `json:"id"`
-	Repo         *string         `json:"repo,omitempty"`
-	EventTypes   []string        `json:"event_types,omitempty"`
-	Backend      string          `json:"backend"`
-	Config       json.RawMessage `json:"config"`
-	CreatedAt    time.Time       `json:"created_at"`
-	CreatedBy    string          `json:"created_by"`
-	SuspendedAt  *time.Time      `json:"suspended_at,omitempty"`
-	FailureCount int             `json:"failure_count"`
-}
-
