@@ -3013,3 +3013,214 @@ func TestPull_SkipVerify(t *testing.T) {
 		t.Errorf("state.Sequence = %d, want 2", newSt.Sequence)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Org members
+// ---------------------------------------------------------------------------
+
+func TestOrgMembersAdd(t *testing.T) {
+	var gotBody model.AddOrgMemberRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && r.URL.Path == "/orgs/myorg/members/alice" {
+			json.NewDecoder(r.Body).Decode(&gotBody)
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	app, out := newTestApp(t, srv)
+	app.DefaultRemote = srv.URL
+
+	if err := app.OrgMembersAdd("myorg", "alice", "member"); err != nil {
+		t.Fatal(err)
+	}
+	if gotBody.Role != model.OrgRoleMember {
+		t.Errorf("role = %q, want %q", gotBody.Role, model.OrgRoleMember)
+	}
+	if !strings.Contains(out.String(), "alice") || !strings.Contains(out.String(), "myorg") {
+		t.Errorf("unexpected output: %s", out.String())
+	}
+}
+
+func TestOrgMembersAdd_InvalidRole(t *testing.T) {
+	app, _ := newTestApp(t, nil)
+	app.DefaultRemote = "http://example.com"
+	err := app.OrgMembersAdd("myorg", "alice", "reader")
+	if err == nil || !strings.Contains(err.Error(), "role must be") {
+		t.Errorf("expected role error, got: %v", err)
+	}
+}
+
+func TestOrgMembersRemove(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "DELETE" && r.URL.Path == "/orgs/myorg/members/alice" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	app, out := newTestApp(t, srv)
+	app.DefaultRemote = srv.URL
+
+	if err := app.OrgMembersRemove("myorg", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "alice") || !strings.Contains(out.String(), "myorg") {
+		t.Errorf("unexpected output: %s", out.String())
+	}
+}
+
+func TestOrgMembersList(t *testing.T) {
+	members := model.OrgMembersResponse{
+		Members: []model.OrgMember{
+			{Identity: "alice", Role: model.OrgRoleOwner},
+			{Identity: "bob", Role: model.OrgRoleMember},
+		},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && r.URL.Path == "/orgs/myorg/members" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(members)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	app, out := newTestApp(t, srv)
+	app.DefaultRemote = srv.URL
+
+	if err := app.OrgMembersList("myorg"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "alice") || !strings.Contains(out.String(), "bob") {
+		t.Errorf("unexpected output: %s", out.String())
+	}
+	if !strings.Contains(out.String(), "owner") {
+		t.Errorf("expected 'owner' in output: %s", out.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Org invites
+// ---------------------------------------------------------------------------
+
+func TestOrgInvitesCreate(t *testing.T) {
+	var gotBody model.CreateInviteRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && r.URL.Path == "/orgs/myorg/invites" {
+			json.NewDecoder(r.Body).Decode(&gotBody)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(model.CreateInviteResponse{ID: "inv-1", Token: "tok-abc"})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	app, out := newTestApp(t, srv)
+	app.DefaultRemote = srv.URL
+
+	if err := app.OrgInvitesCreate("myorg", "user@example.com", "member"); err != nil {
+		t.Fatal(err)
+	}
+	if gotBody.Email != "user@example.com" {
+		t.Errorf("email = %q, want %q", gotBody.Email, "user@example.com")
+	}
+	if gotBody.Role != model.OrgRoleMember {
+		t.Errorf("role = %q, want %q", gotBody.Role, model.OrgRoleMember)
+	}
+	if !strings.Contains(out.String(), "tok-abc") {
+		t.Errorf("expected token in output: %s", out.String())
+	}
+	if !strings.Contains(out.String(), "inv-1") {
+		t.Errorf("expected invite ID in output: %s", out.String())
+	}
+}
+
+func TestOrgInvitesCreate_InvalidRole(t *testing.T) {
+	app, _ := newTestApp(t, nil)
+	app.DefaultRemote = "http://example.com"
+	err := app.OrgInvitesCreate("myorg", "user@example.com", "admin")
+	if err == nil || !strings.Contains(err.Error(), "role must be") {
+		t.Errorf("expected role error, got: %v", err)
+	}
+}
+
+func TestOrgInvitesList(t *testing.T) {
+	invites := model.OrgInvitesResponse{
+		Invites: []model.OrgInvite{
+			{ID: "inv-1", Email: "alice@example.com", Role: model.OrgRoleOwner},
+			{ID: "inv-2", Email: "bob@example.com", Role: model.OrgRoleMember},
+		},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && r.URL.Path == "/orgs/myorg/invites" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(invites)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	app, out := newTestApp(t, srv)
+	app.DefaultRemote = srv.URL
+
+	if err := app.OrgInvitesList("myorg"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "alice@example.com") || !strings.Contains(out.String(), "bob@example.com") {
+		t.Errorf("unexpected output: %s", out.String())
+	}
+	if !strings.Contains(out.String(), "inv-1") {
+		t.Errorf("expected invite ID in output: %s", out.String())
+	}
+}
+
+func TestOrgInvitesAccept(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && r.URL.Path == "/orgs/myorg/invites/tok-abc/accept" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	app, out := newTestApp(t, srv)
+	app.DefaultRemote = srv.URL
+
+	if err := app.OrgInvitesAccept("myorg", "tok-abc"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "myorg") {
+		t.Errorf("unexpected output: %s", out.String())
+	}
+}
+
+func TestOrgInvitesRevoke(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "DELETE" && r.URL.Path == "/orgs/myorg/invites/inv-1" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	app, out := newTestApp(t, srv)
+	app.DefaultRemote = srv.URL
+
+	if err := app.OrgInvitesRevoke("myorg", "inv-1"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "inv-1") || !strings.Contains(out.String(), "myorg") {
+		t.Errorf("unexpected output: %s", out.String())
+	}
+}

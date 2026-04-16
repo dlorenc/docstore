@@ -2188,6 +2188,168 @@ func (a *App) Purge(olderThan string, dryRun bool) error {
 }
 
 // ---------------------------------------------------------------------------
+// Org membership management
+// ---------------------------------------------------------------------------
+
+// OrgMembersAdd adds or updates a member in an org with the given role.
+func (a *App) OrgMembersAdd(org, identity, role string) error {
+	switch model.OrgRole(role) {
+	case model.OrgRoleOwner, model.OrgRoleMember:
+	default:
+		return fmt.Errorf("role must be 'owner' or 'member'")
+	}
+	remote, err := a.loadRemote()
+	if err != nil {
+		return err
+	}
+	resp, err := a.doPOSTJSON(remote+"/orgs/"+org+"/members/"+identity, model.AddOrgMemberRequest{Role: model.OrgRole(role)})
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		return a.readError(resp)
+	}
+	fmt.Fprintf(a.Out, "Added '%s' to org '%s' as '%s'\n", identity, org, role)
+	return nil
+}
+
+// OrgMembersRemove removes a member from an org.
+func (a *App) OrgMembersRemove(org, identity string) error {
+	remote, err := a.loadRemote()
+	if err != nil {
+		return err
+	}
+	resp, err := a.doDELETE(remote + "/orgs/" + org + "/members/" + identity)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return a.readError(resp)
+	}
+	fmt.Fprintf(a.Out, "Removed '%s' from org '%s'\n", identity, org)
+	return nil
+}
+
+// OrgMembersList lists all members of an org.
+func (a *App) OrgMembersList(org string) error {
+	remote, err := a.loadRemote()
+	if err != nil {
+		return err
+	}
+	resp, err := a.doGET(remote + "/orgs/" + org + "/members")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return a.readError(resp)
+	}
+	var r model.OrgMembersResponse
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return fmt.Errorf("decoding response: %w", err)
+	}
+	fmt.Fprintf(a.Out, "%-30s  %s\n", "IDENTITY", "ROLE")
+	for _, m := range r.Members {
+		fmt.Fprintf(a.Out, "%-30s  %s\n", m.Identity, string(m.Role))
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Org invite management
+// ---------------------------------------------------------------------------
+
+// OrgInvitesCreate creates an invite for email with the given role and prints the token.
+func (a *App) OrgInvitesCreate(org, email, role string) error {
+	switch model.OrgRole(role) {
+	case model.OrgRoleOwner, model.OrgRoleMember:
+	default:
+		return fmt.Errorf("role must be 'owner' or 'member'")
+	}
+	remote, err := a.loadRemote()
+	if err != nil {
+		return err
+	}
+	resp, err := a.doPOSTJSON(remote+"/orgs/"+org+"/invites", model.CreateInviteRequest{Email: email, Role: model.OrgRole(role)})
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		return a.readError(resp)
+	}
+	var r model.CreateInviteResponse
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return fmt.Errorf("decoding response: %w", err)
+	}
+	fmt.Fprintf(a.Out, "Invite created: id=%s token=%s\n", r.ID, r.Token)
+	return nil
+}
+
+// OrgInvitesList lists all pending invites for an org.
+func (a *App) OrgInvitesList(org string) error {
+	remote, err := a.loadRemote()
+	if err != nil {
+		return err
+	}
+	resp, err := a.doGET(remote + "/orgs/" + org + "/invites")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return a.readError(resp)
+	}
+	var r model.OrgInvitesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return fmt.Errorf("decoding response: %w", err)
+	}
+	fmt.Fprintf(a.Out, "%-36s  %-30s  %s\n", "ID", "EMAIL", "ROLE")
+	for _, inv := range r.Invites {
+		fmt.Fprintf(a.Out, "%-36s  %-30s  %s\n", inv.ID, inv.Email, string(inv.Role))
+	}
+	return nil
+}
+
+// OrgInvitesAccept accepts an invite using a token.
+func (a *App) OrgInvitesAccept(org, token string) error {
+	remote, err := a.loadRemote()
+	if err != nil {
+		return err
+	}
+	resp, err := a.doPOSTJSON(remote+"/orgs/"+org+"/invites/"+token+"/accept", struct{}{})
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		return a.readError(resp)
+	}
+	fmt.Fprintf(a.Out, "Accepted invite for org '%s'\n", org)
+	return nil
+}
+
+// OrgInvitesRevoke revokes a pending invite by ID.
+func (a *App) OrgInvitesRevoke(org, inviteID string) error {
+	remote, err := a.loadRemote()
+	if err != nil {
+		return err
+	}
+	resp, err := a.doDELETE(remote + "/orgs/" + org + "/invites/" + inviteID)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return a.readError(resp)
+	}
+	fmt.Fprintf(a.Out, "Revoked invite '%s' from org '%s'\n", inviteID, org)
+	return nil
+}
+
+// ---------------------------------------------------------------------------
 // Role management
 // ---------------------------------------------------------------------------
 
