@@ -3372,3 +3372,268 @@ func TestCommit_PerBranchChain(t *testing.T) {
 		t.Error("expected different hashes for commits on different branches")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Org membership store tests
+// ---------------------------------------------------------------------------
+
+func TestOrgMember_AddListRemove(t *testing.T) {
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	// Create a test org.
+	org, err := s.CreateOrg(ctx, "testmemberorg", "system")
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+
+	// Add a member.
+	if err := s.AddOrgMember(ctx, org.Name, "alice@example.com", "owner", "system"); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+
+	// List members.
+	members, err := s.ListOrgMembers(ctx, org.Name)
+	if err != nil {
+		t.Fatalf("list members: %v", err)
+	}
+	if len(members) != 1 {
+		t.Fatalf("expected 1 member, got %d", len(members))
+	}
+	if members[0].Identity != "alice@example.com" {
+		t.Errorf("unexpected identity: %s", members[0].Identity)
+	}
+	if members[0].Role != "owner" {
+		t.Errorf("unexpected role: %s", members[0].Role)
+	}
+
+	// Get member.
+	m, err := s.GetOrgMember(ctx, org.Name, "alice@example.com")
+	if err != nil {
+		t.Fatalf("get member: %v", err)
+	}
+	if m.Role != "owner" {
+		t.Errorf("unexpected role: %s", m.Role)
+	}
+
+	// Upsert (role change).
+	if err := s.AddOrgMember(ctx, org.Name, "alice@example.com", "member", "system"); err != nil {
+		t.Fatalf("upsert member: %v", err)
+	}
+	m, err = s.GetOrgMember(ctx, org.Name, "alice@example.com")
+	if err != nil {
+		t.Fatalf("get member after upsert: %v", err)
+	}
+	if m.Role != "member" {
+		t.Errorf("expected role=member after upsert, got %s", m.Role)
+	}
+
+	// Remove member.
+	if err := s.RemoveOrgMember(ctx, org.Name, "alice@example.com"); err != nil {
+		t.Fatalf("remove member: %v", err)
+	}
+
+	// Second remove → ErrOrgMemberNotFound.
+	if err := s.RemoveOrgMember(ctx, org.Name, "alice@example.com"); !errors.Is(err, ErrOrgMemberNotFound) {
+		t.Errorf("expected ErrOrgMemberNotFound, got %v", err)
+	}
+}
+
+func TestOrgMember_GetNotFound(t *testing.T) {
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "testgetmemberorg", "system")
+	_, err := s.GetOrgMember(ctx, org.Name, "nobody@example.com")
+	if !errors.Is(err, ErrOrgMemberNotFound) {
+		t.Errorf("expected ErrOrgMemberNotFound, got %v", err)
+	}
+}
+
+func TestOrgInvite_CreateListRevoke(t *testing.T) {
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	org, err := s.CreateOrg(ctx, "testinviteorg", "system")
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+
+	expiresAt := time.Now().Add(7 * 24 * time.Hour)
+	inv, err := s.CreateInvite(ctx, org.Name, "bob@example.com", "member", "admin@example.com", "tok-abc123", expiresAt)
+	if err != nil {
+		t.Fatalf("create invite: %v", err)
+	}
+	if inv.ID == "" {
+		t.Fatal("expected non-empty invite ID")
+	}
+	if inv.Token != "tok-abc123" {
+		t.Errorf("unexpected token: %q", inv.Token)
+	}
+
+	// List invites — should have 1.
+	invites, err := s.ListInvites(ctx, org.Name)
+	if err != nil {
+		t.Fatalf("list invites: %v", err)
+	}
+	if len(invites) != 1 {
+		t.Fatalf("expected 1 invite, got %d", len(invites))
+	}
+
+	// Revoke.
+	if err := s.RevokeInvite(ctx, org.Name, inv.ID); err != nil {
+		t.Fatalf("revoke invite: %v", err)
+	}
+
+	// List again — should be empty.
+	invites, err = s.ListInvites(ctx, org.Name)
+	if err != nil {
+		t.Fatalf("list invites after revoke: %v", err)
+	}
+	if len(invites) != 0 {
+		t.Errorf("expected 0 invites after revoke, got %d", len(invites))
+	}
+
+	// Second revoke → ErrInviteNotFound.
+	if err := s.RevokeInvite(ctx, org.Name, inv.ID); !errors.Is(err, ErrInviteNotFound) {
+		t.Errorf("expected ErrInviteNotFound, got %v", err)
+	}
+}
+
+func TestOrgInvite_AcceptInvite(t *testing.T) {
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "testacceptorg", "system")
+
+	expiresAt := time.Now().Add(7 * 24 * time.Hour)
+	inv, err := s.CreateInvite(ctx, org.Name, "carol@example.com", "member", "admin@example.com", "tok-accept", expiresAt)
+	if err != nil {
+		t.Fatalf("create invite: %v", err)
+	}
+
+	// Accept with wrong identity → ErrEmailMismatch.
+	if err := s.AcceptInvite(ctx, org.Name, inv.Token, "other@example.com"); !errors.Is(err, ErrEmailMismatch) {
+		t.Errorf("expected ErrEmailMismatch, got %v", err)
+	}
+
+	// Accept with correct identity.
+	if err := s.AcceptInvite(ctx, org.Name, inv.Token, "carol@example.com"); err != nil {
+		t.Fatalf("accept invite: %v", err)
+	}
+
+	// carol should now be a member.
+	m, err := s.GetOrgMember(ctx, org.Name, "carol@example.com")
+	if err != nil {
+		t.Fatalf("get member after accept: %v", err)
+	}
+	if m.Role != "member" {
+		t.Errorf("expected role=member, got %s", m.Role)
+	}
+
+	// Accept again → ErrInviteAlreadyAccepted.
+	if err := s.AcceptInvite(ctx, org.Name, inv.Token, "carol@example.com"); !errors.Is(err, ErrInviteAlreadyAccepted) {
+		t.Errorf("expected ErrInviteAlreadyAccepted, got %v", err)
+	}
+
+	// The accepted invite should not appear in ListInvites.
+	invites, err := s.ListInvites(ctx, org.Name)
+	if err != nil {
+		t.Fatalf("list invites: %v", err)
+	}
+	if len(invites) != 0 {
+		t.Errorf("expected 0 pending invites after accept, got %d", len(invites))
+	}
+}
+
+func TestOrgInvite_ExpiredInvite(t *testing.T) {
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "testexpiredorg", "system")
+
+	// Expires in the past.
+	expiresAt := time.Now().Add(-1 * time.Hour)
+	inv, err := s.CreateInvite(ctx, org.Name, "dave@example.com", "member", "admin@example.com", "tok-expired", expiresAt)
+	if err != nil {
+		t.Fatalf("create invite: %v", err)
+	}
+
+	// Accept → ErrInviteExpired.
+	if err := s.AcceptInvite(ctx, org.Name, inv.Token, "dave@example.com"); !errors.Is(err, ErrInviteExpired) {
+		t.Errorf("expected ErrInviteExpired, got %v", err)
+	}
+
+	// Expired invites don't appear in ListInvites.
+	invites, err := s.ListInvites(ctx, org.Name)
+	if err != nil {
+		t.Fatalf("list invites: %v", err)
+	}
+	if len(invites) != 0 {
+		t.Errorf("expected 0 invites (expired excluded), got %d", len(invites))
+	}
+}
+
+func TestGetRole_OrgFallback(t *testing.T) {
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	// Create org and repo.
+	org, _ := s.CreateOrg(ctx, "testroleorg", "system")
+	_, err := s.CreateRepo(ctx, model.CreateRepoRequest{Owner: org.Name, Name: "myrepo", CreatedBy: "system"})
+	if err != nil {
+		t.Fatalf("create repo: %v", err)
+	}
+	repoName := org.Name + "/myrepo"
+
+	// Add an org owner.
+	_ = s.AddOrgMember(ctx, org.Name, "owner@example.com", "owner", "system")
+	// Add an org member.
+	_ = s.AddOrgMember(ctx, org.Name, "member@example.com", "member", "system")
+
+	// org owner → repo admin via fallback.
+	role, err := s.GetRole(ctx, repoName, "owner@example.com")
+	if err != nil {
+		t.Fatalf("get role for org owner: %v", err)
+	}
+	if role.Role != model.RoleAdmin {
+		t.Errorf("expected admin for org owner, got %s", role.Role)
+	}
+
+	// org member → repo reader via fallback.
+	role, err = s.GetRole(ctx, repoName, "member@example.com")
+	if err != nil {
+		t.Fatalf("get role for org member: %v", err)
+	}
+	if role.Role != model.RoleReader {
+		t.Errorf("expected reader for org member, got %s", role.Role)
+	}
+
+	// Not a member → ErrRoleNotFound.
+	_, err = s.GetRole(ctx, repoName, "stranger@example.com")
+	if !errors.Is(err, ErrRoleNotFound) {
+		t.Errorf("expected ErrRoleNotFound for non-member, got %v", err)
+	}
+
+	// Explicit repo role should take precedence over org fallback.
+	_ = s.SetRole(ctx, repoName, "member@example.com", model.RoleAdmin)
+	role, err = s.GetRole(ctx, repoName, "member@example.com")
+	if err != nil {
+		t.Fatalf("get role after explicit set: %v", err)
+	}
+	if role.Role != model.RoleAdmin {
+		t.Errorf("expected explicit admin role to win, got %s", role.Role)
+	}
+}
