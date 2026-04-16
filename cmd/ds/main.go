@@ -50,7 +50,11 @@ commands:
 
   roles                                           List roles for the current repo
   roles set <identity> <role>                     Set a role (reader/writer/maintainer/admin)
-  roles delete <identity>                         Delete a role assignment`
+  roles delete <identity>                         Delete a role assignment
+
+  role list                                       List roles for the current repo
+  role set <identity> <role>                      Set a role (reader/writer/maintainer/admin)
+  role delete <identity>                          Delete a role assignment`
 
 func main() {
 	if len(os.Args) < 2 {
@@ -370,6 +374,32 @@ func main() {
 				fmt.Fprintln(os.Stderr, usage)
 				os.Exit(1)
 			}
+		}
+
+	case "role":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: ds role list|set|delete ...")
+			os.Exit(1)
+		}
+		switch args[1] {
+		case "list":
+			err = app.Roles()
+		case "set":
+			if len(args) < 4 {
+				fmt.Fprintln(os.Stderr, "usage: ds role set <identity> <role>")
+				os.Exit(1)
+			}
+			err = app.RolesSet(args[2], args[3])
+		case "delete":
+			if len(args) < 3 {
+				fmt.Fprintln(os.Stderr, "usage: ds role delete <identity>")
+				os.Exit(1)
+			}
+			err = app.RolesDelete(args[2])
+		default:
+			fmt.Fprintf(os.Stderr, "unknown role subcommand: %s\n", args[1])
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(1)
 		}
 
 	default:
