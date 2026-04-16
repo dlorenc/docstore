@@ -46,6 +46,14 @@ commands:
   orgs delete <name>                              Delete an organization
   orgs repos <name>                               List repos in an organization
 
+  org members add <org> <identity> --role owner|member  Add a member to an org
+  org members remove <org> <identity>                   Remove a member from an org
+  org members list <org>                                List org members
+  org invites create <org> --email <email> --role owner|member  Create an invite (prints token)
+  org invites list <org>                                List pending invites
+  org invites accept <org> <token>                      Accept an invite by token
+  org invites revoke <org> <invite-id>                  Revoke a pending invite
+
   repo list                                       List repositories
   repo create <owner/name>                        Create a repository
   repo get <owner/name>                           Get a repository
@@ -312,6 +320,116 @@ func main() {
 
 	case "tui":
 		err = app.TUI()
+
+	case "org":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: ds org members|invites ...")
+			os.Exit(1)
+		}
+		switch args[1] {
+		case "members":
+			if len(args) < 3 {
+				fmt.Fprintln(os.Stderr, "usage: ds org members add|remove|list ...")
+				os.Exit(1)
+			}
+			switch args[2] {
+			case "add":
+				if len(args) < 5 {
+					fmt.Fprintln(os.Stderr, "usage: ds org members add <org> <identity> --role owner|member")
+					os.Exit(1)
+				}
+				org := args[3]
+				identity := args[4]
+				role := ""
+				for i := 5; i < len(args); i++ {
+					if args[i] == "--role" && i+1 < len(args) {
+						role = args[i+1]
+						i++
+					}
+				}
+				if role == "" {
+					fmt.Fprintln(os.Stderr, "usage: ds org members add <org> <identity> --role owner|member")
+					os.Exit(1)
+				}
+				err = app.OrgMembersAdd(org, identity, role)
+			case "remove":
+				if len(args) < 5 {
+					fmt.Fprintln(os.Stderr, "usage: ds org members remove <org> <identity>")
+					os.Exit(1)
+				}
+				err = app.OrgMembersRemove(args[3], args[4])
+			case "list":
+				if len(args) < 4 {
+					fmt.Fprintln(os.Stderr, "usage: ds org members list <org>")
+					os.Exit(1)
+				}
+				err = app.OrgMembersList(args[3])
+			default:
+				fmt.Fprintf(os.Stderr, "unknown org members subcommand: %s\n", args[2])
+				fmt.Fprintln(os.Stderr, usage)
+				os.Exit(1)
+			}
+		case "invites":
+			if len(args) < 3 {
+				fmt.Fprintln(os.Stderr, "usage: ds org invites create|list|accept|revoke ...")
+				os.Exit(1)
+			}
+			switch args[2] {
+			case "create":
+				if len(args) < 4 {
+					fmt.Fprintln(os.Stderr, "usage: ds org invites create <org> --email <email> --role owner|member")
+					os.Exit(1)
+				}
+				org := args[3]
+				email := ""
+				role := ""
+				for i := 4; i < len(args); i++ {
+					switch args[i] {
+					case "--email":
+						if i+1 < len(args) {
+							email = args[i+1]
+							i++
+						}
+					case "--role":
+						if i+1 < len(args) {
+							role = args[i+1]
+							i++
+						}
+					}
+				}
+				if email == "" || role == "" {
+					fmt.Fprintln(os.Stderr, "usage: ds org invites create <org> --email <email> --role owner|member")
+					os.Exit(1)
+				}
+				err = app.OrgInvitesCreate(org, email, role)
+			case "list":
+				if len(args) < 4 {
+					fmt.Fprintln(os.Stderr, "usage: ds org invites list <org>")
+					os.Exit(1)
+				}
+				err = app.OrgInvitesList(args[3])
+			case "accept":
+				if len(args) < 5 {
+					fmt.Fprintln(os.Stderr, "usage: ds org invites accept <org> <token>")
+					os.Exit(1)
+				}
+				err = app.OrgInvitesAccept(args[3], args[4])
+			case "revoke":
+				if len(args) < 5 {
+					fmt.Fprintln(os.Stderr, "usage: ds org invites revoke <org> <invite-id>")
+					os.Exit(1)
+				}
+				err = app.OrgInvitesRevoke(args[3], args[4])
+			default:
+				fmt.Fprintf(os.Stderr, "unknown org invites subcommand: %s\n", args[2])
+				fmt.Fprintln(os.Stderr, usage)
+				os.Exit(1)
+			}
+		default:
+			fmt.Fprintf(os.Stderr, "unknown org subcommand: %s\n", args[1])
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(1)
+		}
 
 	case "orgs":
 		if len(args) < 2 {
