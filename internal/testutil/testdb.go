@@ -71,64 +71,6 @@ func TestDBFromShared(t testing.TB, adminDSN string, migrate func(*sql.DB) error
 	return testDBFromDSN(t, adminDSN, migrate)
 }
 
-// TestDB starts a PostgreSQL container via testcontainers-go, creates a fresh
-// database, runs the given migration function, and returns a connected *sql.DB.
-// The container is automatically terminated when the test finishes.
-//
-// If the DOCSTORE_TEST_DSN environment variable is set, it is used instead of
-// starting a container (useful for local development with an existing server).
-func TestDB(t testing.TB, migrate func(*sql.DB) error) *sql.DB {
-	t.Helper()
-
-	// Allow override for local dev.
-	if dsn := os.Getenv("DOCSTORE_TEST_DSN"); dsn != "" {
-		return testDBFromDSN(t, dsn, migrate)
-	}
-
-	ctx := context.Background()
-
-	dbName := fmt.Sprintf("docstore_test_%d", time.Now().UnixNano())
-
-	ctr, err := postgres.Run(ctx,
-		"postgres:16-alpine",
-		postgres.WithDatabase(dbName),
-		postgres.WithUsername("test"),
-		postgres.WithPassword("test"),
-		testcontainers.WithWaitStrategy(
-			wait.ForLog("database system is ready to accept connections").
-				WithOccurrence(2).
-				WithStartupTimeout(30*time.Second),
-		),
-	)
-	if err != nil {
-		t.Fatalf("start postgres container: %v", err)
-	}
-
-	t.Cleanup(func() {
-		if err := ctr.Terminate(ctx); err != nil {
-			t.Logf("terminate postgres container: %v", err)
-		}
-	})
-
-	connStr, err := ctr.ConnectionString(ctx, "sslmode=disable")
-	if err != nil {
-		t.Fatalf("get connection string: %v", err)
-	}
-
-	testDB, err := sql.Open("postgres", connStr)
-	if err != nil {
-		t.Fatalf("connect to test database: %v", err)
-	}
-	t.Cleanup(func() { testDB.Close() })
-
-	// Run schema migrations.
-	if err := migrate(testDB); err != nil {
-		t.Fatalf("run migrations: %v", err)
-	}
-
-	return testDB
-}
-
 // testDBFromDSN is the legacy path: use a pre-existing PostgreSQL server via DSN.
 // It creates a unique database per test so parallel tests don't interfere.
 func testDBFromDSN(t testing.TB, dsn string, migrate func(*sql.DB) error) *sql.DB {
