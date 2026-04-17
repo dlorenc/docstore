@@ -82,10 +82,14 @@ kind: Service
 metadata:
   name: ci-runner
   namespace: docstore-ci
+  annotations:
+    # Internal load balancer: reachable from Cloud Run via VPC Direct Egress,
+    # not exposed to the public internet.
+    networking.gke.io/load-balancer-type: "Internal"
 spec:
   selector:
     app: ci-runner
   ports:
   - port: 8080
     targetPort: 8080
-  type: ClusterIP
+  type: LoadBalancer

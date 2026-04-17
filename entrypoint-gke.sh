@@ -29,6 +29,12 @@ echo "buildkitd ready" >&2
 if [ -n "${DEV_IDENTITY}" ]; then
   set -- "$@" --dev-identity "${DEV_IDENTITY}"
 fi
+if [ -n "${RUNNER_URL}" ]; then
+  set -- "$@" --runner-url "${RUNNER_URL}"
+fi
+if [ -n "${WEBHOOK_SECRET}" ]; then
+  set -- "$@" --webhook-secret "${WEBHOOK_SECRET}"
+fi
 
 exec ci-runner \
   --buildkit-addr tcp://localhost:1234 \

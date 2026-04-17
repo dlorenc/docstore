@@ -49,12 +49,16 @@ jobs:
             --add-cloudsql-instances=dlorenc-chainguard:us-central1:docstore-mvp \
             --update-secrets=DATABASE_URL=docstore-db-url:latest \
             --allow-unauthenticated \
-            --min-instances=0 \
+            --min-instances=1 \
             --max-instances=1 \
-            --port=8080
+            --no-cpu-throttling \
+            --port=8080 \
+            --network=default \
+            --subnet=default \
+            --vpc-egress=private-ranges-only
 
-  # One-time setup: run scripts/setup.sh before the first push to main.
-  # See OPERATIONS.md "Initial Setup" for details.
+  # One-time setup: run scripts/setup.sh and scripts/setup-gke.sh before the
+  # first push to main. See OPERATIONS.md "Initial Setup" for details.
   build-and-deploy-ci-runner:
     runs-on: ubuntu-latest
     steps:
@@ -67,6 +71,12 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
+      - uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: chainguardener
+          location: us-central1
+          project_id: dlorenc-chainguard
+
       - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
 
@@ -74,41 +84,34 @@ jobs:
         id: build
         run: |
           SHA=$(git rev-parse --short HEAD)
-          docker build -f Dockerfile.ci-runner \
-            -t us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-runner:latest \
-            -t us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-runner:${SHA} \
+          docker buildx build --platform linux/amd64 \
+            -f Dockerfile.ci-runner-gke \
+            -t us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-runner-gke:latest \
+            -t us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-runner-gke:${SHA} \
+            --push \
             .
-          docker push us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-runner:latest
-          docker push us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-runner:${SHA}
           echo "sha=${SHA}" >> $GITHUB_OUTPUT
 
-      - name: Ensure GCS log bucket exists
+      - name: Deploy ci-runner to GKE
         run: |
-          gcloud storage buckets create gs://docstore-ci-logs \
-            --project=dlorenc-chainguard \
-            --location=us-central1 \
-            --uniform-bucket-level-access \
-            2>/dev/null || true
+          kubectl apply -f deploy/k8s/ci-runner.yaml
+          kubectl set image deployment/ci-runner \
+            ci-runner=us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-runner-gke:${{ steps.build.outputs.sha }} \
+            -n docstore-ci
+          kubectl rollout status deployment/ci-runner -n docstore-ci --timeout=300s
 
-      - name: Deploy ci-runner to Cloud Run
+      - name: Update ci-runner-url secret
         run: |
-          gcloud run deploy ci-runner \
-            --image=us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-runner:${{ steps.build.outputs.sha }} \
-            --project=dlorenc-chainguard \
-            --region=us-central1 \
-            --execution-environment=gen2 \
-            --service-account=ci-runner@dlorenc-chainguard.iam.gserviceaccount.com \
-            --set-env-vars=DOCSTORE_URL=https://docstore-efuj4cj54a-uc.a.run.app \
-            --set-env-vars=LOG_STORE=gcs \
-            --set-env-vars=LOG_BUCKET=docstore-ci-logs \
-            --update-secrets=WEBHOOK_SECRET=ci-runner-webhook-secret:latest \
-            --update-secrets=RUNNER_URL=ci-runner-url:latest \
-            --allow-unauthenticated \
-            --concurrency=1 \
-            --min-instances=0 \
-            --max-instances=10 \
-            --memory=4Gi \
-            --cpu=4 \
-            --no-cpu-throttling \
-            --timeout=3600 \
-            --port=8080
+          # Wait for the internal load balancer IP to be assigned, then update
+          # the Secret Manager secret so ci-runner can register its webhook URL.
+          IP=$(kubectl get svc ci-runner -n docstore-ci \
+            -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+          if [ -n "$IP" ]; then
+            printf "http://%s:8080" "$IP" | \
+              gcloud secrets versions add ci-runner-url \
+                --data-file=- \
+                --project=dlorenc-chainguard
+            echo "ci-runner-url updated to http://${IP}:8080"
+          else
+            echo "WARNING: internal LB IP not yet assigned; ci-runner-url not updated"
+          fi

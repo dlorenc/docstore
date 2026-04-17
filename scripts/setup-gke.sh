@@ -15,6 +15,15 @@ CLUSTER="${CLUSTER:-chainguardener}"
 NAMESPACE="docstore-ci"
 KSA="ci-runner"
 GSA="ci-runner@${PROJECT}.iam.gserviceaccount.com"
+DEPLOYER_SA="docstore-deployer@${PROJECT}.iam.gserviceaccount.com"
+
+echo "==> Granting deployer SA container.developer (needed for kubectl in CI)..."
+gcloud projects add-iam-policy-binding "${PROJECT}" \
+  --member="serviceAccount:${DEPLOYER_SA}" \
+  --role=roles/container.developer \
+  --condition=None \
+  --quiet
+echo "    Done."
 
 echo "==> Getting cluster credentials..."
 gcloud container clusters get-credentials "${CLUSTER}" \
