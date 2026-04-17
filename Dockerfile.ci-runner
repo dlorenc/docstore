@@ -5,10 +5,9 @@ COPY . /src
 WORKDIR /src
 RUN go build -o /ci-runner ./cmd/ci-runner
 
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
-COPY --from=buildkit    /usr/bin/buildkitd /usr/bin/buildkitd
-COPY --from=runner-build /ci-runner         /usr/bin/ci-runner
+FROM moby/buildkit:v0.29.0
+RUN apk add --no-cache ca-certificates
+COPY --from=runner-build /ci-runner /usr/bin/ci-runner
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
