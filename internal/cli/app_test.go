@@ -2018,7 +2018,7 @@ func TestChecks_ListsWithStale(t *testing.T) {
 	app, out := newTestApp(t, srv)
 	initWorkspace(t, app, srv.URL, "feature/x", "alice")
 
-	if err := app.Checks("feature/x"); err != nil {
+	if err := app.Checks("feature/x", false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2049,7 +2049,7 @@ func TestChecks_Empty(t *testing.T) {
 	app, out := newTestApp(t, srv)
 	initWorkspace(t, app, srv.URL, "main", "alice")
 
-	if err := app.Checks("main"); err != nil {
+	if err := app.Checks("main", false); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "No check runs") {
@@ -2078,7 +2078,7 @@ func TestCheckSubmit_Passed(t *testing.T) {
 	app, out := newTestApp(t, srv)
 	initWorkspace(t, app, srv.URL, "feature/x", "alice")
 
-	if err := app.Check("feature/x", "ci/build", "passed"); err != nil {
+	if err := app.Check("feature/x", "ci/build", "passed", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2116,7 +2116,7 @@ func TestCheckSubmit_DefaultBranch(t *testing.T) {
 	app, _ := newTestApp(t, srv)
 	initWorkspace(t, app, srv.URL, "feature/current", "alice")
 
-	if err := app.Check("", "ci/test", "failed"); err != nil {
+	if err := app.Check("", "ci/test", "failed", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2129,7 +2129,7 @@ func TestCheckSubmit_InvalidStatus(t *testing.T) {
 	app, _ := newTestApp(t, nil)
 	initWorkspace(t, app, "http://test", "main", "alice")
 
-	err := app.Check("main", "ci/build", "unknown")
+	err := app.Check("main", "ci/build", "unknown", nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "status must be") {
 		t.Errorf("expected status validation error, got: %v", err)
 	}
@@ -2192,7 +2192,7 @@ func TestChecks_ExplicitBranchOverride(t *testing.T) {
 	app, _ := newTestApp(t, srv)
 	initWorkspace(t, app, srv.URL, "main", "alice")
 
-	app.Checks("feature/other")
+	app.Checks("feature/other", false)
 
 	wantChecksPath := "/repos/default/default/-/branch/feature%2Fother/checks"
 	if gotChecksPath != wantChecksPath {
@@ -2242,7 +2242,7 @@ func TestCheckSubmit_ExplicitBranchOverride(t *testing.T) {
 	app, _ := newTestApp(t, srv)
 	initWorkspace(t, app, srv.URL, "main", "alice") // workspace is on "main"
 
-	if err := app.Check("feature/other", "ci/build", "passed"); err != nil {
+	if err := app.Check("feature/other", "ci/build", "passed", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if gotReq.Branch != "feature/other" {
