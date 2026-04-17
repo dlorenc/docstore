@@ -2,6 +2,7 @@ FROM moby/buildkit:v0.29.0 AS buildkit
 
 FROM golang:1.25 AS runner-build
 COPY . /src
+WORKDIR /src
 RUN go build -o /ci-runner ./cmd/ci-runner
 
 FROM debian:bookworm-slim
