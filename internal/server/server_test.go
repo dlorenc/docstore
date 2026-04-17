@@ -31,7 +31,7 @@ type mockStore struct {
 	getRepoFn       func(ctx context.Context, name string) (*model.Repo, error)
 	createReviewFn  func(ctx context.Context, repo, branch, reviewer string, status model.ReviewStatus, body string) (*model.Review, error)
 	listReviewsFn   func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.Review, error)
-	createCheckRunFn func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string) (*model.CheckRun, error)
+	createCheckRunFn func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64) (*model.CheckRun, error)
 	listCheckRunsFn  func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.CheckRun, error)
 	getRoleFn      func(ctx context.Context, repo, identity string) (*model.Role, error)
 	setRoleFn      func(ctx context.Context, repo, identity string, role model.RoleType) error
@@ -151,9 +151,9 @@ func (m *mockStore) ListReviews(ctx context.Context, repo, branch string, atSeq 
 	return nil, errors.New("not implemented")
 }
 
-func (m *mockStore) CreateCheckRun(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string) (*model.CheckRun, error) {
+func (m *mockStore) CreateCheckRun(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64) (*model.CheckRun, error) {
 	if m.createCheckRunFn != nil {
-		return m.createCheckRunFn(ctx, repo, branch, checkName, status, reporter, logURL)
+		return m.createCheckRunFn(ctx, repo, branch, checkName, status, reporter, logURL, atSequence)
 	}
 	return nil, errors.New("not implemented")
 }
@@ -1439,7 +1439,7 @@ func TestHandleReview_BranchNotFound(t *testing.T) {
 func TestHandleCheck_Success(t *testing.T) {
 	const identity = "ci-bot@example.com"
 	store := &mockStore{
-		createCheckRunFn: func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string) (*model.CheckRun, error) {
+		createCheckRunFn: func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64) (*model.CheckRun, error) {
 			if repo != "default/default" {
 				t.Errorf("expected repo default, got %q", repo)
 			}
@@ -1480,9 +1480,42 @@ func TestHandleCheck_Success(t *testing.T) {
 	}
 }
 
+func TestHandleCheck_ExplicitSequence(t *testing.T) {
+	const identity = "ci-bot@example.com"
+	const wantSeq int64 = 15
+	var gotSeq *int64
+	store := &mockStore{
+		createCheckRunFn: func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64) (*model.CheckRun, error) {
+			gotSeq = atSequence
+			seq := int64(0)
+			if atSequence != nil {
+				seq = *atSequence
+			}
+			return &model.CheckRun{ID: "chk", Sequence: seq}, nil
+		},
+	}
+	srv := New(store, nil, identity, identity)
+
+	seq := wantSeq
+	b, _ := json.Marshal(model.CreateCheckRunRequest{Branch: "main", CheckName: "ci/build", Status: model.CheckRunPassed, Sequence: &seq})
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/check", bytes.NewReader(b))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	if gotSeq == nil {
+		t.Fatal("expected atSequence to be forwarded, got nil")
+	}
+	if *gotSeq != wantSeq {
+		t.Errorf("expected atSequence=%d, got %d", wantSeq, *gotSeq)
+	}
+}
+
 func TestHandleCheck_BranchNotFound(t *testing.T) {
 	store := &mockStore{
-		createCheckRunFn: func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string) (*model.CheckRun, error) {
+		createCheckRunFn: func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64) (*model.CheckRun, error) {
 			return nil, db.ErrBranchNotFound
 		},
 	}
@@ -2554,7 +2587,7 @@ default allow = true
 			writeDetector()
 			return nil, nil
 		},
-		createCheckRunFn: func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string) (*model.CheckRun, error) {
+		createCheckRunFn: func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64) (*model.CheckRun, error) {
 			writeDetector()
 			return nil, nil
 		},
@@ -3323,6 +3356,50 @@ func TestHandleArchive_Success(t *testing.T) {
 	}
 	if files["sub/util.go"] != "package sub" {
 		t.Errorf("sub/util.go = %q, want \"package sub\"", files["sub/util.go"])
+	}
+}
+
+func TestHandleArchive_AtSequence(t *testing.T) {
+	const wantSeq int64 = 7
+	var gotSeq *int64
+	rs := &mockReadStore{
+		getBranchFn: func(_ context.Context, repo, branch string) (*store.BranchInfo, error) {
+			return &store.BranchInfo{Name: branch, HeadSequence: 99, BaseSequence: 0, Status: "active"}, nil
+		},
+		materializeTreeFn: func(_ context.Context, repo, branch string, atSeq *int64, limit int, afterPath string) ([]store.TreeEntry, error) {
+			gotSeq = atSeq
+			return nil, nil // empty archive is fine
+		},
+		getFileFn: func(_ context.Context, repo, branch, path string, atSeq *int64) (*store.FileContent, error) {
+			return nil, nil
+		},
+	}
+	h := newTestHandler(&mockStore{}, rs, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/default/-/archive?branch=main&at=7", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if gotSeq == nil {
+		t.Fatal("expected atSequence to be passed to MaterializeTree, got nil")
+	}
+	if *gotSeq != wantSeq {
+		t.Errorf("expected atSequence=%d, got %d", wantSeq, *gotSeq)
+	}
+}
+
+func TestHandleArchive_AtInvalid(t *testing.T) {
+	rs := &mockReadStore{}
+	h := newTestHandler(&mockStore{}, rs, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/default/-/archive?branch=main&at=notanumber", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
 	}
 }
 

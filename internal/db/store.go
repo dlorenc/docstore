@@ -1196,10 +1196,12 @@ func (s *Store) ListReviews(ctx context.Context, repo, branch string, atSeq *int
 	return reviews, rows.Err()
 }
 
-// CreateCheckRun records a CI check run for a branch at its current
-// head_sequence. Returns ErrBranchNotFound if the branch doesn't exist.
+// CreateCheckRun records a CI check run for a branch. If atSequence is
+// non-nil it is used as the recorded sequence; otherwise the branch's
+// current head_sequence is used. Returns ErrBranchNotFound if the branch
+// doesn't exist.
 // logURL is optional (may be nil) and stores a GCS URI or local file path.
-func (s *Store) CreateCheckRun(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string) (*model.CheckRun, error) {
+func (s *Store) CreateCheckRun(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64) (*model.CheckRun, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		slog.Error("tx begin failed", "op", "create_check_run", "error", err)
@@ -1221,6 +1223,9 @@ func (s *Store) CreateCheckRun(ctx context.Context, repo, branch, checkName stri
 			return nil, ErrBranchNotFound
 		}
 		return nil, fmt.Errorf("lock branch: %w", err)
+	}
+	if atSequence != nil {
+		headSeq = *atSequence
 	}
 
 	id := uuid.New().String()
