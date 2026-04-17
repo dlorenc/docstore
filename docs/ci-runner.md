@@ -12,7 +12,9 @@ In the full production flow (Milestone 1):
 3. The runner calls itself (`POST /run`) with the local source path
 4. Results are written back to docstore as check runs via `POST /-/check`
 
-Milestone 0.5 (what is implemented) covers step 3 only — the executor and HTTP API, with no docstore integration.
+Milestone 1 wires in full docstore integration: fetching `.docstore/ci.yaml` from `main`, pulling branch source, posting check runs back to docstore, and writing logs to a configurable log store.
+
+Milestone 2 (this document) adds webhook-triggered runs, a run status polling endpoint, and auto-registration of the webhook subscription at startup.
 
 ## How It Works
 
@@ -82,6 +84,40 @@ Logs are collected from the `SolveStatus` stream in a goroutine (`executor.go:10
 If `Solve` returns an error and no log bytes were collected, the error message is used as the log value.
 
 ## HTTP API
+
+### `POST /webhook` (Milestone 2)
+
+Receives CloudEvents webhook deliveries from docstore's outbox dispatcher.
+
+**Authentication:** Verified via `X-DocStore-Signature: sha256=<hex>` HMAC header using the `--webhook-secret` flag. If no secret is configured, the header is not checked.
+
+**Supported event types:**
+- `com.docstore.commit.created` — extracts `repo`, `branch`, `sequence` from the data field and calls `POST /run` internally
+- All other types — acknowledged with `200 OK` and ignored (forward-compat)
+
+**Responses:**
+- `200 OK` — event accepted (or ignored)
+- `400 Bad Request` — invalid signature or malformed body
+
+---
+
+### `GET /run/{run_id}` (Milestone 2)
+
+Returns the current status of an async CI run. Runs are tracked in-memory; history is lost on restart.
+
+**Response:**
+```json
+{"run_id": "...", "state": "running", "repo": "...", "branch": "...", "head_seq": 42, "started_at": "..."}
+{"run_id": "...", "state": "done",    "checks": [{"name":"ci/build","status":"passed","logs":"..."}]}
+{"run_id": "...", "state": "failed",  "error": "config fetch failed: ..."}
+```
+
+**States:** `running`, `done`, `failed`
+
+**Error responses:**
+- `404 Not Found` — unknown run_id
+
+---
 
 ### `POST /run`
 
@@ -176,6 +212,7 @@ until [ -S /run/buildkit/buildkitd.sock ]; do sleep 0.1; done
 ```bash
 go run ./cmd/ci-runner \
   --buildkit-addr unix:///run/buildkit/buildkitd.sock \
+  --docstore-url http://localhost:8000 \
   --port 8080
 ```
 
@@ -185,6 +222,11 @@ Flags:
 |---|---|---|
 | `--buildkit-addr` | `unix:///run/buildkit/buildkitd.sock` | buildkitd socket address |
 | `--port` | `8080` | HTTP listen port |
+| `--docstore-url` | (required) | Base URL of the docstore server |
+| `--dev-identity` | `""` | Identity header for local dev (sets X-Goog-IAP-JWT-Assertion) |
+| `--run-timeout` | `30m` | Maximum duration for a single CI run |
+| `--runner-url` | `""` | Public URL of this runner (enables auto-registration with docstore) |
+| `--webhook-secret` | `""` | HMAC secret for verifying incoming webhook deliveries |
 
 Log format defaults to JSON. Set `LOG_FORMAT=text` for human-readable output:
 ```bash
@@ -262,6 +304,24 @@ go test ./... -count=1
 go build ./...
 go vet ./...
 ```
+
+### End-to-End Tests (Milestone 2)
+
+The e2e test (`cmd/ci-runner/e2e_test.go`) requires Docker to start real postgres, docstore, and buildkitd containers. It is tagged `//go:build e2e` and excluded from the default test run.
+
+```bash
+# Run the e2e test (requires Docker)
+go test ./cmd/ci-runner/ -tags=e2e -run TestE2E_WebhookTriggersRun -v -timeout=5m
+```
+
+The test:
+1. Starts a Postgres container via testcontainers and runs docstore migrations
+2. Starts a real docstore HTTP server wired to the database
+3. Starts a testcontainers buildkitd instance
+4. Creates an org, repo, commits `.docstore/ci.yaml` to `main`, and creates a feature branch
+5. Registers a webhook subscription pointing at the in-process ci-runner
+6. Posts a commit to trigger the `commit.created` event via the outbox dispatcher
+7. Polls docstore `GET /repos/{repo}/-/branch/{branch}/checks` until `ci/hello` completes
 
 ## Architecture Notes
 
