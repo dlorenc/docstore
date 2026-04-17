@@ -449,8 +449,7 @@ func newMux(serverCtx context.Context, exec *executor.Executor, ls logstore.LogS
 	mux := http.NewServeMux()
 
 	// POST /run — manual trigger. Runs synchronously so the HTTP connection
-	// stays open for the duration of the build, preventing Cloud Run from
-	// terminating the instance mid-build. Returns when all checks complete.
+	// stays open for the duration of the build. Returns when all checks complete.
 	mux.HandleFunc("POST /run", func(w http.ResponseWriter, r *http.Request) {
 		var req runRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -469,8 +468,8 @@ func newMux(serverCtx context.Context, exec *executor.Executor, ls logstore.LogS
 		runID := uuid.New().String()
 		reg.start(runID, req.Repo, req.Branch, req.HeadSequence)
 
-		// Flush headers immediately so the Cloud Run load balancer doesn't
-		// timeout waiting for the first byte while the build runs.
+		// Flush headers immediately so the load balancer doesn't timeout
+		// waiting for the first byte while the build runs.
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.WriteHeader(http.StatusOK)
