@@ -1,15 +1,15 @@
 checks:
   - name: ci/build
-    image: us-central1-docker.pkg.dev/dlorenc-chainguard/images/golang:1.22
+    image: golang:1.25
     steps:
       - go build ./...
 
   - name: ci/test
-    image: us-central1-docker.pkg.dev/dlorenc-chainguard/images/golang:1.22
+    image: golang:1.25
     steps:
       - go test ./...
 
   - name: ci/vet
-    image: us-central1-docker.pkg.dev/dlorenc-chainguard/images/golang:1.22
+    image: golang:1.25
     steps:
       - go vet ./...
