@@ -722,7 +722,7 @@ func (s *server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cr, err := s.commitStore.CreateCheckRun(r.Context(), repo, req.Branch, req.CheckName, req.Status, reporter, req.LogURL)
+	cr, err := s.commitStore.CreateCheckRun(r.Context(), repo, req.Branch, req.CheckName, req.Status, reporter, req.LogURL, req.Sequence)
 	if err != nil {
 		switch {
 		case errors.Is(err, db.ErrBranchNotFound):
@@ -1941,6 +1941,16 @@ func (s *server) handleArchive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var atSequence *int64
+	if v := r.URL.Query().Get("at"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid 'at' parameter")
+			return
+		}
+		atSequence = &n
+	}
+
 	// Verify the branch exists before we start streaming.
 	bi, err := s.readStore.GetBranch(r.Context(), repo, branch)
 	if err != nil {
@@ -1958,13 +1968,13 @@ func (s *server) handleArchive(w http.ResponseWriter, r *http.Request) {
 
 	afterPath := ""
 	for {
-		entries, err := s.readStore.MaterializeTree(r.Context(), repo, branch, nil, 100, afterPath)
+		entries, err := s.readStore.MaterializeTree(r.Context(), repo, branch, atSequence, 100, afterPath)
 		if err != nil {
 			slog.Error("archive: materialize tree error", "repo", repo, "branch", branch, "error", err)
 			return
 		}
 		for _, entry := range entries {
-			fc, err := s.readStore.GetFile(r.Context(), repo, branch, entry.Path, nil)
+			fc, err := s.readStore.GetFile(r.Context(), repo, branch, entry.Path, atSequence)
 			if err != nil || fc == nil {
 				slog.Error("archive: get file error", "repo", repo, "branch", branch, "path", entry.Path, "error", err)
 				continue

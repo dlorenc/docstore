@@ -1848,7 +1848,7 @@ func TestCreateCheckRun_Success(t *testing.T) {
 	s := NewStore(d)
 	ctx := context.Background()
 
-	cr, err := s.CreateCheckRun(ctx, "default/default", "main", "ci/build", model.CheckRunPassed, "ci-bot", nil)
+	cr, err := s.CreateCheckRun(ctx, "default/default", "main", "ci/build", model.CheckRunPassed, "ci-bot", nil, nil)
 	if err != nil {
 		t.Fatalf("CreateCheckRun: %v", err)
 	}
@@ -1881,7 +1881,7 @@ func TestCreateCheckRun_RecordedAtHeadSequence(t *testing.T) {
 		t.Fatalf("commit: %v", err)
 	}
 
-	cr, err := s.CreateCheckRun(ctx, "default/default", "main", "ci/build", model.CheckRunPassed, "ci-bot", nil)
+	cr, err := s.CreateCheckRun(ctx, "default/default", "main", "ci/build", model.CheckRunPassed, "ci-bot", nil, nil)
 	if err != nil {
 		t.Fatalf("CreateCheckRun: %v", err)
 	}
@@ -1896,11 +1896,11 @@ func TestListCheckRuns_ByBranch(t *testing.T) {
 	s := NewStore(d)
 	ctx := context.Background()
 
-	_, err := s.CreateCheckRun(ctx, "default/default", "main", "ci/build", model.CheckRunPassed, "ci-bot", nil)
+	_, err := s.CreateCheckRun(ctx, "default/default", "main", "ci/build", model.CheckRunPassed, "ci-bot", nil, nil)
 	if err != nil {
 		t.Fatalf("check 1: %v", err)
 	}
-	_, err = s.CreateCheckRun(ctx, "default/default", "main", "ci/lint", model.CheckRunFailed, "ci-bot", nil)
+	_, err = s.CreateCheckRun(ctx, "default/default", "main", "ci/lint", model.CheckRunFailed, "ci-bot", nil, nil)
 	if err != nil {
 		t.Fatalf("check 2: %v", err)
 	}
@@ -1921,12 +1921,12 @@ func TestListCheckRuns_LatestPerName(t *testing.T) {
 	ctx := context.Background()
 
 	// First run: pending
-	_, err := s.CreateCheckRun(ctx, "default/default", "main", "ci/build", model.CheckRunPending, "ci-bot", nil)
+	_, err := s.CreateCheckRun(ctx, "default/default", "main", "ci/build", model.CheckRunPending, "ci-bot", nil, nil)
 	if err != nil {
 		t.Fatalf("check 1: %v", err)
 	}
 	// Second run: passed (same check_name, more recent)
-	_, err = s.CreateCheckRun(ctx, "default/default", "main", "ci/build", model.CheckRunPassed, "ci-bot", nil)
+	_, err = s.CreateCheckRun(ctx, "default/default", "main", "ci/build", model.CheckRunPassed, "ci-bot", nil, nil)
 	if err != nil {
 		t.Fatalf("check 2: %v", err)
 	}
@@ -2421,7 +2421,7 @@ func TestPurge_DeletesReviewsAndChecks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create review: %v", err)
 	}
-	_, err = s.CreateCheckRun(ctx, "default/default", "feature/rev", "ci/build", model.CheckRunPassed, "ci-bot", nil)
+	_, err = s.CreateCheckRun(ctx, "default/default", "feature/rev", "ci/build", model.CheckRunPassed, "ci-bot", nil, nil)
 	if err != nil {
 		t.Fatalf("create check_run: %v", err)
 	}
