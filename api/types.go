@@ -441,6 +441,7 @@ type CreateCheckRunRequest struct {
 	CheckName string         `json:"check_name"`
 	Status    CheckRunStatus `json:"status"`
 	LogURL    *string        `json:"log_url,omitempty"`
+	Sequence  *int64         `json:"sequence,omitempty"`
 }
 
 // CreateCheckRunResponse is the response for POST /check.
