@@ -6,15 +6,14 @@ The CI runner is a standalone HTTP service (`cmd/ci-runner`) that executes `.doc
 
 The runner sits between docstore and a co-located `buildkitd` instance. It accepts a source directory and a check configuration over HTTP, translates each check into an LLB DAG, dispatches the build to BuildKit, collects logs, and returns pass/fail results synchronously.
 
-In the full production flow (Milestone 1):
+In the full production flow:
 1. A commit lands on a branch
-2. The runner fetches `.docstore/ci.yaml` from `main` and downloads the branch tree to disk
-3. The runner calls itself (`POST /run`) with the local source path
-4. Results are written back to docstore as check runs via `POST /-/check`
+2. Docstore's outbox dispatcher sends a `commit.created` CloudEvent to the ci-runner webhook
+3. The ci-runner fetches `.docstore/ci.yaml` from `main` and downloads the branch tree to disk
+4. BuildKit executes the checks; logs are written to GCS
+5. Results are written back to docstore as check runs via `POST /-/check`
 
-Milestone 1 wires in full docstore integration: fetching `.docstore/ci.yaml` from `main`, pulling branch source, posting check runs back to docstore, and writing logs to a configurable log store.
-
-Milestone 2 (this document) adds webhook-triggered runs, a run status polling endpoint, and auto-registration of the webhook subscription at startup.
+**Production deployment:** ci-runner runs on GKE Autopilot (cluster `chainguardener`, namespace `docstore-ci`) using rootless buildkitd (`moby/buildkit-rootless`). The docstore Cloud Run service delivers webhook events to ci-runner's internal GKE LoadBalancer (IP `10.128.0.40`) via VPC Direct Egress. Logs are stored at `gs://docstore-ci-logs`. See [GKE Deployment](#gke-deployment) for details.
 
 ## How It Works
 
@@ -50,24 +49,47 @@ No matrix, conditionals, or artifact config in v1.
 
 ### LLB Translation
 
-`internal/executor` (`executor.go:78`) translates each check into an independent LLB chain. The source directory is mounted as a local input named `"src"`.
+`internal/executor` (`executor.go`) translates each check into an independent LLB chain using the BuildKit gateway API (`client.Build`). The source directory is mounted as a local input named `"src"`.
+
+**Image ENV injection (gateway API):** The executor uses `client.Build` rather than `client.Solve` so it can call `ResolveImageConfig` to fetch the image's OCI config and extract its `Env` array. These ENV variables are then injected as `llb.AddEnv` `RunOption`s on every exec. This is required because `--oci-worker-no-process-sandbox` (needed for rootless buildkitd on GKE Autopilot, where `SYS_ADMIN` is blocked) does not apply the image's ENV automatically. Without this fix, tools like `go` are not found at runtime because the image's `PATH` is never set.
 
 For each check, the executor:
-1. Starts from the check's container image with working directory `/src`
-2. Chains each step as a `Run` vertex with the source mounted at `/src`
-3. **Threads `srcMount` forward between steps** — each step receives the output `/src` from the previous step as its input mount, so in-source changes (e.g. `go generate` producing files) persist across steps within one check
-4. Marshals the final DAG and dispatches to buildkitd
+1. Resolves the image config via `ResolveImageConfig` to extract ENV variables
+2. Starts from the check's container image with working directory `/src`
+3. Chains each step as a `Run` vertex with the source mounted at `/src` and all image ENV variables applied
+4. **Threads `srcMount` forward between steps** — each step receives the output `/src` from the previous step as its input mount, so in-source changes (e.g. `go generate` producing files) persist across steps within one check
+5. Marshals the final DAG and dispatches via the gateway solve
 
-Key snippet (`executor.go:83-90`):
+Key snippet:
 ```go
+// Resolve image ENV so tools like `go` are on PATH under --oci-worker-no-process-sandbox.
+imageRef := check.Image
+if named, err := reference.ParseNormalizedNamed(check.Image); err == nil {
+    imageRef = reference.TagNameOnly(named).String()
+}
+var imageEnv []string
+if _, _, cfgBytes, err := c.ResolveImageConfig(ctx, imageRef, ...); err == nil {
+    var imgCfg specs.Image
+    if json.Unmarshal(cfgBytes, &imgCfg) == nil {
+        imageEnv = imgCfg.Config.Env
+    }
+}
+envOpts := make([]llb.RunOption, 0, len(imageEnv))
+for _, env := range imageEnv {
+    k, v, _ := strings.Cut(env, "=")
+    envOpts = append(envOpts, llb.AddEnv(k, v))
+}
+
 state := llb.Image(check.Image).Dir("/src")
 srcMount := source  // llb.Local("src")
 
 for _, step := range check.Steps {
-    exec := state.Run(
+    runOpts := []llb.RunOption{
         llb.Args([]string{"sh", "-c", step}),
         llb.AddMount("/src", srcMount),
-    )
+    }
+    runOpts = append(runOpts, envOpts...)
+    exec := state.Run(runOpts...)
     state = exec.Root()
     srcMount = exec.GetMount("/src")  // carry forward for next step
 }
@@ -228,6 +250,14 @@ Flags:
 | `--runner-url` | `""` | Public URL of this runner (enables auto-registration with docstore) |
 | `--webhook-secret` | `""` | HMAC secret for verifying incoming webhook deliveries |
 
+Environment variables (log storage):
+
+| Variable | Default | Description |
+|---|---|---|
+| `LOG_STORE` | `local` | Log store backend: `local` or `gcs` |
+| `LOG_LOCAL_DIR` | `/tmp/ci-logs` | Directory for local log store (when `LOG_STORE=local`) |
+| `LOG_BUCKET` | (required when gcs) | GCS bucket name (when `LOG_STORE=gcs`) |
+
 Log format defaults to JSON. Set `LOG_FORMAT=text` for human-readable output:
 ```bash
 LOG_FORMAT=text go run ./cmd/ci-runner
@@ -305,23 +335,78 @@ go build ./...
 go vet ./...
 ```
 
-### End-to-End Tests (Milestone 2)
+### End-to-End Tests
 
 The e2e test (`cmd/ci-runner/e2e_test.go`) requires Docker to start real postgres, docstore, and buildkitd containers. It is tagged `//go:build e2e` and excluded from the default test run.
 
 ```bash
 # Run the e2e test (requires Docker)
-go test ./cmd/ci-runner/ -tags=e2e -run TestE2E_WebhookTriggersRun -v -timeout=5m
+go test ./cmd/ci-runner/ -tags=e2e -run TestE2EGoPipeline -v -timeout=10m
 ```
 
-The test:
+The test (`TestE2EGoPipeline`):
 1. Starts a Postgres container via testcontainers and runs docstore migrations
 2. Starts a real docstore HTTP server wired to the database
 3. Starts a testcontainers buildkitd instance
-4. Creates an org, repo, commits `.docstore/ci.yaml` to `main`, and creates a feature branch
+4. Creates an org, repo, commits `.docstore/ci.yaml` (using `golang:1.25`) and the `test/hello` source tree to `main`, then creates a feature branch
 5. Registers a webhook subscription pointing at the in-process ci-runner
-6. Posts a commit to trigger the `commit.created` event via the outbox dispatcher
-7. Polls docstore `GET /repos/{repo}/-/branch/{branch}/checks` until `ci/hello` completes
+6. Posts a commit to the feature branch to trigger `commit.created` via the outbox dispatcher
+7. Polls docstore `GET /repos/{repo}/-/branch/{branch}/checks` until all three checks (`ci/build`, `ci/test`, `ci/vet`) complete with `passed`
+
+## GKE Deployment
+
+The production ci-runner runs on GKE Autopilot rather than Cloud Run because buildkitd requires Linux user namespaces (`SYS_ADMIN`) that Autopilot blocks. The rootless buildkitd image (`moby/buildkit:v0.29.0-rootless`) works around this using `rootlesskit`, which sets up mount namespaces inside a user namespace.
+
+### Components
+
+| File | Purpose |
+|---|---|
+| `Dockerfile.ci-runner-gke` | Two-stage build: Go binary + rootless buildkitd image |
+| `entrypoint-gke.sh` | Configures GCR auth, starts rootlesskit buildkitd, then starts ci-runner |
+| `deploy/k8s/ci-runner.yaml` | GKE Deployment + internal LoadBalancer + Workload Identity SA |
+| `scripts/setup-gke.sh` | One-time GKE setup (Workload Identity, secrets, IAM) |
+
+### Network topology
+
+```
+Cloud Run (docstore)
+  └─[VPC Direct Egress]─► internal LB 10.128.0.40:8080
+                                 └─► ci-runner pod (docstore-ci namespace)
+                                           └─► rootlesskit buildkitd (tcp://localhost:1234)
+```
+
+Docstore uses VPC Direct Egress to reach the GKE internal LoadBalancer IP. The ci-runner is not exposed to the public internet.
+
+### Security
+
+- **Workload Identity:** The `ci-runner` k8s ServiceAccount is bound to the `ci-runner@dlorenc-chainguard.iam.gserviceaccount.com` GCP SA via `iam.workloadIdentityUser`. This grants access to GCS log storage without static credentials.
+- **seccompProfile / AppArmor:** Both must be `Unconfined` for rootlesskit to set up mount namespaces. This is configured in `deploy/k8s/ci-runner.yaml`.
+- **Webhook HMAC:** The ci-runner verifies the `X-DocStore-Signature` header on all incoming webhooks using the `WEBHOOK_SECRET` env var (sourced from a k8s Secret backed by Secret Manager).
+
+### First-time setup
+
+```bash
+# One-time setup (idempotent):
+bash scripts/setup.sh          # GCP SA, GCS bucket, Secret Manager secrets, IAM
+bash scripts/setup-gke.sh      # Workload Identity binding, k8s namespace and Secret
+
+# Build and push the image:
+docker build -f Dockerfile.ci-runner-gke \
+  -t us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-runner-gke:latest .
+docker push us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-runner-gke:latest
+
+# Deploy:
+kubectl apply -f deploy/k8s/ci-runner.yaml
+kubectl rollout status deployment/ci-runner -n docstore-ci
+```
+
+After deploy, the `build-and-deploy-ci-runner` CI job in `deploy.yml` handles subsequent deploys automatically on every push to `main`. It also updates the `ci-runner-url` Secret Manager secret with the internal LB IP if it has changed.
+
+### rootlesskit flags
+
+`entrypoint-gke.sh` starts buildkitd with:
+- `--oci-worker-snapshotter=native` — uses overlay-less snapshotter compatible with Autopilot
+- `--oci-worker-no-process-sandbox` — disables the per-process sandbox (required because there is no seccomp/apparmor inside the user namespace); the image ENV fix in `executor.go` compensates for the side effect of this flag not applying image ENV
 
 ## Architecture Notes
 
