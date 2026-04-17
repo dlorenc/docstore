@@ -1225,32 +1225,13 @@ The server uses the standard `log/slog` package for structured JSON logging. All
 
 ## Initial Setup: CI Runner
 
-The CI runner is a separate Cloud Run service (`ci-runner`) that executes checks triggered by docstore events. Before the first push to `main` will succeed, run the one-time setup script to provision the required infrastructure.
+The CI runner (`ci-runner`) executes `.docstore/ci.yaml` checks triggered by docstore commit events. It runs on GKE Autopilot using rootless buildkitd. See [docs/ci-runner.md](docs/ci-runner.md) for full architecture details.
 
-### When to run
+Before the first deploy, run the one-time setup scripts to provision GCP and GKE infrastructure.
 
-Run `scripts/setup.sh` once per project, before pushing to `main` for the first time. It is safe to re-run (all steps are idempotent).
+### Step 1: GCP setup (`scripts/setup.sh`)
 
-### What it creates
-
-| Resource | Description |
-|---------|-------------|
-| `ci-runner` service account | Runs the Cloud Run service |
-| `gs://docstore-ci-logs` GCS bucket | Stores CI check run logs |
-| `ci-runner-webhook-secret` Secret Manager secret | HMAC secret for webhook payload verification |
-| `ci-runner-url` Secret Manager secret | Public URL of the deployed ci-runner service |
-| IAM bindings | See below |
-
-**IAM bindings created:**
-- `ci-runner` SA → `roles/storage.objectCreator` on `gs://docstore-ci-logs`
-- `ci-runner` SA → `roles/secretmanager.secretAccessor` on both secrets (runtime access)
-- `docstore-deployer` SA → `roles/run.admin` on the project (to deploy the service)
-- `docstore-deployer` SA → `roles/iam.serviceAccountUser` on `ci-runner` SA (to assign it to the Cloud Run service)
-- `docstore-deployer` SA → `roles/secretmanager.viewer` on both secrets (to validate `--update-secrets` references at deploy time)
-
-**Required APIs enabled:** `run.googleapis.com`, `secretmanager.googleapis.com`, `storage.googleapis.com`, `artifactregistry.googleapis.com`
-
-### How to run
+Run once to create the GCP service account, GCS bucket, and Secret Manager secrets.
 
 ```bash
 bash scripts/setup.sh
@@ -1262,45 +1243,88 @@ Override project or region if needed:
 PROJECT=my-project REGION=us-east1 bash scripts/setup.sh
 ```
 
-### Updating placeholder secrets
+**What it creates:**
 
-The script creates both secrets with a `PLACEHOLDER` value. Before the first deploy you must update them:
+| Resource | Description |
+|---------|-------------|
+| `ci-runner` GCP service account | Identity for the GKE pod (via Workload Identity) |
+| `gs://docstore-ci-logs` GCS bucket | Stores CI check run logs |
+| `ci-runner-webhook-secret` Secret Manager secret | HMAC secret for webhook payload verification |
+| `ci-runner-url` Secret Manager secret | Internal LB IP:port of the deployed ci-runner |
+| IAM bindings | See below |
 
-**1. Set the real HMAC webhook secret** (choose any random string; must match what the docstore outbox dispatcher sends):
+**IAM bindings created by `scripts/setup.sh`:**
+- `ci-runner` SA → `roles/storage.objectUser` on `gs://docstore-ci-logs` (read/write logs)
+- `ci-runner` SA → `roles/secretmanager.secretAccessor` on both secrets (runtime access)
+- `docstore-deployer` SA → `roles/secretmanager.secretVersionAdder` on `ci-runner-url` (update LB IP after deploy)
+
+**Required APIs enabled:** `secretmanager.googleapis.com`, `storage.googleapis.com`, `artifactregistry.googleapis.com`, `container.googleapis.com`
+
+### Step 2: GKE setup (`scripts/setup-gke.sh`)
+
+Run once after `scripts/setup.sh` to configure Workload Identity, create the k8s namespace, and populate the k8s Secret from Secret Manager.
+
+```bash
+bash scripts/setup-gke.sh
+```
+
+**What it does:**
+
+- Grants `docstore-deployer` SA `roles/container.developer` (for `kubectl` in CI)
+- Binds the `ci-runner` GCP SA to the `docstore-ci/ci-runner` k8s ServiceAccount via Workload Identity (`roles/iam.workloadIdentityUser`)
+- Creates the `docstore-ci` namespace
+- Populates the `ci-runner` k8s Secret from Secret Manager (`ci-runner-webhook-secret` and `ci-runner-url`)
+
+Override cluster or project if needed:
+
+```bash
+PROJECT=my-project CLUSTER=my-cluster bash scripts/setup-gke.sh
+```
+
+### Step 3: Populate secrets
+
+The setup scripts create secrets with a `PLACEHOLDER` value. Update them before the first deploy:
+
+**Set the HMAC webhook secret:**
 
 ```bash
 echo -n 'your-hmac-secret' | gcloud secrets versions add ci-runner-webhook-secret \
   --data-file=- --project=dlorenc-chainguard
 ```
 
-**2. Push to `main`** — `deploy.yml` builds and deploys the ci-runner image.
+Then re-run `scripts/setup-gke.sh` to propagate the updated value to the k8s Secret.
 
-**3. After the first deploy, get the service URL and update `ci-runner-url`:**
+### Step 4: Deploy
+
+Push to `main` — `deploy.yml` builds the ci-runner image (from `Dockerfile.ci-runner-gke`), deploys to GKE, and updates the `ci-runner-url` secret with the internal LB IP.
+
+To deploy manually:
 
 ```bash
-URL=$(gcloud run services describe ci-runner \
-  --region=us-central1 --project=dlorenc-chainguard --format='value(status.url)')
-echo -n "${URL}" | gcloud secrets versions add ci-runner-url \
-  --data-file=- --project=dlorenc-chainguard
-```
+docker build -f Dockerfile.ci-runner-gke \
+  -t us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-runner-gke:latest .
+docker push us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-runner-gke:latest
 
-The `ci-runner-url` secret is read at runtime by the ci-runner service and used by the docstore event outbox dispatcher to know where to send webhook events.
+kubectl apply -f deploy/k8s/ci-runner.yaml
+kubectl rollout status deployment/ci-runner -n docstore-ci
+```
 
 ### Full E2E flow after setup
 
-1. Run `scripts/setup.sh` (once)
-2. Update `ci-runner-webhook-secret` with the real HMAC secret
+1. Run `scripts/setup.sh` and `scripts/setup-gke.sh` (once each)
+2. Populate `ci-runner-webhook-secret` with the real HMAC secret
 3. Push to `main` → `deploy.yml` runs two parallel jobs:
-   - `deploy` — builds and deploys the docstore server via ko
-   - `build-and-deploy-ci-runner` — builds the ci-runner Docker image and deploys it to Cloud Run gen2
-4. Retrieve the ci-runner URL and update `ci-runner-url` (step 3 above)
-5. Commits to any branch in docstore trigger the outbox dispatcher, which POSTs to `ci-runner/webhook` (future endpoint), which runs `.docstore/ci.yaml` checks and posts results back via `POST /repos/{name}/-/check`
+   - `deploy` — builds and deploys the docstore server via ko to Cloud Run
+   - `build-and-deploy-ci-runner` — builds ci-runner and deploys to GKE; updates `ci-runner-url`
+4. The ci-runner auto-registers a webhook subscription with docstore on startup
+5. Commits to any branch trigger the outbox dispatcher → `POST /webhook` on ci-runner → `.docstore/ci.yaml` checks run → results posted back via `POST /repos/{name}/-/check`
 
 ### Notes
 
-- `--allow-unauthenticated` is intentional on the ci-runner service. It receives webhook POSTs from the docstore outbox dispatcher; request authenticity is verified via HMAC signature (WEBHOOK_SECRET), not IAP.
-- The docstore service is also `--allow-unauthenticated` in this project, so the ci-runner SA does not need `roles/run.invoker` on the docstore service.
-- The ci-runner uses `--execution-environment=gen2` (required for running buildkitd inside the container) with `--concurrency=1` to avoid concurrent buildkitd access per instance.
+- The ci-runner is reachable only via the GKE internal LoadBalancer (not public internet). Docstore reaches it via VPC Direct Egress.
+- Webhook authenticity is verified via HMAC signature (`X-DocStore-Signature` header), not IAP.
+- The `ci-runner-url` secret stores the internal LB `http://IP:8080` address. The deploy job updates it if the IP changes.
+- Logs are stored in GCS at `gs://docstore-ci-logs/{repo}/{branch}/{seq}/{check}.log`.
 
 ---
 
