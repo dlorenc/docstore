@@ -1,15 +1,15 @@
 checks:
   - name: ci/build
-    image: mirror.gcr.io/library/golang:1.22
+    image: us-central1-docker.pkg.dev/dlorenc-chainguard/images/golang:1.22
     steps:
       - go build ./...
 
   - name: ci/test
-    image: mirror.gcr.io/library/golang:1.22
+    image: us-central1-docker.pkg.dev/dlorenc-chainguard/images/golang:1.22
     steps:
       - go test ./...
 
   - name: ci/vet
-    image: mirror.gcr.io/library/golang:1.22
+    image: us-central1-docker.pkg.dev/dlorenc-chainguard/images/golang:1.22
     steps:
       - go vet ./...
