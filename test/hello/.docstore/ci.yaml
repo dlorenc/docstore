@@ -1,0 +1,15 @@
+checks:
+  - name: ci/build
+    image: golang:1.22
+    steps:
+      - go build ./...
+
+  - name: ci/test
+    image: golang:1.22
+    steps:
+      - go test ./...
+
+  - name: ci/vet
+    image: golang:1.22
+    steps:
+      - go vet ./...
