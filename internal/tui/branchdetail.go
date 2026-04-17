@@ -2,7 +2,9 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -47,8 +49,20 @@ type branchDetailModel struct {
 	showReviewOverlay bool
 	reviewOverlay     reviewOverlayModel
 
+	// Auto-refresh: true when any HEAD check is pending.
+	autoRefreshPending bool
+
 	goBack bool
 	quit   bool
+}
+
+// checkRefreshTick is sent by the auto-refresh ticker.
+type checkRefreshTick struct{}
+
+func scheduleCheckRefresh() tea.Cmd {
+	return tea.Tick(5*time.Second, func(time.Time) tea.Msg {
+		return checkRefreshTick{}
+	})
 }
 
 func newBranchDetailModel(client *tuiClient, branchName string) branchDetailModel {
@@ -129,6 +143,12 @@ func (m branchDetailModel) Update(msg tea.Msg) (branchDetailModel, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
+	case checkRefreshTick:
+		if m.autoRefreshPending {
+			m.loading = true
+			return m, loadBranchDetail(m.client, m.branchName)
+		}
+
 	case branchDetailLoadedMsg:
 		m.loading = false
 		m.err = msg.err
@@ -139,6 +159,17 @@ func (m branchDetailModel) Update(msg tea.Msg) (branchDetailModel, tea.Cmd) {
 			m.headSeq = msg.headSeq
 			m.baseSeq = msg.baseSeq
 			m.baseTreePaths = msg.baseTreePaths
+		}
+		// Auto-refresh: schedule a tick if any HEAD check is pending.
+		m.autoRefreshPending = false
+		for _, c := range m.checks {
+			if c.Sequence == m.headSeq && c.Status == model.CheckRunPending {
+				m.autoRefreshPending = true
+				break
+			}
+		}
+		if m.autoRefreshPending {
+			return m, scheduleCheckRefresh()
 		}
 
 	case mergeResultMsg:
@@ -158,6 +189,7 @@ func (m branchDetailModel) Update(msg tea.Msg) (branchDetailModel, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q":
+			m.autoRefreshPending = false
 			m.goBack = true
 
 		case "Q", "ctrl+c":
@@ -423,8 +455,24 @@ func (m branchDetailModel) renderChecks() string {
 		return "  No check runs.\n"
 	}
 
-	var sb strings.Builder
+	// Deduplicate by CheckName, keeping the entry with the highest Sequence.
+	latest := make(map[string]model.CheckRun)
 	for _, c := range m.checks {
+		prev, ok := latest[c.CheckName]
+		if !ok || c.Sequence > prev.Sequence {
+			latest[c.CheckName] = c
+		}
+	}
+	deduped := make([]model.CheckRun, 0, len(latest))
+	for _, c := range latest {
+		deduped = append(deduped, c)
+	}
+	sort.Slice(deduped, func(i, j int) bool {
+		return deduped[i].CheckName < deduped[j].CheckName
+	})
+
+	var sb strings.Builder
+	for _, c := range deduped {
 		isStale := c.Sequence < m.headSeq
 		icon := "?"
 		var iconStyled string
@@ -450,6 +498,9 @@ func (m branchDetailModel) renderChecks() string {
 			sb.WriteString(styleStale.Render(line) + "\n")
 		} else {
 			sb.WriteString(line + "\n")
+		}
+		if c.LogURL != nil {
+			sb.WriteString("       log: " + *c.LogURL + "\n")
 		}
 	}
 	return sb.String()
