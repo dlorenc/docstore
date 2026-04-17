@@ -469,12 +469,22 @@ func newMux(serverCtx context.Context, exec *executor.Executor, ls logstore.LogS
 		runID := uuid.New().String()
 		reg.start(runID, req.Repo, req.Branch, req.HeadSequence)
 
-		ctx, cancel := context.WithTimeout(r.Context(), runTimeout)
+		// Flush headers immediately so the Cloud Run load balancer doesn't
+		// timeout waiting for the first byte while the build runs.
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+
+		// Run synchronously using a background context so the build is not
+		// cancelled if the client disconnects.
+		ctx, cancel := context.WithTimeout(context.Background(), runTimeout)
 		defer cancel()
 		runAsync(ctx, client, exec, ls, docstoreURL, req.Repo, req.Branch, req.HeadSequence, runID, reg)
 
 		status, _ := reg.get(runID)
-		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(status) //nolint:errcheck
 	})
 
