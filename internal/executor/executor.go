@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"sync"
 
+	dockerconfig "github.com/docker/cli/cli/config"
 	"github.com/moby/buildkit/client"
 	"github.com/moby/buildkit/client/llb"
 	"github.com/moby/buildkit/session"
@@ -115,10 +117,27 @@ func (e *Executor) runCheck(ctx context.Context, sourceDir string, check Check) 
 		}
 	}()
 
+	// Load Docker credentials from DOCKER_CONFIG or ~/.docker so buildkitd
+	// can pull images from authenticated registries via the session auth provider.
+	dockerConfigDir := os.Getenv("DOCKER_CONFIG")
+	if dockerConfigDir == "" {
+		home := os.Getenv("HOME")
+		if home == "" {
+			home = "/root"
+		}
+		dockerConfigDir = home + "/.docker"
+	}
+	dockerCfg, _ := dockerconfig.Load(dockerConfigDir)
+
+	var ap authprovider.DockerAuthProviderConfig
+	if dockerCfg != nil {
+		ap.AuthConfigProvider = authprovider.LoadAuthConfig(dockerCfg)
+	}
+
 	_, solveErr := e.client.Solve(ctx, def, client.SolveOpt{
 		LocalDirs: map[string]string{"src": sourceDir},
 		Session: []session.Attachable{
-			authprovider.NewDockerAuthProvider(authprovider.DockerAuthProviderConfig{}),
+			authprovider.NewDockerAuthProvider(ap),
 		},
 	}, ch)
 	collectWg.Wait()
