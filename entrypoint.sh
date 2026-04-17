@@ -1,24 +1,10 @@
 #!/bin/sh
 set -e
 
-# Fetch workload identity token and write Docker credentials for
-# buildkitd to authenticate with Artifact Registry.
-TOKEN=$(wget -qO- --header "Metadata-Flavor: Google" \
-  "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" \
-  | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4 || true)
-if [ -n "$TOKEN" ]; then
-  AUTH=$(printf "oauth2accesstoken:%s" "$TOKEN" | base64 | tr -d '\n')
-  mkdir -p /root/.docker
-  cat > /root/.docker/config.json <<JSON
-{
-  "auths": {
-    "us-central1-docker.pkg.dev": {"auth": "$AUTH"},
-    "mirror.gcr.io":               {"auth": "$AUTH"},
-    "gcr.io":                      {"auth": "$AUTH"}
-  }
-}
-JSON
-fi
+# Configure docker-credential-gcr so buildkitd can pull from
+# Artifact Registry using the instance's workload identity.
+docker-credential-gcr configure-docker \
+  --registries=us-central1-docker.pkg.dev,mirror.gcr.io,gcr.io 2>/dev/null || true
 
 buildkitd --oci-worker-snapshotter=native &
 until [ -S /run/buildkit/buildkitd.sock ]; do sleep 0.1; done
