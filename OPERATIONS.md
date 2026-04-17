@@ -1223,6 +1223,87 @@ The server uses the standard `log/slog` package for structured JSON logging. All
 
 ---
 
+## Initial Setup: CI Runner
+
+The CI runner is a separate Cloud Run service (`ci-runner`) that executes checks triggered by docstore events. Before the first push to `main` will succeed, run the one-time setup script to provision the required infrastructure.
+
+### When to run
+
+Run `scripts/setup.sh` once per project, before pushing to `main` for the first time. It is safe to re-run (all steps are idempotent).
+
+### What it creates
+
+| Resource | Description |
+|---------|-------------|
+| `ci-runner` service account | Runs the Cloud Run service |
+| `gs://docstore-ci-logs` GCS bucket | Stores CI check run logs |
+| `ci-runner-webhook-secret` Secret Manager secret | HMAC secret for webhook payload verification |
+| `ci-runner-url` Secret Manager secret | Public URL of the deployed ci-runner service |
+| IAM bindings | See below |
+
+**IAM bindings created:**
+- `ci-runner` SA → `roles/storage.objectCreator` on `gs://docstore-ci-logs`
+- `ci-runner` SA → `roles/secretmanager.secretAccessor` on both secrets (runtime access)
+- `docstore-deployer` SA → `roles/run.admin` on the project (to deploy the service)
+- `docstore-deployer` SA → `roles/iam.serviceAccountUser` on `ci-runner` SA (to assign it to the Cloud Run service)
+- `docstore-deployer` SA → `roles/secretmanager.viewer` on both secrets (to validate `--update-secrets` references at deploy time)
+
+**Required APIs enabled:** `run.googleapis.com`, `secretmanager.googleapis.com`, `storage.googleapis.com`, `artifactregistry.googleapis.com`
+
+### How to run
+
+```bash
+bash scripts/setup.sh
+```
+
+Override project or region if needed:
+
+```bash
+PROJECT=my-project REGION=us-east1 bash scripts/setup.sh
+```
+
+### Updating placeholder secrets
+
+The script creates both secrets with a `PLACEHOLDER` value. Before the first deploy you must update them:
+
+**1. Set the real HMAC webhook secret** (choose any random string; must match what the docstore outbox dispatcher sends):
+
+```bash
+echo -n 'your-hmac-secret' | gcloud secrets versions add ci-runner-webhook-secret \
+  --data-file=- --project=dlorenc-chainguard
+```
+
+**2. Push to `main`** — `deploy.yml` builds and deploys the ci-runner image.
+
+**3. After the first deploy, get the service URL and update `ci-runner-url`:**
+
+```bash
+URL=$(gcloud run services describe ci-runner \
+  --region=us-central1 --project=dlorenc-chainguard --format='value(status.url)')
+echo -n "${URL}" | gcloud secrets versions add ci-runner-url \
+  --data-file=- --project=dlorenc-chainguard
+```
+
+The `ci-runner-url` secret is read at runtime by the ci-runner service and used by the docstore event outbox dispatcher to know where to send webhook events.
+
+### Full E2E flow after setup
+
+1. Run `scripts/setup.sh` (once)
+2. Update `ci-runner-webhook-secret` with the real HMAC secret
+3. Push to `main` → `deploy.yml` runs two parallel jobs:
+   - `deploy` — builds and deploys the docstore server via ko
+   - `build-and-deploy-ci-runner` — builds the ci-runner Docker image and deploys it to Cloud Run gen2
+4. Retrieve the ci-runner URL and update `ci-runner-url` (step 3 above)
+5. Commits to any branch in docstore trigger the outbox dispatcher, which POSTs to `ci-runner/webhook` (future endpoint), which runs `.docstore/ci.yaml` checks and posts results back via `POST /repos/{name}/-/check`
+
+### Notes
+
+- `--allow-unauthenticated` is intentional on the ci-runner service. It receives webhook POSTs from the docstore outbox dispatcher; request authenticity is verified via HMAC signature (WEBHOOK_SECRET), not IAP.
+- The docstore service is also `--allow-unauthenticated` in this project, so the ci-runner SA does not need `roles/run.invoker` on the docstore service.
+- The ci-runner uses `--execution-environment=gen2` (required for running buildkitd inside the container) with `--concurrency=1` to avoid concurrent buildkitd access per instance.
+
+---
+
 ## CLI Reference
 
 The `ds` CLI wraps the DocStore API. All workspace commands require a `.docstore/` directory (created by `ds init`). Org, repo, and role management commands work without a workspace when a default remote URL is compiled in.
