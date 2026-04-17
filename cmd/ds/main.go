@@ -35,8 +35,8 @@ commands:
   branches [--status active|merged|abandoned] [--draft] [--include-draft]  List branches
   reviews [--branch <name>]                       List reviews for a branch
   review --status approved|rejected [--body "…"] [--branch <name>]  Submit a review
-  checks [--branch <name>]                        List check runs for a branch
-  check --name <n> --status passed|failed [--branch <name>]  Report a CI check
+  checks [--branch <name>] [--all]                List check runs for a branch
+  check --name <n> --status passed|failed [--branch <name>] [--log-url <url>] [--sequence <n>]  Report a CI check
   import-git <path> [--mode squash|replay]        Import a git repo into docstore main
   tui                                             Launch the terminal UI
   purge --older-than <Nd> [--dry-run]             Purge old merged/abandoned branches
@@ -284,18 +284,26 @@ func main() {
 
 	case "checks":
 		branch := ""
+		showAll := false
 		for i := 1; i < len(args); i++ {
-			if args[i] == "--branch" && i+1 < len(args) {
-				branch = args[i+1]
-				i++
+			switch args[i] {
+			case "--branch":
+				if i+1 < len(args) {
+					branch = args[i+1]
+					i++
+				}
+			case "--all":
+				showAll = true
 			}
 		}
-		err = app.Checks(branch)
+		err = app.Checks(branch, showAll)
 
 	case "check":
 		name := ""
 		status := ""
 		branch := ""
+		var logURL *string
+		var sequence *int64
 		for i := 1; i < len(args); i++ {
 			switch args[i] {
 			case "--name":
@@ -313,13 +321,29 @@ func main() {
 					branch = args[i+1]
 					i++
 				}
+			case "--log-url":
+				if i+1 < len(args) {
+					u := args[i+1]
+					logURL = &u
+					i++
+				}
+			case "--sequence":
+				if i+1 < len(args) {
+					n, parseErr := strconv.ParseInt(args[i+1], 10, 64)
+					if parseErr != nil {
+						fmt.Fprintln(os.Stderr, "ds check: --sequence must be an integer")
+						os.Exit(1)
+					}
+					sequence = &n
+					i++
+				}
 			}
 		}
 		if name == "" || status == "" {
-			fmt.Fprintln(os.Stderr, "usage: ds check --name <check_name> --status passed|failed [--branch <name>]")
+			fmt.Fprintln(os.Stderr, "usage: ds check --name <check_name> --status passed|failed [--branch <name>] [--log-url <url>] [--sequence <n>]")
 			os.Exit(1)
 		}
-		err = app.Check(branch, name, status)
+		err = app.Check(branch, name, status, logURL, sequence)
 
 	case "import-git":
 		if len(args) < 2 {
