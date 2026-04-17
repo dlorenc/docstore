@@ -9,9 +9,20 @@ TOKEN=$(wget -qO- --header "Metadata-Flavor: Google" \
   | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4 || true)
 if [ -n "$TOKEN" ]; then
   cat > /etc/buildkit/buildkitd.toml <<TOML
+[registry."mirror.gcr.io"]
+  [registry."mirror.gcr.io".auth]
+    username = "oauth2accesstoken"
+    password = "$TOKEN"
+
 [registry."us-central1-docker.pkg.dev"]
   [registry."us-central1-docker.pkg.dev".auth]
-    token = "$TOKEN"
+    username = "oauth2accesstoken"
+    password = "$TOKEN"
+
+[registry."gcr.io"]
+  [registry."gcr.io".auth]
+    username = "oauth2accesstoken"
+    password = "$TOKEN"
 TOML
 fi
 
