@@ -1,0 +1,8 @@
+FROM docker:27-dind-rootless
+USER root
+# slirp4netns provides tap-free user-space networking for rootlesskit.
+# Required on GKE Autopilot where NET_ADMIN and ip tuntap are blocked by the
+# default capability policy. The stock docker:dind-rootless image only ships
+# vpnkit, which still uses a tap device internally and fails on Autopilot.
+RUN apk add --no-cache slirp4netns
+USER 1000

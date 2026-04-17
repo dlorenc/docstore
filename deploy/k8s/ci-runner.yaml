@@ -3,6 +3,13 @@
 # Uses rootless buildkitd (moby/buildkit-rootless) so no SYS_ADMIN is needed,
 # which is required because GKE Autopilot blocks that capability.
 #
+# NOTE: Docker-in-Docker sidecar is NOT included here. All Docker rootless
+# networking modes (vpnkit, slirp4netns, host) require either NET_ADMIN for
+# tap device creation OR are incompatible with rootlesskit's port driver.
+# GKE Autopilot blocks ip tuntap unconditionally. The executor WithDockerSocket
+# option exists in the code but requires standard GKE nodes (not Autopilot) or
+# a pre-existing Docker socket on the host. See Dockerfile.dind and issue #143.
+#
 # Pre-requisites (run scripts/setup-gke.sh first):
 #   - GKE cluster with Workload Identity enabled
 #   - ci-runner GCP SA bound to the k8s SA below
