@@ -102,16 +102,23 @@ jobs:
 
       - name: Update ci-runner-url secret
         run: |
-          # Wait for the internal load balancer IP to be assigned, then update
-          # the Secret Manager secret so ci-runner can register its webhook URL.
+          # Update the ci-runner-url secret if the LB IP has changed.
+          # On first deploy the LB may still be provisioning; on subsequent
+          # deploys the IP is stable and this is a no-op.
           IP=$(kubectl get svc ci-runner -n docstore-ci \
             -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
-          if [ -n "$IP" ]; then
-            printf "http://%s:8080" "$IP" | \
-              gcloud secrets versions add ci-runner-url \
-                --data-file=- \
-                --project=dlorenc-chainguard
-            echo "ci-runner-url updated to http://${IP}:8080"
-          else
+          if [ -z "$IP" ]; then
             echo "WARNING: internal LB IP not yet assigned; ci-runner-url not updated"
+            exit 0
+          fi
+          CURRENT=$(gcloud secrets versions access latest \
+            --secret=ci-runner-url --project=dlorenc-chainguard 2>/dev/null || true)
+          WANT="http://${IP}:8080"
+          if [ "$CURRENT" = "$WANT" ]; then
+            echo "ci-runner-url already set to ${WANT}, skipping"
+          else
+            printf "%s" "$WANT" | \
+              gcloud secrets versions add ci-runner-url \
+                --data-file=- --project=dlorenc-chainguard
+            echo "ci-runner-url updated to ${WANT}"
           fi

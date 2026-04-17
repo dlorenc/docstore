@@ -25,6 +25,14 @@ gcloud projects add-iam-policy-binding "${PROJECT}" \
   --quiet
 echo "    Done."
 
+echo "==> Granting deployer SA secretVersionAdder on ci-runner-url (needed to update LB IP after deploy)..."
+gcloud secrets add-iam-policy-binding ci-runner-url \
+  --project="${PROJECT}" \
+  --member="serviceAccount:${DEPLOYER_SA}" \
+  --role=roles/secretmanager.secretVersionAdder \
+  --quiet
+echo "    Done."
+
 echo "==> Getting cluster credentials..."
 gcloud container clusters get-credentials "${CLUSTER}" \
   --region="${REGION}" \
