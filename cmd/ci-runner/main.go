@@ -448,7 +448,9 @@ func newMux(serverCtx context.Context, exec *executor.Executor, ls logstore.LogS
 
 	mux := http.NewServeMux()
 
-	// POST /run — manual trigger (existing endpoint).
+	// POST /run — manual trigger. Runs synchronously so the HTTP connection
+	// stays open for the duration of the build, preventing Cloud Run from
+	// terminating the instance mid-build. Returns when all checks complete.
 	mux.HandleFunc("POST /run", func(w http.ResponseWriter, r *http.Request) {
 		var req runRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -466,14 +468,14 @@ func newMux(serverCtx context.Context, exec *executor.Executor, ls logstore.LogS
 
 		runID := uuid.New().String()
 		reg.start(runID, req.Repo, req.Branch, req.HeadSequence)
-		go func() {
-			ctx, cancel := context.WithTimeout(serverCtx, runTimeout)
-			defer cancel()
-			runAsync(ctx, client, exec, ls, docstoreURL, req.Repo, req.Branch, req.HeadSequence, runID, reg)
-		}()
 
+		ctx, cancel := context.WithTimeout(r.Context(), runTimeout)
+		defer cancel()
+		runAsync(ctx, client, exec, ls, docstoreURL, req.Repo, req.Branch, req.HeadSequence, runID, reg)
+
+		status, _ := reg.get(runID)
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(runResponse{RunID: runID}) //nolint:errcheck
+		json.NewEncoder(w).Encode(status) //nolint:errcheck
 	})
 
 	// POST /webhook — receives CloudEvents webhook deliveries from docstore.
