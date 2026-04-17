@@ -8,6 +8,8 @@ import (
 
 	"github.com/moby/buildkit/client"
 	"github.com/moby/buildkit/client/llb"
+	"github.com/moby/buildkit/session"
+	"github.com/moby/buildkit/session/auth/authprovider"
 )
 
 // Config mirrors the .docstore/ci.yaml DSL and is used for both JSON decode
@@ -115,6 +117,9 @@ func (e *Executor) runCheck(ctx context.Context, sourceDir string, check Check) 
 
 	_, solveErr := e.client.Solve(ctx, def, client.SolveOpt{
 		LocalDirs: map[string]string{"src": sourceDir},
+		Session: []session.Attachable{
+			authprovider.NewDockerAuthProvider(authprovider.DockerAuthProviderConfig{}),
+		},
 	}, ch)
 	collectWg.Wait()
 
