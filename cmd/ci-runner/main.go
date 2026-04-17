@@ -4,6 +4,9 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -14,6 +17,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -37,6 +42,88 @@ type runRequest struct {
 
 type runResponse struct {
 	RunID string `json:"run_id"`
+}
+
+// ---------------------------------------------------------------------------
+// RunStatus tracks an in-progress or completed CI run.
+// ---------------------------------------------------------------------------
+
+// RunStatus is the state record for a single CI run.
+type RunStatus struct {
+	RunID     string                 `json:"run_id"`
+	Repo      string                 `json:"repo"`
+	Branch    string                 `json:"branch"`
+	HeadSeq   int64                  `json:"head_seq,omitempty"`
+	State     string                 `json:"state"` // "running", "done", "failed"
+	StartedAt time.Time              `json:"started_at"`
+	Checks    []executor.CheckResult `json:"checks,omitempty"`
+	Error     string                 `json:"error,omitempty"`
+}
+
+// runRegistry is a thread-safe in-memory store of run statuses.
+type runRegistry struct {
+	mu   sync.RWMutex
+	runs map[string]*RunStatus
+}
+
+func newRunRegistry() *runRegistry {
+	return &runRegistry{runs: make(map[string]*RunStatus)}
+}
+
+func (r *runRegistry) start(runID, repo, branch string, headSeq int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.runs[runID] = &RunStatus{
+		RunID:     runID,
+		Repo:      repo,
+		Branch:    branch,
+		HeadSeq:   headSeq,
+		State:     "running",
+		StartedAt: time.Now(),
+	}
+}
+
+func (r *runRegistry) complete(runID string, checks []executor.CheckResult) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if s, ok := r.runs[runID]; ok {
+		s.State = "done"
+		s.Checks = append([]executor.CheckResult(nil), checks...)
+	}
+}
+
+func (r *runRegistry) fail(runID, errMsg string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if s, ok := r.runs[runID]; ok {
+		s.State = "failed"
+		s.Error = errMsg
+	}
+}
+
+func (r *runRegistry) cleanup() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for id, s := range r.runs {
+		if s.State != "running" && time.Since(s.StartedAt) > time.Hour {
+			delete(r.runs, id)
+		}
+	}
+}
+
+func (r *runRegistry) get(runID string) (*RunStatus, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	s, ok := r.runs[runID]
+	if !ok {
+		return nil, false
+	}
+	// Return a shallow copy to avoid data races.
+	cp := *s
+	if s.Checks != nil {
+		cp.Checks = append([]executor.CheckResult(nil), s.Checks...)
+	}
+	return &cp, true
 }
 
 // ---------------------------------------------------------------------------
@@ -165,14 +252,17 @@ func postCheckRun(ctx context.Context, client *http.Client, docstoreURL, repo st
 // Async run goroutine
 // ---------------------------------------------------------------------------
 
-func runAsync(ctx context.Context, client *http.Client, exec *executor.Executor, ls logstore.LogStore, docstoreURL, repo, branch string, headSeq int64) {
+func runAsync(ctx context.Context, client *http.Client, exec *executor.Executor, ls logstore.LogStore, docstoreURL, repo, branch string, headSeq int64, runID string, reg *runRegistry) {
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("runAsync panic", "repo", repo, "branch", branch, "panic", r)
+			if reg != nil {
+				reg.fail(runID, fmt.Sprintf("panic: %v", r))
+			}
 		}
 	}()
 
-	slog.Info("run started", "repo", repo, "branch", branch, "head_seq", headSeq)
+	slog.Info("run started", "repo", repo, "branch", branch, "head_seq", headSeq, "run_id", runID)
 
 	// 1. Fetch config from main branch.
 	cfg, err := fetchConfig(ctx, client, docstoreURL, repo)
@@ -186,6 +276,9 @@ func runAsync(ctx context.Context, client *http.Client, exec *executor.Executor,
 			Status:    model.CheckRunFailed,
 			LogURL:    &msg,
 		})
+		if reg != nil {
+			reg.fail(runID, "config fetch failed: "+err.Error())
+		}
 		return
 	}
 
@@ -196,6 +289,9 @@ func runAsync(ctx context.Context, client *http.Client, exec *executor.Executor,
 	}
 	if err != nil {
 		slog.Error("pull source failed", "repo", repo, "branch", branch, "error", err)
+		if reg != nil {
+			reg.fail(runID, "source pull failed: "+err.Error())
+		}
 		return
 	}
 
@@ -214,6 +310,9 @@ func runAsync(ctx context.Context, client *http.Client, exec *executor.Executor,
 	results, err := exec.Run(ctx, tempDir, *cfg)
 	if err != nil {
 		slog.Error("executor failed", "repo", repo, "branch", branch, "error", err)
+		if reg != nil {
+			reg.fail(runID, "executor failed: "+err.Error())
+		}
 		return
 	}
 
@@ -239,15 +338,117 @@ func runAsync(ctx context.Context, client *http.Client, exec *executor.Executor,
 		}
 	}
 
-	slog.Info("run complete", "repo", repo, "branch", branch, "checks", len(results))
+	if reg != nil {
+		reg.complete(runID, results)
+	}
+	slog.Info("run complete", "repo", repo, "branch", branch, "checks", len(results), "run_id", runID)
+}
+
+// ---------------------------------------------------------------------------
+// HMAC helper
+// ---------------------------------------------------------------------------
+
+// computeHMACHex returns the hex-encoded HMAC-SHA256 of body using secret.
+// The format matches what docstore's outbox dispatcher sends:
+// "sha256=" + hex(hmac-sha256(body, secret))
+func computeHMACHex(body []byte, secret string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// ---------------------------------------------------------------------------
+// Startup: auto-register webhook subscription with docstore
+// ---------------------------------------------------------------------------
+
+// registerWebhookSubscription checks whether a webhook subscription for
+// runnerURL already exists and creates one if not. Errors are logged as
+// warnings so the runner can still be triggered manually.
+func registerWebhookSubscription(ctx context.Context, client *http.Client, docstoreURL, runnerURL, webhookSecret string) {
+	webhookURL := strings.TrimRight(runnerURL, "/") + "/webhook"
+	subsURL := strings.TrimRight(docstoreURL, "/") + "/subscriptions"
+
+	// List existing subscriptions.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, subsURL, nil)
+	if err != nil {
+		slog.Warn("webhook registration: build list request failed", "error", err)
+		return
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		slog.Warn("webhook registration: list subscriptions failed", "error", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		var listResp model.ListSubscriptionsResponse
+		if err := json.NewDecoder(resp.Body).Decode(&listResp); err == nil {
+			for _, sub := range listResp.Subscriptions {
+				var cfg map[string]string
+				if err := json.Unmarshal(sub.Config, &cfg); err != nil {
+					slog.Warn("webhook registration: failed to parse subscription config", "id", sub.ID, "error", err)
+					continue
+				}
+				if cfg["url"] == webhookURL {
+					slog.Info("webhook subscription already registered", "id", sub.ID, "url", webhookURL)
+					return
+				}
+			}
+		}
+	}
+
+	// Create subscription.
+	cfgJSON, _ := json.Marshal(map[string]string{"url": webhookURL, "secret": webhookSecret})
+	createBody, _ := json.Marshal(model.CreateSubscriptionRequest{
+		Backend:    "webhook",
+		EventTypes: []string{"com.docstore.commit.created"},
+		Config:     cfgJSON,
+	})
+	createReq, err := http.NewRequestWithContext(ctx, http.MethodPost, subsURL, bytes.NewReader(createBody))
+	if err != nil {
+		slog.Warn("webhook registration: build create request failed", "error", err)
+		return
+	}
+	createReq.Header.Set("Content-Type", "application/json")
+	createResp, err := client.Do(createReq)
+	if err != nil {
+		slog.Warn("webhook registration: create subscription failed", "error", err)
+		return
+	}
+	defer createResp.Body.Close()
+
+	if createResp.StatusCode == http.StatusCreated {
+		slog.Info("webhook subscription registered", "url", webhookURL)
+	} else {
+		slog.Warn("webhook registration: unexpected status (runner will still accept manual POST /run)",
+			"status", createResp.StatusCode, "url", webhookURL)
+	}
 }
 
 // ---------------------------------------------------------------------------
 // HTTP mux
 // ---------------------------------------------------------------------------
 
-func newMux(serverCtx context.Context, exec *executor.Executor, ls logstore.LogStore, docstoreURL string, client *http.Client, runTimeout time.Duration) *http.ServeMux {
+func newMux(serverCtx context.Context, exec *executor.Executor, ls logstore.LogStore, docstoreURL string, client *http.Client, runTimeout time.Duration, webhookSecret string) *http.ServeMux {
+	reg := newRunRegistry()
+
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-serverCtx.Done():
+				return
+			case <-ticker.C:
+				reg.cleanup()
+			}
+		}
+	}()
+
 	mux := http.NewServeMux()
+
+	// POST /run — manual trigger (existing endpoint).
 	mux.HandleFunc("POST /run", func(w http.ResponseWriter, r *http.Request) {
 		var req runRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -264,15 +465,89 @@ func newMux(serverCtx context.Context, exec *executor.Executor, ls logstore.LogS
 		}
 
 		runID := uuid.New().String()
+		reg.start(runID, req.Repo, req.Branch, req.HeadSequence)
 		go func() {
 			ctx, cancel := context.WithTimeout(serverCtx, runTimeout)
 			defer cancel()
-			runAsync(ctx, client, exec, ls, docstoreURL, req.Repo, req.Branch, req.HeadSequence)
+			runAsync(ctx, client, exec, ls, docstoreURL, req.Repo, req.Branch, req.HeadSequence, runID, reg)
 		}()
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(runResponse{RunID: runID}) //nolint:errcheck
 	})
+
+	// POST /webhook — receives CloudEvents webhook deliveries from docstore.
+	mux.HandleFunc("POST /webhook", func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		if err != nil {
+			http.Error(w, "failed to read body", http.StatusBadRequest)
+			return
+		}
+
+		// Verify HMAC signature when a secret is configured.
+		if webhookSecret != "" {
+			sig := r.Header.Get("X-DocStore-Signature")
+			expected := "sha256=" + computeHMACHex(body, webhookSecret)
+			if !hmac.Equal([]byte(sig), []byte(expected)) {
+				http.Error(w, "invalid signature", http.StatusBadRequest)
+				return
+			}
+		}
+
+		// Parse CloudEvents envelope — only need type and data.
+		var env struct {
+			Type string          `json:"type"`
+			Data json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal(body, &env); err != nil {
+			http.Error(w, "invalid cloudevent body", http.StatusBadRequest)
+			return
+		}
+
+		// Unknown event types are silently acknowledged (forward-compat).
+		if env.Type != "com.docstore.commit.created" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		// Extract commit.created data fields.
+		var data struct {
+			Repo     string `json:"repo"`
+			Branch   string `json:"branch"`
+			Sequence int64  `json:"sequence"`
+		}
+		if err := json.Unmarshal(env.Data, &data); err != nil {
+			http.Error(w, "invalid event data", http.StatusBadRequest)
+			return
+		}
+		if data.Repo == "" || data.Branch == "" {
+			http.Error(w, "missing repo or branch in event data", http.StatusBadRequest)
+			return
+		}
+
+		runID := uuid.New().String()
+		reg.start(runID, data.Repo, data.Branch, data.Sequence)
+		go func() {
+			ctx, cancel := context.WithTimeout(serverCtx, runTimeout)
+			defer cancel()
+			runAsync(ctx, client, exec, ls, docstoreURL, data.Repo, data.Branch, data.Sequence, runID, reg)
+		}()
+
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// GET /run/{run_id} — polling endpoint for run status.
+	mux.HandleFunc("GET /run/{run_id}", func(w http.ResponseWriter, r *http.Request) {
+		runID := r.PathValue("run_id")
+		status, ok := reg.get(runID)
+		if !ok {
+			http.Error(w, "run not found", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(status) //nolint:errcheck
+	})
+
 	return mux
 }
 
@@ -286,6 +561,8 @@ func main() {
 	docstoreURL := flag.String("docstore-url", "", "Base URL of the docstore server (required)")
 	devIdentity := flag.String("dev-identity", "", "Identity header to send to docstore (local dev only)")
 	runTimeout := flag.Duration("run-timeout", 30*time.Minute, "Maximum duration for a single CI run")
+	runnerURL := flag.String("runner-url", "", "Public URL of this ci-runner instance (used to register webhook subscription)")
+	webhookSecret := flag.String("webhook-secret", "", "Shared HMAC secret for webhook signature verification")
 	flag.Parse()
 
 	if *docstoreURL == "" {
@@ -329,7 +606,7 @@ func main() {
 	serverCtx, serverCancel := context.WithCancel(context.Background())
 	defer serverCancel()
 
-	mux := newMux(serverCtx, exec, ls, *docstoreURL, httpClient, *runTimeout)
+	mux := newMux(serverCtx, exec, ls, *docstoreURL, httpClient, *runTimeout, *webhookSecret)
 
 	srv := &http.Server{
 		Addr:        ":" + *port,
@@ -346,6 +623,13 @@ func main() {
 			os.Exit(1)
 		}
 	}()
+
+	// Auto-register webhook subscription if runner-url and webhook-secret are provided.
+	if *runnerURL != "" && *webhookSecret != "" {
+		registerCtx, registerCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer registerCancel()
+		registerWebhookSubscription(registerCtx, httpClient, *docstoreURL, *runnerURL, *webhookSecret)
+	}
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)

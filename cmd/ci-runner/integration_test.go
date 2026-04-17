@@ -176,7 +176,7 @@ func newIntegrationServer(t *testing.T, docstoreURL string) *httptest.Server {
 		t.Fatalf("cannot connect to buildkitd at %s: %v", pkgBuildkitAddr, err)
 	}
 	ls, _ := logstore.NewLocalLogStore(t.TempDir())
-	srv := httptest.NewServer(newMux(context.Background(), exec, ls, docstoreURL, &http.Client{}, 30*time.Minute))
+	srv := httptest.NewServer(newMux(context.Background(), exec, ls, docstoreURL, &http.Client{}, 30*time.Minute, ""))
 	t.Cleanup(func() {
 		srv.Close()
 		exec.Close() //nolint:errcheck
