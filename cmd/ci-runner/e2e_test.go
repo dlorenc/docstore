@@ -256,6 +256,181 @@ func TestSmoke(t *testing.T) { t.Log("smoke ok") }
 	_ = logDir // keep temp dir alive until assertions complete
 }
 
+// TestE2EDockerSocket tests that a build step can run `docker info` when a
+// Docker socket is available. It requires the DOCKER_SOCKET env var to point
+// to a running Docker socket (e.g. /run/shared/docker.sock from the DinD
+// sidecar in production, or /var/run/docker.sock on a developer machine).
+// The test is skipped when DOCKER_SOCKET is not set.
+//
+// Run with: DOCKER_SOCKET=/var/run/docker.sock go test ./cmd/ci-runner/ -tags=e2e -v -run TestE2EDockerSocket
+func TestE2EDockerSocket(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test in short mode")
+	}
+	dockerSocket := os.Getenv("DOCKER_SOCKET")
+	if dockerSocket == "" {
+		t.Skip("DOCKER_SOCKET not set; skipping docker socket e2e test")
+	}
+
+	ctx := context.Background()
+
+	// Start Postgres and docstore server.
+	adminDSN, dbCleanup, err := testutil.StartSharedPostgres()
+	if err != nil {
+		t.Fatalf("start postgres: %v", err)
+	}
+	t.Cleanup(dbCleanup)
+
+	db := testutil.TestDBFromShared(t, adminDSN, dbpkg.RunMigrations)
+	store := dbpkg.NewStore(db)
+	broker := events.NewBroker(db)
+
+	const adminIdentity = "admin@test.example.com"
+	docstoreHandler := server.NewWithBroker(store, db, nil, broker, adminIdentity, adminIdentity)
+	docstoreSrv := httptest.NewServer(docstoreHandler)
+	t.Cleanup(docstoreSrv.Close)
+
+	dispatchCtx, dispatchCancel := context.WithCancel(ctx)
+	t.Cleanup(dispatchCancel)
+	events.StartDispatcher(dispatchCtx, db)
+
+	adminClient := &http.Client{
+		Transport: &devTransport{base: http.DefaultTransport, identity: adminIdentity},
+	}
+
+	// Start buildkitd and ci-runner with docker socket configured.
+	buildkitAddr, buildkitCleanup, err := testutil.StartBuildkit()
+	if err != nil {
+		t.Fatalf("start buildkitd: %v", err)
+	}
+	t.Cleanup(buildkitCleanup)
+
+	exec, err := executor.New(buildkitAddr, executor.WithDockerSocket(dockerSocket))
+	if err != nil {
+		t.Fatalf("connect to buildkitd: %v", err)
+	}
+	t.Cleanup(func() { exec.Close() }) //nolint:errcheck
+
+	logDir := t.TempDir()
+	ls, _ := logstore.NewLocalLogStore(logDir)
+	const webhookSecret = "e2e-docker-socket-secret"
+	runnerMux := newMux(ctx, exec, ls, docstoreSrv.URL, adminClient, 10*time.Minute, webhookSecret)
+	runnerSrv := httptest.NewServer(runnerMux)
+	t.Cleanup(runnerSrv.Close)
+
+	// Seed docstore.
+	mustPost(t, adminClient, docstoreSrv.URL+"/orgs", map[string]any{"name": "testdocker"})
+	mustPost(t, adminClient, docstoreSrv.URL+"/repos", map[string]any{"owner": "testdocker", "name": "app"})
+
+	ciYAML := `checks:
+  - name: ci/docker
+    image: docker:cli
+    steps:
+      - docker info
+`
+	mustCommit(t, adminClient, docstoreSrv.URL, "testdocker/app", "main",
+		"initial: add ci config with docker check", []model.FileChange{
+			{Path: ".docstore/ci.yaml", Content: []byte(ciYAML)},
+		})
+
+	// Register webhook subscription.
+	cfgJSON, _ := json.Marshal(map[string]string{
+		"url":    runnerSrv.URL + "/webhook",
+		"secret": webhookSecret,
+	})
+	subBody, _ := json.Marshal(model.CreateSubscriptionRequest{
+		Backend:    "webhook",
+		EventTypes: []string{"com.docstore.commit.created"},
+		Config:     cfgJSON,
+	})
+	subResp, err := adminClient.Post(
+		docstoreSrv.URL+"/subscriptions",
+		"application/json",
+		bytes.NewReader(subBody),
+	)
+	if err != nil {
+		t.Fatalf("create subscription: %v", err)
+	}
+	subResp.Body.Close()
+	if subResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create subscription: expected 201, got %d", subResp.StatusCode)
+	}
+
+	// Trigger a commit.
+	triggerResp := mustCommit(t, adminClient, docstoreSrv.URL, "testdocker/app", "main",
+		"trigger: add readme", []model.FileChange{
+			{Path: "README.md", Content: []byte("hello")},
+		})
+	t.Logf("trigger commit sequence: %d", triggerResp.Sequence)
+
+	// Poll until ci/docker resolves.
+	checksURL := fmt.Sprintf("%s/repos/testdocker/app/-/branch/main/checks", docstoreSrv.URL)
+	deadline := time.Now().Add(4 * time.Minute)
+	resolved := false
+
+	for time.Now().Before(deadline) {
+		time.Sleep(3 * time.Second)
+
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, checksURL, nil)
+		cr, err := adminClient.Do(req)
+		if err != nil {
+			t.Logf("poll checks: %v", err)
+			continue
+		}
+		var runs []model.CheckRun
+		if err := json.NewDecoder(cr.Body).Decode(&runs); err != nil {
+			cr.Body.Close()
+			continue
+		}
+		cr.Body.Close()
+
+		for _, run := range runs {
+			if run.Sequence != triggerResp.Sequence {
+				continue
+			}
+			if run.CheckName == "ci/docker" &&
+				(run.Status == model.CheckRunPassed || run.Status == model.CheckRunFailed) {
+				resolved = true
+			}
+		}
+		if resolved {
+			break
+		}
+		t.Logf("waiting for ci/docker to resolve...")
+	}
+
+	// Assert ci/docker passed.
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, checksURL, nil)
+	finalResp, err := adminClient.Do(req)
+	if err != nil {
+		t.Fatalf("final check fetch: %v", err)
+	}
+	var finalRuns []model.CheckRun
+	if err := json.NewDecoder(finalResp.Body).Decode(&finalRuns); err != nil {
+		t.Fatalf("decode final checks: %v", err)
+	}
+	finalResp.Body.Close()
+
+	for _, run := range finalRuns {
+		if run.Sequence != triggerResp.Sequence || run.CheckName != "ci/docker" {
+			continue
+		}
+		if run.Status != model.CheckRunPassed {
+			logContent := ""
+			if run.LogURL != nil {
+				logContent = readLocalLog(t, *run.LogURL)
+			}
+			t.Errorf("ci/docker: expected passed, got %s\nlogs:\n%s", run.Status, logContent)
+		} else {
+			t.Logf("ci/docker: passed ✓")
+		}
+		return
+	}
+	if !resolved {
+		t.Error("ci/docker: check never resolved")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

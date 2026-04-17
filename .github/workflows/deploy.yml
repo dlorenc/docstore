@@ -73,7 +73,7 @@ jobs:
 
       - uses: google-github-actions/get-gke-credentials@v2
         with:
-          cluster_name: chainguardener
+          cluster_name: docstore-ci
           location: us-central1
           project_id: dlorenc-chainguard
 
