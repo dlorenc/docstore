@@ -236,6 +236,9 @@ func TestPullBranchSource_DownloadsFiles(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/repos/default/myrepo/-/archive" {
+			if at := r.URL.Query().Get("at"); at != "42" {
+				t.Errorf("expected at=42, got %q", at)
+			}
 			w.Header().Set("Content-Type", "application/x-tar")
 			w.Write(tarData) //nolint:errcheck
 			return
@@ -244,7 +247,7 @@ func TestPullBranchSource_DownloadsFiles(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	tempDir, err := pullBranchSource(context.Background(), srv.Client(), srv.URL, "default/myrepo", "feature/x")
+	tempDir, err := pullBranchSource(context.Background(), srv.Client(), srv.URL, "default/myrepo", "feature/x", 42)
 	if tempDir != "" {
 		defer os.RemoveAll(tempDir)
 	}
