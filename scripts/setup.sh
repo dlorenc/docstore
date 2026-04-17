@@ -50,10 +50,12 @@ else
   echo "    Already exists: gs://${LOG_BUCKET}"
 fi
 
-echo "==> Granting ci-runner SA storage.objectCreator on log bucket..."
+echo "==> Granting ci-runner SA storage.objectUser on log bucket..."
+# objectUser (not objectCreator) is required: the GCS multipart writer needs
+# delete access to compose/clean up intermediate chunk objects.
 gcloud storage buckets add-iam-policy-binding "gs://${LOG_BUCKET}" \
   --member="serviceAccount:${CI_RUNNER_SA}" \
-  --role=roles/storage.objectCreator \
+  --role=roles/storage.objectUser \
   --project="${PROJECT}" \
   --quiet
 echo "    Done."

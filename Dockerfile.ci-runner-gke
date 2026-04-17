@@ -1,0 +1,15 @@
+FROM golang:1.25 AS runner-build
+COPY . /src
+WORKDIR /src
+RUN CGO_ENABLED=0 go build -o /ci-runner ./cmd/ci-runner
+
+# rootless image: buildkitd runs in a user namespace, no SYS_ADMIN required.
+# Works on GKE Autopilot which blocks SYS_ADMIN.
+FROM moby/buildkit:v0.29.0-rootless
+USER root
+RUN apk add --no-cache ca-certificates curl
+COPY --from=runner-build /ci-runner /usr/bin/ci-runner
+COPY entrypoint-gke.sh /entrypoint-gke.sh
+RUN chmod +x /entrypoint-gke.sh
+USER 1000
+ENTRYPOINT ["/entrypoint-gke.sh"]
