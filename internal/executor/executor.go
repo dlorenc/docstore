@@ -3,15 +3,22 @@ package executor
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+	"runtime"
+	"strings"
 	"sync"
 
 	dockerconfig "github.com/docker/cli/cli/config"
+	"github.com/distribution/reference"
 	"github.com/moby/buildkit/client"
 	"github.com/moby/buildkit/client/llb"
+	"github.com/moby/buildkit/client/llb/sourceresolver"
+	gwclient "github.com/moby/buildkit/frontend/gateway/client"
 	"github.com/moby/buildkit/session"
 	"github.com/moby/buildkit/session/auth/authprovider"
+	specs "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 // Config mirrors the .docstore/ci.yaml DSL and is used for both JSON decode
@@ -80,29 +87,6 @@ func (e *Executor) Close() error {
 
 // runCheck executes a single check and returns its result.
 func (e *Executor) runCheck(ctx context.Context, sourceDir string, check Check) CheckResult {
-	source := llb.Local("src")
-	state := llb.Image(check.Image).Dir("/src")
-	srcMount := source
-
-	for _, step := range check.Steps {
-		exec := state.Run(
-			llb.Args([]string{"sh", "-c", step}),
-			llb.WithCustomName(check.Name+": "+step),
-			llb.AddMount("/src", srcMount),
-		)
-		state = exec.Root()
-		srcMount = exec.GetMount("/src")
-	}
-
-	def, err := state.Marshal(ctx, llb.LinuxAmd64)
-	if err != nil {
-		return CheckResult{
-			Name:   check.Name,
-			Status: "failed",
-			Logs:   fmt.Sprintf("marshal error: %v", err),
-		}
-	}
-
 	var logBuf bytes.Buffer
 	ch := make(chan *client.SolveStatus)
 
@@ -117,8 +101,6 @@ func (e *Executor) runCheck(ctx context.Context, sourceDir string, check Check) 
 		}
 	}()
 
-	// Load Docker credentials from DOCKER_CONFIG or ~/.docker so buildkitd
-	// can pull images from authenticated registries via the session auth provider.
 	dockerConfigDir := os.Getenv("DOCKER_CONFIG")
 	if dockerConfigDir == "" {
 		home := os.Getenv("HOME")
@@ -134,12 +116,78 @@ func (e *Executor) runCheck(ctx context.Context, sourceDir string, check Check) 
 		ap.AuthConfigProvider = authprovider.LoadAuthConfig(dockerCfg)
 	}
 
-	_, solveErr := e.client.Solve(ctx, def, client.SolveOpt{
+	_, solveErr := e.client.Build(ctx, client.SolveOpt{
 		LocalDirs: map[string]string{"src": sourceDir},
 		Session: []session.Attachable{
 			authprovider.NewDockerAuthProvider(ap),
 		},
+	}, "", func(ctx context.Context, c gwclient.Client) (*gwclient.Result, error) {
+		// Resolve the image config to extract its ENV variables.
+		// Required because --oci-worker-no-process-sandbox (needed on GKE
+		// Autopilot where SYS_ADMIN is blocked) does not apply the image's
+		// ENV automatically. We add them to the LLB state explicitly so that
+		// PATH and other variables set by the image (e.g. in golang:1.25) are
+		// available when steps run.
+		// Normalize the image reference (e.g. "golang:1.25" →
+		// "docker.io/library/golang:1.25") so that ResolveImageConfig can parse
+		// it — bare short names without a registry host confuse the URL parser.
+		imageRef := check.Image
+		if named, err := reference.ParseNormalizedNamed(check.Image); err == nil {
+			imageRef = reference.TagNameOnly(named).String()
+		}
+
+		var imageEnv []string
+		if _, _, cfgBytes, err := c.ResolveImageConfig(ctx, imageRef,
+			sourceresolver.Opt{ImageOpt: &sourceresolver.ResolveImageOpt{}}); err == nil {
+			var imgCfg specs.Image
+			if json.Unmarshal(cfgBytes, &imgCfg) == nil {
+				imageEnv = imgCfg.Config.Env
+			}
+		}
+
+		source := llb.Local("src")
+		state := llb.Image(check.Image).Dir("/src")
+		srcMount := source
+
+		// Build RunOptions that apply the image ENV to each exec.
+		// llb.State.AddEnv only sets metadata; llb.AddEnv as a RunOption is
+		// what actually injects variables into the exec environment.
+		envOpts := make([]llb.RunOption, 0, len(imageEnv))
+		for _, env := range imageEnv {
+			k, v, _ := strings.Cut(env, "=")
+			envOpts = append(envOpts, llb.AddEnv(k, v))
+		}
+
+		for _, step := range check.Steps {
+			runOpts := []llb.RunOption{
+				llb.Args([]string{"sh", "-c", step}),
+				llb.WithCustomName(check.Name + ": " + step),
+				llb.AddMount("/src", srcMount),
+			}
+			runOpts = append(runOpts, envOpts...)
+			exec := state.Run(runOpts...)
+			state = exec.Root()
+			srcMount = exec.GetMount("/src")
+		}
+
+		// Use the host architecture so builds work on both amd64 (GKE) and
+		// arm64 (Apple Silicon dev machines).
+		var platformOpt llb.ConstraintsOpt
+		if runtime.GOARCH == "arm64" {
+			platformOpt = llb.LinuxArm64
+		} else {
+			platformOpt = llb.LinuxAmd64
+		}
+		def, err := state.Marshal(ctx, platformOpt)
+		if err != nil {
+			return nil, fmt.Errorf("marshal: %w", err)
+		}
+
+		return c.Solve(ctx, gwclient.SolveRequest{
+			Definition: def.ToPB(),
+		})
 	}, ch)
+
 	collectWg.Wait()
 
 	status := "passed"
