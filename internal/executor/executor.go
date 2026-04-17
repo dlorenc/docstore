@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -41,18 +42,38 @@ type CheckResult struct {
 	Logs   string `json:"logs"`
 }
 
+// options holds optional configuration for an Executor.
+type options struct {
+	dockerSocket string
+}
+
+// Option is a functional option for configuring an Executor.
+type Option func(*options)
+
+// WithDockerSocket configures the executor to mount the Docker socket at the
+// standard location (/var/run/docker.sock) inside every build step, and sets
+// DOCKER_HOST accordingly. An empty path disables the feature.
+func WithDockerSocket(path string) Option {
+	return func(o *options) { o.dockerSocket = path }
+}
+
 // Executor translates a Config into an LLB DAG and dispatches it to buildkitd.
 type Executor struct {
 	client *client.Client
+	opts   options
 }
 
 // New creates an Executor connected to the buildkitd at buildkitAddr.
-func New(buildkitAddr string) (*Executor, error) {
+func New(buildkitAddr string, opts ...Option) (*Executor, error) {
 	c, err := client.New(context.Background(), buildkitAddr)
 	if err != nil {
 		return nil, fmt.Errorf("connect to buildkitd at %s: %w", buildkitAddr, err)
 	}
-	return &Executor{client: c}, nil
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return &Executor{client: c, opts: o}, nil
 }
 
 // Run executes all checks in cfg in parallel against sourceDir.
@@ -116,8 +137,13 @@ func (e *Executor) runCheck(ctx context.Context, sourceDir string, check Check) 
 		ap.AuthConfigProvider = authprovider.LoadAuthConfig(dockerCfg)
 	}
 
+	localDirs := map[string]string{"src": sourceDir}
+	if e.opts.dockerSocket != "" {
+		localDirs["docker-socket"] = filepath.Dir(e.opts.dockerSocket)
+	}
+
 	_, solveErr := e.client.Build(ctx, client.SolveOpt{
-		LocalDirs: map[string]string{"src": sourceDir},
+		LocalDirs: localDirs,
 		Session: []session.Attachable{
 			authprovider.NewDockerAuthProvider(ap),
 		},
@@ -156,6 +182,15 @@ func (e *Executor) runCheck(ctx context.Context, sourceDir string, check Check) 
 		for _, env := range imageEnv {
 			k, v, _ := strings.Cut(env, "=")
 			envOpts = append(envOpts, llb.AddEnv(k, v))
+		}
+		if e.opts.dockerSocket != "" {
+			envOpts = append(envOpts,
+				llb.AddEnv("DOCKER_HOST", "unix:///var/run/docker.sock"),
+				llb.AddMount("/var/run/docker.sock",
+					llb.Local("docker-socket"),
+					llb.SourcePath(filepath.Base(e.opts.dockerSocket)),
+				),
+			)
 		}
 
 		for _, step := range check.Steps {
