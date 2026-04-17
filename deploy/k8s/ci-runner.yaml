@@ -1,0 +1,91 @@
+# GKE Autopilot deployment for ci-runner.
+#
+# Uses rootless buildkitd (moby/buildkit-rootless) so no SYS_ADMIN is needed,
+# which is required because GKE Autopilot blocks that capability.
+#
+# Pre-requisites (run scripts/setup-gke.sh first):
+#   - GKE cluster with Workload Identity enabled
+#   - ci-runner GCP SA bound to the k8s SA below
+#   - docstore-ci/ci-runner k8s Secret populated
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ci-runner
+  namespace: docstore-ci
+  annotations:
+    iam.gke.io/gcp-service-account: ci-runner@dlorenc-chainguard.iam.gserviceaccount.com
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ci-runner
+  namespace: docstore-ci
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ci-runner
+  template:
+    metadata:
+      labels:
+        app: ci-runner
+    spec:
+      serviceAccountName: ci-runner
+      # rootlesskit needs AppArmor unconfined to set up mount namespaces within
+      # the user namespace. seccompProfile Unconfined is also required.
+      securityContext:
+        appArmorProfile:
+          type: Unconfined
+      containers:
+      - name: ci-runner
+        image: us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-runner-gke:latest
+        env:
+        - name: DOCSTORE_URL
+          value: https://docstore-efuj4cj54a-uc.a.run.app
+        - name: LOG_STORE
+          value: gcs
+        - name: LOG_BUCKET
+          value: docstore-ci-logs
+        - name: WEBHOOK_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: ci-runner
+              key: webhook-secret
+              optional: true
+        - name: RUNNER_URL
+          valueFrom:
+            secretKeyRef:
+              name: ci-runner
+              key: runner-url
+              optional: true
+        ports:
+        - containerPort: 8080
+        securityContext:
+          seccompProfile:
+            type: Unconfined
+          runAsUser: 1000
+          runAsNonRoot: true
+        resources:
+          requests:
+            cpu: "4"
+            memory: "4Gi"
+        readinessProbe:
+          tcpSocket:
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ci-runner
+  namespace: docstore-ci
+spec:
+  selector:
+    app: ci-runner
+  ports:
+  - port: 8080
+    targetPort: 8080
+  type: ClusterIP
