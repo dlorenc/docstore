@@ -1698,7 +1698,8 @@ func (a *App) Review(branch, status, body string) error {
 }
 
 // Checks lists check runs for a branch (defaults to current branch if empty).
-func (a *App) Checks(branch string) error {
+// If showAll is false, only the latest result per check_name is shown.
+func (a *App) Checks(branch string, showAll bool) error {
 	cfg, err := a.loadConfig()
 	if err != nil {
 		return err
@@ -1732,6 +1733,24 @@ func (a *App) Checks(branch string) error {
 		return err
 	}
 
+	// Deduplicate by check_name keeping highest sequence unless --all is set.
+	if !showAll {
+		latest := make(map[string]model.CheckRun)
+		for _, c := range checkRuns {
+			prev, ok := latest[c.CheckName]
+			if !ok || c.Sequence > prev.Sequence {
+				latest[c.CheckName] = c
+			}
+		}
+		checkRuns = make([]model.CheckRun, 0, len(latest))
+		for _, c := range latest {
+			checkRuns = append(checkRuns, c)
+		}
+		sort.Slice(checkRuns, func(i, j int) bool {
+			return checkRuns[i].CheckName < checkRuns[j].CheckName
+		})
+	}
+
 	fmt.Fprintf(a.Out, "%-8s  %-20s  %-4s  %-10s  %s\n", "ID", "CHECK NAME", "SEQ", "STATUS", "REPORTER")
 	for _, c := range checkRuns {
 		stale := ""
@@ -1744,12 +1763,16 @@ func (a *App) Checks(branch string) error {
 		}
 		fmt.Fprintf(a.Out, "%-8s  %-20s  %-4d  %-10s  %s%s\n",
 			id, c.CheckName, c.Sequence, string(c.Status), c.Reporter, stale)
+		if c.LogURL != nil {
+			fmt.Fprintf(a.Out, "         log: %s\n", *c.LogURL)
+		}
 	}
 	return nil
 }
 
 // Check reports a CI check result for a branch.
-func (a *App) Check(branch, name, status string) error {
+// logURL and sequence are optional; pass nil to omit them from the request.
+func (a *App) Check(branch, name, status string, logURL *string, sequence *int64) error {
 	cfg, err := a.loadConfig()
 	if err != nil {
 		return err
@@ -1767,6 +1790,8 @@ func (a *App) Check(branch, name, status string) error {
 		Branch:    branch,
 		CheckName: name,
 		Status:    checkStatus,
+		LogURL:    logURL,
+		Sequence:  sequence,
 	}
 	resp, err := a.postJSON(cfg, repoBase(cfg)+"/check", req)
 	if err != nil {
