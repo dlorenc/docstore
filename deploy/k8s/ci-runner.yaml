@@ -37,6 +37,9 @@ spec:
       securityContext:
         appArmorProfile:
           type: Unconfined
+      volumes:
+      - name: docker-socket
+        emptyDir: {}
       containers:
       - name: ci-runner
         image: us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-runner-gke:latest
@@ -76,6 +79,32 @@ spec:
           initialDelaySeconds: 15
           periodSeconds: 10
           failureThreshold: 3
+        volumeMounts:
+        - name: docker-socket
+          mountPath: /run/shared
+      - name: docker-dind
+        image: docker:27-dind-rootless
+        args: ["--host=unix:///run/shared/docker.sock", "--tls=false"]
+        env:
+        - name: DOCKER_TLS_CERTDIR
+          value: ""
+        securityContext:
+          seccompProfile:
+            type: Unconfined
+          runAsUser: 1000
+          runAsNonRoot: true
+        volumeMounts:
+        - name: docker-socket
+          mountPath: /run/shared
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "512Mi"
+        readinessProbe:
+          exec:
+            command: ["sh", "-c", "test -S /run/shared/docker.sock"]
+          initialDelaySeconds: 5
+          periodSeconds: 3
 ---
 apiVersion: v1
 kind: Service
