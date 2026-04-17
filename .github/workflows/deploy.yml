@@ -105,7 +105,7 @@ jobs:
             --update-secrets=RUNNER_URL=ci-runner-url:latest \
             --allow-unauthenticated \
             --concurrency=1 \
-            --min-instances=1 \
+            --min-instances=0 \
             --max-instances=10 \
             --memory=4Gi \
             --cpu=4 \
