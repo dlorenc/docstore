@@ -11,7 +11,19 @@ set -euo pipefail
 
 PROJECT="${PROJECT:-dlorenc-chainguard}"
 REGION="${REGION:-us-central1}"
-CLUSTER="${CLUSTER:-chainguardener}"
+CLUSTER="${CLUSTER:-docstore-ci}"
+
+echo "==> Creating cluster ${CLUSTER} (no-op if it already exists)..."
+gcloud container clusters create "${CLUSTER}" \
+  --project="${PROJECT}" \
+  --region="${REGION}" \
+  --num-nodes=1 \
+  --machine-type=n2-standard-4 \
+  --workload-pool="${PROJECT}.svc.id.goog" \
+  --spot \
+  --release-channel=regular \
+  --quiet || true
+echo "    Done."
 NAMESPACE="docstore-ci"
 KSA="ci-runner"
 GSA="ci-runner@${PROJECT}.iam.gserviceaccount.com"
