@@ -3,14 +3,14 @@ package db
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 
 	"github.com/dlorenc/docstore/internal/model"
 )
 
+// ciJobColumns is the ordered list of columns returned by SELECT * on ci_jobs.
 const ciJobColumns = `id, repo, branch, sequence, status, claimed_at, last_heartbeat_at,
-                      worker_pod, worker_pod_ip, log_url, error_message, created_at`
+	worker_pod, worker_pod_ip, log_url, error_message, created_at`
 
 // scanCIJob scans a single ci_jobs row into a model.CIJob.
 func scanCIJob(row interface {
@@ -51,12 +51,10 @@ func scanCIJob(row interface {
 	return &j, nil
 }
 
-// InsertCIJob creates a new ci_jobs row in the 'queued' state.
+// InsertCIJob inserts a new ci_job row with status 'queued' and returns it.
 func (s *Store) InsertCIJob(ctx context.Context, repo, branch string, sequence int64) (*model.CIJob, error) {
 	row := s.db.QueryRowContext(ctx,
-		`INSERT INTO ci_jobs (repo, branch, sequence)
-		 VALUES ($1, $2, $3)
-		 RETURNING `+ciJobColumns,
+		`INSERT INTO ci_jobs (repo, branch, sequence) VALUES ($1, $2, $3) RETURNING `+ciJobColumns,
 		repo, branch, sequence,
 	)
 	j, err := scanCIJob(row)
@@ -66,15 +64,15 @@ func (s *Store) InsertCIJob(ctx context.Context, repo, branch string, sequence i
 	return j, nil
 }
 
-// GetCIJob retrieves a ci_jobs row by UUID. Returns ErrCIJobNotFound if not present.
+// GetCIJob fetches a single ci_job by ID.
 func (s *Store) GetCIJob(ctx context.Context, id string) (*model.CIJob, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT `+ciJobColumns+` FROM ci_jobs WHERE id = $1`,
 		id,
 	)
 	j, err := scanCIJob(row)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrCIJobNotFound
+	if err == sql.ErrNoRows {
+		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get ci job: %w", err)
@@ -82,19 +80,69 @@ func (s *Store) GetCIJob(ctx context.Context, id string) (*model.CIJob, error) {
 	return j, nil
 }
 
-// ReapStaleCIJobs resets claimed jobs that missed heartbeats back to 'queued'.
-// Returns the reclaimed jobs.
+// ClaimCIJob atomically claims the oldest queued job for this worker pod.
+// Returns nil, nil if no queued job is currently available.
+func (s *Store) ClaimCIJob(ctx context.Context, podName, podIP string) (*model.CIJob, error) {
+	row := s.db.QueryRowContext(ctx,
+		`UPDATE ci_jobs
+		SET status = 'claimed', claimed_at = now(), worker_pod = $1, worker_pod_ip = $2
+		WHERE id = (
+			SELECT id FROM ci_jobs
+			WHERE status = 'queued'
+			ORDER BY created_at
+			FOR UPDATE SKIP LOCKED
+			LIMIT 1
+		)
+		RETURNING `+ciJobColumns,
+		podName, podIP,
+	)
+	j, err := scanCIJob(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("claim ci job: %w", err)
+	}
+	return j, nil
+}
+
+// HeartbeatCIJob updates last_heartbeat_at to now() for the given job.
+func (s *Store) HeartbeatCIJob(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE ci_jobs SET last_heartbeat_at = now() WHERE id = $1`,
+		id,
+	)
+	if err != nil {
+		return fmt.Errorf("heartbeat ci job: %w", err)
+	}
+	return nil
+}
+
+// CompleteCIJob sets a terminal status, log URL, and error message on the job.
+func (s *Store) CompleteCIJob(ctx context.Context, id, status string, logURL, errorMessage *string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE ci_jobs SET status = $2, log_url = $3, error_message = $4 WHERE id = $1`,
+		id, status, logURL, errorMessage,
+	)
+	if err != nil {
+		return fmt.Errorf("complete ci job: %w", err)
+	}
+	return nil
+}
+
+// ReapStaleCIJobs resets claimed jobs that have not sent a heartbeat in the
+// last 2 minutes back to 'queued' so another worker can pick them up.
 func (s *Store) ReapStaleCIJobs(ctx context.Context) ([]model.CIJob, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`UPDATE ci_jobs
-		 SET status            = 'queued',
-		     claimed_at        = NULL,
-		     last_heartbeat_at = NULL,
-		     worker_pod        = NULL,
-		     worker_pod_ip     = NULL
-		 WHERE status = 'claimed'
-		   AND COALESCE(last_heartbeat_at, claimed_at) < now() - interval '2 minutes'
-		 RETURNING `+ciJobColumns,
+		SET status            = 'queued',
+		    claimed_at        = NULL,
+		    last_heartbeat_at = NULL,
+		    worker_pod        = NULL,
+		    worker_pod_ip     = NULL
+		WHERE status = 'claimed'
+		  AND COALESCE(last_heartbeat_at, claimed_at) < now() - interval '2 minutes'
+		RETURNING `+ciJobColumns,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("reap stale ci jobs: %w", err)
@@ -105,12 +153,9 @@ func (s *Store) ReapStaleCIJobs(ctx context.Context) ([]model.CIJob, error) {
 	for rows.Next() {
 		j, err := scanCIJob(rows)
 		if err != nil {
-			return nil, fmt.Errorf("scan ci job: %w", err)
+			return nil, fmt.Errorf("scan reaped ci job: %w", err)
 		}
 		jobs = append(jobs, *j)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate ci jobs: %w", err)
-	}
-	return jobs, nil
+	return jobs, rows.Err()
 }
