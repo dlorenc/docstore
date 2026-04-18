@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS ci_jobs;
+DROP TYPE IF EXISTS ci_job_status;
