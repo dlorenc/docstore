@@ -1,0 +1,25 @@
+FROM docker:27-dind AS docker-bins
+
+FROM moby/buildkit:v0.29.0 AS buildkit
+
+FROM golang:1.25 AS build
+COPY . /src
+WORKDIR /src
+RUN CGO_ENABLED=0 go build -o /ci-worker ./cmd/ci-worker
+
+FROM ubuntu:24.04
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        iptables \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl -fsSL https://github.com/GoogleCloudPlatform/docker-credential-gcr/releases/download/v2.1.22/docker-credential-gcr_linux_amd64-2.1.22.tar.gz \
+    | tar xz -C /usr/local/bin docker-credential-gcr
+COPY --from=docker-bins /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=docker-bins /usr/local/bin/dockerd /usr/local/bin/dockerd
+COPY --from=docker-bins /usr/local/bin/containerd /usr/local/bin/containerd
+COPY --from=buildkit /usr/bin/buildkitd /usr/bin/buildkitd
+COPY --from=build /ci-worker /usr/bin/ci-worker
+COPY entrypoint-worker.sh /entrypoint-worker.sh
+RUN chmod +x /entrypoint-worker.sh
+ENTRYPOINT ["/entrypoint-worker.sh"]
