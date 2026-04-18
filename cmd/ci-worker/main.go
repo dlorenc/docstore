@@ -21,18 +21,12 @@ import (
 	_ "github.com/lib/pq"
 	"gopkg.in/yaml.v3"
 
+	"github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/executor"
 	"github.com/dlorenc/docstore/internal/logstore"
 	"github.com/dlorenc/docstore/internal/model"
 )
 
-// ciJob holds the fields from a claimed ci_jobs row.
-type ciJob struct {
-	id       string
-	repo     string
-	branch   string
-	sequence int64
-}
 
 func mustEnv(key string) string {
 	v := os.Getenv(key)
@@ -79,34 +73,8 @@ func waitBuildkitReady(ctx context.Context, addr string) error {
 	}
 }
 
-// claimJob atomically claims the oldest queued job for this worker pod.
-// Returns nil, nil if no job is currently available.
-func claimJob(ctx context.Context, db *sql.DB, podName, podIP string) (*ciJob, error) {
-	const q = `
-	UPDATE ci_jobs
-	SET status = 'claimed', claimed_at = now(), worker_pod = $1, worker_pod_ip = $2
-	WHERE id = (
-		SELECT id FROM ci_jobs
-		WHERE status = 'queued'
-		ORDER BY created_at
-		FOR UPDATE SKIP LOCKED
-		LIMIT 1
-	)
-	RETURNING id, repo, branch, sequence`
-
-	var job ciJob
-	err := db.QueryRowContext(ctx, q, podName, podIP).Scan(&job.id, &job.repo, &job.branch, &job.sequence)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("claim ci job: %w", err)
-	}
-	return &job, nil
-}
-
 // heartbeat sends periodic last_heartbeat_at updates until done is closed.
-func heartbeat(ctx context.Context, db *sql.DB, jobID string, done <-chan struct{}) {
+func heartbeat(ctx context.Context, store *db.Store, jobID string, done <-chan struct{}) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -116,19 +84,11 @@ func heartbeat(ctx context.Context, db *sql.DB, jobID string, done <-chan struct
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if _, err := db.ExecContext(ctx, `UPDATE ci_jobs SET last_heartbeat_at = now() WHERE id = $1`, jobID); err != nil {
+			if err := store.HeartbeatCIJob(ctx, jobID); err != nil {
 				slog.Warn("heartbeat failed", "job_id", jobID, "error", err)
 			}
 		}
 	}
-}
-
-// completeJob marks the job with a terminal status in the DB.
-func completeJob(ctx context.Context, db *sql.DB, jobID, status string, logURL, errMsg *string) error {
-	_, err := db.ExecContext(ctx,
-		`UPDATE ci_jobs SET status = $2, log_url = $3, error_message = $4 WHERE id = $1`,
-		jobID, status, logURL, errMsg)
-	return err
 }
 
 // ---------------------------------------------------------------------------
@@ -288,28 +248,28 @@ func runJob(
 	exec *executor.Executor,
 	ls logstore.LogStore,
 	docstoreURL string,
-	job *ciJob,
+	job *model.CIJob,
 	logDir string,
 ) (status string, logURL *string, errMsg *string) {
 	fail := func(msg string) (string, *string, *string) {
-		slog.Error("job failed", "job_id", job.id, "reason", msg)
+		slog.Error("job failed", "job_id", job.ID, "reason", msg)
 		return "failed", nil, &msg
 	}
 
 	// 1. Fetch CI config.
-	cfg, err := fetchConfig(ctx, httpClient, docstoreURL, job.repo)
+	cfg, err := fetchConfig(ctx, httpClient, docstoreURL, job.Repo)
 	if err != nil {
-		_ = postCheckRun(ctx, httpClient, docstoreURL, job.repo, model.CreateCheckRunRequest{
-			Branch:    job.branch,
+		_ = postCheckRun(ctx, httpClient, docstoreURL, job.Repo, model.CreateCheckRunRequest{
+			Branch:    job.Branch,
 			CheckName: "ci/config",
 			Status:    model.CheckRunFailed,
-			Sequence:  &job.sequence,
+			Sequence:  &job.Sequence,
 		})
 		return fail(err.Error())
 	}
 
 	// 2. Pull branch source into temp dir.
-	srcDir, err := pullBranchSource(ctx, httpClient, docstoreURL, job.repo, job.branch, job.sequence)
+	srcDir, err := pullBranchSource(ctx, httpClient, docstoreURL, job.Repo, job.Branch, job.Sequence)
 	if srcDir != "" {
 		defer os.RemoveAll(srcDir)
 	}
@@ -319,11 +279,11 @@ func runJob(
 
 	// 3. Mark each check as pending.
 	for _, check := range cfg.Checks {
-		if err := postCheckRun(ctx, httpClient, docstoreURL, job.repo, model.CreateCheckRunRequest{
-			Branch:    job.branch,
+		if err := postCheckRun(ctx, httpClient, docstoreURL, job.Repo, model.CreateCheckRunRequest{
+			Branch:    job.Branch,
 			CheckName: check.Name,
 			Status:    model.CheckRunPending,
-			Sequence:  &job.sequence,
+			Sequence:  &job.Sequence,
 		}); err != nil {
 			slog.Warn("mark pending failed", "check", check.Name, "error", err)
 		}
@@ -346,7 +306,7 @@ func runJob(
 		// Upload to persistent log store.
 		var checkLogURL *string
 		if ls != nil {
-			u, err := ls.Write(ctx, job.repo, job.branch, job.sequence, result.Name, result.Logs)
+			u, err := ls.Write(ctx, job.Repo, job.Branch, job.Sequence, result.Name, result.Logs)
 			if err != nil {
 				slog.Warn("log upload failed", "check", result.Name, "error", err)
 			} else {
@@ -358,12 +318,12 @@ func runJob(
 		}
 
 		// Post check run result.
-		if err := postCheckRun(ctx, httpClient, docstoreURL, job.repo, model.CreateCheckRunRequest{
-			Branch:    job.branch,
+		if err := postCheckRun(ctx, httpClient, docstoreURL, job.Repo, model.CreateCheckRunRequest{
+			Branch:    job.Branch,
 			CheckName: result.Name,
 			Status:    model.CheckRunStatus(result.Status),
 			LogURL:    checkLogURL,
-			Sequence:  &job.sequence,
+			Sequence:  &job.Sequence,
 		}); err != nil {
 			slog.Warn("post result failed", "check", result.Name, "error", err)
 		}
@@ -417,6 +377,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer sqlDB.Close()
+	store := db.NewStore(sqlDB)
 
 	// Build executor.
 	exec, err := executor.New(buildkitAddr)
@@ -452,7 +413,7 @@ func main() {
 
 	// Poll for a job to claim.
 	for {
-		job, err := claimJob(ctx, sqlDB, podName, podIP)
+		job, err := store.ClaimCIJob(ctx, podName, podIP)
 		if err != nil {
 			slog.Error("claim job failed", "error", err)
 			time.Sleep(1 * time.Second)
@@ -463,11 +424,11 @@ func main() {
 			continue
 		}
 
-		slog.Info("claimed job", "job_id", job.id, "repo", job.repo, "branch", job.branch, "sequence", job.sequence)
+		slog.Info("claimed job", "job_id", job.ID, "repo", job.Repo, "branch", job.Branch, "sequence", job.Sequence)
 
 		// Start heartbeat goroutine.
 		hbDone := make(chan struct{})
-		go heartbeat(ctx, sqlDB, job.id, hbDone)
+		go heartbeat(ctx, store, job.ID, hbDone)
 
 		// Create a temp dir for in-progress check logs.
 		logDir, err := os.MkdirTemp("", "ci-worker-logs-*")
@@ -475,7 +436,7 @@ func main() {
 			close(hbDone)
 			slog.Error("create log dir", "error", err)
 			msg := err.Error()
-			_ = completeJob(ctx, sqlDB, job.id, "failed", nil, &msg)
+			_ = store.CompleteCIJob(ctx, job.ID, "failed", nil, &msg)
 			break
 		}
 		defer os.RemoveAll(logDir)
@@ -489,10 +450,10 @@ func main() {
 		logSrv.setDir("")
 
 		// Persist final status to DB.
-		if err := completeJob(ctx, sqlDB, job.id, jobStatus, jobLogURL, jobErrMsg); err != nil {
-			slog.Error("complete job failed", "job_id", job.id, "error", err)
+		if err := store.CompleteCIJob(ctx, job.ID, jobStatus, jobLogURL, jobErrMsg); err != nil {
+			slog.Error("complete job failed", "job_id", job.ID, "error", err)
 		}
-		slog.Info("job complete", "job_id", job.id, "status", jobStatus)
+		slog.Info("job complete", "job_id", job.ID, "status", jobStatus)
 
 		// Exit — the Deployment controller will schedule a fresh pod for the next job.
 		break
