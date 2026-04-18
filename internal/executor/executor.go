@@ -143,9 +143,9 @@ func (e *Executor) runCheck(ctx context.Context, sourceDir string, check Check) 
 			}
 		}
 		// Inject DOCKER_HOST so docker:cli checks can reach the dockerd running
-		// in the Kata VM. --oci-worker-no-process-sandbox shares the host mount
-		// namespace so the unix socket is accessible at its host path.
-		envOpts = append(envOpts, llb.AddEnv("DOCKER_HOST", "unix:///var/run/docker.sock"))
+		// in the Kata VM. Build containers run with --oci-worker-net=host so they
+		// share the host network namespace and can reach dockerd via TCP.
+		envOpts = append(envOpts, llb.AddEnv("DOCKER_HOST", "tcp://localhost:2375"))
 
 		source := llb.Local("src")
 		state := llb.Image(check.Image).Dir("/src")
