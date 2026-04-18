@@ -16,7 +16,7 @@ metadata:
   name: ci-scheduler
   namespace: docstore-ci
   annotations:
-    iam.gke.io/gcp-service-account: ci-scheduler@dlorenc-chainguard.iam.gserviceaccount.com
+    iam.gke.io/gcp-service-account: ci-runner@dlorenc-chainguard.iam.gserviceaccount.com
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -36,7 +36,7 @@ spec:
       serviceAccountName: ci-scheduler
       containers:
       - name: ci-scheduler
-        image: us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-scheduler-gke:latest
+        image: us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-scheduler:latest
         env:
         - name: DOCSTORE_URL
           value: https://docstore-efuj4cj54a-uc.a.run.app

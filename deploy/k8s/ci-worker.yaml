@@ -19,7 +19,7 @@ metadata:
   name: ci-worker
   namespace: docstore-ci
   annotations:
-    iam.gke.io/gcp-service-account: ci-worker@dlorenc-chainguard.iam.gserviceaccount.com
+    iam.gke.io/gcp-service-account: ci-runner@dlorenc-chainguard.iam.gserviceaccount.com
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -42,7 +42,7 @@ spec:
         runtime: kata
       containers:
       - name: ci-worker
-        image: us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-worker-gke:latest
+        image: us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-worker:latest
         env:
         - name: DOCSTORE_URL
           value: https://docstore-efuj4cj54a-uc.a.run.app
@@ -59,9 +59,19 @@ spec:
             secretKeyRef:
               name: ci-scheduler
               key: database-url
+        - name: LOG_STORE
+          value: gcs
+        - name: LOG_BUCKET
+          value: docstore-ci-logs
         ports:
         - containerPort: 8081
         resources:
           requests:
             cpu: "2000m"
             memory: "4Gi"
+        readinessProbe:
+          tcpSocket:
+            port: 8081
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          failureThreshold: 6
