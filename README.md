@@ -390,6 +390,184 @@ See [docs/ci-architecture.md](docs/ci-architecture.md) for the full architecture
 
 ---
 
+## Policy Engine
+
+The policy engine is a merge gate. Before any branch can merge into `main`, the server evaluates all active Rego policies and returns a pass/fail result for each one. You can also query the policy status for a branch at any time without merging via `GET /repos/{name}/-/branch/:bname/status`.
+
+If any policy denies the merge, `ds merge` exits with an error listing which policies failed and why. Policies have no effect on reads, commits, or branch creation — only merges are gated.
+
+### Creating a Policy
+
+Drop a `.rego` file at `.docstore/policy/<name>.rego` on the `main` branch. Policy files are versioned like any other file and go through the normal branch → review → merge workflow, so policy changes themselves require approval before taking effect.
+
+**Package naming:** every policy must declare `package docstore.<name>` where `<name>` is a short identifier (e.g. `require_review`, `ci_must_pass`). The name shown in API responses and error messages is derived from the last segment of the package path.
+
+**Required rules:**
+
+```rego
+package docstore.my_policy
+
+import rego.v1
+
+default allow := false
+
+allow if {
+    # ... conditions ...
+}
+
+reason := "human-readable denial message"
+```
+
+- `allow` — required boolean; defaults to `false`.
+- `reason` — optional string; returned in the denial message when `allow` is `false`. Use `if` syntax in rule bodies and include `import rego.v1` (OPA v1 syntax is required).
+
+### Input Schema
+
+Every policy evaluation receives an `input` document with the following fields (see `internal/policy/engine.go`):
+
+| Field | Type | Description |
+|---|---|---|
+| `input.actor` | string | Identity of the user attempting the merge (e.g. `alice@example.com`) |
+| `input.actor_roles` | array of strings | Roles held by the actor in this repo (e.g. `["maintainer"]`); empty if none |
+| `input.action` | string | Always `"merge"` |
+| `input.repo` | string | Full repo name (e.g. `acme/myrepo`) |
+| `input.branch` | string | Name of the branch being merged |
+| `input.draft` | bool | Whether the branch is marked as a draft |
+| `input.changed_paths` | array of strings | Paths modified on the branch relative to its base |
+| `input.reviews` | array of objects | Reviews at the current head (see below) |
+| `input.check_runs` | array of objects | CI check results at the current head (see below) |
+| `input.owners` | object | Map of file path → owner list (see OWNERS Files below) |
+| `input.head_sequence` | number | Branch head sequence number |
+| `input.base_sequence` | number | Sequence where the branch forked from main |
+
+**Review objects** (`input.reviews[i]`):
+- `reviewer` — identity who submitted the review
+- `status` — `"approved"` or `"rejected"`
+- `sequence` — sequence number the review was submitted at
+
+**Check run objects** (`input.check_runs[i]`):
+- `check_name` — name of the check (e.g. `"ci/build"`)
+- `status` — `"passed"` or `"failed"`
+- `sequence` — sequence number the check was reported at
+
+### OWNERS Files
+
+Place an `OWNERS` file in any directory. One identity per line; lines starting with `#` are comments; blank lines are ignored.
+
+```
+# src/OWNERS
+alice@example.com
+bob@example.com
+```
+
+Ownership is resolved by **longest-prefix matching** (see `internal/policy/owners.go`). If `src/pkg/OWNERS` exists, it takes precedence over `src/OWNERS` for files under `src/pkg/`. The root `OWNERS` file (at the repo root) is the fallback for any path not covered by a more specific file. If no OWNERS file covers a path, `input.owners["that/path"]` is `null`.
+
+In policies, `input.owners` is keyed by **file path** (not directory), with each value being the resolved owner list for that file:
+
+```rego
+input.owners["src/api.go"]  # => ["alice@example.com", "bob@example.com"]
+```
+
+### Staleness Rule
+
+Reviews and check runs are tied to `head_sequence`. Any new commit on the branch advances `head_sequence`, which automatically invalidates all prior reviews and checks — the policy engine sees empty lists until the branch is re-reviewed and re-checked at the new head. This prevents approving a branch then sneaking in additional commits before merging.
+
+`ds reviews` and `ds checks` show stale entries marked `[stale]` so reviewers know what needs to be re-done after a new commit.
+
+### Bootstrap Mode
+
+If no `.rego` files exist at `.docstore/policy/` on `main`, the policy engine is disabled and all merges are allowed (subject to RBAC role checks). This avoids a chicken-and-egg problem when setting up a new repo — you don't need a policy approval to land the first policy.
+
+### Example Policies
+
+**1. Require at least one approval before merge**
+
+```rego
+package docstore.require_review
+
+import rego.v1
+
+default allow := false
+
+allow if {
+    some rev in input.reviews
+    rev.status == "approved"
+}
+
+reason := "at least one approved review is required"
+```
+
+**2. Require a specific CI check to pass**
+
+```rego
+package docstore.ci_must_pass
+
+import rego.v1
+
+default allow := false
+
+allow if {
+    some check in input.check_runs
+    check.check_name == "ci/build"
+    check.status == "passed"
+}
+
+reason := "ci/build check must pass before merging"
+```
+
+**3. Require codeowner approval for changes under `.docstore/`**
+
+This pattern gates on path: if any changed file lives under `.docstore/`, a reviewer must be listed in its owners list.
+
+```rego
+package docstore.codeowner_approval
+
+import rego.v1
+
+default allow := false
+
+# Pass if no .docstore/ paths are touched.
+allow if {
+    not any_docstore_path_changed
+}
+
+# Pass if a codeowner has approved.
+allow if {
+    any_docstore_path_changed
+    some rev in input.reviews
+    rev.status == "approved"
+    some path in input.changed_paths
+    strings.has_prefix(path, ".docstore/")
+    some owner in input.owners[path]
+    owner == rev.reviewer
+}
+
+any_docstore_path_changed if {
+    some path in input.changed_paths
+    strings.has_prefix(path, ".docstore/")
+}
+
+reason := "a codeowner must approve changes to .docstore/"
+```
+
+**4. Block merges from draft branches**
+
+```rego
+package docstore.no_draft_merge
+
+import rego.v1
+
+default allow := false
+
+allow if {
+    not input.draft
+}
+
+reason := "draft branches cannot be merged"
+```
+
+---
+
 ## Branching and Merging
 
 DocStore uses a simple, linear branching model:
