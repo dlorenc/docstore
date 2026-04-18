@@ -382,6 +382,14 @@ Valid roles: `reader`, `writer`, `maintainer`, `admin`.
 
 ---
 
+## CI
+
+DocStore has a built-in CI system that runs `.docstore/ci.yaml` checks on every branch commit. Jobs are queued in PostgreSQL and executed inside [Kata CLH](https://katacontainers.io/) microVMs on GKE using [BuildKit](https://github.com/moby/buildkit) as the execution engine.
+
+See [docs/ci-architecture.md](docs/ci-architecture.md) for the full architecture, Kata guest environment details, and deployment instructions.
+
+---
+
 ## Branching and Merging
 
 DocStore uses a simple, linear branching model:
