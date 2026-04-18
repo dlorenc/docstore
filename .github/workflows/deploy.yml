@@ -228,4 +228,4 @@ jobs:
           kubectl set image deployment/ci-worker \
             ci-worker=us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-worker:${{ steps.build.outputs.sha }} \
             -n docstore-ci
-          kubectl rollout status deployment/ci-worker -n docstore-ci --timeout=300s
+          kubectl rollout status deployment/ci-worker -n docstore-ci --timeout=600s
