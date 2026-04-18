@@ -28,6 +28,10 @@ metadata:
   namespace: docstore-ci
 spec:
   replicas: 3
+  # Recreate: terminate all old pods before starting new ones. Fastest
+  # strategy for a tight node pool — no surge capacity needed.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: ci-worker
