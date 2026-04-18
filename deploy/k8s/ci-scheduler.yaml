@@ -1,0 +1,88 @@
+# GKE standard node deployment for ci-scheduler.
+#
+# ci-scheduler receives webhook deliveries from docstore, queues jobs in
+# PostgreSQL, reaps stale claimed jobs, and serves job-status / log-proxy
+# endpoints.  It does NOT execute builds.
+#
+# Pre-requisites (run scripts/setup-gke.sh first):
+#   - GKE cluster with Workload Identity enabled
+#   - ci-scheduler GCP SA bound to the k8s SA below
+#   - docstore-ci/ci-scheduler k8s Secret with database-url
+#   - docstore-ci/ci-runner k8s Secret with webhook-secret and runner-url
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ci-scheduler
+  namespace: docstore-ci
+  annotations:
+    iam.gke.io/gcp-service-account: ci-scheduler@dlorenc-chainguard.iam.gserviceaccount.com
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ci-scheduler
+  namespace: docstore-ci
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ci-scheduler
+  template:
+    metadata:
+      labels:
+        app: ci-scheduler
+    spec:
+      serviceAccountName: ci-scheduler
+      containers:
+      - name: ci-scheduler
+        image: us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-scheduler-gke:latest
+        env:
+        - name: DOCSTORE_URL
+          value: https://docstore-efuj4cj54a-uc.a.run.app
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: ci-scheduler
+              key: database-url
+        - name: WEBHOOK_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: ci-runner
+              key: webhook-secret
+              optional: true
+        - name: RUNNER_URL
+          valueFrom:
+            secretKeyRef:
+              name: ci-runner
+              key: runner-url
+              optional: true
+        ports:
+        - containerPort: 8080
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "512Mi"
+        readinessProbe:
+          tcpSocket:
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ci-scheduler
+  namespace: docstore-ci
+  annotations:
+    # Internal load balancer: reachable from Cloud Run via VPC Direct Egress,
+    # not exposed to the public internet.
+    networking.gke.io/load-balancer-type: "Internal"
+spec:
+  selector:
+    app: ci-scheduler
+  ports:
+  - port: 8080
+    targetPort: 8080
+  type: LoadBalancer

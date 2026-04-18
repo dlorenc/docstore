@@ -1,0 +1,67 @@
+# GKE Kata Containers deployment for ci-worker.
+#
+# ci-worker pods each claim exactly one job from the ci_jobs queue, execute
+# it inside a Kata Cloud-Hypervisor microVM, upload logs, and then exit.
+# The Deployment controller replaces exited pods to maintain the pool size.
+#
+# Kata CLH provides a real kernel per pod so Docker/buildkitd run natively
+# inside the VM — no DinD nesting, no privileged containers required.
+#
+# Pre-requisites (run scripts/setup-gke.sh first):
+#   - GKE node pool with Kata 3.28.0, RuntimeClass kata-clh registered
+#   - Nodes labelled runtime=kata
+#   - ci-worker GCP SA bound to the k8s SA below
+#   - docstore-ci/ci-scheduler k8s Secret with database-url
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ci-worker
+  namespace: docstore-ci
+  annotations:
+    iam.gke.io/gcp-service-account: ci-worker@dlorenc-chainguard.iam.gserviceaccount.com
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ci-worker
+  namespace: docstore-ci
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: ci-worker
+  template:
+    metadata:
+      labels:
+        app: ci-worker
+    spec:
+      serviceAccountName: ci-worker
+      runtimeClassName: kata-clh
+      nodeSelector:
+        runtime: kata
+      containers:
+      - name: ci-worker
+        image: us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-worker-gke:latest
+        env:
+        - name: DOCSTORE_URL
+          value: https://docstore-efuj4cj54a-uc.a.run.app
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: ci-scheduler
+              key: database-url
+        ports:
+        - containerPort: 8081
+        resources:
+          requests:
+            cpu: "2000m"
+            memory: "4Gi"
