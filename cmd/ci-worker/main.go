@@ -106,6 +106,8 @@ func heartbeat(ctx context.Context, store *db.Store, jobID string, done <-chan s
 // ---------------------------------------------------------------------------
 
 func fetchConfig(ctx context.Context, client *http.Client, docstoreURL, repo string) (*executor.Config, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	fileURL := fmt.Sprintf("%s/repos/%s/-/file/.docstore/ci.yaml?branch=main", docstoreURL, repo)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fileURL, nil)
 	if err != nil {
@@ -412,8 +414,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	// HTTP client for docstore requests.
-	httpClient := &http.Client{}
+	// HTTP client for docstore requests. The 5-minute timeout covers the
+	// worst-case archive download; fetchConfig wraps its context with a
+	// tighter 30-second deadline for the lightweight config fetch.
+	httpClient := &http.Client{Timeout: 5 * time.Minute}
 
 	// Start log HTTP server on :8081.
 	logSrv := &checkLogServer{}
