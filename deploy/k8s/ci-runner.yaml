@@ -1,7 +1,8 @@
-# GKE Autopilot deployment for ci-runner.
+# GKE standard node deployment for ci-runner.
 #
-# Uses rootless buildkitd (moby/buildkit-rootless) so no SYS_ADMIN is needed,
-# which is required because GKE Autopilot blocks that capability.
+# Uses rootless buildkitd (moby/buildkit-rootless) so no SYS_ADMIN is needed.
+# DinD sidecar uses docker:27-dind (privileged) — standard GKE allows privileged
+# pods unlike Autopilot. The docker socket emptyDir is mounted at /var/shared.
 #
 # Pre-requisites (run scripts/setup-gke.sh first):
 #   - GKE cluster with Workload Identity enabled
@@ -71,7 +72,7 @@ spec:
           runAsNonRoot: true
         resources:
           requests:
-            cpu: "4"
+            cpu: "2500m"
             memory: "4Gi"
         readinessProbe:
           tcpSocket:
@@ -81,28 +82,25 @@ spec:
           failureThreshold: 3
         volumeMounts:
         - name: docker-socket
-          mountPath: /run/shared
+          mountPath: /var/shared
       - name: docker-dind
-        image: docker:27-dind-rootless
-        args: ["--host=unix:///run/shared/docker.sock", "--tls=false"]
+        image: docker:27-dind
+        args: ["--host=unix:///var/shared/docker.sock", "--tls=false"]
         env:
         - name: DOCKER_TLS_CERTDIR
           value: ""
         securityContext:
-          seccompProfile:
-            type: Unconfined
-          runAsUser: 1000
-          runAsNonRoot: true
+          privileged: true
         volumeMounts:
         - name: docker-socket
-          mountPath: /run/shared
+          mountPath: /var/shared
         resources:
           requests:
             cpu: "500m"
             memory: "512Mi"
         readinessProbe:
           exec:
-            command: ["sh", "-c", "test -S /run/shared/docker.sock"]
+            command: ["sh", "-c", "test -S /var/shared/docker.sock"]
           initialDelaySeconds: 5
           periodSeconds: 3
 ---
