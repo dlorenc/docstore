@@ -27,7 +27,7 @@ until nc -z localhost 1234 2>/dev/null; do sleep 0.1; done
 echo "buildkitd ready" >&2
 
 # Wait for docker socket from DinD sidecar
-until [ -S /run/shared/docker.sock ] 2>/dev/null; do sleep 0.2; done
+until [ -S /var/shared/docker.sock ] 2>/dev/null; do sleep 0.2; done
 echo "docker socket ready" >&2
 
 if [ -n "${DEV_IDENTITY}" ]; then
@@ -42,7 +42,7 @@ fi
 
 exec ci-runner \
   --buildkit-addr tcp://localhost:1234 \
-  --docker-socket /run/shared/docker.sock \
+  --docker-socket /var/shared/docker.sock \
   --docstore-url "${DOCSTORE_URL}" \
   --port "${PORT:-8080}" \
   "$@"
