@@ -127,6 +127,7 @@ var (
 	ErrBranchDraft            = errors.New("branch is in draft state")
 	ErrSubscriptionNotFound   = errors.New("subscription not found")
 	ErrCommentNotFound        = errors.New("comment not found")
+	ErrCIJobNotFound          = errors.New("ci job not found")
 )
 
 // rebaseFile is one file within a replayed commit group.
