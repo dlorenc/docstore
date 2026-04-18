@@ -47,4 +47,17 @@ buildkitd --addr tcp://localhost:1234 --oci-worker-net=host --oci-worker-snapsho
 # host network can use DOCKER_HOST=tcp://localhost:2375.
 dockerd --userland-proxy=false -H unix:///var/run/docker.sock -H tcp://127.0.0.1:2375 &
 
+# Wait for dockerd to be ready on TCP port 2375.
+echo "waiting for dockerd..." >&2
+i=0
+while ! curl -sf --max-time 1 http://127.0.0.1:2375/_ping >/dev/null 2>&1; do
+  i=$((i+1))
+  if [ "$i" -ge 60 ]; then
+    echo "ERROR: dockerd not ready after 60s" >&2
+    exit 1
+  fi
+  sleep 1
+done
+echo "dockerd ready" >&2
+
 exec ci-worker

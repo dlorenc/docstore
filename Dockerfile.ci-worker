@@ -15,7 +15,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         runc \
     && rm -rf /var/lib/apt/lists/*
 RUN curl -fsSL https://github.com/GoogleCloudPlatform/docker-credential-gcr/releases/download/v2.1.22/docker-credential-gcr_linux_amd64-2.1.22.tar.gz \
-    | tar xz -C /usr/local/bin docker-credential-gcr
+      -o /tmp/docker-credential-gcr.tar.gz \
+    && echo "443e897dc383d69e55e6dbcb13802f4ec88444848612e83f0381df2ddd721694  /tmp/docker-credential-gcr.tar.gz" | sha256sum -c - \
+    && tar xz -C /usr/local/bin -f /tmp/docker-credential-gcr.tar.gz docker-credential-gcr \
+    && rm /tmp/docker-credential-gcr.tar.gz
 COPY --from=docker-bins /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=docker-bins /usr/local/bin/dockerd /usr/local/bin/dockerd
 COPY --from=docker-bins /usr/local/bin/docker-proxy /usr/local/bin/docker-proxy
