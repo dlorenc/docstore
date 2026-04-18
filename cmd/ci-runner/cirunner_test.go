@@ -148,6 +148,20 @@ func TestPostCheckRun_ServerError(t *testing.T) {
 	}
 }
 
+// newErrDocstore starts a minimal httptest.Server that returns HTTP 404 for
+// every request and registers it for cleanup via t.Cleanup. It is used by
+// unit tests that need a reachable docstore URL so that runAsync can fail fast
+// rather than getting a connection-refused error that might coincidentally
+// collide with a real server (e.g. an integration test's mock on the same port).
+func newErrDocstore(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
 // ---------------------------------------------------------------------------
 // POST /run handler tests
 // ---------------------------------------------------------------------------
@@ -155,7 +169,7 @@ func TestPostCheckRun_ServerError(t *testing.T) {
 func TestPostRunHandler_ReturnsRunID(t *testing.T) {
 	// Use a nil executor and logstore (the goroutine won't do anything useful
 	// but the handler itself should return 200 with a run_id immediately).
-	mux := newMux(context.Background(), nil, nil, "http://localhost:9999", &http.Client{}, 30*time.Minute, "")
+	mux := newMux(context.Background(), nil, nil, newErrDocstore(t), &http.Client{}, 30*time.Minute, "")
 
 	body := `{"repo":"default/myrepo","branch":"feature/x","head_sequence":42}`
 	req := httptest.NewRequest(http.MethodPost, "/run", strings.NewReader(body))
@@ -176,7 +190,7 @@ func TestPostRunHandler_ReturnsRunID(t *testing.T) {
 }
 
 func TestPostRunHandler_MissingRepo(t *testing.T) {
-	mux := newMux(context.Background(), nil, nil, "http://localhost:9999", &http.Client{}, 30*time.Minute, "")
+	mux := newMux(context.Background(), nil, nil, newErrDocstore(t), &http.Client{}, 30*time.Minute, "")
 
 	req := httptest.NewRequest(http.MethodPost, "/run", strings.NewReader(`{"branch":"feature/x"}`))
 	rec := httptest.NewRecorder()
@@ -188,7 +202,7 @@ func TestPostRunHandler_MissingRepo(t *testing.T) {
 }
 
 func TestPostRunHandler_MissingBranch(t *testing.T) {
-	mux := newMux(context.Background(), nil, nil, "http://localhost:9999", &http.Client{}, 30*time.Minute, "")
+	mux := newMux(context.Background(), nil, nil, newErrDocstore(t), &http.Client{}, 30*time.Minute, "")
 
 	req := httptest.NewRequest(http.MethodPost, "/run", strings.NewReader(`{"repo":"default/myrepo"}`))
 	rec := httptest.NewRecorder()
@@ -307,7 +321,9 @@ func signBody(body []byte, secret string) string {
 
 func TestWebhookHandler_ValidSignature(t *testing.T) {
 	const secret = "test-secret"
-	mux := newMux(context.Background(), nil, nil, "http://localhost:9999", &http.Client{}, 30*time.Minute, secret)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	mux := newMux(ctx, nil, nil, newErrDocstore(t), &http.Client{}, 30*time.Minute, secret)
 
 	body := buildWebhookBody(t, "com.docstore.commit.created", map[string]any{
 		"repo":       "default/myrepo",
@@ -331,7 +347,7 @@ func TestWebhookHandler_ValidSignature(t *testing.T) {
 
 func TestWebhookHandler_InvalidSignature(t *testing.T) {
 	const secret = "test-secret"
-	mux := newMux(context.Background(), nil, nil, "http://localhost:9999", &http.Client{}, 30*time.Minute, secret)
+	mux := newMux(context.Background(), nil, nil, newErrDocstore(t), &http.Client{}, 30*time.Minute, secret)
 
 	body := buildWebhookBody(t, "com.docstore.commit.created", map[string]any{
 		"repo":   "default/myrepo",
@@ -351,7 +367,7 @@ func TestWebhookHandler_InvalidSignature(t *testing.T) {
 
 func TestWebhookHandler_MissingSignature(t *testing.T) {
 	const secret = "test-secret"
-	mux := newMux(context.Background(), nil, nil, "http://localhost:9999", &http.Client{}, 30*time.Minute, secret)
+	mux := newMux(context.Background(), nil, nil, newErrDocstore(t), &http.Client{}, 30*time.Minute, secret)
 
 	body := buildWebhookBody(t, "com.docstore.commit.created", map[string]any{
 		"repo":   "default/myrepo",
@@ -370,7 +386,7 @@ func TestWebhookHandler_MissingSignature(t *testing.T) {
 }
 
 func TestWebhookHandler_UnknownEventType(t *testing.T) {
-	mux := newMux(context.Background(), nil, nil, "http://localhost:9999", &http.Client{}, 30*time.Minute, "")
+	mux := newMux(context.Background(), nil, nil, newErrDocstore(t), &http.Client{}, 30*time.Minute, "")
 
 	body := buildWebhookBody(t, "com.docstore.branch.created", map[string]any{
 		"repo":   "default/myrepo",
@@ -392,7 +408,7 @@ func TestWebhookHandler_UnknownEventType(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestGetRunStatus_NotFound(t *testing.T) {
-	mux := newMux(context.Background(), nil, nil, "http://localhost:9999", &http.Client{}, 30*time.Minute, "")
+	mux := newMux(context.Background(), nil, nil, newErrDocstore(t), &http.Client{}, 30*time.Minute, "")
 
 	req := httptest.NewRequest(http.MethodGet, "/run/nonexistent-id", nil)
 	rec := httptest.NewRecorder()
@@ -444,7 +460,7 @@ func TestRunStatus_TracksInFlight(t *testing.T) {
 }
 
 func TestRunStatus_ViaHTTP(t *testing.T) {
-	mux := newMux(context.Background(), nil, nil, "http://localhost:9999", &http.Client{}, 30*time.Minute, "")
+	mux := newMux(context.Background(), nil, nil, newErrDocstore(t), &http.Client{}, 30*time.Minute, "")
 
 	// Trigger a run via POST /run to register it in the registry.
 	runBody := `{"repo":"default/myrepo","branch":"feature/x","head_sequence":1}`
