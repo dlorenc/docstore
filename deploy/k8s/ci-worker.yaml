@@ -47,10 +47,13 @@ spec:
       containers:
       - name: ci-worker
         image: us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-worker:latest
+        # privileged=true is safe inside a Kata CLH microVM — the VM is the
+        # security boundary, not the container security context. buildkitd and
+        # dockerd both require SYS_ADMIN (bind mounts, overlayfs) and NET_ADMIN
+        # (bridge networking). Kata sets privileged_without_host_devices=true so
+        # host devices are not exposed into the VM.
         securityContext:
-          capabilities:
-            add:
-              - NET_ADMIN
+          privileged: true
         env:
         - name: DOCSTORE_URL
           value: https://docstore-efuj4cj54a-uc.a.run.app
