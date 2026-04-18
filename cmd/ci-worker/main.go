@@ -105,10 +105,10 @@ func heartbeat(ctx context.Context, store *db.Store, jobID string, done <-chan s
 // Docstore API helpers (same as ci-runner)
 // ---------------------------------------------------------------------------
 
-func fetchConfig(ctx context.Context, client *http.Client, docstoreURL, repo string) (*executor.Config, error) {
+func fetchConfig(ctx context.Context, client *http.Client, docstoreURL, repo, branch string, headSeq int64) (*executor.Config, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	fileURL := fmt.Sprintf("%s/repos/%s/-/file/.docstore/ci.yaml?branch=main", docstoreURL, repo)
+	fileURL := fmt.Sprintf("%s/repos/%s/-/file/.docstore/ci.yaml?branch=%s&at=%d", docstoreURL, repo, url.QueryEscape(branch), headSeq)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fileURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create config request: %w", err)
@@ -119,7 +119,8 @@ func fetchConfig(ctx context.Context, client *http.Client, docstoreURL, repo str
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("ci config not found at %s", fileURL)
+		// No ci.yaml on this branch — CI is not configured; skip silently.
+		return nil, nil
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("fetch config: unexpected status %d", resp.StatusCode)
@@ -268,8 +269,8 @@ func runJob(
 		return "failed", nil, &msg
 	}
 
-	// 1. Fetch CI config.
-	cfg, err := fetchConfig(ctx, httpClient, docstoreURL, job.Repo)
+	// 1. Fetch CI config from the branch under test at its head sequence.
+	cfg, err := fetchConfig(ctx, httpClient, docstoreURL, job.Repo, job.Branch, job.Sequence)
 	if err != nil {
 		_ = postCheckRun(ctx, httpClient, docstoreURL, job.Repo, model.CreateCheckRunRequest{
 			Branch:    job.Branch,
@@ -278,6 +279,11 @@ func runJob(
 			Sequence:  &job.Sequence,
 		})
 		return fail(err.Error())
+	}
+	if cfg == nil {
+		// No .docstore/ci.yaml on this branch — CI not configured; skip.
+		slog.Info("no ci.yaml on branch, skipping CI", "job_id", job.ID, "branch", job.Branch)
+		return "passed", nil, nil
 	}
 
 	// 2. Pull branch source into temp dir.
