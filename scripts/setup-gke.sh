@@ -78,6 +78,21 @@ kubectl create secret generic "${KSA}" \
   --dry-run=client -o yaml | kubectl apply -f -
 echo "    Done."
 
+echo "==> Creating GCS cache bucket docstore-ci-cache (no-op if it already exists)..."
+gcloud storage buckets create "gs://docstore-ci-cache" \
+  --project="${PROJECT}" \
+  --location="${REGION}" \
+  --uniform-bucket-level-access \
+  --quiet || true
+echo "    Done."
+
+echo "==> Granting ci-runner SA storage.objectAdmin on docstore-ci-cache..."
+gcloud storage buckets add-iam-policy-binding "gs://docstore-ci-cache" \
+  --member="serviceAccount:${GSA}" \
+  --role=roles/storage.objectAdmin \
+  --quiet
+echo "    Done."
+
 echo ""
 echo "GKE setup complete."
 echo ""
