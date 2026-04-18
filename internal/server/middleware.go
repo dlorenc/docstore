@@ -252,6 +252,16 @@ func roleAllows(role model.RoleType, method, subPath string, r *http.Request) bo
 		return true
 	}
 
+	// POST /comment — writer+.
+	if method == http.MethodPost && subPath == "comment" {
+		return role == model.RoleWriter || role == model.RoleMaintainer || role == model.RoleAdmin
+	}
+
+	// DELETE /comment/* — writer+ minimum; handler additionally checks author identity or maintainer role.
+	if method == http.MethodDelete && strings.HasPrefix(subPath, "comment/") {
+		return role == model.RoleWriter || role == model.RoleMaintainer || role == model.RoleAdmin
+	}
+
 	// POST /branch, /merge, /rebase — maintainer+.
 	if method == http.MethodPost && (subPath == "branch" || subPath == "merge" || subPath == "rebase") {
 		return role == model.RoleMaintainer || role == model.RoleAdmin
