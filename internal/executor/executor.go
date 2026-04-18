@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -44,17 +43,26 @@ type CheckResult struct {
 
 // options holds optional configuration for an Executor.
 type options struct {
-	dockerSocket string
+	dockerHost string
 }
 
 // Option is a functional option for configuring an Executor.
 type Option func(*options)
 
-// WithDockerSocket configures the executor to mount the Docker socket at the
-// standard location (/var/run/docker.sock) inside every build step, and sets
-// DOCKER_HOST accordingly. An empty path disables the feature.
+// WithDockerHost configures the executor to set DOCKER_HOST to the given URL
+// (e.g. "tcp://localhost:2375" or "unix:///var/shared/docker.sock") in every
+// build step. An empty URL disables the feature.
+// This works because --oci-worker-no-process-sandbox shares the host mount
+// namespace, so unix sockets on the host are accessible at their host path
+// inside build steps without any file transfer.
+func WithDockerHost(url string) Option {
+	return func(o *options) { o.dockerHost = url }
+}
+
+// WithDockerSocket is a convenience wrapper around WithDockerHost that accepts
+// a filesystem path and converts it to a unix:// URL.
 func WithDockerSocket(path string) Option {
-	return func(o *options) { o.dockerSocket = path }
+	return WithDockerHost("unix://" + path)
 }
 
 // Executor translates a Config into an LLB DAG and dispatches it to buildkitd.
@@ -138,9 +146,6 @@ func (e *Executor) runCheck(ctx context.Context, sourceDir string, check Check) 
 	}
 
 	localDirs := map[string]string{"src": sourceDir}
-	if e.opts.dockerSocket != "" {
-		localDirs["docker-socket"] = filepath.Dir(e.opts.dockerSocket)
-	}
 
 	_, solveErr := e.client.Build(ctx, client.SolveOpt{
 		LocalDirs: localDirs,
@@ -183,14 +188,8 @@ func (e *Executor) runCheck(ctx context.Context, sourceDir string, check Check) 
 			k, v, _ := strings.Cut(env, "=")
 			envOpts = append(envOpts, llb.AddEnv(k, v))
 		}
-		if e.opts.dockerSocket != "" {
-			envOpts = append(envOpts,
-				llb.AddEnv("DOCKER_HOST", "unix:///var/run/docker.sock"),
-				llb.AddMount("/var/run/docker.sock",
-					llb.Local("docker-socket"),
-					llb.SourcePath(filepath.Base(e.opts.dockerSocket)),
-				),
-			)
+		if e.opts.dockerHost != "" {
+			envOpts = append(envOpts, llb.AddEnv("DOCKER_HOST", e.opts.dockerHost))
 		}
 
 		for _, step := range check.Steps {
