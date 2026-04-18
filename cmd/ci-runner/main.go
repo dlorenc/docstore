@@ -585,11 +585,18 @@ func main() {
 		os.Exit(1)
 	}
 
+	// LOG_LEVEL accepts: debug, info, warn, error (default: info).
+	var logLevel slog.LevelVar
+	if lvlStr := os.Getenv("LOG_LEVEL"); lvlStr != "" {
+		if err := logLevel.UnmarshalText([]byte(lvlStr)); err != nil {
+			logLevel.Set(slog.LevelInfo)
+		}
+	}
 	var handler slog.Handler
 	if os.Getenv("LOG_FORMAT") == "text" {
-		handler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})
+		handler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: &logLevel})
 	} else {
-		handler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})
+		handler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: &logLevel})
 	}
 	slog.SetDefault(slog.New(handler))
 
