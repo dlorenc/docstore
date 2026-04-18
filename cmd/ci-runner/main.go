@@ -572,6 +572,7 @@ func newMux(serverCtx context.Context, exec *executor.Executor, ls logstore.LogS
 func main() {
 	buildkitAddr := flag.String("buildkit-addr", "unix:///run/buildkit/buildkitd.sock", "buildkitd socket address")
 	dockerSocket := flag.String("docker-socket", "", "path to Docker socket; sets DOCKER_HOST=unix://<path> in build steps (optional)")
+	dockerHost := flag.String("docker-host", "", "Docker host URL for build steps via DOCKER_HOST (e.g. tcp://localhost:2375); overrides --docker-socket")
 	port := flag.String("port", "8080", "HTTP listen port")
 	docstoreURL := flag.String("docstore-url", "", "Base URL of the docstore server (required)")
 	devIdentity := flag.String("dev-identity", "", "Identity header to send to docstore (local dev only)")
@@ -617,7 +618,14 @@ func main() {
 	}
 
 	// Build executor.
-	exec, err := executor.New(*buildkitAddr, executor.WithDockerSocket(*dockerSocket))
+	var dockerOpt executor.Option
+	switch {
+	case *dockerHost != "":
+		dockerOpt = executor.WithDockerHost(*dockerHost)
+	case *dockerSocket != "":
+		dockerOpt = executor.WithDockerSocket(*dockerSocket)
+	}
+	exec, err := executor.New(*buildkitAddr, dockerOpt)
 	if err != nil {
 		slog.Error("failed to connect to buildkitd", "addr", *buildkitAddr, "error", err)
 		os.Exit(1)
