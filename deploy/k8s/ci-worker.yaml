@@ -74,6 +74,8 @@ spec:
           value: gcs
         - name: LOG_BUCKET
           value: docstore-ci-logs
+        - name: CACHE_BUCKET
+          value: docstore-ci-cache
         ports:
         - containerPort: 8081
         resources:
