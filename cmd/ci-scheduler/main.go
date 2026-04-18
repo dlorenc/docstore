@@ -1,0 +1,418 @@
+// Package main implements the ci-scheduler binary.
+//
+// ci-scheduler is responsible for:
+//   - Receiving webhook deliveries from docstore and inserting ci_jobs rows
+//   - Serving job status and log-proxy endpoints
+//   - Reaping stale (heartbeat-missed) claimed jobs back to 'queued'
+//
+// It does NOT execute builds — that is the ci-worker's job.
+package main
+
+import (
+	"bytes"
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httputil"
+	"net/url"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+
+	_ "github.com/lib/pq"
+
+	"github.com/dlorenc/docstore/internal/db"
+	"github.com/dlorenc/docstore/internal/model"
+)
+
+// ---------------------------------------------------------------------------
+// ciJobStore is the minimal interface the scheduler needs from the DB layer.
+// ---------------------------------------------------------------------------
+
+type ciJobStore interface {
+	InsertCIJob(ctx context.Context, repo, branch string, sequence int64) (*model.CIJob, error)
+	GetCIJob(ctx context.Context, id string) (*model.CIJob, error)
+	ReapStaleCIJobs(ctx context.Context) ([]model.CIJob, error)
+}
+
+// ---------------------------------------------------------------------------
+// HMAC helper
+// ---------------------------------------------------------------------------
+
+// computeHMACHex returns the hex-encoded HMAC-SHA256 of body using secret.
+// Matches the format sent by docstore's outbox dispatcher:
+// "sha256=" + hex(hmac-sha256(body, secret))
+func computeHMACHex(body []byte, secret string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// ---------------------------------------------------------------------------
+// Webhook subscription registration
+// ---------------------------------------------------------------------------
+
+// registerWebhookSubscription checks whether a subscription for schedulerURL
+// already exists and creates one if not. Errors are logged as warnings.
+func registerWebhookSubscription(ctx context.Context, client *http.Client, docstoreURL, schedulerURL, webhookSecret string) {
+	webhookURL := strings.TrimRight(schedulerURL, "/") + "/webhook"
+	subsURL := strings.TrimRight(docstoreURL, "/") + "/subscriptions"
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, subsURL, nil)
+	if err != nil {
+		slog.Warn("webhook registration: build list request failed", "error", err)
+		return
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		slog.Warn("webhook registration: list subscriptions failed", "error", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	type sub struct {
+		ID     string          `json:"id"`
+		Config json.RawMessage `json:"config"`
+	}
+	type listResp struct {
+		Subscriptions []sub `json:"subscriptions"`
+	}
+	if resp.StatusCode == http.StatusOK {
+		var lr listResp
+		if err := json.NewDecoder(resp.Body).Decode(&lr); err == nil {
+			for _, s := range lr.Subscriptions {
+				var cfg map[string]string
+				if err := json.Unmarshal(s.Config, &cfg); err != nil {
+					continue
+				}
+				if cfg["url"] == webhookURL {
+					slog.Info("webhook subscription already registered", "id", s.ID, "url", webhookURL)
+					return
+				}
+			}
+		}
+	}
+
+	cfgJSON, _ := json.Marshal(map[string]string{"url": webhookURL, "secret": webhookSecret})
+	type createReq struct {
+		Backend    string          `json:"backend"`
+		EventTypes []string        `json:"event_types"`
+		Config     json.RawMessage `json:"config"`
+	}
+	createBody, _ := json.Marshal(createReq{
+		Backend:    "webhook",
+		EventTypes: []string{"com.docstore.commit.created"},
+		Config:     cfgJSON,
+	})
+	createReq2, err := http.NewRequestWithContext(ctx, http.MethodPost, subsURL, bytes.NewReader(createBody))
+	if err != nil {
+		slog.Warn("webhook registration: build create request failed", "error", err)
+		return
+	}
+	createReq2.Header.Set("Content-Type", "application/json")
+	createResp, err := client.Do(createReq2)
+	if err != nil {
+		slog.Warn("webhook registration: create subscription failed", "error", err)
+		return
+	}
+	defer createResp.Body.Close()
+
+	if createResp.StatusCode == http.StatusCreated {
+		slog.Info("webhook subscription registered", "url", webhookURL)
+	} else {
+		slog.Warn("webhook registration: unexpected status",
+			"status", createResp.StatusCode, "url", webhookURL)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// scheduler holds handler dependencies
+// ---------------------------------------------------------------------------
+
+type scheduler struct {
+	store         ciJobStore
+	webhookSecret string
+}
+
+// handleWebhook handles POST /webhook — receives CloudEvents from docstore outbox.
+func (s *scheduler) handleWebhook(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		http.Error(w, "failed to read body", http.StatusBadRequest)
+		return
+	}
+
+	// Verify HMAC signature when a secret is configured.
+	if s.webhookSecret != "" {
+		sig := r.Header.Get("X-DocStore-Signature")
+		expected := "sha256=" + computeHMACHex(body, s.webhookSecret)
+		if !hmac.Equal([]byte(sig), []byte(expected)) {
+			http.Error(w, "invalid signature", http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Parse CloudEvents envelope.
+	var env struct {
+		Type string          `json:"type"`
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		http.Error(w, "invalid cloudevent body", http.StatusBadRequest)
+		return
+	}
+
+	// Unknown event types are silently acknowledged (forward-compat).
+	if env.Type != "com.docstore.commit.created" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	var data struct {
+		Repo     string `json:"repo"`
+		Branch   string `json:"branch"`
+		Sequence int64  `json:"sequence"`
+	}
+	if err := json.Unmarshal(env.Data, &data); err != nil {
+		http.Error(w, "invalid event data", http.StatusBadRequest)
+		return
+	}
+	if data.Repo == "" || data.Branch == "" {
+		http.Error(w, "missing repo or branch in event data", http.StatusBadRequest)
+		return
+	}
+
+	job, err := s.store.InsertCIJob(r.Context(), data.Repo, data.Branch, data.Sequence)
+	if err != nil {
+		slog.Error("insert ci job failed", "repo", data.Repo, "branch", data.Branch, "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	slog.Info("ci job queued", "id", job.ID, "repo", data.Repo, "branch", data.Branch, "sequence", data.Sequence)
+	w.WriteHeader(http.StatusOK)
+}
+
+// runStatusResponse is the JSON shape returned by GET /run/{id}.
+type runStatusResponse struct {
+	RunID  string `json:"run_id"`
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
+}
+
+// handleGetRun handles GET /run/{id} — returns job status from ci_jobs.
+func (s *scheduler) handleGetRun(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	job, err := s.store.GetCIJob(r.Context(), id)
+	if errors.Is(err, db.ErrCIJobNotFound) {
+		http.Error(w, "run not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		slog.Error("get ci job failed", "id", id, "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	resp := runStatusResponse{
+		RunID:  job.ID,
+		Status: job.Status,
+	}
+	if job.ErrorMessage != nil {
+		resp.Error = *job.ErrorMessage
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp) //nolint:errcheck
+}
+
+// handleGetLogs handles GET /run/{id}/logs/{check}.
+// If the job is claimed and has a worker_pod_ip, it reverse-proxies to the
+// worker. Otherwise it redirects to the job's log_url.
+func (s *scheduler) handleGetLogs(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	check := r.PathValue("check")
+
+	job, err := s.store.GetCIJob(r.Context(), id)
+	if errors.Is(err, db.ErrCIJobNotFound) {
+		http.Error(w, "run not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		slog.Error("get ci job for logs failed", "id", id, "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	// Live proxy to worker if job is claimed and worker IP is known.
+	if job.Status == "claimed" && job.WorkerPodIP != nil {
+		workerURL, err := url.Parse(fmt.Sprintf("http://%s:8081", *job.WorkerPodIP))
+		if err != nil {
+			http.Error(w, "invalid worker address", http.StatusInternalServerError)
+			return
+		}
+		proxy := httputil.NewSingleHostReverseProxy(workerURL)
+		r2 := r.Clone(r.Context())
+		r2.URL.Path = "/logs/" + check
+		r2.URL.RawQuery = ""
+		r2.Host = workerURL.Host
+		proxy.ServeHTTP(w, r2)
+		return
+	}
+
+	// Fall back to redirect to stored log URL.
+	if job.LogURL != nil && *job.LogURL != "" {
+		http.Redirect(w, r, *job.LogURL, http.StatusFound)
+		return
+	}
+
+	http.Error(w, "logs not yet available", http.StatusNotFound)
+}
+
+// ---------------------------------------------------------------------------
+// HTTP mux
+// ---------------------------------------------------------------------------
+
+func newMux(sched *scheduler) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /webhook", sched.handleWebhook)
+	mux.HandleFunc("GET /run/{id}", sched.handleGetRun)
+	mux.HandleFunc("GET /run/{id}/logs/{check}", sched.handleGetLogs)
+	return mux
+}
+
+// ---------------------------------------------------------------------------
+// Stale job reaper
+// ---------------------------------------------------------------------------
+
+func startReaper(ctx context.Context, store ciJobStore, interval time.Duration) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				jobs, err := store.ReapStaleCIJobs(ctx)
+				if err != nil {
+					slog.Error("reap stale ci jobs failed", "error", err)
+					continue
+				}
+				for _, j := range jobs {
+					slog.Info("reclaimed stale ci job", "id", j.ID, "repo", j.Repo, "branch", j.Branch)
+				}
+			}
+		}
+	}()
+}
+
+// ---------------------------------------------------------------------------
+// main
+// ---------------------------------------------------------------------------
+
+func main() {
+	port := flag.String("port", "8080", "HTTP listen port")
+	docstoreURL := flag.String("docstore-url", "", "Base URL of the docstore server")
+	schedulerURL := flag.String("scheduler-url", "", "Public URL of this ci-scheduler (used to register webhook subscription)")
+	webhookSecret := flag.String("webhook-secret", "", "Shared HMAC secret for webhook signature verification")
+	flag.Parse()
+
+	// Also accept env-var overrides so the binary is container-friendly.
+	if *docstoreURL == "" {
+		*docstoreURL = os.Getenv("DOCSTORE_URL")
+	}
+	if *schedulerURL == "" {
+		*schedulerURL = os.Getenv("RUNNER_URL") // backward-compat name used by ci-runner
+	}
+	if *webhookSecret == "" {
+		*webhookSecret = os.Getenv("WEBHOOK_SECRET")
+	}
+
+	// Set up structured logging.
+	var logLevel slog.LevelVar
+	if lvlStr := os.Getenv("LOG_LEVEL"); lvlStr != "" {
+		if err := logLevel.UnmarshalText([]byte(lvlStr)); err != nil {
+			logLevel.Set(slog.LevelInfo)
+		}
+	}
+	var handler slog.Handler
+	if os.Getenv("LOG_FORMAT") == "text" {
+		handler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: &logLevel})
+	} else {
+		handler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: &logLevel})
+	}
+	slog.SetDefault(slog.New(handler))
+
+	// Connect to Postgres.
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		slog.Error("DATABASE_URL environment variable is required")
+		os.Exit(1)
+	}
+	database, err := db.Open(dsn)
+	if err != nil {
+		slog.Error("failed to connect to database", "error", err)
+		os.Exit(1)
+	}
+	defer database.Close()
+
+	store := db.NewStore(database)
+
+	serverCtx, serverCancel := context.WithCancel(context.Background())
+	defer serverCancel()
+
+	// Start stale job reaper.
+	startReaper(serverCtx, store, 30*time.Second)
+
+	sched := &scheduler{
+		store:         store,
+		webhookSecret: *webhookSecret,
+	}
+
+	srv := &http.Server{
+		Addr:        ":" + *port,
+		Handler:     newMux(sched),
+		ReadTimeout: 10 * time.Second,
+		IdleTimeout: 60 * time.Second,
+	}
+
+	go func() {
+		slog.Info("starting ci-scheduler", "port", *port)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("server error", "error", err)
+			os.Exit(1)
+		}
+	}()
+
+	// Register webhook subscription after server is up.
+	if *schedulerURL != "" && *webhookSecret != "" && *docstoreURL != "" {
+		regCtx, regCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer regCancel()
+		registerWebhookSubscription(regCtx, &http.Client{}, *docstoreURL, *schedulerURL, *webhookSecret)
+	}
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	slog.Info("shutting down")
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		slog.Error("shutdown error", "error", err)
+		os.Exit(1)
+	}
+	serverCancel()
+	slog.Info("stopped")
+}
