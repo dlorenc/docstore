@@ -121,43 +121,6 @@ func TestMultiCheck(t *testing.T) {
 	}
 }
 
-// TestDockerSocket verifies that when WithDockerSocket is configured the socket
-// is mounted at /var/run/docker.sock inside the build step. Only runs when the
-// DOCKER_SOCKET environment variable points at a real Docker socket.
-func TestDockerSocket(t *testing.T) {
-	socketPath := os.Getenv("DOCKER_SOCKET")
-	if socketPath == "" {
-		t.Skip("DOCKER_SOCKET not set; skipping docker socket test")
-	}
-
-	exec, err := executor.New(pkgBuildkitAddr, executor.WithDockerSocket(socketPath))
-	if err != nil {
-		t.Fatalf("cannot connect to buildkitd at %s: %v", pkgBuildkitAddr, err)
-	}
-	dir := t.TempDir()
-
-	cfg := executor.Config{
-		Checks: []executor.Check{
-			{
-				Name:  "ci/docker-socket",
-				Image: "alpine",
-				Steps: []string{"test -S /var/run/docker.sock"},
-			},
-		},
-	}
-
-	results, err := exec.Run(context.Background(), dir, cfg)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
-	}
-	r := results[0]
-	if r.Status != "passed" {
-		t.Errorf("expected status passed, got %s (logs: %s)", r.Status, r.Logs)
-	}
-}
 
 // TestLogCapture verifies that stdout and stderr from steps both appear in
 // the Logs field.

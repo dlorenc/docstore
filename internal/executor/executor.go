@@ -3,22 +3,17 @@ package executor
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"runtime"
-	"strings"
 	"sync"
 
 	dockerconfig "github.com/docker/cli/cli/config"
-	"github.com/distribution/reference"
 	"github.com/moby/buildkit/client"
 	"github.com/moby/buildkit/client/llb"
-	"github.com/moby/buildkit/client/llb/sourceresolver"
 	gwclient "github.com/moby/buildkit/frontend/gateway/client"
 	"github.com/moby/buildkit/session"
 	"github.com/moby/buildkit/session/auth/authprovider"
-	specs "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 // Config mirrors the .docstore/ci.yaml DSL and is used for both JSON decode
@@ -41,47 +36,18 @@ type CheckResult struct {
 	Logs   string `json:"logs"`
 }
 
-// options holds optional configuration for an Executor.
-type options struct {
-	dockerHost string
-}
-
-// Option is a functional option for configuring an Executor.
-type Option func(*options)
-
-// WithDockerHost configures the executor to set DOCKER_HOST to the given URL
-// (e.g. "tcp://localhost:2375" or "unix:///var/shared/docker.sock") in every
-// build step. An empty URL disables the feature.
-// This works because --oci-worker-no-process-sandbox shares the host mount
-// namespace, so unix sockets on the host are accessible at their host path
-// inside build steps without any file transfer.
-func WithDockerHost(url string) Option {
-	return func(o *options) { o.dockerHost = url }
-}
-
-// WithDockerSocket is a convenience wrapper around WithDockerHost that accepts
-// a filesystem path and converts it to a unix:// URL.
-func WithDockerSocket(path string) Option {
-	return WithDockerHost("unix://" + path)
-}
-
 // Executor translates a Config into an LLB DAG and dispatches it to buildkitd.
 type Executor struct {
 	client *client.Client
-	opts   options
 }
 
 // New creates an Executor connected to the buildkitd at buildkitAddr.
-func New(buildkitAddr string, opts ...Option) (*Executor, error) {
+func New(buildkitAddr string) (*Executor, error) {
 	c, err := client.New(context.Background(), buildkitAddr)
 	if err != nil {
 		return nil, fmt.Errorf("connect to buildkitd at %s: %w", buildkitAddr, err)
 	}
-	var o options
-	for _, opt := range opts {
-		opt(&o)
-	}
-	return &Executor{client: c, opts: o}, nil
+	return &Executor{client: c}, nil
 }
 
 // Run executes all checks in cfg in parallel against sourceDir.
@@ -153,44 +119,9 @@ func (e *Executor) runCheck(ctx context.Context, sourceDir string, check Check) 
 			authprovider.NewDockerAuthProvider(ap),
 		},
 	}, "", func(ctx context.Context, c gwclient.Client) (*gwclient.Result, error) {
-		// Resolve the image config to extract its ENV variables.
-		// Required because --oci-worker-no-process-sandbox (needed on GKE
-		// Autopilot where SYS_ADMIN is blocked) does not apply the image's
-		// ENV automatically. We add them to the LLB state explicitly so that
-		// PATH and other variables set by the image (e.g. in golang:1.25) are
-		// available when steps run.
-		// Normalize the image reference (e.g. "golang:1.25" →
-		// "docker.io/library/golang:1.25") so that ResolveImageConfig can parse
-		// it — bare short names without a registry host confuse the URL parser.
-		imageRef := check.Image
-		if named, err := reference.ParseNormalizedNamed(check.Image); err == nil {
-			imageRef = reference.TagNameOnly(named).String()
-		}
-
-		var imageEnv []string
-		if _, _, cfgBytes, err := c.ResolveImageConfig(ctx, imageRef,
-			sourceresolver.Opt{ImageOpt: &sourceresolver.ResolveImageOpt{}}); err == nil {
-			var imgCfg specs.Image
-			if json.Unmarshal(cfgBytes, &imgCfg) == nil {
-				imageEnv = imgCfg.Config.Env
-			}
-		}
-
 		source := llb.Local("src")
 		state := llb.Image(check.Image).Dir("/src")
 		srcMount := source
-
-		// Build RunOptions that apply the image ENV to each exec.
-		// llb.State.AddEnv only sets metadata; llb.AddEnv as a RunOption is
-		// what actually injects variables into the exec environment.
-		envOpts := make([]llb.RunOption, 0, len(imageEnv))
-		for _, env := range imageEnv {
-			k, v, _ := strings.Cut(env, "=")
-			envOpts = append(envOpts, llb.AddEnv(k, v))
-		}
-		if e.opts.dockerHost != "" {
-			envOpts = append(envOpts, llb.AddEnv("DOCKER_HOST", e.opts.dockerHost))
-		}
 
 		for _, step := range check.Steps {
 			runOpts := []llb.RunOption{
@@ -198,7 +129,6 @@ func (e *Executor) runCheck(ctx context.Context, sourceDir string, check Check) 
 				llb.WithCustomName(check.Name + ": " + step),
 				llb.AddMount("/src", srcMount),
 			}
-			runOpts = append(runOpts, envOpts...)
 			exec := state.Run(runOpts...)
 			state = exec.Root()
 			srcMount = exec.GetMount("/src")
