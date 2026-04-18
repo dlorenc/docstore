@@ -88,14 +88,16 @@ jobs:
             -t us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-scheduler:latest \
             -t us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-scheduler:${SHA} \
             --push \
+            --metadata-file /tmp/ci-scheduler-metadata.json \
             .
-          echo "sha=${SHA}" >> $GITHUB_OUTPUT
+          DIGEST=$(jq -r '."containerimage.digest"' /tmp/ci-scheduler-metadata.json)
+          echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
 
       - name: Deploy ci-scheduler to GKE
         run: |
           kubectl apply -f deploy/k8s/ci-scheduler.yaml
           kubectl set image deployment/ci-scheduler \
-            ci-scheduler=us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-scheduler:${{ steps.build.outputs.sha }} \
+            ci-scheduler=us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-scheduler@${{ steps.build.outputs.digest }} \
             -n docstore-ci
           kubectl rollout status deployment/ci-scheduler -n docstore-ci --timeout=300s
 
@@ -153,13 +155,15 @@ jobs:
             -t us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-worker:latest \
             -t us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-worker:${SHA} \
             --push \
+            --metadata-file /tmp/ci-worker-metadata.json \
             .
-          echo "sha=${SHA}" >> $GITHUB_OUTPUT
+          DIGEST=$(jq -r '."containerimage.digest"' /tmp/ci-worker-metadata.json)
+          echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
 
       - name: Deploy ci-worker to GKE
         run: |
           kubectl apply -f deploy/k8s/ci-worker.yaml
           kubectl set image deployment/ci-worker \
-            ci-worker=us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-worker:${{ steps.build.outputs.sha }} \
+            ci-worker=us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-worker@${{ steps.build.outputs.digest }} \
             -n docstore-ci
           kubectl rollout status deployment/ci-worker -n docstore-ci --timeout=600s
