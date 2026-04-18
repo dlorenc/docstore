@@ -126,6 +126,7 @@ var (
 	ErrInvalidCursor          = errors.New("invalid pagination cursor")
 	ErrBranchDraft            = errors.New("branch is in draft state")
 	ErrSubscriptionNotFound   = errors.New("subscription not found")
+	ErrCommentNotFound        = errors.New("comment not found")
 )
 
 // rebaseFile is one file within a replayed commit group.
@@ -1194,6 +1195,150 @@ func (s *Store) ListReviews(ctx context.Context, repo, branch string, atSeq *int
 		reviews = append(reviews, rev)
 	}
 	return reviews, rows.Err()
+}
+
+// CreateReviewComment records an inline file comment on a branch at its current
+// head_sequence. Returns ErrBranchNotFound if the branch doesn't exist.
+// reviewID is optional and may associate the comment with a formal review.
+func (s *Store) CreateReviewComment(ctx context.Context, repo, branch, path, versionID, body, author string, reviewID *string) (*model.ReviewComment, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		slog.Error("tx begin failed", "op", "create_review_comment", "error", err)
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			slog.Error("tx rollback failed", "op", "create_review_comment", "error", rollbackErr)
+		}
+	}()
+
+	var headSeq int64
+	err = tx.QueryRowContext(ctx,
+		"SELECT head_sequence FROM branches WHERE repo = $1 AND name = $2 FOR UPDATE",
+		repo, branch,
+	).Scan(&headSeq)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrBranchNotFound
+		}
+		return nil, fmt.Errorf("lock branch: %w", err)
+	}
+
+	var nullReviewID sql.NullString
+	if reviewID != nil && *reviewID != "" {
+		nullReviewID = sql.NullString{String: *reviewID, Valid: true}
+	}
+
+	var id string
+	var createdAt time.Time
+	err = tx.QueryRowContext(ctx,
+		`INSERT INTO review_comments (review_id, repo, branch, path, version_id, body, author, sequence)
+		 VALUES ($1, $2, $3, $4, $5::uuid, $6, $7, $8)
+		 RETURNING id::text, created_at`,
+		nullReviewID, repo, branch, path, versionID, body, author, headSeq,
+	).Scan(&id, &createdAt)
+	if err != nil {
+		return nil, fmt.Errorf("insert review_comment: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit tx: %w", err)
+	}
+
+	rc := &model.ReviewComment{
+		ID:        id,
+		Branch:    branch,
+		Path:      path,
+		VersionID: versionID,
+		Body:      body,
+		Author:    author,
+		Sequence:  headSeq,
+		CreatedAt: createdAt,
+	}
+	if reviewID != nil {
+		rc.ReviewID = reviewID
+	}
+	return rc, nil
+}
+
+// ListReviewComments returns inline file comments for a branch, ordered by
+// created_at ASC. If path is non-nil, only comments on that path are returned.
+func (s *Store) ListReviewComments(ctx context.Context, repo, branch string, path *string) ([]model.ReviewComment, error) {
+	q := `SELECT id::text, review_id::text, path, version_id::text, body, author, sequence, created_at
+	      FROM review_comments
+	      WHERE repo = $1 AND branch = $2`
+	args := []interface{}{repo, branch}
+	if path != nil {
+		q += " AND path = $3"
+		args = append(args, *path)
+	}
+	q += " ORDER BY created_at ASC"
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var comments []model.ReviewComment
+	for rows.Next() {
+		var c model.ReviewComment
+		c.Branch = branch
+		var reviewID sql.NullString
+		if err := rows.Scan(&c.ID, &reviewID, &c.Path, &c.VersionID, &c.Body, &c.Author, &c.Sequence, &c.CreatedAt); err != nil {
+			return nil, err
+		}
+		if reviewID.Valid {
+			s := reviewID.String
+			c.ReviewID = &s
+		}
+		comments = append(comments, c)
+	}
+	return comments, rows.Err()
+}
+
+// GetReviewComment returns a single review comment by ID and repo.
+// Returns ErrCommentNotFound if no matching comment exists.
+func (s *Store) GetReviewComment(ctx context.Context, repo, id string) (*model.ReviewComment, error) {
+	var c model.ReviewComment
+	var reviewID sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id::text, review_id::text, branch, path, version_id::text, body, author, sequence, created_at
+		 FROM review_comments
+		 WHERE repo = $1 AND id = $2::uuid`,
+		repo, id,
+	).Scan(&c.ID, &reviewID, &c.Branch, &c.Path, &c.VersionID, &c.Body, &c.Author, &c.Sequence, &c.CreatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrCommentNotFound
+		}
+		return nil, fmt.Errorf("get review_comment: %w", err)
+	}
+	if reviewID.Valid {
+		s := reviewID.String
+		c.ReviewID = &s
+	}
+	return &c, nil
+}
+
+// DeleteReviewComment removes a review comment by ID and repo.
+// Returns ErrCommentNotFound if no matching comment exists.
+func (s *Store) DeleteReviewComment(ctx context.Context, repo, id string) error {
+	res, err := s.db.ExecContext(ctx,
+		"DELETE FROM review_comments WHERE repo = $1 AND id = $2::uuid",
+		repo, id,
+	)
+	if err != nil {
+		return fmt.Errorf("delete review_comment: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	}
+	if n == 0 {
+		return ErrCommentNotFound
+	}
+	return nil
 }
 
 // CreateCheckRun records a CI check run for a branch. If atSequence is

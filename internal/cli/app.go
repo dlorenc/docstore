@@ -1697,6 +1697,113 @@ func (a *App) Review(branch, status, body string) error {
 	return nil
 }
 
+// Comment creates an inline file annotation on a branch.
+// The version_id is resolved automatically by fetching the file metadata from the server.
+func (a *App) Comment(branch, path, body string) error {
+	cfg, err := a.loadConfig()
+	if err != nil {
+		return err
+	}
+	if branch == "" {
+		branch = cfg.Branch
+	}
+
+	// Resolve version_id for the file on this branch.
+	q := url.Values{}
+	q.Set("branch", branch)
+	fileResp, err := a.httpGet(cfg, repoBase(cfg)+"/file/"+url.PathEscape(path)+"?"+q.Encode())
+	if err != nil {
+		return fmt.Errorf("fetching file info: %w", err)
+	}
+	defer fileResp.Body.Close()
+	if fileResp.StatusCode == http.StatusNotFound {
+		return fmt.Errorf("file %q not found on branch %q", path, branch)
+	}
+	if fileResp.StatusCode != http.StatusOK {
+		return a.readError(fileResp)
+	}
+	var fileMeta struct {
+		VersionID string `json:"version_id"`
+	}
+	if err := json.NewDecoder(fileResp.Body).Decode(&fileMeta); err != nil {
+		return fmt.Errorf("decoding file info: %w", err)
+	}
+	if fileMeta.VersionID == "" {
+		return fmt.Errorf("file %q was deleted on branch %q", path, branch)
+	}
+
+	req := model.CreateReviewCommentRequest{
+		Branch:    branch,
+		Path:      path,
+		VersionID: fileMeta.VersionID,
+		Body:      body,
+	}
+	resp, err := a.postJSON(cfg, repoBase(cfg)+"/comment", req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		return a.readError(resp)
+	}
+
+	var createResp model.CreateReviewCommentResponse
+	if err := json.NewDecoder(resp.Body).Decode(&createResp); err != nil {
+		return fmt.Errorf("decoding response: %w", err)
+	}
+
+	fmt.Fprintf(a.Out, "Comment created: id=%s, sequence=%d\n", createResp.ID, createResp.Sequence)
+	return nil
+}
+
+// Comments lists inline file comments for a branch. If path is non-empty, only
+// comments on that path are shown.
+func (a *App) Comments(branch, path string) error {
+	cfg, err := a.loadConfig()
+	if err != nil {
+		return err
+	}
+	if branch == "" {
+		branch = cfg.Branch
+	}
+
+	q := url.Values{}
+	if path != "" {
+		q.Set("path", path)
+	}
+	urlStr := repoBase(cfg) + "/branch/" + url.PathEscape(branch) + "/comments"
+	if len(q) > 0 {
+		urlStr += "?" + q.Encode()
+	}
+
+	resp, err := a.httpGet(cfg, urlStr)
+	if err != nil {
+		return fmt.Errorf("fetching comments: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return a.readError(resp)
+	}
+
+	var comments []model.ReviewComment
+	if err := json.NewDecoder(resp.Body).Decode(&comments); err != nil {
+		return fmt.Errorf("decoding comments: %w", err)
+	}
+
+	if len(comments) == 0 {
+		fmt.Fprintf(a.Out, "No comments for branch '%s'\n", branch)
+		return nil
+	}
+
+	fmt.Fprintf(a.Out, "%-36s  %-40s  %-4s  %s\n", "ID", "PATH", "SEQ", "BODY")
+	for _, c := range comments {
+		fmt.Fprintf(a.Out, "%-36s  %-40s  %-4d  %s\n", c.ID, c.Path, c.Sequence, c.Body)
+	}
+	return nil
+}
+
 // Checks lists check runs for a branch (defaults to current branch if empty).
 // If showAll is false, only the latest result per check_name is shown.
 func (a *App) Checks(branch string, showAll bool) error {
