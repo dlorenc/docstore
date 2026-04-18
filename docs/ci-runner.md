@@ -13,7 +13,7 @@ In the full production flow:
 4. BuildKit executes the checks; logs are written to GCS
 5. Results are written back to docstore as check runs via `POST /-/check`
 
-**Production deployment:** ci-runner runs on GKE Autopilot (cluster `chainguardener`, namespace `docstore-ci`) using rootless buildkitd (`moby/buildkit-rootless`). The docstore Cloud Run service delivers webhook events to ci-runner's internal GKE LoadBalancer (IP `10.128.0.40`) via VPC Direct Egress. Logs are stored at `gs://docstore-ci-logs`. See [GKE Deployment](#gke-deployment) for details.
+**Production deployment:** ci-runner runs on standard GKE (cluster `chainguardener`, namespace `docstore-ci`) using rootless buildkitd (`moby/buildkit-rootless`) alongside a privileged `docker:27-dind` sidecar. The docstore Cloud Run service delivers webhook events to ci-runner's internal GKE LoadBalancer via VPC Direct Egress. Logs are stored at `gs://docstore-ci-logs`. See [GKE Deployment](#gke-deployment) for details.
 
 ## How It Works
 
@@ -51,7 +51,9 @@ No matrix, conditionals, or artifact config in v1.
 
 `internal/executor` (`executor.go`) translates each check into an independent LLB chain using the BuildKit gateway API (`client.Build`). The source directory is mounted as a local input named `"src"`.
 
-**Image ENV injection (gateway API):** The executor uses `client.Build` rather than `client.Solve` so it can call `ResolveImageConfig` to fetch the image's OCI config and extract its `Env` array. These ENV variables are then injected as `llb.AddEnv` `RunOption`s on every exec. This is required because `--oci-worker-no-process-sandbox` (needed for rootless buildkitd on GKE Autopilot, where `SYS_ADMIN` is blocked) does not apply the image's ENV automatically. Without this fix, tools like `go` are not found at runtime because the image's `PATH` is never set.
+**Image ENV injection (gateway API):** The executor uses `client.Build` rather than `client.Solve` so it can call `ResolveImageConfig` to fetch the image's OCI config and extract its `Env` array. These ENV variables are then injected as `llb.AddEnv` `RunOption`s on every exec. This is required because `--oci-worker-no-process-sandbox` does not apply the image's ENV automatically. Without this fix, tools like `go` are not found at runtime because the image's `PATH` is never set.
+
+**Docker-in-Docker access:** When a `--docker-host` URL is configured, `DOCKER_HOST` is injected as an env var into every build step. This allows CI steps to run `docker build`, `docker info`, testcontainers, etc. The value must be a TCP URL (e.g. `tcp://localhost:2375`) rather than a Unix socket path. BuildKit OCI worker containers do not inherit pod volume mounts even with `--oci-worker-no-process-sandbox`, so a socket file mounted via an emptyDir volume is not accessible from inside a build step. TCP works because `--oci-worker-no-process-sandbox` shares the host network namespace.
 
 For each check, the executor:
 1. Resolves the image config via `ResolveImageConfig` to extract ENV variables
@@ -243,6 +245,8 @@ Flags:
 | Flag | Default | Description |
 |---|---|---|
 | `--buildkit-addr` | `unix:///run/buildkit/buildkitd.sock` | buildkitd socket address |
+| `--docker-host` | `""` | Docker host URL injected as `DOCKER_HOST` in every build step (e.g. `tcp://localhost:2375`); use this for DinD access. Takes precedence over `--docker-socket`. |
+| `--docker-socket` | `""` | Path to a Docker socket; sets `DOCKER_HOST=unix://<path>` in build steps. Only reachable if buildkitd runs with `--oci-worker-no-process-sandbox` and the socket is on the host. Prefer `--docker-host` with a TCP URL. |
 | `--port` | `8080` | HTTP listen port |
 | `--docstore-url` | (required) | Base URL of the docstore server |
 | `--dev-identity` | `""` | Identity header for local dev (sets X-Goog-IAP-JWT-Assertion) |
@@ -362,32 +366,40 @@ The test (`TestE2EGoPipeline`):
 
 ## GKE Deployment
 
-The production ci-runner runs on GKE Autopilot rather than Cloud Run because buildkitd requires Linux user namespaces (`SYS_ADMIN`) that Autopilot blocks. The rootless buildkitd image (`moby/buildkit:v0.29.0-rootless`) works around this using `rootlesskit`, which sets up mount namespaces inside a user namespace.
+The production ci-runner runs on standard GKE (not Autopilot). Standard GKE allows privileged pods, which is required for the `docker:27-dind` sidecar. Autopilot blocks privileged pods and also blocks `ip tuntap` operations needed by rootless DinD networking modes, so it is not suitable.
 
 ### Components
 
 | File | Purpose |
 |---|---|
 | `Dockerfile.ci-runner-gke` | Two-stage build: Go binary + rootless buildkitd image |
-| `entrypoint-gke.sh` | Configures GCR auth, starts rootlesskit buildkitd, then starts ci-runner |
-| `deploy/k8s/ci-runner.yaml` | GKE Deployment + internal LoadBalancer + Workload Identity SA |
+| `entrypoint-gke.sh` | Configures GCR auth, starts rootlesskit buildkitd, waits for DinD TCP, then starts ci-runner |
+| `deploy/k8s/ci-runner.yaml` | GKE Deployment (ci-runner + docker-dind sidecar) + internal LoadBalancer + Workload Identity SA |
 | `scripts/setup-gke.sh` | One-time GKE setup (Workload Identity, secrets, IAM) |
 
 ### Network topology
 
 ```
 Cloud Run (docstore)
-  └─[VPC Direct Egress]─► internal LB 10.128.0.40:8080
+  └─[VPC Direct Egress]─► internal LB :8080
                                  └─► ci-runner pod (docstore-ci namespace)
-                                           └─► rootlesskit buildkitd (tcp://localhost:1234)
+                                           ├─► rootlesskit buildkitd (tcp://localhost:1234)
+                                           └─► docker:27-dind sidecar  (tcp://localhost:2375)
 ```
 
 Docstore uses VPC Direct Egress to reach the GKE internal LoadBalancer IP. The ci-runner is not exposed to the public internet.
 
+### DinD sidecar
+
+The `docker:27-dind` container runs as a privileged sidecar. It listens on TCP port 2375 (not a Unix socket). The `entrypoint-gke.sh` waits for port 2375 before starting ci-runner, and passes `--docker-host tcp://localhost:2375` to make `DOCKER_HOST` available to all build steps.
+
+**Why TCP and not a socket file?** BuildKit OCI worker containers don't inherit pod volume mounts even with `--oci-worker-no-process-sandbox`. A socket file on an emptyDir volume is only visible to the pod's named containers (`ci-runner`, `docker-dind`), not to the isolated container rootfs BuildKit creates for each build step. TCP works because `--oci-worker-no-process-sandbox` shares the host network namespace, making `localhost:2375` reachable from inside any build step.
+
 ### Security
 
 - **Workload Identity:** The `ci-runner` k8s ServiceAccount is bound to the `ci-runner@dlorenc-chainguard.iam.gserviceaccount.com` GCP SA via `iam.workloadIdentityUser`. This grants access to GCS log storage without static credentials.
-- **seccompProfile / AppArmor:** Both must be `Unconfined` for rootlesskit to set up mount namespaces. This is configured in `deploy/k8s/ci-runner.yaml`.
+- **seccompProfile / AppArmor:** Both must be `Unconfined` on the ci-runner container for rootlesskit to set up mount namespaces. This is configured in `deploy/k8s/ci-runner.yaml`.
+- **Privileged DinD:** The `docker-dind` sidecar runs with `privileged: true`. This is required for Docker-in-Docker and is only available on standard GKE nodes (not Autopilot).
 - **Webhook HMAC:** The ci-runner verifies the `X-DocStore-Signature` header on all incoming webhooks using the `WEBHOOK_SECRET` env var (sourced from a k8s Secret backed by Secret Manager).
 
 ### First-time setup
@@ -412,8 +424,8 @@ After deploy, the `build-and-deploy-ci-runner` CI job in `deploy.yml` handles su
 ### rootlesskit flags
 
 `entrypoint-gke.sh` starts buildkitd with:
-- `--oci-worker-snapshotter=native` — uses overlay-less snapshotter compatible with Autopilot
-- `--oci-worker-no-process-sandbox` — disables the per-process sandbox (required because there is no seccomp/apparmor inside the user namespace); the image ENV fix in `executor.go` compensates for the side effect of this flag not applying image ENV
+- `--oci-worker-snapshotter=native` — uses overlay-less snapshotter; avoids overlay-on-overlay issues inside user namespaces
+- `--oci-worker-no-process-sandbox` — disables the per-process sandbox (required because there is no seccomp/apparmor inside the user namespace). Side effects: (1) image ENV is not applied automatically — compensated by the `ResolveImageConfig` ENV injection in `executor.go`; (2) build steps share the host network namespace — this is what makes `DOCKER_HOST=tcp://localhost:2375` work
 
 ## Architecture Notes
 
