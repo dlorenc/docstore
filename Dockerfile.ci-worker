@@ -1,0 +1,17 @@
+FROM moby/buildkit:v0.29.0 AS buildkit
+
+FROM golang:1.25 AS build
+COPY . /src
+WORKDIR /src
+RUN CGO_ENABLED=0 go build -o /ci-worker ./cmd/ci-worker
+
+FROM ubuntu:24.04
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        docker.io \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=buildkit /usr/bin/buildkitd /usr/bin/buildkitd
+COPY --from=build /ci-worker /usr/bin/ci-worker
+COPY entrypoint-worker.sh /entrypoint-worker.sh
+RUN chmod +x /entrypoint-worker.sh
+ENTRYPOINT ["/entrypoint-worker.sh"]
