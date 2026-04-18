@@ -51,6 +51,9 @@ type RebaseConflictError = api.RebaseConflictError
 type CreateReviewRequest = api.CreateReviewRequest
 type CreateReviewResponse = api.CreateReviewResponse
 
+type CreateReviewCommentRequest = api.CreateReviewCommentRequest
+type CreateReviewCommentResponse = api.CreateReviewCommentResponse
+
 type CreateCheckRunRequest = api.CreateCheckRunRequest
 type CreateCheckRunResponse = api.CreateCheckRunResponse
 
