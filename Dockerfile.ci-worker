@@ -13,7 +13,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
         fuse-overlayfs \
         iptables \
-        kmod \
         runc \
     && rm -rf /var/lib/apt/lists/*
 RUN curl -fsSL https://github.com/GoogleCloudPlatform/docker-credential-gcr/releases/download/v2.1.22/docker-credential-gcr_linux_amd64-2.1.22.tar.gz \
