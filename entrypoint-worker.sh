@@ -17,7 +17,7 @@ fi
 export DOCKER_CONFIG="$HOME/.docker"
 
 # Start buildkitd in background (standard, non-rootless — runs natively inside Kata VM).
-buildkitd --addr tcp://localhost:1234 &
+buildkitd --addr tcp://localhost:1234 --oci-worker-no-process-sandbox &
 
 # Start dockerd in background (--userland-proxy=false avoids needing docker-proxy for port forwarding).
 dockerd --userland-proxy=false &
