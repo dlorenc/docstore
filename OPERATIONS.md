@@ -1185,7 +1185,12 @@ To support SSE at multiple instances, replace the in-process `events.Broker` wit
 
 ### Logging
 
-The server uses the standard `log/slog` package for structured JSON logging. All startup events, migration status, request details, and errors are written to stderr as JSON. Cloud Run's log collection will parse this automatically.
+The server uses the standard `log/slog` package for structured logging. Two environment variables control logging behaviour:
+
+- `LOG_FORMAT` — `json` (default) or `text` for human-readable output. Cloud Run parses JSON natively.
+- `LOG_LEVEL` — `debug`, `info` (default), `warn`, or `error`.
+
+All log entries go to stdout.
 
 ---
 
