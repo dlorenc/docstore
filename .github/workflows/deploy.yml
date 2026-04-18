@@ -122,3 +122,110 @@ jobs:
                 --data-file=- --project=dlorenc-chainguard
             echo "ci-runner-url updated to ${WANT}"
           fi
+
+  build-and-deploy-ci-scheduler:
+    runs-on: ubuntu-latest
+    needs: [deploy]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/320310132788/locations/global/workloadIdentityPools/github-actions/providers/github
+          service_account: docstore-deployer@dlorenc-chainguard.iam.gserviceaccount.com
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: docstore-ci
+          location: us-central1
+          project_id: dlorenc-chainguard
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+      - name: Build and push ci-scheduler image
+        id: build
+        run: |
+          SHA=$(git rev-parse --short HEAD)
+          docker buildx build --platform linux/amd64 \
+            -f Dockerfile.ci-scheduler \
+            -t us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-scheduler:latest \
+            -t us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-scheduler:${SHA} \
+            --push \
+            .
+          echo "sha=${SHA}" >> $GITHUB_OUTPUT
+
+      - name: Deploy ci-scheduler to GKE
+        run: |
+          kubectl apply -f deploy/k8s/ci-scheduler.yaml
+          kubectl set image deployment/ci-scheduler \
+            ci-scheduler=us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-scheduler:${{ steps.build.outputs.sha }} \
+            -n docstore-ci
+          kubectl rollout status deployment/ci-scheduler -n docstore-ci --timeout=300s
+
+      - name: Update ci-runner-url secret
+        run: |
+          # Update the ci-runner-url secret if the LB IP has changed.
+          # On first deploy the LB may still be provisioning; on subsequent
+          # deploys the IP is stable and this is a no-op.
+          IP=$(kubectl get svc ci-scheduler -n docstore-ci \
+            -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+          if [ -z "$IP" ]; then
+            echo "WARNING: internal LB IP not yet assigned; ci-runner-url not updated"
+            exit 0
+          fi
+          CURRENT=$(gcloud secrets versions access latest \
+            --secret=ci-runner-url --project=dlorenc-chainguard 2>/dev/null || true)
+          WANT="http://${IP}:8080"
+          if [ "$CURRENT" = "$WANT" ]; then
+            echo "ci-runner-url already set to ${WANT}, skipping"
+          else
+            printf "%s" "$WANT" | \
+              gcloud secrets versions add ci-runner-url \
+                --data-file=- --project=dlorenc-chainguard
+            echo "ci-runner-url updated to ${WANT}"
+          fi
+
+  build-and-deploy-ci-worker:
+    runs-on: ubuntu-latest
+    needs: [deploy]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/320310132788/locations/global/workloadIdentityPools/github-actions/providers/github
+          service_account: docstore-deployer@dlorenc-chainguard.iam.gserviceaccount.com
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: docstore-ci
+          location: us-central1
+          project_id: dlorenc-chainguard
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+      - name: Build and push ci-worker image
+        id: build
+        run: |
+          SHA=$(git rev-parse --short HEAD)
+          docker buildx build --platform linux/amd64 \
+            -f Dockerfile.ci-worker \
+            -t us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-worker:latest \
+            -t us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-worker:${SHA} \
+            --push \
+            .
+          echo "sha=${SHA}" >> $GITHUB_OUTPUT
+
+      - name: Deploy ci-worker to GKE
+        run: |
+          kubectl apply -f deploy/k8s/ci-worker.yaml
+          kubectl set image deployment/ci-worker \
+            ci-worker=us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-worker:${{ steps.build.outputs.sha }} \
+            -n docstore-ci
+          kubectl rollout status deployment/ci-worker -n docstore-ci --timeout=300s
