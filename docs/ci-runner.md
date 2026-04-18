@@ -9,7 +9,7 @@ The runner sits between docstore and a co-located `buildkitd` instance. It accep
 In the full production flow:
 1. A commit lands on a branch
 2. Docstore's outbox dispatcher sends a `commit.created` CloudEvent to the ci-runner webhook
-3. The ci-runner fetches `.docstore/ci.yaml` from `main` and downloads the branch tree to disk
+3. The ci-runner fetches `.docstore/ci.yaml` from the branch under test (pinned to its head sequence) and downloads the branch tree to disk
 4. BuildKit executes the checks; logs are written to GCS
 5. Results are written back to docstore as check runs via `POST /-/check`
 
@@ -19,7 +19,13 @@ In the full production flow:
 
 ### `.docstore/ci.yaml` DSL
 
-Committed to `main` (always read from `main`, never from the branch under test):
+Read from the **branch under test**, pinned to its head sequence at the time the CI job was queued. This means changes to `ci.yaml` on a branch take effect immediately for that branch's CI runs without requiring a merge to `main` first.
+
+If `.docstore/ci.yaml` does not exist on the branch, CI is skipped entirely — no check runs are posted. The merge policy independently enforces required check names, so removing `ci.yaml` from a branch does not bypass the merge gate; it just means CI produces no results (which may cause required checks to be absent and block merging, depending on policy).
+
+**Security note:** Policy files (`.docstore/policy/*.rego`) are always loaded from `main`, not from the branch. This means the merge gate cannot be weakened by changes on a branch — a branch cannot modify the policies that govern whether it is allowed to merge.
+
+Example `ci.yaml`:
 
 ```yaml
 checks:
