@@ -16,15 +16,11 @@ else
 fi
 export DOCKER_CONFIG="$HOME/.docker"
 
-# Mount a loop-backed ext4 filesystem for buildkitd's data directory.
-# The Kata CLH guest rootfs is served via virtiofs which does not support
-# overlayfs upper dirs (EINVAL). A loop-mounted ext4 volume gives buildkitd
-# a real block-backed filesystem where overlayfs works natively, enabling
-# the full overlay snapshotter instead of the slow native (no-CoW) fallback.
-truncate -s 20G /tmp/buildkit-disk.img
-mkfs.ext4 -F -q /tmp/buildkit-disk.img
+# Mount tmpfs over /var/lib/buildkit so buildkitd can use the overlay
+# snapshotter. The Kata CLH guest rootfs is served via virtiofs which does
+# not support overlayfs upper dirs. tmpfs does, and needs no loop device.
 mkdir -p /var/lib/buildkit
-mount -o loop /tmp/buildkit-disk.img /var/lib/buildkit
+mount -t tmpfs -o size=10g tmpfs /var/lib/buildkit
 
 # Start buildkitd in background (standard, non-rootless — runs natively inside Kata VM).
 # --oci-worker-net=host ensures build containers share the host network namespace so they
