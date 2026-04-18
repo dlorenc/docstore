@@ -75,3 +75,14 @@ spec:
           initialDelaySeconds: 30
           periodSeconds: 10
           failureThreshold: 6
+      - name: cloud-sql-proxy
+        image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2
+        args:
+          - dlorenc-chainguard:us-central1:docstore-mvp
+          - --port=5432
+        securityContext:
+          runAsNonRoot: true
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
