@@ -24,13 +24,21 @@ func main() {
 	bootstrapAdmin := flag.String("bootstrap-admin", "", "identity granted admin access to repos with no admin assigned yet")
 	flag.Parse()
 
-	// Set up structured logger based on LOG_FORMAT env var.
+	// Set up structured logger based on LOG_FORMAT and LOG_LEVEL env vars.
 	// Default is JSON (GCP Cloud Run picks this up natively).
+	// LOG_LEVEL accepts: debug, info, warn, error (default: info).
+	var logLevel slog.LevelVar
+	if lvlStr := os.Getenv("LOG_LEVEL"); lvlStr != "" {
+		if err := logLevel.UnmarshalText([]byte(lvlStr)); err != nil {
+			// Unknown level — leave at default (Info) and warn below.
+			logLevel.Set(slog.LevelInfo)
+		}
+	}
 	var handler slog.Handler
 	if os.Getenv("LOG_FORMAT") == "text" {
-		handler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})
+		handler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: &logLevel})
 	} else {
-		handler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})
+		handler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: &logLevel})
 	}
 	logger := slog.New(handler)
 	slog.SetDefault(logger)

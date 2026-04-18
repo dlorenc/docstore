@@ -258,9 +258,16 @@ Environment variables (log storage):
 | `LOG_LOCAL_DIR` | `/tmp/ci-logs` | Directory for local log store (when `LOG_STORE=local`) |
 | `LOG_BUCKET` | (required when gcs) | GCS bucket name (when `LOG_STORE=gcs`) |
 
-Log format defaults to JSON. Set `LOG_FORMAT=text` for human-readable output:
+Environment variables (logging):
+
+| Variable | Default | Description |
+|---|---|---|
+| `LOG_FORMAT` | `json` | Log output format: `json` or `text` |
+| `LOG_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn`, or `error` |
+
+Log format defaults to JSON. Set `LOG_FORMAT=text` for human-readable output, and `LOG_LEVEL` to adjust verbosity:
 ```bash
-LOG_FORMAT=text go run ./cmd/ci-runner
+LOG_FORMAT=text LOG_LEVEL=debug go run ./cmd/ci-runner
 ```
 
 ### Example Request
@@ -428,4 +435,9 @@ Panics inside goroutines are recovered and turned into `status: failed` results 
 
 ### Logging
 
-The server uses `log/slog` with structured JSON output by default (set `LOG_FORMAT=text` for text format). All log entries go to stdout at `INFO` level or above.
+The server uses `log/slog` with structured JSON output by default. Two environment variables control logging:
+
+- `LOG_FORMAT` — `json` (default) or `text` for human-readable output.
+- `LOG_LEVEL` — `debug`, `info` (default), `warn`, or `error`.
+
+All log entries go to stdout.
