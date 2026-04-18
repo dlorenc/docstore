@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/moby/buildkit/client"
 	dockercontainer "github.com/moby/moby/api/types/container"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -43,9 +44,43 @@ func StartBuildkit() (addr string, cleanup func(), err error) {
 		return "", func() {}, fmt.Errorf("get buildkit endpoint: %w", err)
 	}
 
+	// wait.ForListeningPort only confirms TCP is bound; buildkitd may still be
+	// initialising its OCI worker and gRPC service. Poll ListWorkers until the
+	// daemon actually responds so that tests don't race against a half-started
+	// buildkitd.
+	if err := waitForBuildkitReady(ctx, bkAddr, 60*time.Second); err != nil {
+		_ = ctr.Terminate(ctx)
+		return "", func() {}, fmt.Errorf("buildkitd at %s did not become ready: %w", bkAddr, err)
+	}
+
 	return bkAddr, func() {
 		if termErr := ctr.Terminate(ctx); termErr != nil {
 			fmt.Fprintf(os.Stderr, "terminate buildkit container: %v\n", termErr)
 		}
 	}, nil
+}
+
+// waitForBuildkitReady polls the buildkitd gRPC API until ListWorkers succeeds
+// or the deadline is reached. This bridges the gap between the TCP port
+// becoming reachable and the daemon being fully initialised.
+func waitForBuildkitReady(ctx context.Context, addr string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		c, err := client.New(ctx, addr)
+		if err != nil {
+			lastErr = err
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		_, lastErr = c.ListWorkers(probeCtx)
+		cancel()
+		c.Close()
+		if lastErr == nil {
+			return nil
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return fmt.Errorf("timeout after %s; last error: %w", timeout, lastErr)
 }
