@@ -132,14 +132,16 @@ func (e *Executor) runCheck(ctx context.Context, sourceDir string, check Check) 
 			imageRef = reference.TagNameOnly(named).String()
 		}
 		var envOpts []llb.RunOption
-		if _, _, cfgBytes, err := c.ResolveImageConfig(ctx, imageRef,
-			sourceresolver.Opt{ImageOpt: &sourceresolver.ResolveImageOpt{}}); err == nil {
-			var imgCfg specs.Image
-			if json.Unmarshal(cfgBytes, &imgCfg) == nil {
-				for _, env := range imgCfg.Config.Env {
-					k, v, _ := strings.Cut(env, "=")
-					envOpts = append(envOpts, llb.AddEnv(k, v))
-				}
+		_, _, cfgBytes, err := c.ResolveImageConfig(ctx, imageRef,
+			sourceresolver.Opt{ImageOpt: &sourceresolver.ResolveImageOpt{}})
+		if err != nil {
+			return nil, fmt.Errorf("resolve image config for %s: %w", imageRef, err)
+		}
+		var imgCfg specs.Image
+		if json.Unmarshal(cfgBytes, &imgCfg) == nil {
+			for _, env := range imgCfg.Config.Env {
+				k, v, _ := strings.Cut(env, "=")
+				envOpts = append(envOpts, llb.AddEnv(k, v))
 			}
 		}
 		// Inject DOCKER_HOST so docker:cli checks can reach the dockerd running
