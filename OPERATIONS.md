@@ -1230,7 +1230,7 @@ All log entries go to stdout.
 
 ## Initial Setup: CI Runner
 
-The CI runner (`ci-runner`) executes `.docstore/ci.yaml` checks triggered by docstore commit events. It runs on GKE Autopilot using rootless buildkitd. See [docs/ci-runner.md](docs/ci-runner.md) for full architecture details.
+The CI runner (`ci-runner`) executes `.docstore/ci.yaml` checks triggered by docstore commit events. It runs on standard GKE using rootless buildkitd alongside a privileged `docker:27-dind` sidecar (TCP port 2375) for Docker access in build steps. See [docs/ci-runner.md](docs/ci-runner.md) for full architecture details.
 
 Before the first deploy, run the one-time setup scripts to provision GCP and GKE infrastructure.
 

@@ -2,7 +2,9 @@
 #
 # Uses rootless buildkitd (moby/buildkit-rootless) so no SYS_ADMIN is needed.
 # DinD sidecar uses docker:27-dind (privileged) — standard GKE allows privileged
-# pods unlike Autopilot. The docker socket emptyDir is mounted at /var/shared.
+# pods unlike Autopilot. DinD listens on TCP 2375; build steps reach it via
+# DOCKER_HOST=tcp://localhost:2375. Socket files are not accessible from BuildKit
+# OCI worker containers even with --oci-worker-no-process-sandbox.
 #
 # Pre-requisites (run scripts/setup-gke.sh first):
 #   - GKE cluster with Workload Identity enabled
@@ -38,9 +40,6 @@ spec:
       securityContext:
         appArmorProfile:
           type: Unconfined
-      volumes:
-      - name: docker-socket
-        emptyDir: {}
       containers:
       - name: ci-runner
         image: us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-runner-gke:latest
@@ -80,27 +79,21 @@ spec:
           initialDelaySeconds: 15
           periodSeconds: 10
           failureThreshold: 3
-        volumeMounts:
-        - name: docker-socket
-          mountPath: /var/shared
       - name: docker-dind
         image: docker:27-dind
-        args: ["--host=unix:///var/shared/docker.sock", "--tls=false"]
+        args: ["--host=tcp://0.0.0.0:2375", "--tls=false"]
         env:
         - name: DOCKER_TLS_CERTDIR
           value: ""
         securityContext:
           privileged: true
-        volumeMounts:
-        - name: docker-socket
-          mountPath: /var/shared
         resources:
           requests:
             cpu: "500m"
             memory: "512Mi"
         readinessProbe:
-          exec:
-            command: ["sh", "-c", "test -S /var/shared/docker.sock"]
+          tcpSocket:
+            port: 2375
           initialDelaySeconds: 5
           periodSeconds: 3
 ---
