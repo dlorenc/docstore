@@ -35,6 +35,8 @@ spec:
         app: ci-runner
     spec:
       serviceAccountName: ci-runner
+      nodeSelector:
+        cloud.google.com/gke-nodepool: default-pool
       # rootlesskit needs AppArmor unconfined to set up mount namespaces within
       # the user namespace. seccompProfile Unconfined is also required.
       securityContext:

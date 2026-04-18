@@ -34,6 +34,8 @@ spec:
         app: ci-scheduler
     spec:
       serviceAccountName: ci-scheduler
+      nodeSelector:
+        cloud.google.com/gke-nodepool: default-pool
       containers:
       - name: ci-scheduler
         image: us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-scheduler:latest
@@ -69,6 +71,17 @@ spec:
           initialDelaySeconds: 10
           periodSeconds: 10
           failureThreshold: 3
+      - name: cloud-sql-proxy
+        image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2
+        args:
+          - dlorenc-chainguard:us-central1:docstore-mvp
+          - --port=5432
+        securityContext:
+          runAsNonRoot: true
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
 ---
 apiVersion: v1
 kind: Service
