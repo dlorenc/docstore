@@ -19,7 +19,7 @@ export DOCKER_CONFIG="$HOME/.docker"
 # Start buildkitd in background (standard, non-rootless — runs natively inside Kata VM).
 # --oci-worker-net=host ensures build containers share the host network namespace so they
 # can reach dockerd at tcp://localhost:2375.
-buildkitd --addr tcp://localhost:1234 --oci-worker-net=host &
+buildkitd --addr tcp://localhost:1234 --oci-worker-net=host --oci-worker-snapshotter=fuse-overlayfs &
 
 # Start dockerd in background.
 # -H tcp://127.0.0.1:2375 exposes dockerd over TCP so build containers running with
