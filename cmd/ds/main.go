@@ -37,6 +37,8 @@ commands:
   review --status approved|rejected [--body "…"] [--branch <name>]  Submit a review
   checks [--branch <name>] [--all]                List check runs for a branch
   check --name <n> --status passed|failed [--branch <name>] [--log-url <url>] [--sequence <n>]  Report a CI check
+  comment --path <path> --body <body> [--branch <name>]  Add an inline file comment
+  comments [--path <path>] [--branch <name>]      List inline file comments
   import-git <path> [--mode squash|replay]        Import a git repo into docstore main
   tui                                             Launch the terminal UI
   purge --older-than <Nd> [--dry-run]             Purge old merged/abandoned branches
@@ -638,6 +640,54 @@ func main() {
 			fmt.Fprintln(os.Stderr, usage)
 			os.Exit(1)
 		}
+
+	case "comment":
+		path := ""
+		body := ""
+		branch := ""
+		for i := 1; i < len(args); i++ {
+			switch args[i] {
+			case "--path":
+				if i+1 < len(args) {
+					path = args[i+1]
+					i++
+				}
+			case "--body":
+				if i+1 < len(args) {
+					body = args[i+1]
+					i++
+				}
+			case "--branch":
+				if i+1 < len(args) {
+					branch = args[i+1]
+					i++
+				}
+			}
+		}
+		if path == "" || body == "" {
+			fmt.Fprintln(os.Stderr, "usage: ds comment --path <path> --body <body> [--branch <name>]")
+			os.Exit(1)
+		}
+		err = app.Comment(branch, path, body)
+
+	case "comments":
+		path := ""
+		branch := ""
+		for i := 1; i < len(args); i++ {
+			switch args[i] {
+			case "--path":
+				if i+1 < len(args) {
+					path = args[i+1]
+					i++
+				}
+			case "--branch":
+				if i+1 < len(args) {
+					branch = args[i+1]
+					i++
+				}
+			}
+		}
+		err = app.Comments(branch, path)
 
 	case "ready":
 		err = app.Ready()
