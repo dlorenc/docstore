@@ -148,6 +148,22 @@ func (s *server) handleReposPrefix(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
 
+	case endpoint == "comment":
+		if r.Method == http.MethodPost {
+			s.handleCreateReviewComment(w, r)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+
+	case strings.HasPrefix(endpoint, "comment/"):
+		commentID := strings.TrimPrefix(endpoint, "comment/")
+		r.SetPathValue("commentID", commentID)
+		if r.Method == http.MethodDelete {
+			s.handleDeleteReviewComment(w, r)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+
 	case endpoint == "purge":
 		if r.Method == http.MethodPost {
 			s.handlePurge(w, r)
@@ -765,6 +781,9 @@ func (s *server) handleBranchGet(w http.ResponseWriter, r *http.Request) {
 	case strings.HasSuffix(branchPath, "/checks"):
 		branch := strings.TrimSuffix(branchPath, "/checks")
 		s.handleGetChecks(w, r, repo, branch)
+	case strings.HasSuffix(branchPath, "/comments"):
+		branch := strings.TrimSuffix(branchPath, "/comments")
+		s.handleListReviewComments(w, r, repo, branch)
 	default:
 		writeError(w, http.StatusNotFound, "not found")
 	}
@@ -814,6 +833,111 @@ func (s *server) handleGetChecks(w http.ResponseWriter, r *http.Request, repo, b
 		checkRuns = []model.CheckRun{}
 	}
 	writeJSON(w, http.StatusOK, checkRuns)
+}
+
+// handleCreateReviewComment implements POST /repos/:name/comment
+func (s *server) handleCreateReviewComment(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
+	author := IdentityFromContext(r.Context())
+
+	var req model.CreateReviewCommentRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Branch == "" {
+		writeError(w, http.StatusBadRequest, "branch is required")
+		return
+	}
+	if req.Path == "" {
+		writeError(w, http.StatusBadRequest, "path is required")
+		return
+	}
+	if req.VersionID == "" {
+		writeError(w, http.StatusBadRequest, "version_id is required")
+		return
+	}
+	if req.Body == "" {
+		writeError(w, http.StatusBadRequest, "body is required")
+		return
+	}
+
+	comment, err := s.commitStore.CreateReviewComment(r.Context(), repo, req.Branch, req.Path, req.VersionID, req.Body, author, req.ReviewID)
+	if err != nil {
+		switch {
+		case errors.Is(err, db.ErrBranchNotFound):
+			writeError(w, http.StatusNotFound, "branch not found")
+		default:
+			slog.Error("internal error", "op", "create_review_comment", "repo", repo, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+
+	slog.Info("review comment created", "repo", repo, "branch", req.Branch, "path", req.Path, "author", author)
+	writeJSON(w, http.StatusCreated, model.CreateReviewCommentResponse{
+		ID:       comment.ID,
+		Sequence: comment.Sequence,
+	})
+}
+
+// handleListReviewComments serves GET /repos/:name/branch/:branch/comments
+func (s *server) handleListReviewComments(w http.ResponseWriter, r *http.Request, repo, branch string) {
+	var path *string
+	if v := r.URL.Query().Get("path"); v != "" {
+		path = &v
+	}
+
+	comments, err := s.commitStore.ListReviewComments(r.Context(), repo, branch, path)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if comments == nil {
+		comments = []model.ReviewComment{}
+	}
+	writeJSON(w, http.StatusOK, comments)
+}
+
+// handleDeleteReviewComment implements DELETE /repos/:name/comment/:commentID
+func (s *server) handleDeleteReviewComment(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
+	commentID := r.PathValue("commentID")
+	identity := IdentityFromContext(r.Context())
+	role := RoleFromContext(r.Context())
+
+	comment, err := s.commitStore.GetReviewComment(r.Context(), repo, commentID)
+	if err != nil {
+		switch {
+		case errors.Is(err, db.ErrCommentNotFound):
+			writeError(w, http.StatusNotFound, "comment not found")
+		default:
+			slog.Error("internal error", "op", "get_review_comment", "repo", repo, "comment", commentID, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+
+	// Only the comment author or a maintainer+ may delete a comment.
+	if comment.Author != identity && role != model.RoleMaintainer && role != model.RoleAdmin {
+		writeError(w, http.StatusForbidden, "forbidden: must be comment author or maintainer")
+		return
+	}
+
+	if err := s.commitStore.DeleteReviewComment(r.Context(), repo, commentID); err != nil {
+		slog.Error("internal error", "op", "delete_review_comment", "repo", repo, "comment", commentID, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	slog.Info("review comment deleted", "repo", repo, "comment", commentID, "by", identity)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // parseDayDuration parses a duration string of the form "Nd" (e.g. "7d", "30d").
