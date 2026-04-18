@@ -61,6 +61,11 @@ type mockStore struct {
 	deleteReleaseFn        func(ctx context.Context, repo, name string) error
 	commitSequenceExistsFn func(ctx context.Context, repo string, sequence int64) (bool, error)
 
+	createReviewCommentFn func(ctx context.Context, repo, branch, path, versionID, body, author string, reviewID *string) (*model.ReviewComment, error)
+	listReviewCommentsFn  func(ctx context.Context, repo, branch string, path *string) ([]model.ReviewComment, error)
+	getReviewCommentFn    func(ctx context.Context, repo, id string) (*model.ReviewComment, error)
+	deleteReviewCommentFn func(ctx context.Context, repo, id string) error
+
 	createSubscriptionFn func(ctx context.Context, req model.CreateSubscriptionRequest) (*model.EventSubscription, error)
 	listSubscriptionsFn  func(ctx context.Context) ([]model.EventSubscription, error)
 	deleteSubscriptionFn func(ctx context.Context, id string) error
@@ -359,6 +364,34 @@ func (m *mockStore) ResumeSubscription(ctx context.Context, id string) error {
 		return m.resumeSubscriptionFn(ctx, id)
 	}
 	return nil
+}
+
+func (m *mockStore) CreateReviewComment(ctx context.Context, repo, branch, path, versionID, body, author string, reviewID *string) (*model.ReviewComment, error) {
+	if m.createReviewCommentFn != nil {
+		return m.createReviewCommentFn(ctx, repo, branch, path, versionID, body, author, reviewID)
+	}
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockStore) ListReviewComments(ctx context.Context, repo, branch string, path *string) ([]model.ReviewComment, error) {
+	if m.listReviewCommentsFn != nil {
+		return m.listReviewCommentsFn(ctx, repo, branch, path)
+	}
+	return []model.ReviewComment{}, nil
+}
+
+func (m *mockStore) GetReviewComment(ctx context.Context, repo, id string) (*model.ReviewComment, error) {
+	if m.getReviewCommentFn != nil {
+		return m.getReviewCommentFn(ctx, repo, id)
+	}
+	return nil, db.ErrCommentNotFound
+}
+
+func (m *mockStore) DeleteReviewComment(ctx context.Context, repo, id string) error {
+	if m.deleteReviewCommentFn != nil {
+		return m.deleteReviewCommentFn(ctx, repo, id)
+	}
+	return db.ErrCommentNotFound
 }
 
 func TestHealthEndpoint(t *testing.T) {

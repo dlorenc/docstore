@@ -432,6 +432,40 @@ type CreateReviewResponse struct {
 }
 
 // ---------------------------------------------------------------------------
+// POST /comment, GET /branch/:branch/comments, DELETE /comment/:id
+// ---------------------------------------------------------------------------
+
+// ReviewComment is an inline file annotation on a branch.
+// version_id is required; comments on deleted files are not supported.
+// review_id is optional; comments may exist independently of a formal review.
+type ReviewComment struct {
+	ID        string    `json:"id"`
+	ReviewID  *string   `json:"review_id,omitempty"`
+	Branch    string    `json:"branch"`
+	Path      string    `json:"path"`
+	VersionID string    `json:"version_id"`
+	Body      string    `json:"body"`
+	Author    string    `json:"author"`
+	Sequence  int64     `json:"sequence"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// CreateReviewCommentRequest is the body for POST /comment.
+type CreateReviewCommentRequest struct {
+	Branch    string  `json:"branch"`
+	Path      string  `json:"path"`
+	VersionID string  `json:"version_id"`
+	Body      string  `json:"body"`
+	ReviewID  *string `json:"review_id,omitempty"`
+}
+
+// CreateReviewCommentResponse is the response for POST /comment.
+type CreateReviewCommentResponse struct {
+	ID       string `json:"id"`
+	Sequence int64  `json:"sequence"`
+}
+
+// ---------------------------------------------------------------------------
 // POST /check
 // ---------------------------------------------------------------------------
 
