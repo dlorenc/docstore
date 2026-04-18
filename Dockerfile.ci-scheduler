@@ -1,0 +1,8 @@
+FROM golang:1.25 AS build
+COPY . /src
+WORKDIR /src
+RUN CGO_ENABLED=0 go build -o /ci-scheduler ./cmd/ci-scheduler
+
+FROM gcr.io/distroless/static:nonroot
+COPY --from=build /ci-scheduler /ci-scheduler
+ENTRYPOINT ["/ci-scheduler"]
