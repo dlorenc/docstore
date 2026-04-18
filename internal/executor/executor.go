@@ -43,16 +43,18 @@ type CheckResult struct {
 
 // Executor translates a Config into an LLB DAG and dispatches it to buildkitd.
 type Executor struct {
-	client *client.Client
+	client      *client.Client
+	cacheBucket string // empty = no cache
 }
 
 // New creates an Executor connected to the buildkitd at buildkitAddr.
-func New(buildkitAddr string) (*Executor, error) {
+// cacheBucket is an optional GCS bucket name for BuildKit cache; pass "" to disable.
+func New(buildkitAddr, cacheBucket string) (*Executor, error) {
 	c, err := client.New(context.Background(), buildkitAddr)
 	if err != nil {
 		return nil, fmt.Errorf("connect to buildkitd at %s: %w", buildkitAddr, err)
 	}
-	return &Executor{client: c}, nil
+	return &Executor{client: c, cacheBucket: cacheBucket}, nil
 }
 
 // Run executes all checks in cfg in parallel against sourceDir.
@@ -118,12 +120,29 @@ func (e *Executor) runCheck(ctx context.Context, sourceDir string, check Check) 
 
 	localDirs := map[string]string{"src": sourceDir}
 
-	_, solveErr := e.client.Build(ctx, client.SolveOpt{
+	solveOpt := client.SolveOpt{
 		LocalDirs: localDirs,
 		Session: []session.Attachable{
 			authprovider.NewDockerAuthProvider(ap),
 		},
-	}, "", func(ctx context.Context, c gwclient.Client) (*gwclient.Result, error) {
+	}
+	if e.cacheBucket != "" {
+		solveOpt.CacheImports = []client.CacheOptionsEntry{
+			{Type: "gcs", Attrs: map[string]string{
+				"bucket": e.cacheBucket,
+				"prefix": "buildkit-cache/",
+			}},
+		}
+		solveOpt.CacheExports = []client.CacheOptionsEntry{
+			{Type: "gcs", Attrs: map[string]string{
+				"bucket": e.cacheBucket,
+				"prefix": "buildkit-cache/",
+				"mode":   "max",
+			}},
+		}
+	}
+
+	_, solveErr := e.client.Build(ctx, solveOpt, "", func(ctx context.Context, c gwclient.Client) (*gwclient.Result, error) {
 		// Resolve image config to get ENV (e.g. PATH in golang:1.25).
 		// --oci-worker-no-process-sandbox skips applying image ENV automatically,
 		// and empirically the standard OCI worker also requires explicit injection.
