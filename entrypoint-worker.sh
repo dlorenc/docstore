@@ -16,6 +16,11 @@ else
 fi
 export DOCKER_CONFIG="$HOME/.docker"
 
+# Load the fuse kernel module so fuse-overlayfs can mount /dev/fuse.
+# In Kata CLH, privileged_without_host_devices=true means /dev/fuse is not
+# passed from the host, but the guest kernel ships fuse as a loadable module.
+modprobe fuse || echo "WARNING: modprobe fuse failed" >&2
+
 # Start buildkitd in background (standard, non-rootless — runs natively inside Kata VM).
 # --oci-worker-net=host ensures build containers share the host network namespace so they
 # can reach dockerd at tcp://localhost:2375.
