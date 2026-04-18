@@ -175,17 +175,17 @@ func fetchConfig(ctx context.Context, client *http.Client, docstoreURL, repo str
 	return &cfg, nil
 }
 
-// pullBranchSource materialises the given branch into a new temp directory
-// and returns its path. The caller is responsible for os.RemoveAll.
+// pullBranchSource materialises the given branch at headSeq into a new temp
+// directory and returns its path. The caller is responsible for os.RemoveAll.
 // It uses the /-/archive endpoint to fetch all files in a single request.
-func pullBranchSource(ctx context.Context, client *http.Client, docstoreURL, repo, branch string) (string, error) {
+func pullBranchSource(ctx context.Context, client *http.Client, docstoreURL, repo, branch string, headSeq int64) (string, error) {
 	tempDir, err := os.MkdirTemp("", "ci-runner-src-*")
 	if err != nil {
 		return "", fmt.Errorf("create temp dir: %w", err)
 	}
 
-	archiveURL := fmt.Sprintf("%s/repos/%s/-/archive?branch=%s",
-		docstoreURL, repo, url.QueryEscape(branch))
+	archiveURL := fmt.Sprintf("%s/repos/%s/-/archive?branch=%s&at=%d",
+		docstoreURL, repo, url.QueryEscape(branch), headSeq)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, archiveURL, nil)
 	if err != nil {
 		return tempDir, fmt.Errorf("create archive request: %w", err)
@@ -275,6 +275,7 @@ func runAsync(ctx context.Context, client *http.Client, exec *executor.Executor,
 			CheckName: "ci/config",
 			Status:    model.CheckRunFailed,
 			LogURL:    &msg,
+			Sequence:  &headSeq,
 		})
 		if reg != nil {
 			reg.fail(runID, "config fetch failed: "+err.Error())
@@ -283,7 +284,7 @@ func runAsync(ctx context.Context, client *http.Client, exec *executor.Executor,
 	}
 
 	// 2. Pull branch source into temp dir.
-	tempDir, err := pullBranchSource(ctx, client, docstoreURL, repo, branch)
+	tempDir, err := pullBranchSource(ctx, client, docstoreURL, repo, branch, headSeq)
 	if tempDir != "" {
 		defer os.RemoveAll(tempDir)
 	}
@@ -301,6 +302,7 @@ func runAsync(ctx context.Context, client *http.Client, exec *executor.Executor,
 			Branch:    branch,
 			CheckName: check.Name,
 			Status:    model.CheckRunPending,
+			Sequence:  &headSeq,
 		}); err != nil {
 			slog.Warn("mark pending failed", "check", check.Name, "error", err)
 		}
@@ -333,6 +335,7 @@ func runAsync(ctx context.Context, client *http.Client, exec *executor.Executor,
 			CheckName: result.Name,
 			Status:    model.CheckRunStatus(result.Status),
 			LogURL:    logURL,
+			Sequence:  &headSeq,
 		}); err != nil {
 			slog.Warn("post result failed", "check", result.Name, "error", err)
 		}
@@ -449,8 +452,7 @@ func newMux(serverCtx context.Context, exec *executor.Executor, ls logstore.LogS
 	mux := http.NewServeMux()
 
 	// POST /run — manual trigger. Runs synchronously so the HTTP connection
-	// stays open for the duration of the build, preventing Cloud Run from
-	// terminating the instance mid-build. Returns when all checks complete.
+	// stays open for the duration of the build. Returns when all checks complete.
 	mux.HandleFunc("POST /run", func(w http.ResponseWriter, r *http.Request) {
 		var req runRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -469,8 +471,8 @@ func newMux(serverCtx context.Context, exec *executor.Executor, ls logstore.LogS
 		runID := uuid.New().String()
 		reg.start(runID, req.Repo, req.Branch, req.HeadSequence)
 
-		// Flush headers immediately so the Cloud Run load balancer doesn't
-		// timeout waiting for the first byte while the build runs.
+		// Flush headers immediately so the load balancer doesn't timeout
+		// waiting for the first byte while the build runs.
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.WriteHeader(http.StatusOK)
@@ -569,6 +571,7 @@ func newMux(serverCtx context.Context, exec *executor.Executor, ls logstore.LogS
 
 func main() {
 	buildkitAddr := flag.String("buildkit-addr", "unix:///run/buildkit/buildkitd.sock", "buildkitd socket address")
+	dockerHost := flag.String("docker-host", "", "Docker host URL to expose to build steps via DOCKER_HOST (e.g. tcp://localhost:2375)")
 	port := flag.String("port", "8080", "HTTP listen port")
 	docstoreURL := flag.String("docstore-url", "", "Base URL of the docstore server (required)")
 	devIdentity := flag.String("dev-identity", "", "Identity header to send to docstore (local dev only)")
@@ -607,7 +610,7 @@ func main() {
 	}
 
 	// Build executor.
-	exec, err := executor.New(*buildkitAddr)
+	exec, err := executor.New(*buildkitAddr, executor.WithDockerHost(*dockerHost))
 	if err != nil {
 		slog.Error("failed to connect to buildkitd", "addr", *buildkitAddr, "error", err)
 		os.Exit(1)

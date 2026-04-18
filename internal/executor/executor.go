@@ -41,18 +41,48 @@ type CheckResult struct {
 	Logs   string `json:"logs"`
 }
 
+// options holds optional configuration for an Executor.
+type options struct {
+	dockerHost string
+}
+
+// Option is a functional option for configuring an Executor.
+type Option func(*options)
+
+// WithDockerHost injects DOCKER_HOST into every build step so that Docker
+// clients and testcontainers can reach a Docker daemon. Typically set to
+// "tcp://localhost:2375" when a DinD sidecar is running in the same pod.
+// An empty string disables the feature.
+//
+// Note: socket files cannot be transported via BuildKit's local-dir transfer,
+// so a TCP address is required rather than a unix:// socket path.
+func WithDockerHost(url string) Option {
+	return func(o *options) { o.dockerHost = url }
+}
+
+// WithDockerSocket is an alias for WithDockerHost kept for compatibility.
+// Deprecated: use WithDockerHost with a tcp:// URL instead.
+func WithDockerSocket(path string) Option {
+	return WithDockerHost(path)
+}
+
 // Executor translates a Config into an LLB DAG and dispatches it to buildkitd.
 type Executor struct {
 	client *client.Client
+	opts   options
 }
 
 // New creates an Executor connected to the buildkitd at buildkitAddr.
-func New(buildkitAddr string) (*Executor, error) {
+func New(buildkitAddr string, opts ...Option) (*Executor, error) {
 	c, err := client.New(context.Background(), buildkitAddr)
 	if err != nil {
 		return nil, fmt.Errorf("connect to buildkitd at %s: %w", buildkitAddr, err)
 	}
-	return &Executor{client: c}, nil
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return &Executor{client: c, opts: o}, nil
 }
 
 // Run executes all checks in cfg in parallel against sourceDir.
@@ -116,8 +146,10 @@ func (e *Executor) runCheck(ctx context.Context, sourceDir string, check Check) 
 		ap.AuthConfigProvider = authprovider.LoadAuthConfig(dockerCfg)
 	}
 
+	localDirs := map[string]string{"src": sourceDir}
+
 	_, solveErr := e.client.Build(ctx, client.SolveOpt{
-		LocalDirs: map[string]string{"src": sourceDir},
+		LocalDirs: localDirs,
 		Session: []session.Attachable{
 			authprovider.NewDockerAuthProvider(ap),
 		},
@@ -156,6 +188,13 @@ func (e *Executor) runCheck(ctx context.Context, sourceDir string, check Check) 
 		for _, env := range imageEnv {
 			k, v, _ := strings.Cut(env, "=")
 			envOpts = append(envOpts, llb.AddEnv(k, v))
+		}
+		if e.opts.dockerHost != "" {
+			// Inject DOCKER_HOST so Docker clients and testcontainers in build
+			// steps can reach the DinD sidecar. Build steps share the pod
+			// network (--oci-worker-no-process-sandbox uses host networking),
+			// so a TCP address is reachable without any socket file mounting.
+			envOpts = append(envOpts, llb.AddEnv("DOCKER_HOST", e.opts.dockerHost))
 		}
 
 		for _, step := range check.Steps {

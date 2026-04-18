@@ -26,6 +26,11 @@ rootlesskit buildkitd \
 until nc -z localhost 1234 2>/dev/null; do sleep 0.1; done
 echo "buildkitd ready" >&2
 
+# Wait for DinD TCP port to be ready (socket files can't be transferred via
+# BuildKit's local-dir transport, so we use TCP 2375 for DOCKER_HOST).
+until nc -z localhost 2375 2>/dev/null; do sleep 0.2; done
+echo "docker daemon ready" >&2
+
 if [ -n "${DEV_IDENTITY}" ]; then
   set -- "$@" --dev-identity "${DEV_IDENTITY}"
 fi
@@ -38,6 +43,7 @@ fi
 
 exec ci-runner \
   --buildkit-addr tcp://localhost:1234 \
+  --docker-host tcp://localhost:2375 \
   --docstore-url "${DOCSTORE_URL}" \
   --port "${PORT:-8080}" \
   "$@"

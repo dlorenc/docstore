@@ -1,14 +1,9 @@
-# GKE Autopilot deployment for ci-runner.
+# GKE standard node deployment for ci-runner.
 #
-# Uses rootless buildkitd (moby/buildkit-rootless) so no SYS_ADMIN is needed,
-# which is required because GKE Autopilot blocks that capability.
-#
-# NOTE: Docker-in-Docker sidecar is NOT included here. All Docker rootless
-# networking modes (vpnkit, slirp4netns, host) require either NET_ADMIN for
-# tap device creation OR are incompatible with rootlesskit's port driver.
-# GKE Autopilot blocks ip tuntap unconditionally. The executor WithDockerSocket
-# option exists in the code but requires standard GKE nodes (not Autopilot) or
-# a pre-existing Docker socket on the host. See Dockerfile.dind and issue #143.
+# Uses rootless buildkitd (moby/buildkit-rootless) so no SYS_ADMIN is needed.
+# DinD sidecar uses docker:27-dind (privileged) — standard GKE allows privileged
+# pods unlike Autopilot. DinD listens on TCP 2375 (not a socket file) so the
+# ci-runner can reach it via DOCKER_HOST=tcp://localhost:2375.
 #
 # Pre-requisites (run scripts/setup-gke.sh first):
 #   - GKE cluster with Workload Identity enabled
@@ -75,7 +70,7 @@ spec:
           runAsNonRoot: true
         resources:
           requests:
-            cpu: "4"
+            cpu: "2500m"
             memory: "4Gi"
         readinessProbe:
           tcpSocket:
@@ -83,6 +78,23 @@ spec:
           initialDelaySeconds: 15
           periodSeconds: 10
           failureThreshold: 3
+      - name: docker-dind
+        image: docker:27-dind
+        args: ["--host=tcp://0.0.0.0:2375", "--tls=false"]
+        env:
+        - name: DOCKER_TLS_CERTDIR
+          value: ""
+        securityContext:
+          privileged: true
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "512Mi"
+        readinessProbe:
+          tcpSocket:
+            port: 2375
+          initialDelaySeconds: 5
+          periodSeconds: 3
 ---
 apiVersion: v1
 kind: Service
