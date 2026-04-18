@@ -1,0 +1,25 @@
+# Throwaway debug pod for probing the Kata CLH guest kernel.
+# kubectl apply -f deploy/k8s/debug-kata.yaml
+# kubectl exec -it -n docstore-ci kata-debug -- bash
+# kubectl delete -f deploy/k8s/debug-kata.yaml
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kata-debug
+  namespace: docstore-ci
+spec:
+  runtimeClassName: kata-clh
+  nodeSelector:
+    runtime: kata
+  restartPolicy: Never
+  containers:
+  - name: debug
+    image: ubuntu:24.04
+    command: ["sleep", "3600"]
+    securityContext:
+      privileged: true
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "512Mi"
