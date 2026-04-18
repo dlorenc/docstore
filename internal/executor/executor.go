@@ -3,17 +3,22 @@ package executor
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 
 	dockerconfig "github.com/docker/cli/cli/config"
+	"github.com/distribution/reference"
 	"github.com/moby/buildkit/client"
 	"github.com/moby/buildkit/client/llb"
+	"github.com/moby/buildkit/client/llb/sourceresolver"
 	gwclient "github.com/moby/buildkit/frontend/gateway/client"
 	"github.com/moby/buildkit/session"
 	"github.com/moby/buildkit/session/auth/authprovider"
+	specs "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 // Config mirrors the .docstore/ci.yaml DSL and is used for both JSON decode
@@ -119,6 +124,29 @@ func (e *Executor) runCheck(ctx context.Context, sourceDir string, check Check) 
 			authprovider.NewDockerAuthProvider(ap),
 		},
 	}, "", func(ctx context.Context, c gwclient.Client) (*gwclient.Result, error) {
+		// Resolve image config to get ENV (e.g. PATH in golang:1.25).
+		// --oci-worker-no-process-sandbox skips applying image ENV automatically,
+		// and empirically the standard OCI worker also requires explicit injection.
+		imageRef := check.Image
+		if named, err := reference.ParseNormalizedNamed(check.Image); err == nil {
+			imageRef = reference.TagNameOnly(named).String()
+		}
+		var envOpts []llb.RunOption
+		if _, _, cfgBytes, err := c.ResolveImageConfig(ctx, imageRef,
+			sourceresolver.Opt{ImageOpt: &sourceresolver.ResolveImageOpt{}}); err == nil {
+			var imgCfg specs.Image
+			if json.Unmarshal(cfgBytes, &imgCfg) == nil {
+				for _, env := range imgCfg.Config.Env {
+					k, v, _ := strings.Cut(env, "=")
+					envOpts = append(envOpts, llb.AddEnv(k, v))
+				}
+			}
+		}
+		// Inject DOCKER_HOST so docker:cli checks can reach the dockerd running
+		// in the Kata VM. --oci-worker-no-process-sandbox shares the host mount
+		// namespace so the unix socket is accessible at its host path.
+		envOpts = append(envOpts, llb.AddEnv("DOCKER_HOST", "unix:///var/run/docker.sock"))
+
 		source := llb.Local("src")
 		state := llb.Image(check.Image).Dir("/src")
 		srcMount := source
@@ -129,6 +157,7 @@ func (e *Executor) runCheck(ctx context.Context, sourceDir string, check Check) 
 				llb.WithCustomName(check.Name + ": " + step),
 				llb.AddMount("/src", srcMount),
 			}
+			runOpts = append(runOpts, envOpts...)
 			exec := state.Run(runOpts...)
 			state = exec.Root()
 			srcMount = exec.GetMount("/src")
