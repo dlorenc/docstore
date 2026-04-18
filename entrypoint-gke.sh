@@ -20,17 +20,10 @@ export DOCKER_CONFIG="$HOME/.docker"
 # rootlesskit wraps buildkitd in a user namespace so SYS_ADMIN is not required.
 rootlesskit buildkitd \
   --oci-worker-snapshotter=native \
-  --oci-worker-no-process-sandbox \
   --addr tcp://localhost:1234 &
 
 until nc -z localhost 1234 2>/dev/null; do sleep 0.1; done
 echo "buildkitd ready" >&2
-
-# Wait for DinD TCP port — socket files are not accessible from BuildKit OCI
-# worker containers even with --oci-worker-no-process-sandbox; TCP works because
-# host networking is shared.
-until nc -z localhost 2375 2>/dev/null; do sleep 0.2; done
-echo "docker daemon ready" >&2
 
 if [ -n "${DEV_IDENTITY}" ]; then
   set -- "$@" --dev-identity "${DEV_IDENTITY}"
@@ -44,7 +37,6 @@ fi
 
 exec ci-runner \
   --buildkit-addr tcp://localhost:1234 \
-  --docker-host tcp://localhost:2375 \
   --docstore-url "${DOCSTORE_URL}" \
   --port "${PORT:-8080}" \
   "$@"
