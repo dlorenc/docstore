@@ -79,6 +79,12 @@ type WriteStore interface {
 	CreateCheckRun(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64) (*model.CheckRun, error)
 	ListCheckRuns(ctx context.Context, repo, branch string, atSeq *int64) ([]model.CheckRun, error)
 
+	// Review comment operations
+	CreateReviewComment(ctx context.Context, repo, branch, path, versionID, body, author string, reviewID *string) (*model.ReviewComment, error)
+	ListReviewComments(ctx context.Context, repo, branch string, path *string) ([]model.ReviewComment, error)
+	GetReviewComment(ctx context.Context, repo, id string) (*model.ReviewComment, error)
+	DeleteReviewComment(ctx context.Context, repo, id string) error
+
 	// Role management
 	GetRole(ctx context.Context, repo, identity string) (*model.Role, error)
 	SetRole(ctx context.Context, repo, identity string, role model.RoleType) error

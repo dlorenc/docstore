@@ -66,6 +66,7 @@ type Branch = api.Branch
 type Role = api.Role
 type Review = api.Review
 type CheckRun = api.CheckRun
+type ReviewComment = api.ReviewComment
 type Release = api.Release
 type EventSubscription = api.EventSubscription
 
