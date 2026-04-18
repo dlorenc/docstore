@@ -79,7 +79,7 @@ spec:
         resources:
           requests:
             cpu: "2000m"
-            memory: "4Gi"
+            memory: "8Gi"
         readinessProbe:
           tcpSocket:
             port: 8081
