@@ -44,8 +44,8 @@ func envOrDefault(key, def string) string {
 	return def
 }
 
-// waitBuildkitReady polls the buildkitd address until a TCP/unix connection succeeds.
-func waitBuildkitReady(ctx context.Context, addr string) error {
+// waitServiceReady polls addr (tcp:// or unix://) until a connection succeeds.
+func waitServiceReady(ctx context.Context, name, addr string) error {
 	var network, address string
 	switch {
 	case strings.HasPrefix(addr, "tcp://"):
@@ -55,14 +55,14 @@ func waitBuildkitReady(ctx context.Context, addr string) error {
 		network = "unix"
 		address = strings.TrimPrefix(addr, "unix://")
 	default:
-		return fmt.Errorf("unsupported buildkitd address scheme: %s", addr)
+		return fmt.Errorf("unsupported address scheme for %s: %s", name, addr)
 	}
-	slog.Info("waiting for buildkitd", "addr", addr)
+	slog.Info("waiting for service", "name", name, "addr", addr)
 	for {
 		conn, err := net.DialTimeout(network, address, time.Second)
 		if err == nil {
 			conn.Close()
-			slog.Info("buildkitd ready")
+			slog.Info("service ready", "name", name)
 			return nil
 		}
 		select {
@@ -71,6 +71,16 @@ func waitBuildkitReady(ctx context.Context, addr string) error {
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
+}
+
+// waitBuildkitReady polls the buildkitd address until a TCP/unix connection succeeds.
+func waitBuildkitReady(ctx context.Context, addr string) error {
+	return waitServiceReady(ctx, "buildkitd", addr)
+}
+
+// waitDockerdReady polls dockerd at tcp://localhost:2375 until ready.
+func waitDockerdReady(ctx context.Context) error {
+	return waitServiceReady(ctx, "dockerd", "tcp://localhost:2375")
 }
 
 // heartbeat sends periodic last_heartbeat_at updates until done is closed.
@@ -362,6 +372,14 @@ func main() {
 	waitCtx, waitCancel := context.WithTimeout(ctx, 5*time.Minute)
 	if err := waitBuildkitReady(waitCtx, buildkitAddr); err != nil {
 		slog.Error("buildkitd not ready", "error", err)
+		os.Exit(1)
+	}
+	waitCancel()
+
+	// Wait for dockerd to be ready.
+	waitCtx, waitCancel = context.WithTimeout(ctx, 5*time.Minute)
+	if err := waitDockerdReady(waitCtx); err != nil {
+		slog.Error("dockerd not ready", "error", err)
 		os.Exit(1)
 	}
 	waitCancel()
