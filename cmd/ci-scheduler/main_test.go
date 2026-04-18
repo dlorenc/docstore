@@ -7,8 +7,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/dlorenc/docstore/internal/model"
@@ -244,5 +246,147 @@ func TestHandleGetRun_Found(t *testing.T) {
 	}
 	if resp.Error != errMsg {
 		t.Errorf("error mismatch: %q", resp.Error)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests: GET /run/{id}/logs/{check}
+// ---------------------------------------------------------------------------
+
+func TestHandleGetLogs_ClaimedWithWorkerIP_ProxiesToWorker(t *testing.T) {
+	// The production code dials WorkerPodIP:8081 for live log proxying.
+	// Bind the fake worker to port 8081 on loopback so the proxy connects correctly.
+	ln, err := net.Listen("tcp", "127.0.0.1:8081")
+	if err != nil {
+		t.Skipf("port 8081 unavailable (likely already in use): %v", err)
+	}
+
+	fakeWorker := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("log output from worker")) //nolint:errcheck
+	}))
+	fakeWorker.Listener = ln
+	fakeWorker.Start()
+	defer fakeWorker.Close()
+
+	workerIP := "127.0.0.1"
+	stub := &stubStore{
+		getJob: &model.CIJob{
+			ID:          "job-1",
+			Status:      "claimed",
+			WorkerPodIP: &workerIP,
+		},
+	}
+	sched := &scheduler{store: stub}
+
+	req := httptest.NewRequest(http.MethodGet, "/run/job-1/logs/build", nil)
+	req.SetPathValue("id", "job-1")
+	req.SetPathValue("check", "build")
+	w := httptest.NewRecorder()
+
+	sched.handleGetLogs(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "log output from worker") {
+		t.Errorf("expected proxied log body, got: %q", w.Body.String())
+	}
+}
+
+func TestHandleGetLogs_CompletedWithLogURL_Redirects(t *testing.T) {
+	logURL := "https://logs.example.com/job-2"
+	stub := &stubStore{
+		getJob: &model.CIJob{
+			ID:     "job-2",
+			Status: "passed",
+			LogURL: &logURL,
+		},
+	}
+	sched := &scheduler{store: stub}
+
+	req := httptest.NewRequest(http.MethodGet, "/run/job-2/logs/build", nil)
+	req.SetPathValue("id", "job-2")
+	req.SetPathValue("check", "build")
+	w := httptest.NewRecorder()
+
+	sched.handleGetLogs(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("expected 302, got %d", w.Code)
+	}
+	if got := w.Header().Get("Location"); got != logURL {
+		t.Errorf("redirect location mismatch: %q", got)
+	}
+}
+
+func TestHandleGetLogs_Queued_Returns404(t *testing.T) {
+	stub := &stubStore{
+		getJob: &model.CIJob{
+			ID:     "job-3",
+			Status: "queued",
+		},
+	}
+	sched := &scheduler{store: stub}
+
+	req := httptest.NewRequest(http.MethodGet, "/run/job-3/logs/build", nil)
+	req.SetPathValue("id", "job-3")
+	req.SetPathValue("check", "build")
+	w := httptest.NewRecorder()
+
+	sched.handleGetLogs(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests: POST /run (manual trigger)
+// ---------------------------------------------------------------------------
+
+func TestHandleRun_HappyPath(t *testing.T) {
+	stub := &stubStore{}
+	sched := &scheduler{store: stub}
+
+	body, _ := json.Marshal(map[string]any{
+		"repo":          "org/repo",
+		"branch":        "main",
+		"head_sequence": 10,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/run", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	sched.handleRun(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["run_id"] == "" {
+		t.Error("expected non-empty run_id")
+	}
+	if len(stub.insertedJobs) != 1 {
+		t.Fatalf("expected 1 inserted job, got %d", len(stub.insertedJobs))
+	}
+}
+
+func TestHandleRun_MissingRepo_Returns400(t *testing.T) {
+	stub := &stubStore{}
+	sched := &scheduler{store: stub}
+
+	body, _ := json.Marshal(map[string]any{"branch": "main"})
+	req := httptest.NewRequest(http.MethodPost, "/run", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	sched.handleRun(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
 	}
 }
