@@ -108,8 +108,9 @@ type CIJob struct {
 	LogURL          *string    `json:"log_url,omitempty"`
 	ErrorMessage    *string    `json:"error_message,omitempty"`
 	CreatedAt       time.Time  `json:"created_at"`
-	TriggerType     string     `json:"trigger_type,omitempty"`
-	TriggerBranch   string     `json:"trigger_branch,omitempty"`
+	TriggerType       string  `json:"trigger_type,omitempty"`
+	TriggerBranch     string  `json:"trigger_branch,omitempty"`
+	TriggerProposalID *string `json:"trigger_proposal_id,omitempty"`
 }
 
 // FileCommit is the core event log. One row per file change.
