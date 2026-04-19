@@ -264,6 +264,11 @@ func (e *Executor) runCheck(ctx context.Context, source string, check Check) Che
 				llb.Args([]string{"sh", "-c", step}),
 				llb.WithCustomName(check.Name + ": " + step),
 				llb.AddMount("/src", srcMount),
+				llb.AddMount("/go/pkg/mod", llb.Scratch(), llb.AsPersistentCacheDir("go-mod", llb.CacheMountShared)),
+				llb.AddMount("/root/.cache/go-build", llb.Scratch(), llb.AsPersistentCacheDir("go-build", llb.CacheMountShared)),
+				llb.AddMount("/root/.npm", llb.Scratch(), llb.AsPersistentCacheDir("npm", llb.CacheMountShared)),
+				llb.AddMount("/root/.cache/pip", llb.Scratch(), llb.AsPersistentCacheDir("pip", llb.CacheMountShared)),
+				llb.AddMount("/usr/local/cargo/registry", llb.Scratch(), llb.AsPersistentCacheDir("cargo-registry", llb.CacheMountShared)),
 			}
 			runOpts = append(runOpts, envOpts...)
 			exec := state.Run(runOpts...)
