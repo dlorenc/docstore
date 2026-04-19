@@ -374,7 +374,7 @@ func (m *mockStore) GetProposal(_ context.Context, _, _ string) (*model.Proposal
 	return nil, db.ErrProposalNotFound
 }
 
-func (m *mockStore) ListProposals(_ context.Context, _ string, _ *model.ProposalState) ([]*model.Proposal, error) {
+func (m *mockStore) ListProposals(_ context.Context, _ string, _ *model.ProposalState, _ *string) ([]*model.Proposal, error) {
 	return []*model.Proposal{}, nil
 }
 
