@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -16,6 +17,9 @@ type branchListModel struct {
 	err        error
 	openBranch string
 	quit       bool
+
+	refreshing    bool
+	lastRefreshed time.Time
 }
 
 func newBranchListModel(client *tuiClient) branchListModel {
@@ -34,6 +38,8 @@ func (m branchListModel) Update(msg tea.Msg) (branchListModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case branchesLoadedMsg:
 		m.loading = false
+		m.refreshing = false
+		m.lastRefreshed = time.Now()
 		m.err = msg.err
 		m.branches = msg.branches
 		if m.cursor >= len(m.branches) {
@@ -62,6 +68,7 @@ func (m branchListModel) Update(msg tea.Msg) (branchListModel, tea.Cmd) {
 
 		case "R":
 			m.loading = true
+			m.refreshing = true
 			m.err = nil
 			return m, loadBranches(m.client)
 		}
@@ -105,7 +112,13 @@ func (m branchListModel) View() string {
 	}
 
 	sb.WriteString("\n")
-	sb.WriteString(styleHelp.Render("  j/k navigate · enter open · R refresh · q quit"))
+	if m.refreshing {
+		sb.WriteString(styleHelp.Render("  j/k navigate · enter open · R refresh · q quit  ↻ refreshing…"))
+	} else if !m.lastRefreshed.IsZero() {
+		sb.WriteString(styleHelp.Render("  j/k navigate · enter open · R refresh · q quit  · last refreshed at " + m.lastRefreshed.Format("15:04:05")))
+	} else {
+		sb.WriteString(styleHelp.Render("  j/k navigate · enter open · R refresh · q quit"))
+	}
 
 	return sb.String()
 }
