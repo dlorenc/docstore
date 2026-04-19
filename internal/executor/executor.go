@@ -158,6 +158,10 @@ func (e *Executor) runCheck(ctx context.Context, source string, check Check) Che
 	isLocal := source != "" && !isHTTP
 
 	solveOpt := client.SolveOpt{
+		// FrontendAttrs must be non-nil: BuildKit v0.29 calls maps.Clone(opt.FrontendAttrs)
+		// then maps.Copy(result, cacheOpt.frontendAttrs), which panics when CacheImports/
+		// CacheExports are set and FrontendAttrs is nil.
+		FrontendAttrs: map[string]string{},
 		Session: []session.Attachable{
 			authprovider.NewDockerAuthProvider(ap),
 		},
