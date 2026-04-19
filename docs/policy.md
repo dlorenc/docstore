@@ -32,7 +32,7 @@ The RBAC middleware (`internal/server/middleware.go`) checks roles for all `/rep
 | Any `GET` | `reader` |
 | `POST /commit` (to non-main branch) | `writer` |
 | `POST /commit` (to `main` directly) | `maintainer` |
-| `POST /review-comment`, `DELETE /review-comment/*` | `writer` |
+| `POST /comment`, `DELETE /comment/*` | `writer` |
 | `PATCH /branch/*` (draft promotion) | `writer` |
 | `POST /branch`, `POST /merge`, `POST /rebase` | `maintainer` |
 | `DELETE /branch/*` | `maintainer` |
@@ -74,7 +74,7 @@ Each `.rego` file must declare `package docstore.<name>` and define an `allow` r
 ```rego
 package docstore.require_review
 
-import future.keywords.if
+import rego.v1
 
 default allow = false
 
@@ -180,8 +180,7 @@ For each changed file path, the server finds the longest-prefix OWNERS file. For
 ```rego
 package docstore.require_owners_approval
 
-import future.keywords.if
-import future.keywords.every
+import rego.v1
 
 default allow = false
 

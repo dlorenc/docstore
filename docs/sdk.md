@@ -59,7 +59,7 @@ file, err = repo.File(ctx, "config.yaml", docstore.AtRelease("v1.0.0"))
 ### Listing the tree
 
 ```go
-tree, err := repo.Tree(ctx, docstore.AtHead("feature/x"))
+tree, err := repo.Tree(ctx, docstore.TreeAtHead("feature/x"))
 for _, entry := range tree.Entries {
     fmt.Println(entry.Path, entry.ContentType)
 }
@@ -224,15 +224,16 @@ repo, err := repos.Create(ctx, api.CreateRepoRequest{Owner: "acme", Name: "platf
 
 ## Error types
 
-| Type | Returned when |
-|---|---|
-| `*docstore.ConflictError` | Merge or rebase has conflicts |
-| `*docstore.PolicyError` | Merge rejected by a policy |
-| `*docstore.ErrNotFound` | 404 response |
-| `*docstore.ErrUnauthorized` | 401 response |
-| `*docstore.ErrForbidden` | 403 response |
+| Type | How to match | Returned when |
+|---|---|---|
+| `*docstore.ConflictError` | `errors.As` | Merge or rebase has conflicts |
+| `*docstore.PolicyError` | `errors.As` | Merge rejected by a policy |
+| `docstore.ErrNotFound` | `errors.Is` | 404 response |
+| `docstore.ErrUnauthorized` | `errors.Is` | 401 response |
+| `docstore.ErrForbidden` | `errors.Is` | 403 response |
+| `docstore.ErrConflict` | `errors.Is` | 409 response (non-merge) |
 
-Use `errors.As` to distinguish these from generic errors.
+Use `errors.As` for `*ConflictError` and `*PolicyError`; use `errors.Is` for the sentinel values.
 
 ## Complete example
 

@@ -370,7 +370,7 @@ List check runs for a branch.
 
 ## Review comments
 
-### `POST /repos/{name}/-/review-comment`
+### `POST /repos/{name}/-/comment`
 
 Add an inline comment on a file in a branch.
 
@@ -379,11 +379,11 @@ Add an inline comment on a file in a branch.
 {"branch": "feature/x", "path": "config.yaml", "body": "Needs update"}
 ```
 
-### `GET /repos/{name}/-/branch/{branch}/review-comments`
+### `GET /repos/{name}/-/branch/{branch}/comments`
 
 List review comments. Optional `path` query parameter to filter by file.
 
-### `DELETE /repos/{name}/-/review-comment/{id}`
+### `DELETE /repos/{name}/-/comment/{id}`
 
 Delete a review comment. Writers can delete their own comments; maintainers can delete any.
 
@@ -428,7 +428,7 @@ Get commits in a sequence range for local hash-chain verification.
 
 ## Releases
 
-### `POST /repos/{name}/-/release`
+### `POST /repos/{name}/-/releases`
 
 Create a release. Maintainer-only.
 
@@ -441,11 +441,11 @@ Create a release. Maintainer-only.
 
 List releases in reverse chronological order.
 
-### `GET /repos/{name}/-/release/{name}`
+### `GET /repos/{name}/-/releases/{name}`
 
 Get a release.
 
-### `DELETE /repos/{name}/-/release/{name}`
+### `DELETE /repos/{name}/-/releases/{name}`
 
 Delete a release. Admin-only.
 
