@@ -407,6 +407,33 @@ func TestLocalPathSource(t *testing.T) {
 	}
 }
 
+// TestPathTraversalRejected verifies that a source path containing ".." segments
+// is rejected with status "failed" before any buildkitd interaction.
+func TestPathTraversalRejected(t *testing.T) {
+	exec := newExecutor(t)
+
+	cfg := executor.Config{
+		Checks: []executor.Check{
+			{Name: "ci/test", Image: "alpine", Steps: []string{"echo hi"}},
+		},
+	}
+
+	results, err := exec.Run(context.Background(), "../../etc/passwd", cfg, ciconfig.TriggerContext{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	r := results[0]
+	if r.Status != "failed" {
+		t.Errorf("expected status failed for path traversal, got %s (logs: %s)", r.Status, r.Logs)
+	}
+	if !strings.Contains(r.Logs, "path traversal") {
+		t.Errorf("expected path traversal error in logs, got: %s", r.Logs)
+	}
+}
+
 // TestLogCapture verifies that stdout and stderr from steps both appear in
 // the Logs field.
 func TestLogCapture(t *testing.T) {

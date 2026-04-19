@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -125,6 +126,25 @@ func (e *Executor) Close() error {
 
 // runCheck executes a single check and returns its result.
 func (e *Executor) runCheck(ctx context.Context, source string, check Check) CheckResult {
+	isHTTP := strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://")
+	isLocal := source != "" && !isHTTP
+
+	// Validate local path: clean it and reject any path that still contains
+	// ".." segments after cleaning, which indicates a path traversal attempt.
+	if isLocal {
+		cleaned := filepath.Clean(source)
+		for _, seg := range strings.Split(cleaned, string(filepath.Separator)) {
+			if seg == ".." {
+				return CheckResult{
+					Name:   check.Name,
+					Status: "failed",
+					Logs:   fmt.Sprintf("invalid source path %q: path traversal not allowed", source),
+				}
+			}
+		}
+		source = cleaned
+	}
+
 	var logBuf bytes.Buffer
 	ch := make(chan *client.SolveStatus)
 
@@ -153,9 +173,6 @@ func (e *Executor) runCheck(ctx context.Context, source string, check Check) Che
 	if dockerCfg != nil {
 		ap.AuthConfigProvider = authprovider.LoadAuthConfig(dockerCfg)
 	}
-
-	isHTTP := strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://")
-	isLocal := source != "" && !isHTTP
 
 	solveOpt := client.SolveOpt{
 		Session: []session.Attachable{
