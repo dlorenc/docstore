@@ -265,7 +265,12 @@ func TestHandleCreateSubscription_InvalidURL(t *testing.T) {
 }
 
 func TestHandleCreateSubscription_Success(t *testing.T) {
-	srv := New(&mockStore{}, nil, devID, devID)
+	ms := &mockStore{
+		createSubscriptionFn: func(_ context.Context, req model.CreateSubscriptionRequest) (*model.EventSubscription, error) {
+			return &model.EventSubscription{ID: "test-sub-id", Backend: req.Backend, CreatedBy: req.CreatedBy}, nil
+		},
+	}
+	srv := New(ms, nil, devID, devID)
 	body, _ := json.Marshal(map[string]interface{}{
 		"backend": "webhook",
 		"config":  map[string]string{"url": "https://example.com/hook", "secret": "s3cr3t"},
@@ -283,6 +288,9 @@ func TestHandleCreateSubscription_Success(t *testing.T) {
 	}
 	if sub.Backend != "webhook" {
 		t.Errorf("expected backend webhook, got %q", sub.Backend)
+	}
+	if sub.CreatedBy != devID {
+		t.Errorf("expected created_by %q, got %q", devID, sub.CreatedBy)
 	}
 }
 
@@ -776,5 +784,37 @@ func TestHandleResumeSubscription_NonAdmin_NotFound(t *testing.T) {
 	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for not-found on non-admin resume, got %d", rec.Code)
+	}
+}
+
+// 13. Non-admin caller, listSubscriptionsByCreatorFn returns an error → 500.
+func TestHandleListSubscriptions_NonAdmin_StoreError(t *testing.T) {
+	ms := &mockStore{
+		listSubscriptionsByCreatorFn: func(_ context.Context, createdBy string) ([]model.EventSubscription, error) {
+			return nil, errors.New("db unavailable")
+		},
+	}
+	srv := New(ms, nil, devID, "admin@other.com")
+	req := httptest.NewRequest(http.MethodGet, "/subscriptions", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 for non-admin store error on list, got %d", rec.Code)
+	}
+}
+
+// 14. Config sent as a JSON array → 400.
+func TestHandleCreateSubscription_InvalidConfigType(t *testing.T) {
+	srv := New(&mockStore{}, nil, devID, devID)
+	body, _ := json.Marshal(map[string]interface{}{
+		"backend": "webhook",
+		"config":  []int{1, 2, 3},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/subscriptions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for array config, got %d; body: %s", rec.Code, rec.Body.String())
 	}
 }
