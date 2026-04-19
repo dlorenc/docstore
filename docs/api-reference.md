@@ -472,27 +472,51 @@ Global SSE stream. Admin-only.
 
 ## Event subscriptions (webhooks)
 
+See [docs/events.md](events.md) for a full guide covering event types, SSE streaming, HMAC signing, and the retry/suspend policy.
+
 ### `POST /subscriptions`
 
-Create a webhook subscription. Admin-only.
+Create a webhook subscription.
+
+**Authorization:**
+- `repo` field set → Reader+ on the named repo.
+- `repo` field omitted → Global admin only.
 
 **Body:**
 ```json
 {
-  "backend": "webhook",
+  "repo": "acme/platform",
   "event_types": ["com.docstore.commit.created"],
+  "backend": "webhook",
   "config": {"url": "https://...", "secret": "hmac-secret"}
 }
 ```
 
+- `repo` — Optional. Omit to create a global subscription that receives events from all repos.
+- `event_types` — Optional. Omit to receive all event types.
+- `config.secret` — Optional. When set, each delivery includes an `X-DocStore-Signature: sha256=<hmac>` header.
+
+**Response 201:** EventSubscription object.
+
 ### `GET /subscriptions`
 
-List subscriptions.
+List all subscriptions. Global admin only.
+
+**Response 200:**
+```json
+{"subscriptions": [...]}
+```
+
+A non-null `suspended_at` field means the subscription was automatically suspended after 10 failed deliveries and must be resumed manually.
 
 ### `DELETE /subscriptions/{id}`
 
-Delete a subscription.
+Delete a subscription. Global admin only.
+
+**Response 204.**
 
 ### `POST /subscriptions/{id}/resume`
 
-Resume a paused subscription.
+Resume a suspended subscription. Global admin only. Clears `suspended_at` and resets `failure_count` to 0.
+
+**Response 204.**
