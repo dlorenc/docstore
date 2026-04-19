@@ -357,19 +357,19 @@ Subscription management via the CLI requires the appropriate role (reader+ for r
 Create a webhook subscription.
 
 ```
-ds subscriptions create --url <url> [--repo <owner/name>] [--events <type1,type2,...>] [--secret <secret>]
+ds subscriptions create --url <url> [--repo <owner/name>] [--event-types <type1,type2,...>] [--secret <secret>]
 ```
 
 - `--url` — Required. HTTPS endpoint to deliver events to.
 - `--repo` — Scope to a specific repo. Omit for a global subscription (admin-only).
-- `--events` — Comma-separated list of event types to receive. Omit to receive all types.
+- `--event-types` — Comma-separated list of event types to receive. Omit to receive all types.
 - `--secret` — HMAC-SHA256 signing secret. When set, deliveries include `X-DocStore-Signature: sha256=<hmac>`.
 
 ```bash
 # Repo-scoped, specific event types, with HMAC signing
 ds subscriptions create \
   --repo acme/platform \
-  --events com.docstore.commit.created,com.docstore.branch.merged \
+  --event-types com.docstore.commit.created,com.docstore.branch.merged \
   --url https://hooks.example.com/docstore \
   --secret my-hmac-secret
 
@@ -385,7 +385,7 @@ List all subscriptions.
 ds subscriptions list
 ```
 
-Prints each subscription's ID, repo scope, event filter, URL, status, and failure count. Suspended subscriptions are marked `[suspended]`.
+Prints a table with columns: ID, REPO (`(all)` for global subscriptions), BACKEND, SUSPENDED (the suspension timestamp, or `no` if active).
 
 ### `ds subscriptions delete`
 
