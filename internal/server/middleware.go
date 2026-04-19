@@ -262,6 +262,21 @@ func roleAllows(role model.RoleType, method, subPath string, r *http.Request) bo
 		return role == model.RoleWriter || role == model.RoleMaintainer || role == model.RoleAdmin
 	}
 
+	// POST /proposals — writer+.
+	if method == http.MethodPost && subPath == "proposals" {
+		return role == model.RoleWriter || role == model.RoleMaintainer || role == model.RoleAdmin
+	}
+
+	// PATCH /proposals/* — writer+ minimum; handler additionally checks author or maintainer.
+	if method == http.MethodPatch && strings.HasPrefix(subPath, "proposals/") {
+		return role == model.RoleWriter || role == model.RoleMaintainer || role == model.RoleAdmin
+	}
+
+	// POST /proposals/*/close — writer+ minimum; handler additionally checks author or maintainer.
+	if method == http.MethodPost && strings.HasPrefix(subPath, "proposals/") && strings.HasSuffix(subPath, "/close") {
+		return role == model.RoleWriter || role == model.RoleMaintainer || role == model.RoleAdmin
+	}
+
 	// POST /branch, /merge, /rebase — maintainer+.
 	if method == http.MethodPost && (subPath == "branch" || subPath == "merge" || subPath == "rebase") {
 		return role == model.RoleMaintainer || role == model.RoleAdmin
