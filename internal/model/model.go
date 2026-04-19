@@ -79,6 +79,32 @@ const (
 	ProposalMerged = api.ProposalMerged
 )
 
+type IssueState = api.IssueState
+
+const (
+	IssueStateOpen   = api.IssueStateOpen
+	IssueStateClosed = api.IssueStateClosed
+)
+
+type IssueCloseReason = api.IssueCloseReason
+
+const (
+	IssueCloseReasonCompleted  = api.IssueCloseReasonCompleted
+	IssueCloseReasonNotPlanned = api.IssueCloseReasonNotPlanned
+	IssueCloseReasonDuplicate  = api.IssueCloseReasonDuplicate
+)
+
+type IssueRefType = api.IssueRefType
+
+const (
+	IssueRefTypeProposal = api.IssueRefTypeProposal
+	IssueRefTypeCommit   = api.IssueRefTypeCommit
+)
+
+type Issue = api.Issue
+type IssueComment = api.IssueComment
+type IssueRef = api.IssueRef
+
 // ---------------------------------------------------------------------------
 // Internal-only types — not part of the HTTP wire surface.
 // ---------------------------------------------------------------------------

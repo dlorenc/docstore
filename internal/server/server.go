@@ -120,6 +120,26 @@ type WriteStore interface {
 	UpdateProposal(ctx context.Context, repo, proposalID string, title, description *string) (*model.Proposal, error)
 	CloseProposal(ctx context.Context, repo, proposalID string) error
 	MergeProposal(ctx context.Context, repo, branch string) (*model.Proposal, error)
+
+	// Issue management
+	CreateIssue(ctx context.Context, repo, title, body, author string, labels []string) (*model.Issue, error)
+	GetIssue(ctx context.Context, repo string, number int64) (*model.Issue, error)
+	ListIssues(ctx context.Context, repo, stateFilter, authorFilter string) ([]model.Issue, error)
+	UpdateIssue(ctx context.Context, repo string, number int64, title, body *string, labels *[]string) (*model.Issue, error)
+	CloseIssue(ctx context.Context, repo string, number int64, reason model.IssueCloseReason, closedBy string) (*model.Issue, error)
+	ReopenIssue(ctx context.Context, repo string, number int64) (*model.Issue, error)
+
+	// Issue comment management
+	CreateIssueComment(ctx context.Context, repo string, number int64, body, author string) (*model.IssueComment, error)
+	GetIssueComment(ctx context.Context, repo, id string) (*model.IssueComment, error)
+	ListIssueComments(ctx context.Context, repo string, number int64) ([]model.IssueComment, error)
+	UpdateIssueComment(ctx context.Context, repo, id, body string) (*model.IssueComment, error)
+	DeleteIssueComment(ctx context.Context, repo, id string) error
+
+	// Issue ref management
+	CreateIssueRef(ctx context.Context, repo string, number int64, refType model.IssueRefType, refID string) (*model.IssueRef, error)
+	ListIssueRefs(ctx context.Context, repo string, number int64) ([]model.IssueRef, error)
+	ListIssuesByRef(ctx context.Context, repo string, refType model.IssueRefType, refID string) ([]model.Issue, error)
 }
 
 // CommitStore is an alias for backward compatibility with tests.
