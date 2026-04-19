@@ -2992,7 +2992,7 @@ func (a *App) ProposalClose(proposalID string) error {
 // ---------------------------------------------------------------------------
 
 // SubscriptionCreate creates a new webhook subscription.
-func (a *App) SubscriptionCreate(repo *string, eventTypes []string, webhookURL, secret string) error {
+func (a *App) SubscriptionCreate(webhookURL, secret string, repo *string, eventTypes []string) error {
 	remote, err := a.loadRemote()
 	if err != nil {
 		return err
@@ -3080,12 +3080,12 @@ func (a *App) SubscriptionResume(id string) error {
 	if err != nil {
 		return err
 	}
-	resp, err := a.doPOSTJSON(remote+"/subscriptions/"+url.PathEscape(id)+"/resume", nil)
+	resp, err := a.doPOSTJSON(remote+"/subscriptions/"+url.PathEscape(id)+"/resume", struct{}{})
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+	if resp.StatusCode != http.StatusNoContent {
 		return a.readError(resp)
 	}
 	fmt.Fprintf(a.Out, "Resumed subscription '%s'\n", id)

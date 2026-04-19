@@ -923,7 +923,10 @@ func main() {
 					fmt.Fprintln(os.Stderr, "usage: ds subscriptions create --url <url> --secret <secret> [--repo <repo>] [--event-types t1,t2]")
 					os.Exit(1)
 				}
-				err = app.SubscriptionCreate(repo, eventTypes, webhookURL, secret)
+				if secret == "" {
+					fmt.Fprintln(os.Stderr, "warning: --secret is empty; subscription will have no HMAC signing key")
+				}
+				err = app.SubscriptionCreate(webhookURL, secret, repo, eventTypes)
 			case "delete":
 				if len(args) < 3 {
 					fmt.Fprintln(os.Stderr, "usage: ds subscriptions delete <id>")
