@@ -2,6 +2,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -83,7 +84,9 @@ commands:
 
   proposal open --title "..." [--branch <name>] [--base main] [--description "..."]  Open a proposal
   proposal list [--state open|closed|merged]             List proposals
-  proposal close <id>                                    Close a proposal`
+  proposal close <id>                                    Close a proposal
+
+  ci run [--check <name>] [--trigger push|proposal|proposal_synchronized] [--base-branch <branch>] [--buildkit <addr>]  Run CI checks locally`
 
 func main() {
 	if len(os.Args) < 2 {
@@ -830,6 +833,51 @@ func main() {
 			fmt.Fprintln(os.Stderr, usage)
 			os.Exit(1)
 		}
+
+	case "ci":
+		if len(args) < 2 || args[1] != "run" {
+			fmt.Fprintln(os.Stderr, "usage: ds ci run [--check <name>] [--trigger <type>] [--base-branch <branch>] [--buildkit <addr>]")
+			os.Exit(1)
+		}
+		checkFilter := ""
+		trigger := "push"
+		baseBranch := ""
+		buildkitAddr := os.Getenv("BUILDKIT_ADDR")
+		if buildkitAddr == "" {
+			buildkitAddr = cli.DefaultBuildkitAddr
+		}
+		for i := 2; i < len(args); i++ {
+			switch args[i] {
+			case "--check":
+				if i+1 < len(args) {
+					checkFilter = args[i+1]
+					i++
+				}
+			case "--trigger":
+				if i+1 < len(args) {
+					trigger = args[i+1]
+					i++
+				}
+			case "--base-branch":
+				if i+1 < len(args) {
+					baseBranch = args[i+1]
+					i++
+				}
+			case "--buildkit":
+				if i+1 < len(args) {
+					buildkitAddr = args[i+1]
+					i++
+				}
+			}
+		}
+		ciErr := app.CIRun(checkFilter, trigger, baseBranch, buildkitAddr)
+		if ciErr != nil {
+			if !errors.Is(ciErr, cli.ErrChecksFailed) {
+				fmt.Fprintf(os.Stderr, "error: %s\n", ciErr)
+			}
+			os.Exit(1)
+		}
+		return
 
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
