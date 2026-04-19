@@ -62,13 +62,15 @@ func New(buildkitAddr, cacheBucket string) (*Executor, error) {
 	return &Executor{client: c, cacheBucket: cacheBucket}, nil
 }
 
-// Run executes all checks in cfg in parallel, fetching source from archiveURL.
-// archiveURL must be a tar archive served over HTTP(S); BuildKit fetches it
-// directly so the worker is not in the data path.  Pass "" to use an empty
-// source directory (useful in tests where checks do not read source files).
+// Run executes all checks in cfg in parallel against the given source.
+// source can be:
+//   - an HTTP(S) URL of a tar archive — BuildKit fetches it directly via llb.HTTP
+//   - a local filesystem path — BuildKit uploads it via llb.Local (used by ds ci run)
+//   - "" — uses an empty scratch state (useful in tests that do not read source files)
+//
 // Checks whose if: condition evaluates to false are skipped (omitted from results).
 // It returns once all checks have resolved.
-func (e *Executor) Run(ctx context.Context, archiveURL string, cfg Config, triggerCtx ciconfig.TriggerContext) ([]CheckResult, error) {
+func (e *Executor) Run(ctx context.Context, source string, cfg Config, triggerCtx ciconfig.TriggerContext) ([]CheckResult, error) {
 	// Pre-filter: evaluate if: conditions before launching goroutines.
 	type indexedCheck struct {
 		idx   int
@@ -109,7 +111,7 @@ func (e *Executor) Run(ctx context.Context, archiveURL string, cfg Config, trigg
 					}
 				}
 			}()
-			results[j] = e.runCheck(ctx, archiveURL, check)
+			results[j] = e.runCheck(ctx, source, check)
 		}(j, ic.check)
 	}
 	wg.Wait()
@@ -122,7 +124,7 @@ func (e *Executor) Close() error {
 }
 
 // runCheck executes a single check and returns its result.
-func (e *Executor) runCheck(ctx context.Context, archiveURL string, check Check) CheckResult {
+func (e *Executor) runCheck(ctx context.Context, source string, check Check) CheckResult {
 	var logBuf bytes.Buffer
 	ch := make(chan *client.SolveStatus)
 
@@ -152,10 +154,18 @@ func (e *Executor) runCheck(ctx context.Context, archiveURL string, check Check)
 		ap.AuthConfigProvider = authprovider.LoadAuthConfig(dockerCfg)
 	}
 
+	isHTTP := strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://")
+	isLocal := source != "" && !isHTTP
+
 	solveOpt := client.SolveOpt{
 		Session: []session.Attachable{
 			authprovider.NewDockerAuthProvider(ap),
 		},
+	}
+	if isLocal {
+		solveOpt.LocalDirs = map[string]string{
+			"src": source,
+		}
 	}
 	if e.cacheBucket != "" {
 		solveOpt.CacheImports = []client.CacheOptionsEntry{
@@ -199,20 +209,20 @@ func (e *Executor) runCheck(ctx context.Context, archiveURL string, check Check)
 		// share the host network namespace and can reach dockerd via TCP.
 		envOpts = append(envOpts, llb.AddEnv("DOCKER_HOST", "tcp://localhost:2375"))
 
-		// Build the source mount.  When archiveURL is non-empty BuildKit fetches
-		// the tar directly (no worker intermediary) and a busybox step extracts
-		// it to /src.  The URL includes the commit sequence so BuildKit's HTTP
-		// cache deduplications across parallel checks at the same sequence.
-		// When archiveURL is empty (e.g. tests that do not access source) we use
-		// an empty scratch state.
+		// Build the source mount based on the source type:
+		//   HTTP(S) URL → BuildKit fetches the tar directly; busybox extracts it to /src.
+		//   local path  → BuildKit uploads the directory via llb.Local (ds ci run path).
+		//   ""          → empty scratch state (tests that do not access source files).
 		var srcMount llb.State
-		if archiveURL != "" {
-			httpSrc := llb.HTTP(archiveURL, llb.Filename("source.tar"))
+		if isHTTP {
+			httpSrc := llb.HTTP(source, llb.Filename("source.tar"))
 			srcMount = llb.Image("busybox:latest").
 				Run(
 					llb.Args([]string{"sh", "-c", "mkdir -p /src && tar -xf /archive/source.tar -C /src"}),
 					llb.AddMount("/archive", httpSrc),
 				).GetMount("/src")
+		} else if isLocal {
+			srcMount = llb.Local("src")
 		} else {
 			srcMount = llb.Scratch()
 		}
