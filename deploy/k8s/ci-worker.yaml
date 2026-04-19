@@ -28,10 +28,14 @@ metadata:
   namespace: docstore-ci
 spec:
   replicas: 3
-  # Recreate: terminate all old pods before starting new ones. Fastest
-  # strategy for a tight node pool — no surge capacity needed.
+  # RollingUpdate: allows the autoscaler (KEDA) to add/remove replicas without
+  # killing running workers. Recreate would terminate all pods on any replica
+  # count change, interrupting in-flight builds.
   strategy:
-    type: Recreate
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 3
+      maxUnavailable: 0
   selector:
     matchLabels:
       app: ci-worker
