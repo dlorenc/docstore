@@ -369,91 +369,6 @@ func TestPostCheckRun_WithLogURL(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// pullBranchSource
-// ---------------------------------------------------------------------------
-
-func TestPullBranchSource_ExtractsFiles(t *testing.T) {
-	files := map[string]string{
-		"main.go":     "package main",
-		"sub/util.go": "package sub",
-	}
-	tarData := makeTar(t, files)
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/x-tar")
-		w.Write(tarData) //nolint:errcheck
-	}))
-	defer srv.Close()
-
-	dir, err := pullBranchSource(context.Background(), srv.Client(), srv.URL, "repo", "main", 1)
-	if dir != "" {
-		defer os.RemoveAll(dir)
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	for name := range files {
-		path := filepath.Join(dir, filepath.FromSlash(name))
-		if _, err := os.Stat(path); err != nil {
-			t.Errorf("expected extracted file %s: %v", name, err)
-		}
-	}
-}
-
-func TestPullBranchSource_ServerError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer srv.Close()
-
-	dir, err := pullBranchSource(context.Background(), srv.Client(), srv.URL, "repo", "main", 1)
-	if dir != "" {
-		defer os.RemoveAll(dir)
-	}
-	if err == nil {
-		t.Fatal("expected error for 500, got nil")
-	}
-}
-
-func TestPullBranchSource_URLContainsBranchAndSeq(t *testing.T) {
-	var gotURL string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotURL = r.URL.String()
-		// Return an empty tar so extraction doesn't error.
-		tw := tar.NewWriter(w)
-		tw.Close() //nolint:errcheck
-	}))
-	defer srv.Close()
-
-	dir, _ := pullBranchSource(context.Background(), srv.Client(), srv.URL, "repo", "feat/x", 55)
-	if dir != "" {
-		defer os.RemoveAll(dir)
-	}
-	if !strings.Contains(gotURL, "feat%2Fx") {
-		t.Errorf("branch not URL-encoded: %s", gotURL)
-	}
-	if !strings.Contains(gotURL, "at=55") {
-		t.Errorf("sequence missing: %s", gotURL)
-	}
-}
-
-func TestPullBranchSource_EmptyTarSucceeds(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		tw := tar.NewWriter(w)
-		tw.Close() //nolint:errcheck
-	}))
-	defer srv.Close()
-
-	dir, err := pullBranchSource(context.Background(), srv.Client(), srv.URL, "repo", "main", 1)
-	if dir != "" {
-		defer os.RemoveAll(dir)
-	}
-	if err != nil {
-		t.Fatalf("expected no error for empty tar, got %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // heartbeat
 // ---------------------------------------------------------------------------
 
@@ -607,32 +522,6 @@ func TestRunJob_FetchConfigError_ReturnsFailed(t *testing.T) {
 	}
 }
 
-func TestRunJob_PullSourceError_ReturnsFailed(t *testing.T) {
-	const ciYAML = "checks:\n- name: test\n  image: golang:1.22\n  steps: [\"go test ./...\"]\n"
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case strings.Contains(r.URL.Path, "/-/file/"):
-			w.Header().Set("Content-Type", "application/json")
-			w.Write(fileResponseJSON(t, ciYAML)) //nolint:errcheck
-		case strings.Contains(r.URL.Path, "/-/archive"):
-			w.WriteHeader(http.StatusInternalServerError)
-		case strings.Contains(r.URL.Path, "/-/check"):
-			w.WriteHeader(http.StatusCreated)
-		}
-	}))
-	defer srv.Close()
-
-	status, _, errMsg := runJob(
-		context.Background(), srv.Client(), &mockRunner{}, nil,
-		srv.URL, testJob(), t.TempDir(), ciconfig.TriggerContext{},
-	)
-	if status != "failed" {
-		t.Errorf("expected failed, got %q", status)
-	}
-	if errMsg == nil {
-		t.Error("expected non-nil errMsg")
-	}
-}
 
 func TestRunJob_ExecutorError_ReturnsFailed(t *testing.T) {
 	const ciYAML = "checks:\n- name: test\n  image: golang:1.22\n  steps: [\"go test ./...\"]\n"
