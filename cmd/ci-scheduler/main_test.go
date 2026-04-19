@@ -28,15 +28,16 @@ type stubStore struct {
 	reapErr      error
 }
 
-func (s *stubStore) InsertCIJob(_ context.Context, repo, branch string, sequence int64, triggerType, triggerBranch, triggerProposalID string) (*model.CIJob, error) {
+func (s *stubStore) InsertCIJob(_ context.Context, repo, branch string, sequence int64, triggerType, triggerBranch, triggerBaseBranch, triggerProposalID string) (*model.CIJob, error) {
 	j := &model.CIJob{
-		ID:            "test-uuid",
-		Repo:          repo,
-		Branch:        branch,
-		Sequence:      sequence,
-		Status:        "queued",
-		TriggerType:   triggerType,
-		TriggerBranch: triggerBranch,
+		ID:                "test-uuid",
+		Repo:              repo,
+		Branch:            branch,
+		Sequence:          sequence,
+		Status:            "queued",
+		TriggerType:       triggerType,
+		TriggerBranch:     triggerBranch,
+		TriggerBaseBranch: triggerBaseBranch,
 	}
 	if triggerProposalID != "" {
 		j.TriggerProposalID = &triggerProposalID

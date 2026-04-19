@@ -10,7 +10,7 @@ import (
 
 // ciJobColumns is the ordered list of columns returned by SELECT * on ci_jobs.
 const ciJobColumns = `id, repo, branch, sequence, status, claimed_at, last_heartbeat_at,
-	worker_pod, worker_pod_ip, log_url, error_message, created_at, trigger_type, trigger_branch, trigger_proposal_id`
+	worker_pod, worker_pod_ip, log_url, error_message, created_at, trigger_type, trigger_branch, trigger_base_branch, trigger_proposal_id`
 
 // scanCIJob scans a single ci_jobs row into a model.CIJob.
 func scanCIJob(row interface {
@@ -25,12 +25,13 @@ func scanCIJob(row interface {
 	var errorMessage sql.NullString
 	var triggerType sql.NullString
 	var triggerBranch sql.NullString
+	var triggerBaseBranch sql.NullString
 	var triggerProposalID sql.NullString
 	if err := row.Scan(
 		&j.ID, &j.Repo, &j.Branch, &j.Sequence, &j.Status,
 		&claimedAt, &lastHeartbeatAt, &workerPod, &workerPodIP,
 		&logURL, &errorMessage, &j.CreatedAt,
-		&triggerType, &triggerBranch, &triggerProposalID,
+		&triggerType, &triggerBranch, &triggerBaseBranch, &triggerProposalID,
 	); err != nil {
 		return nil, err
 	}
@@ -58,6 +59,9 @@ func scanCIJob(row interface {
 	if triggerBranch.Valid {
 		j.TriggerBranch = triggerBranch.String
 	}
+	if triggerBaseBranch.Valid {
+		j.TriggerBaseBranch = triggerBaseBranch.String
+	}
 	if triggerProposalID.Valid {
 		j.TriggerProposalID = &triggerProposalID.String
 	}
@@ -67,16 +71,21 @@ func scanCIJob(row interface {
 // InsertCIJob inserts a new ci_job row with status 'queued' and returns it.
 // triggerType identifies how the job was triggered (e.g. "push", "manual", "proposal").
 // triggerBranch is the branch that caused the trigger (may be empty for some trigger types).
+// triggerBaseBranch is the base branch for proposal-triggered jobs (empty string for others).
 // triggerProposalID is the proposal ID for proposal-triggered jobs (empty string for others).
-func (s *Store) InsertCIJob(ctx context.Context, repo, branch string, sequence int64, triggerType, triggerBranch, triggerProposalID string) (*model.CIJob, error) {
+func (s *Store) InsertCIJob(ctx context.Context, repo, branch string, sequence int64, triggerType, triggerBranch, triggerBaseBranch, triggerProposalID string) (*model.CIJob, error) {
 	var proposalID interface{}
 	if triggerProposalID != "" {
 		proposalID = triggerProposalID
 	}
+	var baseBranch interface{}
+	if triggerBaseBranch != "" {
+		baseBranch = triggerBaseBranch
+	}
 	row := s.db.QueryRowContext(ctx,
-		`INSERT INTO ci_jobs (repo, branch, sequence, trigger_type, trigger_branch, trigger_proposal_id)
-		 VALUES ($1, $2, $3, $4, $5, $6) RETURNING `+ciJobColumns,
-		repo, branch, sequence, triggerType, triggerBranch, proposalID,
+		`INSERT INTO ci_jobs (repo, branch, sequence, trigger_type, trigger_branch, trigger_base_branch, trigger_proposal_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING `+ciJobColumns,
+		repo, branch, sequence, triggerType, triggerBranch, baseBranch, proposalID,
 	)
 	j, err := scanCIJob(row)
 	if err != nil {
