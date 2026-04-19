@@ -49,18 +49,19 @@ type CheckResult struct {
 
 // Executor translates a Config into an LLB DAG and dispatches it to buildkitd.
 type Executor struct {
-	client      *client.Client
-	cacheBucket string // empty = no cache
+	client    *client.Client
+	cacheRef  string // registry image ref for BuildKit cache; empty = no cache
 }
 
 // New creates an Executor connected to the buildkitd at buildkitAddr.
-// cacheBucket is an optional GCS bucket name for BuildKit cache; pass "" to disable.
-func New(buildkitAddr, cacheBucket string) (*Executor, error) {
+// cacheRef is an optional registry image reference used for BuildKit registry cache;
+// pass "" to disable. Example: "us-central1-docker.pkg.dev/myproject/images/buildcache".
+func New(buildkitAddr, cacheRef string) (*Executor, error) {
 	c, err := client.New(context.Background(), buildkitAddr)
 	if err != nil {
 		return nil, fmt.Errorf("connect to buildkitd at %s: %w", buildkitAddr, err)
 	}
-	return &Executor{client: c, cacheBucket: cacheBucket}, nil
+	return &Executor{client: c, cacheRef: cacheRef}, nil
 }
 
 // Run executes all checks in cfg in parallel against the given source.
@@ -186,18 +187,16 @@ func (e *Executor) runCheck(ctx context.Context, source string, check Check) Che
 			"src": source,
 		}
 	}
-	if e.cacheBucket != "" {
+	if e.cacheRef != "" {
 		solveOpt.CacheImports = []client.CacheOptionsEntry{
-			{Type: "gcs", Attrs: map[string]string{
-				"bucket": e.cacheBucket,
-				"prefix": "buildkit-cache/",
+			{Type: "registry", Attrs: map[string]string{
+				"ref": e.cacheRef,
 			}},
 		}
 		solveOpt.CacheExports = []client.CacheOptionsEntry{
-			{Type: "gcs", Attrs: map[string]string{
-				"bucket": e.cacheBucket,
-				"prefix": "buildkit-cache/",
-				"mode":   "max",
+			{Type: "registry", Attrs: map[string]string{
+				"ref":  e.cacheRef,
+				"mode": "max",
 			}},
 		}
 	}

@@ -74,8 +74,8 @@ spec:
           value: gcs
         - name: LOG_BUCKET
           value: docstore-ci-logs
-        - name: CACHE_BUCKET
-          value: docstore-ci-cache
+        - name: CACHE_REF
+          value: us-central1-docker.pkg.dev/dlorenc-chainguard/images/buildcache
         ports:
         - containerPort: 8081
         resources:
