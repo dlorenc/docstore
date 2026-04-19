@@ -160,9 +160,19 @@ jobs:
           DIGEST=$(jq -r '."containerimage.digest"' /tmp/ci-worker-metadata.json)
           echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
 
+      - name: Install KEDA via Helm
+        run: |
+          helm repo add kedacore https://kedacore.github.io/charts
+          helm repo update
+          helm upgrade --install keda kedacore/keda \
+            --namespace keda \
+            --create-namespace \
+            --wait
+
       - name: Deploy ci-worker to GKE
         run: |
           kubectl apply -f deploy/k8s/ci-worker.yaml
+          kubectl apply -f deploy/k8s/ci-worker-scaledobject.yaml
           kubectl set image deployment/ci-worker \
             ci-worker=us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-worker@${{ steps.build.outputs.digest }} \
             -n docstore-ci
