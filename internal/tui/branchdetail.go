@@ -43,10 +43,16 @@ type branchDetailModel struct {
 	expandedFiles  map[int]bool
 	diffFileHunks  []string // raw diff content per file (simplified)
 
+	mainHeadSeq int64 // current head sequence of main branch
+
 	// Merge confirmation state.
-	merging        bool
-	mergeConfirm   bool // waiting for y/N
-	mergeMessage   string
+	merging      bool
+	mergeConfirm bool // waiting for y/N
+	mergeMessage string
+
+	// Refresh feedback state.
+	refreshing    bool
+	lastRefreshed time.Time
 
 	// Review overlay.
 	showReviewOverlay bool
@@ -187,6 +193,8 @@ func (m branchDetailModel) Update(msg tea.Msg) (branchDetailModel, tea.Cmd) {
 
 	case branchDetailLoadedMsg:
 		m.loading = false
+		m.refreshing = false
+		m.lastRefreshed = time.Now()
 		m.err = msg.err
 		if msg.err == nil {
 			m.diff = msg.diff
@@ -194,6 +202,7 @@ func (m branchDetailModel) Update(msg tea.Msg) (branchDetailModel, tea.Cmd) {
 			m.checks = msg.checks
 			m.headSeq = msg.headSeq
 			m.baseSeq = msg.baseSeq
+			m.mainHeadSeq = msg.mainHeadSeq
 			m.baseTreePaths = msg.baseTreePaths
 			m.proposal = msg.proposal
 		}
@@ -256,6 +265,7 @@ func (m branchDetailModel) Update(msg tea.Msg) (branchDetailModel, tea.Cmd) {
 
 		case "R":
 			m.loading = true
+			m.refreshing = true
 			m.err = nil
 			m.mergeMessage = ""
 			return m, loadBranchDetail(m.client, m.branchName)
@@ -332,6 +342,11 @@ func (m branchDetailModel) View() string {
 	// Merge confirmation or message.
 	if m.mergeConfirm {
 		sb.WriteString("\n")
+		if m.mainHeadSeq > 0 && m.baseSeq < m.mainHeadSeq {
+			sb.WriteString(styleError.Render(fmt.Sprintf(
+				"  ⚠ base seq %d is behind main head seq %d — conflicts possible",
+				m.baseSeq, m.mainHeadSeq)) + "\n")
+		}
 		sb.WriteString(styleConfirm.Render(fmt.Sprintf("  Merge %s into main? [y/N] ", m.branchName)))
 	} else if m.merging {
 		sb.WriteString("\n  Merging...\n")
@@ -355,6 +370,11 @@ func (m branchDetailModel) View() string {
 			helpText = "  tab panels · enter expand/collapse · p proposal · r review · m merge · R refresh · q back"
 		}
 		sb.WriteString(styleHelp.Render(helpText))
+		if m.refreshing {
+			sb.WriteString("\n" + styleHelp.Render("  ↻ refreshing…"))
+		} else if !m.lastRefreshed.IsZero() {
+			sb.WriteString("\n" + styleHelp.Render("  last refreshed at "+m.lastRefreshed.Format("15:04:05")))
+		}
 	}
 
 	return sb.String()
@@ -365,7 +385,7 @@ func (m branchDetailModel) renderTabs() string {
 		label string
 		p     panel
 	}{
-		{"[Diff]", panelDiff},
+		{"Diff", panelDiff},
 		{"Reviews", panelReviews},
 		{"Checks", panelChecks},
 	}
