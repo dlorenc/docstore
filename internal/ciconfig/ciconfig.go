@@ -1,0 +1,57 @@
+// Package ciconfig parses the .docstore/ci.yaml DSL and evaluates trigger
+// conditions. It is used by the ci-scheduler to decide whether a push event
+// should enqueue a CI job.
+package ciconfig
+
+import "github.com/gobwas/glob"
+
+// CIConfig is the top-level structure of .docstore/ci.yaml.
+// Only the 'on:' block is parsed here; execution-related fields (checks, jobs)
+// are handled separately by the executor package.
+type CIConfig struct {
+	On *TriggerConfig `yaml:"on"`
+}
+
+// TriggerConfig holds the trigger definitions for a CI config.
+type TriggerConfig struct {
+	Push *PushTrigger `yaml:"push"`
+}
+
+// PushTrigger configures which branches a push event triggers CI for.
+type PushTrigger struct {
+	// Branches is a list of glob patterns. A nil or empty list means all branches.
+	Branches []string `yaml:"branches"`
+}
+
+// MatchesPush reports whether a commit to branch should trigger a push-based CI run.
+//
+// Rules:
+//   - No on: block (cfg.On == nil)       → always match (backward compat)
+//   - on: exists, no push: key           → never match
+//   - on: push: with no branches list    → always match (all branches)
+//   - on: push: branches: [pat, ...]     → match if branch matches any pattern
+//
+// Patterns are evaluated using gobwas/glob which supports **, *, ? and
+// character classes.
+func (cfg *CIConfig) MatchesPush(branch string) bool {
+	if cfg.On == nil {
+		return true
+	}
+	if cfg.On.Push == nil {
+		return false
+	}
+	if len(cfg.On.Push.Branches) == 0 {
+		return true
+	}
+	for _, pattern := range cfg.On.Push.Branches {
+		g, err := glob.Compile(pattern)
+		if err != nil {
+			// Skip invalid patterns rather than treating them as a match.
+			continue
+		}
+		if g.Match(branch) {
+			return true
+		}
+	}
+	return false
+}
