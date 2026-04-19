@@ -110,3 +110,96 @@ func TestMatchesPush(t *testing.T) {
 		})
 	}
 }
+
+func TestMatchesProposal(t *testing.T) {
+	tests := []struct {
+		name       string
+		cfg        CIConfig
+		baseBranch string
+		want       bool
+	}{
+		{
+			name:       "no on block always matches",
+			cfg:        CIConfig{On: nil},
+			baseBranch: "main",
+			want:       true,
+		},
+		{
+			name: "on with no proposal never matches",
+			cfg: CIConfig{
+				On: &TriggerConfig{Push: &PushTrigger{}},
+			},
+			baseBranch: "main",
+			want:       false,
+		},
+		{
+			name: "on proposal no base_branches matches all",
+			cfg: CIConfig{
+				On: &TriggerConfig{
+					Proposal: &ProposalTrigger{BaseBranches: nil},
+				},
+			},
+			baseBranch: "main",
+			want:       true,
+		},
+		{
+			name: "on proposal empty base_branches matches all",
+			cfg: CIConfig{
+				On: &TriggerConfig{
+					Proposal: &ProposalTrigger{BaseBranches: []string{}},
+				},
+			},
+			baseBranch: "develop",
+			want:       true,
+		},
+		{
+			name: "on proposal base_branches main matches main",
+			cfg: CIConfig{
+				On: &TriggerConfig{
+					Proposal: &ProposalTrigger{BaseBranches: []string{"main"}},
+				},
+			},
+			baseBranch: "main",
+			want:       true,
+		},
+		{
+			name: "on proposal base_branches main does not match develop",
+			cfg: CIConfig{
+				On: &TriggerConfig{
+					Proposal: &ProposalTrigger{BaseBranches: []string{"main"}},
+				},
+			},
+			baseBranch: "develop",
+			want:       false,
+		},
+		{
+			name: "wildcard release/* matches release/1.0",
+			cfg: CIConfig{
+				On: &TriggerConfig{
+					Proposal: &ProposalTrigger{BaseBranches: []string{"main", "release/*"}},
+				},
+			},
+			baseBranch: "release/1.0",
+			want:       true,
+		},
+		{
+			name: "wildcard release/* does not match feature/foo",
+			cfg: CIConfig{
+				On: &TriggerConfig{
+					Proposal: &ProposalTrigger{BaseBranches: []string{"main", "release/*"}},
+				},
+			},
+			baseBranch: "feature/foo",
+			want:       false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.cfg.MatchesProposal(tt.baseBranch)
+			if got != tt.want {
+				t.Errorf("MatchesProposal(%q) = %v, want %v", tt.baseBranch, got, tt.want)
+			}
+		})
+	}
+}

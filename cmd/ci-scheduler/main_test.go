@@ -28,7 +28,7 @@ type stubStore struct {
 	reapErr      error
 }
 
-func (s *stubStore) InsertCIJob(_ context.Context, repo, branch string, sequence int64, triggerType, triggerBranch string) (*model.CIJob, error) {
+func (s *stubStore) InsertCIJob(_ context.Context, repo, branch string, sequence int64, triggerType, triggerBranch, triggerProposalID string) (*model.CIJob, error) {
 	j := &model.CIJob{
 		ID:            "test-uuid",
 		Repo:          repo,
@@ -37,6 +37,9 @@ func (s *stubStore) InsertCIJob(_ context.Context, repo, branch string, sequence
 		Status:        "queued",
 		TriggerType:   triggerType,
 		TriggerBranch: triggerBranch,
+	}
+	if triggerProposalID != "" {
+		j.TriggerProposalID = &triggerProposalID
 	}
 	s.insertedJobs = append(s.insertedJobs, j)
 	return j, nil
@@ -58,6 +61,24 @@ func signBody(body []byte, secret string) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(body)
 	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
+}
+
+func proposalOpenedEvent(repo, branch, baseBranch, proposalID string) []byte {
+	type data struct {
+		Repo       string `json:"repo"`
+		Branch     string `json:"branch"`
+		BaseBranch string `json:"base_branch"`
+		ProposalID string `json:"proposal_id"`
+	}
+	type env struct {
+		Type string `json:"type"`
+		Data data   `json:"data"`
+	}
+	b, _ := json.Marshal(env{
+		Type: "com.docstore.proposal.opened",
+		Data: data{Repo: repo, Branch: branch, BaseBranch: baseBranch, ProposalID: proposalID},
+	})
+	return b
 }
 
 func commitCreatedEvent(repo, branch string, sequence int64) []byte {
@@ -553,5 +574,194 @@ func TestHandleWebhook_NoCIYAML_AlwaysEnqueues(t *testing.T) {
 	}
 	if len(stub.insertedJobs) != 1 {
 		t.Fatalf("expected 1 inserted job (no ci.yaml = always run), got %d", len(stub.insertedJobs))
+	}
+}
+
+// newDocstoreServer builds a test server that handles both the ci.yaml file
+// endpoint and the proposals endpoint. ciYAML may be empty for no config.
+// proposals is a list of JSON-encodable proposal objects returned for ?state=open.
+func newDocstoreServer(t *testing.T, ciYAML string, branches []map[string]any, proposals []map[string]any) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.Path, "/-/file/.docstore/ci.yaml"):
+			if ciYAML == "" {
+				http.NotFound(w, r)
+				return
+			}
+			type fileResp struct {
+				Path    string `json:"path"`
+				Content []byte `json:"content"`
+			}
+			json.NewEncoder(w).Encode(fileResp{Path: ".docstore/ci.yaml", Content: []byte(ciYAML)}) //nolint:errcheck
+		case strings.Contains(r.URL.Path, "/-/branches"):
+			json.NewEncoder(w).Encode(branches) //nolint:errcheck
+		case strings.Contains(r.URL.Path, "/-/proposals"):
+			json.NewEncoder(w).Encode(proposals) //nolint:errcheck
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+}
+
+// ---------------------------------------------------------------------------
+// Tests: proposal.opened event handling
+// ---------------------------------------------------------------------------
+
+func TestHandleWebhook_ProposalOpened_EnqueuesJob(t *testing.T) {
+	branches := []map[string]any{
+		{"name": "feature/foo", "head_sequence": int64(10)},
+	}
+	srv := newDocstoreServer(t, "", branches, nil)
+	defer srv.Close()
+
+	stub := &stubStore{}
+	sched := &scheduler{
+		store:       stub,
+		docstoreURL: srv.URL,
+		httpClient:  &http.Client{},
+	}
+
+	body := proposalOpenedEvent("myrepo", "feature/foo", "main", "proposal-uuid-1")
+	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	sched.handleWebhook(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if len(stub.insertedJobs) != 1 {
+		t.Fatalf("expected 1 inserted job, got %d", len(stub.insertedJobs))
+	}
+	j := stub.insertedJobs[0]
+	if j.TriggerType != "proposal" {
+		t.Errorf("TriggerType = %q, want %q", j.TriggerType, "proposal")
+	}
+	if j.TriggerProposalID == nil || *j.TriggerProposalID != "proposal-uuid-1" {
+		t.Errorf("TriggerProposalID = %v, want %q", j.TriggerProposalID, "proposal-uuid-1")
+	}
+}
+
+func TestHandleWebhook_ProposalOpened_FilteredByOnBlock(t *testing.T) {
+	ciYAML := "on:\n  proposal:\n    base_branches:\n      - release/*\n"
+	branches := []map[string]any{
+		{"name": "feature/foo", "head_sequence": int64(10)},
+	}
+	srv := newDocstoreServer(t, ciYAML, branches, nil)
+	defer srv.Close()
+
+	stub := &stubStore{}
+	sched := &scheduler{
+		store:       stub,
+		docstoreURL: srv.URL,
+		httpClient:  &http.Client{},
+	}
+
+	// base_branch is "main" — does not match "release/*", so should be filtered.
+	body := proposalOpenedEvent("myrepo", "feature/foo", "main", "proposal-uuid-2")
+	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	sched.handleWebhook(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if len(stub.insertedJobs) != 0 {
+		t.Fatalf("expected 0 jobs (filtered), got %d", len(stub.insertedJobs))
+	}
+}
+
+func TestHandleWebhook_ProposalOpened_MissingRepo_Returns400(t *testing.T) {
+	stub := &stubStore{}
+	sched := &scheduler{store: stub, webhookSecret: ""}
+
+	body, _ := json.Marshal(map[string]any{
+		"type": "com.docstore.proposal.opened",
+		"data": map[string]any{"branch": "feature/foo", "base_branch": "main"},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	sched.handleWebhook(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests: commit.created with open proposal enqueues proposal_synchronized job
+// ---------------------------------------------------------------------------
+
+func TestHandleWebhook_CommitCreated_WithOpenProposal_EnqueuesBothJobs(t *testing.T) {
+	proposals := []map[string]any{
+		{"id": "prop-1", "repo": "myrepo", "branch": "feature/foo", "base_branch": "main", "state": "open"},
+	}
+	branches := []map[string]any{
+		{"name": "feature/foo", "head_sequence": int64(5)},
+	}
+	srv := newDocstoreServer(t, "", branches, proposals)
+	defer srv.Close()
+
+	stub := &stubStore{}
+	sched := &scheduler{
+		store:       stub,
+		docstoreURL: srv.URL,
+		httpClient:  &http.Client{},
+	}
+
+	body := commitCreatedEvent("myrepo", "feature/foo", 5)
+	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	sched.handleWebhook(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if len(stub.insertedJobs) != 2 {
+		t.Fatalf("expected 2 inserted jobs (push + proposal_synchronized), got %d", len(stub.insertedJobs))
+	}
+	types := map[string]bool{}
+	for _, j := range stub.insertedJobs {
+		types[j.TriggerType] = true
+	}
+	if !types["push"] {
+		t.Error("expected push job")
+	}
+	if !types["proposal_synchronized"] {
+		t.Error("expected proposal_synchronized job")
+	}
+}
+
+func TestHandleWebhook_CommitCreated_NoOpenProposal_EnqueuesOnlyPush(t *testing.T) {
+	// Proposals endpoint returns empty array.
+	srv := newDocstoreServer(t, "", nil, []map[string]any{})
+	defer srv.Close()
+
+	stub := &stubStore{}
+	sched := &scheduler{
+		store:       stub,
+		docstoreURL: srv.URL,
+		httpClient:  &http.Client{},
+	}
+
+	body := commitCreatedEvent("myrepo", "feature/foo", 5)
+	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	sched.handleWebhook(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if len(stub.insertedJobs) != 1 {
+		t.Fatalf("expected 1 inserted job (push only), got %d", len(stub.insertedJobs))
+	}
+	if stub.insertedJobs[0].TriggerType != "push" {
+		t.Errorf("TriggerType = %q, want push", stub.insertedJobs[0].TriggerType)
 	}
 }
