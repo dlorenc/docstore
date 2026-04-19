@@ -301,6 +301,11 @@ type issueCommentCreatedMsg struct {
 	err error
 }
 
+type issueReopenedMsg struct {
+	issue *model.Issue
+	err   error
+}
+
 // branchSummary holds a branch plus its review/check summary.
 type branchSummary struct {
 	branch   model.Branch
@@ -680,10 +685,11 @@ func loadIssues(c *tuiClient, state string) tea.Cmd {
 		}
 		defer resp.Body.Close()
 
-		var issues []model.Issue
-		if err := c.decodeJSON(resp, &issues); err != nil {
+		var envelope model.ListIssuesResponse
+		if err := c.decodeJSON(resp, &envelope); err != nil {
 			return issuesLoadedMsg{err: fmt.Errorf("loading issues: %w", err)}
 		}
+		issues := envelope.Issues
 		if issues == nil {
 			issues = []model.Issue{}
 		}
@@ -709,10 +715,11 @@ func loadIssueDetail(c *tuiClient, number int64) tea.Cmd {
 			return issueDetailLoadedMsg{err: err}
 		}
 		defer cResp.Body.Close()
-		var comments []model.IssueComment
-		if err := c.decodeJSON(cResp, &comments); err != nil {
+		var commentsEnv model.ListIssueCommentsResponse
+		if err := c.decodeJSON(cResp, &commentsEnv); err != nil {
 			return issueDetailLoadedMsg{err: fmt.Errorf("loading comments: %w", err)}
 		}
+		comments := commentsEnv.Comments
 		if comments == nil {
 			comments = []model.IssueComment{}
 		}
@@ -722,10 +729,11 @@ func loadIssueDetail(c *tuiClient, number int64) tea.Cmd {
 			return issueDetailLoadedMsg{err: err}
 		}
 		defer rResp.Body.Close()
-		var refs []model.IssueRef
-		if err := c.decodeJSON(rResp, &refs); err != nil {
+		var refsEnv model.ListIssueRefsResponse
+		if err := c.decodeJSON(rResp, &refsEnv); err != nil {
 			return issueDetailLoadedMsg{err: fmt.Errorf("loading refs: %w", err)}
 		}
+		refs := refsEnv.Refs
 		if refs == nil {
 			refs = []model.IssueRef{}
 		}
@@ -780,6 +788,30 @@ func closeIssueCmd(c *tuiClient, number int64, reason model.IssueCloseReason) te
 			return issueClosedMsg{issue: &iss}
 		}
 		return issueClosedMsg{}
+	}
+}
+
+func reopenIssueCmd(c *tuiClient, number int64) tea.Cmd {
+	return func() tea.Msg {
+		path := fmt.Sprintf("/issues/%d/reopen", number)
+		resp, err := c.postJSON(path, nil)
+		if err != nil {
+			return issueReopenedMsg{err: err}
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+			var errResp model.ErrorResponse
+			json.NewDecoder(resp.Body).Decode(&errResp)
+			return issueReopenedMsg{err: fmt.Errorf("server error: %s", errResp.Error)}
+		}
+
+		var iss model.Issue
+		if resp.StatusCode == http.StatusOK {
+			json.NewDecoder(resp.Body).Decode(&iss)
+			return issueReopenedMsg{issue: &iss}
+		}
+		return issueReopenedMsg{}
 	}
 }
 

@@ -114,12 +114,20 @@ func (m issueDetailModel) Update(msg tea.Msg) (issueDetailModel, tea.Cmd) {
 			return m, loadIssueDetail(m.client, m.issue.Number)
 		}
 
+	case issueReopenedMsg:
+		if msg.err != nil {
+			m.statusMsg = styleError.Render("Reopen failed: " + msg.err.Error())
+		} else {
+			m.loading = true
+			return m, loadIssueDetail(m.client, m.issue.Number)
+		}
+
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "esc", "b":
 			m.goBack = true
 
-		case "Q", "ctrl+c":
+		case "q", "ctrl+c":
 			m.quit = true
 
 		case "c":
@@ -134,6 +142,11 @@ func (m issueDetailModel) Update(msg tea.Msg) (issueDetailModel, tea.Cmd) {
 				m.showCloseOverlay = true
 				m.closeOverlay = newIssueCloseOverlay(m.client, m.issue.Number)
 				return m, m.closeOverlay.Init()
+			}
+
+		case "r":
+			if m.issue != nil && m.issue.State == model.IssueStateClosed {
+				return m, reopenIssueCmd(m.client, m.issue.Number)
 			}
 		}
 	}
@@ -220,8 +233,12 @@ func (m issueDetailModel) View() string {
 		sb.WriteString("\n")
 	} else {
 		helpText := "  c comment · esc/b back"
-		if m.issue != nil && m.issue.State == model.IssueStateOpen && !m.loading {
-			helpText = "  c comment · x close · esc/b back"
+		if m.issue != nil && !m.loading {
+			if m.issue.State == model.IssueStateOpen {
+				helpText = "  c comment · x close · esc/b back"
+			} else {
+				helpText = "  c comment · r reopen · esc/b back"
+			}
 		}
 		sb.WriteString(styleHelp.Render(helpText))
 	}
