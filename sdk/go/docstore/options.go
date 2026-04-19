@@ -104,6 +104,14 @@ func ChecksAt(seq int64) CheckListOption {
 	return func(p *reqParams) { p.set("at", strconv.FormatInt(seq, 10)) }
 }
 
+// ProposalOption filters a proposal listing.
+type ProposalOption func(*reqParams)
+
+// ProposalsWithState restricts to proposals in the given state (open, closed, or merged).
+func ProposalsWithState(state api.ProposalState) ProposalOption {
+	return func(p *reqParams) { p.set("state", string(state)) }
+}
+
 // ReleaseListOption narrows a release listing.
 type ReleaseListOption func(*reqParams)
 
