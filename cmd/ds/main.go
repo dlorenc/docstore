@@ -86,7 +86,12 @@ commands:
   proposal list [--state open|closed|merged]             List proposals
   proposal close <id>                                    Close a proposal
 
-  ci run [--check <name>] [--trigger push|proposal|proposal_synchronized] [--base-branch <branch>] [--buildkit <addr>]  Run CI checks locally`
+  ci run [--check <name>] [--trigger push|proposal|proposal_synchronized] [--base-branch <branch>] [--buildkit <addr>]  Run CI checks locally
+
+  subscriptions                                          List subscriptions
+  subscriptions create --url <url> --secret <s> [--repo <r>] [--event-types t1,t2]  Create a subscription
+  subscriptions delete <id>                              Delete a subscription
+  subscriptions resume <id>                              Resume a suspended subscription`
 
 func main() {
 	if len(os.Args) < 2 {
@@ -878,6 +883,68 @@ func main() {
 			os.Exit(1)
 		}
 		return
+
+	case "subscriptions":
+		if len(args) < 2 {
+			err = app.SubscriptionList()
+		} else {
+			switch args[1] {
+			case "create":
+				webhookURL := ""
+				secret := ""
+				var repo *string
+				var eventTypes []string
+				for i := 2; i < len(args); i++ {
+					switch args[i] {
+					case "--url":
+						if i+1 < len(args) {
+							webhookURL = args[i+1]
+							i++
+						}
+					case "--secret":
+						if i+1 < len(args) {
+							secret = args[i+1]
+							i++
+						}
+					case "--repo":
+						if i+1 < len(args) {
+							r := args[i+1]
+							repo = &r
+							i++
+						}
+					case "--event-types":
+						if i+1 < len(args) {
+							eventTypes = strings.Split(args[i+1], ",")
+							i++
+						}
+					}
+				}
+				if webhookURL == "" {
+					fmt.Fprintln(os.Stderr, "usage: ds subscriptions create --url <url> --secret <secret> [--repo <repo>] [--event-types t1,t2]")
+					os.Exit(1)
+				}
+				if secret == "" {
+					fmt.Fprintln(os.Stderr, "warning: --secret is empty; subscription will have no HMAC signing key")
+				}
+				err = app.SubscriptionCreate(webhookURL, secret, repo, eventTypes)
+			case "delete":
+				if len(args) < 3 {
+					fmt.Fprintln(os.Stderr, "usage: ds subscriptions delete <id>")
+					os.Exit(1)
+				}
+				err = app.SubscriptionDelete(args[2])
+			case "resume":
+				if len(args) < 3 {
+					fmt.Fprintln(os.Stderr, "usage: ds subscriptions resume <id>")
+					os.Exit(1)
+				}
+				err = app.SubscriptionResume(args[2])
+			default:
+				fmt.Fprintf(os.Stderr, "unknown subscriptions subcommand: %s\n", args[1])
+				fmt.Fprintln(os.Stderr, usage)
+				os.Exit(1)
+			}
+		}
 
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
