@@ -29,6 +29,22 @@ import (
 )
 
 
+// runner executes CI checks against a source directory.
+// *executor.Executor satisfies this interface.
+type runner interface {
+	Run(ctx context.Context, sourceDir string, cfg executor.Config, triggerCtx ciconfig.TriggerContext) ([]executor.CheckResult, error)
+}
+
+// heartbeater updates a CI job's heartbeat timestamp.
+// *db.Store satisfies this interface.
+type heartbeater interface {
+	HeartbeatCIJob(ctx context.Context, id string) error
+}
+
+// heartbeatInterval is the delay between heartbeat updates.
+// Overridable in tests.
+var heartbeatInterval = 30 * time.Second
+
 func mustEnv(key string) string {
 	v := os.Getenv(key)
 	if v == "" {
@@ -85,8 +101,8 @@ func waitDockerdReady(ctx context.Context) error {
 }
 
 // heartbeat sends periodic last_heartbeat_at updates until done is closed.
-func heartbeat(ctx context.Context, store *db.Store, jobID string, done <-chan struct{}) {
-	ticker := time.NewTicker(30 * time.Second)
+func heartbeat(ctx context.Context, store heartbeater, jobID string, done <-chan struct{}) {
+	ticker := time.NewTicker(heartbeatInterval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -259,7 +275,7 @@ func (s *checkLogServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func runJob(
 	ctx context.Context,
 	httpClient *http.Client,
-	exec *executor.Executor,
+	exec runner,
 	ls logstore.LogStore,
 	docstoreURL string,
 	job *model.CIJob,
