@@ -510,6 +510,38 @@ func (s *scheduler) fetchAllRepos(ctx context.Context) ([]string, error) {
 	return names, nil
 }
 
+// fetchBranchHead fetches the current head sequence of a named branch in the
+// given repo. It is used by the schedule runner to determine the commit to
+// build against, since schedule events carry no sequence of their own.
+func (s *scheduler) fetchBranchHead(ctx context.Context, repo, branch string) (int64, error) {
+	if s.docstoreURL == "" {
+		return 0, fmt.Errorf("docstore URL not configured")
+	}
+	branchesURL := fmt.Sprintf("%s/repos/%s/-/branches", s.docstoreURL, repo)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, branchesURL, nil)
+	if err != nil {
+		return 0, fmt.Errorf("build branches request: %w", err)
+	}
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("fetch branches: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("fetch branches: unexpected status %d", resp.StatusCode)
+	}
+	var branches []model.Branch
+	if err := json.NewDecoder(resp.Body).Decode(&branches); err != nil {
+		return 0, fmt.Errorf("decode branches response: %w", err)
+	}
+	for _, b := range branches {
+		if b.Name == branch {
+			return b.HeadSequence, nil
+		}
+	}
+	return 0, fmt.Errorf("branch %q not found in repo %q", branch, repo)
+}
+
 // runScheduledJobs checks all repos for schedule-triggered CI jobs that should
 // fire at time t (truncated to the minute).
 func (s *scheduler) runScheduledJobs(ctx context.Context, t time.Time) {
