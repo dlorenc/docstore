@@ -196,6 +196,20 @@ reason := "at least one approval required"
 
 OPA v1 syntax is required (use `if` in rule bodies, `import rego.v1`).
 
+Policies also receive `input.proposal` (nil if no open proposal exists for the branch) with fields `id`, `base_branch`, `title`, and `state`. This allows policies to require an open proposal before merging:
+
+```rego
+package docstore.require_proposal
+
+import rego.v1
+
+default allow := false
+
+allow if { input.proposal != null }
+
+reason := "an open proposal is required before merging"
+```
+
 ### Policy Storage
 
 Policies live in `.docstore/policy/*.rego` files in the repo on `main`. They are versioned documents like any other file and go through the same branch/review/merge workflow. This means policy changes require review and approval just like code changes.
