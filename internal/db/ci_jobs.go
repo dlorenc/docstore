@@ -10,7 +10,7 @@ import (
 
 // ciJobColumns is the ordered list of columns returned by SELECT * on ci_jobs.
 const ciJobColumns = `id, repo, branch, sequence, status, claimed_at, last_heartbeat_at,
-	worker_pod, worker_pod_ip, log_url, error_message, created_at`
+	worker_pod, worker_pod_ip, log_url, error_message, created_at, trigger_type, trigger_branch`
 
 // scanCIJob scans a single ci_jobs row into a model.CIJob.
 func scanCIJob(row interface {
@@ -23,10 +23,13 @@ func scanCIJob(row interface {
 	var workerPodIP sql.NullString
 	var logURL sql.NullString
 	var errorMessage sql.NullString
+	var triggerType sql.NullString
+	var triggerBranch sql.NullString
 	if err := row.Scan(
 		&j.ID, &j.Repo, &j.Branch, &j.Sequence, &j.Status,
 		&claimedAt, &lastHeartbeatAt, &workerPod, &workerPodIP,
 		&logURL, &errorMessage, &j.CreatedAt,
+		&triggerType, &triggerBranch,
 	); err != nil {
 		return nil, err
 	}
@@ -48,14 +51,23 @@ func scanCIJob(row interface {
 	if errorMessage.Valid {
 		j.ErrorMessage = &errorMessage.String
 	}
+	if triggerType.Valid {
+		j.TriggerType = triggerType.String
+	}
+	if triggerBranch.Valid {
+		j.TriggerBranch = triggerBranch.String
+	}
 	return &j, nil
 }
 
 // InsertCIJob inserts a new ci_job row with status 'queued' and returns it.
-func (s *Store) InsertCIJob(ctx context.Context, repo, branch string, sequence int64) (*model.CIJob, error) {
+// triggerType identifies how the job was triggered (e.g. "push", "manual").
+// triggerBranch is the branch that caused the trigger (may be empty for some trigger types).
+func (s *Store) InsertCIJob(ctx context.Context, repo, branch string, sequence int64, triggerType, triggerBranch string) (*model.CIJob, error) {
 	row := s.db.QueryRowContext(ctx,
-		`INSERT INTO ci_jobs (repo, branch, sequence) VALUES ($1, $2, $3) RETURNING `+ciJobColumns,
-		repo, branch, sequence,
+		`INSERT INTO ci_jobs (repo, branch, sequence, trigger_type, trigger_branch)
+		 VALUES ($1, $2, $3, $4, $5) RETURNING `+ciJobColumns,
+		repo, branch, sequence, triggerType, triggerBranch,
 	)
 	j, err := scanCIJob(row)
 	if err != nil {
