@@ -87,4 +87,18 @@ type CreateProposalRequest = api.CreateProposalRequest
 type CreateProposalResponse = api.CreateProposalResponse
 type UpdateProposalRequest = api.UpdateProposalRequest
 
+type CreateIssueRequest = api.CreateIssueRequest
+type CreateIssueResponse = api.CreateIssueResponse
+type UpdateIssueRequest = api.UpdateIssueRequest
+type CloseIssueRequest = api.CloseIssueRequest
+type ListIssuesResponse = api.ListIssuesResponse
+type IssueResponse = api.IssueResponse
+type CreateIssueCommentRequest = api.CreateIssueCommentRequest
+type CreateIssueCommentResponse = api.CreateIssueCommentResponse
+type UpdateIssueCommentRequest = api.UpdateIssueCommentRequest
+type ListIssueCommentsResponse = api.ListIssueCommentsResponse
+type AddIssueRefRequest = api.AddIssueRefRequest
+type AddIssueRefResponse = api.AddIssueRefResponse
+type ListIssueRefsResponse = api.ListIssueRefsResponse
+
 type ErrorResponse = api.ErrorResponse

@@ -434,6 +434,49 @@ func (m *mockStore) DeleteReviewComment(ctx context.Context, repo, id string) er
 	return db.ErrCommentNotFound
 }
 
+func (m *mockStore) CreateIssue(_ context.Context, _, _, _, _ string, _ []string) (*model.Issue, error) {
+	return nil, errors.New("not implemented")
+}
+func (m *mockStore) GetIssue(_ context.Context, _ string, _ int64) (*model.Issue, error) {
+	return nil, db.ErrIssueNotFound
+}
+func (m *mockStore) ListIssues(_ context.Context, _, _, _ string) ([]model.Issue, error) {
+	return []model.Issue{}, nil
+}
+func (m *mockStore) UpdateIssue(_ context.Context, _ string, _ int64, _, _ *string) (*model.Issue, error) {
+	return nil, db.ErrIssueNotFound
+}
+func (m *mockStore) CloseIssue(_ context.Context, _ string, _ int64, _ model.IssueCloseReason, _ string) (*model.Issue, error) {
+	return nil, db.ErrIssueNotFound
+}
+func (m *mockStore) ReopenIssue(_ context.Context, _ string, _ int64) (*model.Issue, error) {
+	return nil, db.ErrIssueNotFound
+}
+func (m *mockStore) CreateIssueComment(_ context.Context, _ string, _ int64, _, _ string) (*model.IssueComment, error) {
+	return nil, errors.New("not implemented")
+}
+func (m *mockStore) GetIssueComment(_ context.Context, _, _ string) (*model.IssueComment, error) {
+	return nil, db.ErrIssueCommentNotFound
+}
+func (m *mockStore) ListIssueComments(_ context.Context, _ string, _ int64) ([]model.IssueComment, error) {
+	return []model.IssueComment{}, nil
+}
+func (m *mockStore) UpdateIssueComment(_ context.Context, _, _, _ string) (*model.IssueComment, error) {
+	return nil, db.ErrIssueCommentNotFound
+}
+func (m *mockStore) DeleteIssueComment(_ context.Context, _, _ string) error {
+	return db.ErrIssueCommentNotFound
+}
+func (m *mockStore) CreateIssueRef(_ context.Context, _ string, _ int64, _ model.IssueRefType, _ string) (*model.IssueRef, error) {
+	return nil, errors.New("not implemented")
+}
+func (m *mockStore) ListIssueRefs(_ context.Context, _ string, _ int64) ([]model.IssueRef, error) {
+	return []model.IssueRef{}, nil
+}
+func (m *mockStore) ListIssuesByRef(_ context.Context, _ string, _ model.IssueRefType, _ string) ([]model.Issue, error) {
+	return []model.Issue{}, nil
+}
+
 func TestHealthEndpoint(t *testing.T) {
 	// /healthz is exempt from IAP auth, so devIdentity="" is fine here.
 	srv := New(nil, nil, "", "")

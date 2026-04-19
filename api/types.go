@@ -692,6 +692,145 @@ type ListSubscriptionsResponse struct {
 }
 
 // ---------------------------------------------------------------------------
+// Issues
+// ---------------------------------------------------------------------------
+
+// IssueState represents the lifecycle state of an issue.
+type IssueState string
+
+const (
+	IssueStateOpen   IssueState = "open"
+	IssueStateClosed IssueState = "closed"
+)
+
+// IssueCloseReason represents why an issue was closed.
+type IssueCloseReason string
+
+const (
+	IssueCloseReasonCompleted  IssueCloseReason = "completed"
+	IssueCloseReasonNotPlanned IssueCloseReason = "not_planned"
+	IssueCloseReasonDuplicate  IssueCloseReason = "duplicate"
+)
+
+// IssueRefType represents the kind of cross-reference attached to an issue.
+type IssueRefType string
+
+const (
+	IssueRefTypeProposal IssueRefType = "proposal"
+	IssueRefTypeCommit   IssueRefType = "commit"
+)
+
+// Issue is a repo-scoped bug report or feature request.
+type Issue struct {
+	ID          string            `json:"id"`
+	Repo        string            `json:"repo"`
+	Number      int64             `json:"number"`
+	Title       string            `json:"title"`
+	Body        string            `json:"body,omitempty"`
+	Author      string            `json:"author"`
+	State       IssueState        `json:"state"`
+	CloseReason *IssueCloseReason `json:"close_reason,omitempty"`
+	ClosedBy    *string           `json:"closed_by,omitempty"`
+	Labels      []string          `json:"labels"`
+	CreatedAt   time.Time         `json:"created_at"`
+	UpdatedAt   time.Time         `json:"updated_at"`
+}
+
+// IssueComment is a comment on an issue.
+type IssueComment struct {
+	ID        string     `json:"id"`
+	IssueID   string     `json:"issue_id"`
+	Repo      string     `json:"repo"`
+	Body      string     `json:"body"`
+	Author    string     `json:"author"`
+	CreatedAt time.Time  `json:"created_at"`
+	EditedAt  *time.Time `json:"edited_at,omitempty"`
+}
+
+// IssueRef is a cross-reference from an issue to a proposal or commit.
+type IssueRef struct {
+	ID        string       `json:"id"`
+	IssueID   string       `json:"issue_id"`
+	Repo      string       `json:"repo"`
+	RefType   IssueRefType `json:"ref_type"`
+	RefID     string       `json:"ref_id"`
+	CreatedAt time.Time    `json:"created_at"`
+}
+
+// CreateIssueRequest is the body for POST /repos/:name/issues.
+type CreateIssueRequest struct {
+	Title  string   `json:"title"`
+	Body   string   `json:"body,omitempty"`
+	Labels []string `json:"labels,omitempty"`
+}
+
+// CreateIssueResponse is the response for POST /repos/:name/issues.
+type CreateIssueResponse struct {
+	ID     string `json:"id"`
+	Number int64  `json:"number"`
+}
+
+// UpdateIssueRequest is the body for PATCH /repos/:name/issues/:number.
+type UpdateIssueRequest struct {
+	Title  *string  `json:"title,omitempty"`
+	Body   *string  `json:"body,omitempty"`
+	Labels []string `json:"labels,omitempty"`
+}
+
+// CloseIssueRequest is the body for POST /repos/:name/issues/:number/close.
+type CloseIssueRequest struct {
+	Reason IssueCloseReason `json:"reason"`
+}
+
+// ReopenIssueRequest is the body for POST /repos/:name/issues/:number/reopen.
+// Currently empty but defined for forward compatibility.
+type ReopenIssueRequest struct{}
+
+// ListIssuesResponse is the response for GET /repos/:name/issues.
+type ListIssuesResponse struct {
+	Issues []Issue `json:"issues"`
+}
+
+// IssueResponse is the response for GET /repos/:name/issues/:number.
+type IssueResponse = Issue
+
+// CreateIssueCommentRequest is the body for POST /repos/:name/issues/:number/comments.
+type CreateIssueCommentRequest struct {
+	Body string `json:"body"`
+}
+
+// CreateIssueCommentResponse is the response for POST /repos/:name/issues/:number/comments.
+type CreateIssueCommentResponse struct {
+	ID string `json:"id"`
+}
+
+// UpdateIssueCommentRequest is the body for PATCH /repos/:name/issues/comments/:id.
+type UpdateIssueCommentRequest struct {
+	Body string `json:"body"`
+}
+
+// ListIssueCommentsResponse is the response for GET /repos/:name/issues/:number/comments.
+type ListIssueCommentsResponse struct {
+	Comments []IssueComment `json:"comments"`
+}
+
+// AddIssueRefRequest is the body for POST /repos/:name/issues/:number/refs.
+type AddIssueRefRequest struct {
+	RefType IssueRefType `json:"ref_type"`
+	RefID   string       `json:"ref_id"`
+}
+
+// AddIssueRefResponse is the response for POST /repos/:name/issues/:number/refs.
+type AddIssueRefResponse struct {
+	ID string `json:"id"`
+}
+
+// ListIssueRefsResponse is the response for GET /repos/:name/issues/:number/refs.
+type ListIssueRefsResponse struct {
+	Refs []IssueRef `json:"refs"`
+}
+
+// ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
 
