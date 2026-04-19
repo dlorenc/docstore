@@ -196,6 +196,7 @@ type branchDetailLoadedMsg struct {
 	headSeq       int64
 	baseSeq       int64
 	baseTreePaths map[string]bool
+	proposal      *model.Proposal // nil if no open proposal
 	err           error
 }
 
@@ -206,6 +207,16 @@ type mergeResultMsg struct {
 }
 
 type reviewSubmittedMsg struct {
+	id  string
+	err error
+}
+
+type proposalLoadedMsg struct {
+	proposal *model.Proposal // nil if none found
+	err      error
+}
+
+type proposalOpenedMsg struct {
 	id  string
 	err error
 }
@@ -377,6 +388,23 @@ func loadBranchDetail(c *tuiClient, branchName string) tea.Cmd {
 			return branchDetailLoadedMsg{err: fmt.Errorf("loading checks: %w", err)}
 		}
 
+		// Proposal: fetch open proposals and filter by branch.
+		var openProposal *model.Proposal
+		pResp, pErr := c.get("/proposals?state=open")
+		if pErr == nil {
+			var proposals []model.Proposal
+			if decErr := c.decodeJSON(pResp, &proposals); decErr == nil {
+				for i := range proposals {
+					if proposals[i].Branch == branchName {
+						p := proposals[i]
+						openProposal = &p
+						break
+					}
+				}
+			}
+			pResp.Body.Close()
+		}
+
 		return branchDetailLoadedMsg{
 			diff:          &diff,
 			reviews:       reviews,
@@ -384,6 +412,7 @@ func loadBranchDetail(c *tuiClient, branchName string) tea.Cmd {
 			headSeq:       headSeq,
 			baseSeq:       baseSeq,
 			baseTreePaths: baseTreePaths,
+			proposal:      openProposal,
 		}
 	}
 }
@@ -412,6 +441,55 @@ func mergeBranch(c *tuiClient, branchName string) tea.Cmd {
 		var mergeResp model.MergeResponse
 		json.NewDecoder(resp.Body).Decode(&mergeResp)
 		return mergeResultMsg{sequence: mergeResp.Sequence}
+	}
+}
+
+func loadProposalForBranch(c *tuiClient, branchName string) tea.Cmd {
+	return func() tea.Msg {
+		resp, err := c.get("/proposals?state=open")
+		if err != nil {
+			return proposalLoadedMsg{err: err}
+		}
+		defer resp.Body.Close()
+
+		var proposals []model.Proposal
+		if err := c.decodeJSON(resp, &proposals); err != nil {
+			return proposalLoadedMsg{err: fmt.Errorf("loading proposals: %w", err)}
+		}
+
+		for i := range proposals {
+			if proposals[i].Branch == branchName {
+				p := proposals[i]
+				return proposalLoadedMsg{proposal: &p}
+			}
+		}
+		return proposalLoadedMsg{}
+	}
+}
+
+func openProposal(c *tuiClient, branchName, title, description string) tea.Cmd {
+	return func() tea.Msg {
+		req := model.CreateProposalRequest{
+			Branch:      branchName,
+			BaseBranch:  "main",
+			Title:       title,
+			Description: description,
+		}
+		resp, err := c.postJSON("/proposals", req)
+		if err != nil {
+			return proposalOpenedMsg{err: err}
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+			var errResp model.ErrorResponse
+			json.NewDecoder(resp.Body).Decode(&errResp)
+			return proposalOpenedMsg{err: fmt.Errorf("server error: %s", errResp.Error)}
+		}
+
+		var r model.CreateProposalResponse
+		json.NewDecoder(resp.Body).Decode(&r)
+		return proposalOpenedMsg{id: r.ID}
 	}
 }
 
