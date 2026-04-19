@@ -155,6 +155,15 @@ func (e *Executor) runCheck(ctx context.Context, source string, check Check) Che
 			for _, vlog := range status.Logs {
 				logBuf.Write(vlog.Data)
 			}
+			for _, v := range status.Vertexes {
+				if v.Completed != nil && v.Started != nil {
+					slog.Info("vertex complete",
+						"check", check.Name,
+						"vertex", v.Name,
+						"duration_ms", v.Completed.Sub(*v.Started).Milliseconds(),
+					)
+				}
+			}
 		}
 	}()
 
