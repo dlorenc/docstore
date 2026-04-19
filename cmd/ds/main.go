@@ -91,7 +91,19 @@ commands:
   subscriptions                                          List subscriptions
   subscriptions create --url <url> --secret <s> [--repo <r>] [--event-types t1,t2]  Create a subscription
   subscriptions delete <id>                              Delete a subscription
-  subscriptions resume <id>                              Resume a suspended subscription`
+  subscriptions resume <id>                              Resume a suspended subscription
+
+  issues [--state open|closed|all] [--author <identity>]    List issues (default: open)
+  issues list [--state open|closed|all] [--author <identity>]  List issues
+  issues create --title <title> [--body <markdown>]          Create an issue
+  issues show <number>                                       Show issue details, comments, and refs
+  issues close <number> [--reason completed|not_planned|duplicate]  Close an issue
+  issues reopen <number>                                     Reopen a closed issue
+  issues comment add <number> --body <markdown>              Add a comment to an issue
+  issues comment edit <number> <comment-id> --body <markdown>  Edit an issue comment
+  issues refs <number>                                       List cross-refs for an issue
+  issues tie <number> --proposal <uuid>                      Tie a proposal to an issue
+  issues tie <number> --commit <seq>                         Tie a commit to an issue`
 
 func main() {
 	if len(os.Args) < 2 {
@@ -883,6 +895,219 @@ func main() {
 			os.Exit(1)
 		}
 		return
+
+	case "issues":
+		if len(args) < 2 {
+			err = app.IssueList("open", "")
+		} else {
+			switch args[1] {
+			case "list":
+				state := "open"
+				author := ""
+				for i := 2; i < len(args); i++ {
+					switch args[i] {
+					case "--state":
+						if i+1 < len(args) {
+							state = args[i+1]
+							i++
+						}
+					case "--author":
+						if i+1 < len(args) {
+							author = args[i+1]
+							i++
+						}
+					}
+				}
+				err = app.IssueList(state, author)
+			case "create":
+				title := ""
+				body := ""
+				for i := 2; i < len(args); i++ {
+					switch args[i] {
+					case "--title":
+						if i+1 < len(args) {
+							title = args[i+1]
+							i++
+						}
+					case "--body":
+						if i+1 < len(args) {
+							body = args[i+1]
+							i++
+						}
+					}
+				}
+				if title == "" {
+					fmt.Fprintln(os.Stderr, "usage: ds issues create --title <title> [--body <markdown>]")
+					os.Exit(1)
+				}
+				err = app.IssueCreate(title, body)
+			case "show":
+				if len(args) < 3 {
+					fmt.Fprintln(os.Stderr, "usage: ds issues show <number>")
+					os.Exit(1)
+				}
+				n, parseErr := strconv.ParseInt(args[2], 10, 64)
+				if parseErr != nil {
+					fmt.Fprintf(os.Stderr, "error: invalid issue number: %s\n", args[2])
+					os.Exit(1)
+				}
+				err = app.IssueShow(n)
+			case "close":
+				if len(args) < 3 {
+					fmt.Fprintln(os.Stderr, "usage: ds issues close <number> [--reason completed|not_planned|duplicate]")
+					os.Exit(1)
+				}
+				n, parseErr := strconv.ParseInt(args[2], 10, 64)
+				if parseErr != nil {
+					fmt.Fprintf(os.Stderr, "error: invalid issue number: %s\n", args[2])
+					os.Exit(1)
+				}
+				reason := ""
+				for i := 3; i < len(args); i++ {
+					if args[i] == "--reason" && i+1 < len(args) {
+						reason = args[i+1]
+						i++
+					}
+				}
+				err = app.IssueClose(n, reason)
+			case "reopen":
+				if len(args) < 3 {
+					fmt.Fprintln(os.Stderr, "usage: ds issues reopen <number>")
+					os.Exit(1)
+				}
+				n, parseErr := strconv.ParseInt(args[2], 10, 64)
+				if parseErr != nil {
+					fmt.Fprintf(os.Stderr, "error: invalid issue number: %s\n", args[2])
+					os.Exit(1)
+				}
+				err = app.IssueReopen(n)
+			case "comment":
+				if len(args) < 3 {
+					fmt.Fprintln(os.Stderr, "usage: ds issues comment add|edit ...")
+					os.Exit(1)
+				}
+				switch args[2] {
+				case "add":
+					if len(args) < 4 {
+						fmt.Fprintln(os.Stderr, "usage: ds issues comment add <number> --body <markdown>")
+						os.Exit(1)
+					}
+					n, parseErr := strconv.ParseInt(args[3], 10, 64)
+					if parseErr != nil {
+						fmt.Fprintf(os.Stderr, "error: invalid issue number: %s\n", args[3])
+						os.Exit(1)
+					}
+					body := ""
+					for i := 4; i < len(args); i++ {
+						if args[i] == "--body" && i+1 < len(args) {
+							body = args[i+1]
+							i++
+						}
+					}
+					if body == "" {
+						fmt.Fprintln(os.Stderr, "usage: ds issues comment add <number> --body <markdown>")
+						os.Exit(1)
+					}
+					err = app.IssueCommentAdd(n, body)
+				case "edit":
+					if len(args) < 5 {
+						fmt.Fprintln(os.Stderr, "usage: ds issues comment edit <number> <comment-id> --body <markdown>")
+						os.Exit(1)
+					}
+					n, parseErr := strconv.ParseInt(args[3], 10, 64)
+					if parseErr != nil {
+						fmt.Fprintf(os.Stderr, "error: invalid issue number: %s\n", args[3])
+						os.Exit(1)
+					}
+					commentID := args[4]
+					body := ""
+					for i := 5; i < len(args); i++ {
+						if args[i] == "--body" && i+1 < len(args) {
+							body = args[i+1]
+							i++
+						}
+					}
+					if body == "" {
+						fmt.Fprintln(os.Stderr, "usage: ds issues comment edit <number> <comment-id> --body <markdown>")
+						os.Exit(1)
+					}
+					err = app.IssueCommentEdit(n, commentID, body)
+				default:
+					fmt.Fprintf(os.Stderr, "unknown issues comment subcommand: %s\n", args[2])
+					fmt.Fprintln(os.Stderr, usage)
+					os.Exit(1)
+				}
+			case "refs":
+				if len(args) < 3 {
+					fmt.Fprintln(os.Stderr, "usage: ds issues refs <number>")
+					os.Exit(1)
+				}
+				n, parseErr := strconv.ParseInt(args[2], 10, 64)
+				if parseErr != nil {
+					fmt.Fprintf(os.Stderr, "error: invalid issue number: %s\n", args[2])
+					os.Exit(1)
+				}
+				err = app.IssueRefs(n)
+			case "tie":
+				if len(args) < 3 {
+					fmt.Fprintln(os.Stderr, "usage: ds issues tie <number> --proposal <uuid> | --commit <seq>")
+					os.Exit(1)
+				}
+				n, parseErr := strconv.ParseInt(args[2], 10, 64)
+				if parseErr != nil {
+					fmt.Fprintf(os.Stderr, "error: invalid issue number: %s\n", args[2])
+					os.Exit(1)
+				}
+				refType := ""
+				refID := ""
+				for i := 3; i < len(args); i++ {
+					switch args[i] {
+					case "--proposal":
+						if i+1 < len(args) {
+							refType = "proposal"
+							refID = args[i+1]
+							i++
+						}
+					case "--commit":
+						if i+1 < len(args) {
+							refType = "commit"
+							refID = args[i+1]
+							i++
+						}
+					}
+				}
+				if refType == "" || refID == "" {
+					fmt.Fprintln(os.Stderr, "usage: ds issues tie <number> --proposal <uuid> | --commit <seq>")
+					os.Exit(1)
+				}
+				err = app.IssueTie(n, refType, refID)
+			default:
+				// Default: treat as "issues list" but check if it looks like flags
+				if strings.HasPrefix(args[1], "--") {
+					state := "open"
+					author := ""
+					for i := 1; i < len(args); i++ {
+						switch args[i] {
+						case "--state":
+							if i+1 < len(args) {
+								state = args[i+1]
+								i++
+							}
+						case "--author":
+							if i+1 < len(args) {
+								author = args[i+1]
+								i++
+							}
+						}
+					}
+					err = app.IssueList(state, author)
+				} else {
+					fmt.Fprintf(os.Stderr, "unknown issues subcommand: %s\n", args[1])
+					fmt.Fprintln(os.Stderr, usage)
+					os.Exit(1)
+				}
+			}
+		}
 
 	case "subscriptions":
 		if len(args) < 2 {
