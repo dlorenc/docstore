@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -419,7 +420,11 @@ func loadBranchDetail(c *tuiClient, branchName string) tea.Cmd {
 
 		// Fetch file content for each non-binary changed file so the diff tab
 		// can render inline diffs when the user expands a file.
+		// Fetches run in parallel (max 5 concurrent) to avoid sequential latency.
 		fileContents := make(map[string]fileDiffData, len(diff.BranchChanges))
+		var fcMu sync.Mutex
+		sem := make(chan struct{}, 5)
+		var wg sync.WaitGroup
 		for _, entry := range diff.BranchChanges {
 			if entry.Binary {
 				continue
@@ -431,36 +436,49 @@ func loadBranchDetail(c *tuiClient, branchName string) tea.Cmd {
 				changeType = "+"
 			}
 
-			var baseBytes, headBytes []byte
+			entry := entry // capture loop variable
+			ct := changeType
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
 
-			// Fetch head content when the file exists at head.
-			if entry.VersionID != nil && headSeq > 0 {
-				path := "/file/" + entry.Path + "?branch=" + url.QueryEscape(branchName) +
-					"&at=" + strconv.FormatInt(headSeq, 10)
-				if fResp, fErr := c.get(path); fErr == nil {
-					var fr model.FileResponse
-					if decErr := c.decodeJSON(fResp, &fr); decErr == nil {
-						headBytes = fr.Content
+				var baseBytes, headBytes []byte
+
+				// Fetch head content when the file exists at head.
+				if entry.VersionID != nil && headSeq > 0 {
+					path := "/file/" + entry.Path + "?branch=" + url.QueryEscape(branchName) +
+						"&at=" + strconv.FormatInt(headSeq, 10)
+					if fResp, fErr := c.get(path); fErr == nil {
+						var fr model.FileResponse
+						if decErr := c.decodeJSON(fResp, &fr); decErr == nil {
+							headBytes = fr.Content
+						}
+						fResp.Body.Close()
 					}
-					fResp.Body.Close()
 				}
-			}
 
-			// Fetch base content when the file existed before the branch changes.
-			if baseTreePaths[entry.Path] && baseSeq > 0 {
-				path := "/file/" + entry.Path + "?branch=" + url.QueryEscape(branchName) +
-					"&at=" + strconv.FormatInt(baseSeq, 10)
-				if fResp, fErr := c.get(path); fErr == nil {
-					var fr model.FileResponse
-					if decErr := c.decodeJSON(fResp, &fr); decErr == nil {
-						baseBytes = fr.Content
+				// Fetch base content when the file existed before the branch changes.
+				if baseTreePaths[entry.Path] && baseSeq > 0 {
+					path := "/file/" + entry.Path + "?branch=" + url.QueryEscape(branchName) +
+						"&at=" + strconv.FormatInt(baseSeq, 10)
+					if fResp, fErr := c.get(path); fErr == nil {
+						var fr model.FileResponse
+						if decErr := c.decodeJSON(fResp, &fr); decErr == nil {
+							baseBytes = fr.Content
+						}
+						fResp.Body.Close()
 					}
-					fResp.Body.Close()
 				}
-			}
 
-			fileContents[entry.Path] = computeFileDiff(baseBytes, headBytes, changeType)
+				result := computeFileDiff(baseBytes, headBytes, ct)
+				fcMu.Lock()
+				fileContents[entry.Path] = result
+				fcMu.Unlock()
+			}()
 		}
+		wg.Wait()
 
 		return branchDetailLoadedMsg{
 			diff:          &diff,
