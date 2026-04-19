@@ -13,6 +13,7 @@ CREATE TABLE issues (
     close_reason issue_close_reason,
     closed_by    TEXT,
     labels       TEXT[] NOT NULL DEFAULT '{}',
+    closed_at    TIMESTAMPTZ,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (repo, number)
@@ -39,7 +40,6 @@ CREATE TABLE issue_refs (
 );
 
 CREATE INDEX issues_repo_state   ON issues (repo, state);
-CREATE INDEX issues_repo_number  ON issues (repo, number);
 CREATE INDEX issue_comments_issue_id ON issue_comments (issue_id);
 CREATE INDEX issue_refs_issue_id ON issue_refs (issue_id);
 CREATE INDEX issue_refs_repo_ref ON issue_refs (repo, ref_type, ref_id);

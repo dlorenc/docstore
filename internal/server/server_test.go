@@ -443,7 +443,7 @@ func (m *mockStore) GetIssue(_ context.Context, _ string, _ int64) (*model.Issue
 func (m *mockStore) ListIssues(_ context.Context, _, _, _ string) ([]model.Issue, error) {
 	return []model.Issue{}, nil
 }
-func (m *mockStore) UpdateIssue(_ context.Context, _ string, _ int64, _, _ *string) (*model.Issue, error) {
+func (m *mockStore) UpdateIssue(_ context.Context, _ string, _ int64, _, _ *string, _ *[]string) (*model.Issue, error) {
 	return nil, db.ErrIssueNotFound
 }
 func (m *mockStore) CloseIssue(_ context.Context, _ string, _ int64, _ model.IssueCloseReason, _ string) (*model.Issue, error) {

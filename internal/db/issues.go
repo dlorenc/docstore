@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"github.com/dlorenc/docstore/internal/model"
 	"github.com/google/uuid"
@@ -23,10 +24,11 @@ func scanIssue(row interface{ Scan(...any) error }) (*model.Issue, error) {
 	var body sql.NullString
 	var closeReason sql.NullString
 	var closedBy sql.NullString
+	var closedAt sql.NullTime
 	if err := row.Scan(
 		&iss.ID, &iss.Repo, &iss.Number, &iss.Title, &body,
 		&iss.Author, &iss.State, &closeReason, &closedBy,
-		pq.Array(&iss.Labels), &iss.CreatedAt, &iss.UpdatedAt,
+		pq.Array(&iss.Labels), &closedAt, &iss.CreatedAt, &iss.UpdatedAt,
 	); err != nil {
 		return nil, err
 	}
@@ -40,6 +42,9 @@ func scanIssue(row interface{ Scan(...any) error }) (*model.Issue, error) {
 	if closedBy.Valid {
 		iss.ClosedBy = &closedBy.String
 	}
+	if closedAt.Valid {
+		iss.ClosedAt = &closedAt.Time
+	}
 	if iss.Labels == nil {
 		iss.Labels = []string{}
 	}
@@ -47,7 +52,7 @@ func scanIssue(row interface{ Scan(...any) error }) (*model.Issue, error) {
 }
 
 const issueColumns = `id::text, repo, number, title, body, author, state::text,
-	close_reason::text, closed_by, labels, created_at, updated_at`
+	close_reason::text, closed_by, labels, closed_at, created_at, updated_at`
 
 // CreateIssue inserts a new issue, allocating a per-repo issue number atomically.
 func (s *Store) CreateIssue(ctx context.Context, repo, title, body, author string, labels []string) (*model.Issue, error) {
@@ -162,10 +167,10 @@ func (s *Store) ListIssues(ctx context.Context, repo, stateFilter, authorFilter 
 	return issues, rows.Err()
 }
 
-// UpdateIssue updates the title and/or body of an issue.
+// UpdateIssue updates the title, body, and/or labels of an issue.
 // Returns ErrIssueNotFound if no matching issue exists.
-func (s *Store) UpdateIssue(ctx context.Context, repo string, number int64, title, body *string) (*model.Issue, error) {
-	if title == nil && body == nil {
+func (s *Store) UpdateIssue(ctx context.Context, repo string, number int64, title, body *string, labels *[]string) (*model.Issue, error) {
+	if title == nil && body == nil && labels == nil {
 		return s.GetIssue(ctx, repo, number)
 	}
 
@@ -183,11 +188,13 @@ func (s *Store) UpdateIssue(ctx context.Context, repo string, number int64, titl
 		args = append(args, *body)
 		argIdx++
 	}
-
-	setSQL := setClauses[0]
-	for _, c := range setClauses[1:] {
-		setSQL += ", " + c
+	if labels != nil {
+		setClauses = append(setClauses, fmt.Sprintf("labels = $%d", argIdx))
+		args = append(args, pq.Array(*labels))
+		argIdx++
 	}
+
+	setSQL := strings.Join(setClauses, ", ")
 
 	args = append(args, repo, number)
 	repoIdx := argIdx
@@ -212,7 +219,7 @@ func (s *Store) UpdateIssue(ctx context.Context, repo string, number int64, titl
 func (s *Store) CloseIssue(ctx context.Context, repo string, number int64, reason model.IssueCloseReason, closedBy string) (*model.Issue, error) {
 	row := s.db.QueryRowContext(ctx,
 		`UPDATE issues
-		 SET state = 'closed', close_reason = $3::issue_close_reason, closed_by = $4, updated_at = now()
+		 SET state = 'closed', close_reason = $3::issue_close_reason, closed_by = $4, closed_at = now(), updated_at = now()
 		 WHERE repo = $1 AND number = $2
 		 RETURNING `+issueColumns,
 		repo, number, string(reason), closedBy,
@@ -232,7 +239,7 @@ func (s *Store) CloseIssue(ctx context.Context, repo string, number int64, reaso
 func (s *Store) ReopenIssue(ctx context.Context, repo string, number int64) (*model.Issue, error) {
 	row := s.db.QueryRowContext(ctx,
 		`UPDATE issues
-		 SET state = 'open', close_reason = NULL, closed_by = NULL, updated_at = now()
+		 SET state = 'open', close_reason = NULL, closed_by = NULL, closed_at = NULL, updated_at = now()
 		 WHERE repo = $1 AND number = $2
 		 RETURNING `+issueColumns,
 		repo, number,

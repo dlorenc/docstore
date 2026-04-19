@@ -125,7 +125,7 @@ type WriteStore interface {
 	CreateIssue(ctx context.Context, repo, title, body, author string, labels []string) (*model.Issue, error)
 	GetIssue(ctx context.Context, repo string, number int64) (*model.Issue, error)
 	ListIssues(ctx context.Context, repo, stateFilter, authorFilter string) ([]model.Issue, error)
-	UpdateIssue(ctx context.Context, repo string, number int64, title, body *string) (*model.Issue, error)
+	UpdateIssue(ctx context.Context, repo string, number int64, title, body *string, labels *[]string) (*model.Issue, error)
 	CloseIssue(ctx context.Context, repo string, number int64, reason model.IssueCloseReason, closedBy string) (*model.Issue, error)
 	ReopenIssue(ctx context.Context, repo string, number int64) (*model.Issue, error)
 

@@ -732,6 +732,7 @@ type Issue struct {
 	CloseReason *IssueCloseReason `json:"close_reason,omitempty"`
 	ClosedBy    *string           `json:"closed_by,omitempty"`
 	Labels      []string          `json:"labels"`
+	ClosedAt    *time.Time        `json:"closed_at,omitempty"`
 	CreatedAt   time.Time         `json:"created_at"`
 	UpdatedAt   time.Time         `json:"updated_at"`
 }

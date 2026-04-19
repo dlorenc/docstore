@@ -91,6 +91,7 @@ type CreateIssueRequest = api.CreateIssueRequest
 type CreateIssueResponse = api.CreateIssueResponse
 type UpdateIssueRequest = api.UpdateIssueRequest
 type CloseIssueRequest = api.CloseIssueRequest
+type ReopenIssueRequest = api.ReopenIssueRequest
 type ListIssuesResponse = api.ListIssuesResponse
 type IssueResponse = api.IssueResponse
 type CreateIssueCommentRequest = api.CreateIssueCommentRequest
