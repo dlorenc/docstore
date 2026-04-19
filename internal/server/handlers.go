@@ -1997,6 +1997,23 @@ func (s *server) assembleMergeInput(ctx context.Context, repo, branch, actor str
 		return nil, fmt.Errorf("list check runs: %w", err)
 	}
 
+	// Fetch the open proposal for this branch (nil if none exists).
+	openState := model.ProposalOpen
+	proposals, err := s.commitStore.ListProposals(ctx, repo, &openState, &branch)
+	if err != nil {
+		return nil, fmt.Errorf("list proposals: %w", err)
+	}
+	var proposalInput *policy.ProposalInput
+	if len(proposals) > 0 {
+		p := proposals[0]
+		proposalInput = &policy.ProposalInput{
+			ID:         p.ID,
+			BaseBranch: p.BaseBranch,
+			Title:      p.Title,
+			State:      string(p.State),
+		}
+	}
+
 	// Look up actor roles (empty slice if not assigned).
 	actorRoles := []string{}
 	if r, err := s.commitStore.GetRole(ctx, repo, actor); err == nil && r != nil {
@@ -2040,6 +2057,7 @@ func (s *server) assembleMergeInput(ctx context.Context, repo, branch, actor str
 		Owners:       resolvedOwners,
 		HeadSeq:      branchInfo.HeadSequence,
 		BaseSeq:      branchInfo.BaseSequence,
+		Proposal:     proposalInput,
 	}, nil
 }
 
