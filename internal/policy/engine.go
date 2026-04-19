@@ -37,6 +37,14 @@ type CheckRunInput struct {
 	Sequence  int64  `json:"sequence"`
 }
 
+// ProposalInput is the proposal data exposed to OPA policies.
+type ProposalInput struct {
+	ID         string `json:"id"`
+	BaseBranch string `json:"base_branch"`
+	Title      string `json:"title"`
+	State      string `json:"state"`
+}
+
 // Input is the structured context passed to every policy evaluation.
 type Input struct {
 	Actor        string              `json:"actor"`
@@ -51,6 +59,7 @@ type Input struct {
 	Owners       map[string][]string `json:"owners"`
 	HeadSeq      int64               `json:"head_sequence"`
 	BaseSeq      int64               `json:"base_sequence"`
+	Proposal     *ProposalInput      `json:"proposal"`
 }
 
 // preparedPolicy holds compiled OPA queries for a single .rego file.
