@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -367,6 +368,42 @@ func TestIfConditionAllSkipped(t *testing.T) {
 	}
 	if len(results) != 0 {
 		t.Errorf("expected 0 results when all checks skipped, got %d: %+v", len(results), results)
+	}
+}
+
+// TestLocalPathSource verifies that passing a local directory path as the source
+// causes its contents to be available under /src inside the check container.
+// This exercises the llb.Local code path used by ds ci run.
+func TestLocalPathSource(t *testing.T) {
+	exec := newExecutor(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "hello.txt"), []byte("hello-from-local\n"), 0o644); err != nil {
+		t.Fatalf("create test file: %v", err)
+	}
+
+	cfg := executor.Config{
+		Checks: []executor.Check{
+			{
+				Name:  "ci/local-src",
+				Image: "alpine",
+				Steps: []string{"cat /src/hello.txt"},
+			},
+		},
+	}
+
+	results, err := exec.Run(context.Background(), dir, cfg, ciconfig.TriggerContext{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	r := results[0]
+	if r.Status != "passed" {
+		t.Errorf("expected passed, got %s (logs: %s)", r.Status, r.Logs)
+	}
+	if !strings.Contains(r.Logs, "hello-from-local") {
+		t.Errorf("expected file content in logs, got: %s", r.Logs)
 	}
 }
 
