@@ -454,9 +454,17 @@ func TestHandleRun_SetsTrigerTypeManual(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // newCIConfigServer returns a test HTTP server that serves the given ci.yaml content.
+// It validates that the request path ends with /-/file/.docstore/ci.yaml and that
+// the branch and at query params are present and non-empty; returns 404 otherwise.
 func newCIConfigServer(t *testing.T, ciYAML string) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/-/file/.docstore/ci.yaml") ||
+			r.URL.Query().Get("branch") == "" ||
+			r.URL.Query().Get("at") == "" {
+			http.NotFound(w, r)
+			return
+		}
 		type fileResp struct {
 			Path    string `json:"path"`
 			Content []byte `json:"content"`
