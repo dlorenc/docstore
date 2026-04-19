@@ -11,7 +11,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/dlorenc/docstore/internal/model"
 )
@@ -765,4 +767,460 @@ func TestHandleWebhook_CommitCreated_NoOpenProposal_EnqueuesOnlyPush(t *testing.
 	if stub.insertedJobs[0].TriggerType != "push" {
 		t.Errorf("TriggerType = %q, want push", stub.insertedJobs[0].TriggerType)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// countingStore tracks ReapStaleCIJobs call count for reaper tests.
+// ---------------------------------------------------------------------------
+
+type countingStore struct {
+	mu        sync.Mutex
+	reapCalls int
+	reapJobs  []model.CIJob
+	reapErr   error
+}
+
+func (s *countingStore) InsertCIJob(_ context.Context, repo, branch string, sequence int64, triggerType, triggerBranch, triggerBaseBranch, triggerProposalID string) (*model.CIJob, error) {
+	return &model.CIJob{ID: "test-uuid", Repo: repo, Branch: branch, Sequence: sequence, Status: "queued", TriggerType: triggerType}, nil
+}
+
+func (s *countingStore) GetCIJob(_ context.Context, _ string) (*model.CIJob, error) {
+	return nil, nil
+}
+
+func (s *countingStore) ReapStaleCIJobs(_ context.Context) ([]model.CIJob, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reapCalls++
+	return s.reapJobs, s.reapErr
+}
+
+func (s *countingStore) calls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reapCalls
+}
+
+// ---------------------------------------------------------------------------
+// newScheduleDocstoreServer creates a test docstore server for schedule tests.
+// It handles:
+//   - GET /repos                                     → {"repos":[...]}
+//   - GET /repos/{repo}/-/branches                   → {"branches":[{"name":"main",...}]}
+//   - GET /repos/{repo}/-/file/.docstore/ci.yaml     → FileResponse (or 404 if ciYAML == "")
+// ---------------------------------------------------------------------------
+
+func newScheduleDocstoreServer(t *testing.T, repoNames []string, headSeq int64, ciYAML string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/repos":
+			repos := make([]map[string]any, 0, len(repoNames))
+			for _, name := range repoNames {
+				repos = append(repos, map[string]any{"name": name})
+			}
+			json.NewEncoder(w).Encode(map[string]any{"repos": repos}) //nolint:errcheck
+		case strings.Contains(r.URL.Path, "/-/file/.docstore/ci.yaml"):
+			if ciYAML == "" {
+				http.NotFound(w, r)
+				return
+			}
+			type fileResp struct {
+				Path    string `json:"path"`
+				Content []byte `json:"content"`
+			}
+			json.NewEncoder(w).Encode(fileResp{Path: ".docstore/ci.yaml", Content: []byte(ciYAML)}) //nolint:errcheck
+		case strings.Contains(r.URL.Path, "/-/branches"):
+			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+				"branches": []map[string]any{
+					{"name": "main", "head_sequence": headSeq},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+}
+
+// ---------------------------------------------------------------------------
+// Tests: fetchBranchHead
+// ---------------------------------------------------------------------------
+
+func TestFetchBranchHead_HappyPath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+			"branches": []map[string]any{
+				{"name": "feat", "head_sequence": int64(5)},
+				{"name": "main", "head_sequence": int64(99)},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	sched := &scheduler{docstoreURL: srv.URL, httpClient: &http.Client{}}
+	seq, err := sched.fetchBranchHead(context.Background(), "org/repo", "main")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if seq != 99 {
+		t.Errorf("head sequence = %d, want 99", seq)
+	}
+}
+
+func TestFetchBranchHead_BranchNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+			"branches": []map[string]any{
+				{"name": "other", "head_sequence": int64(1)},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	sched := &scheduler{docstoreURL: srv.URL, httpClient: &http.Client{}}
+	_, err := sched.fetchBranchHead(context.Background(), "org/repo", "main")
+	if err == nil {
+		t.Fatal("expected error for missing branch, got nil")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error = %q, want message containing 'not found'", err.Error())
+	}
+}
+
+func TestFetchBranchHead_NonOKStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	sched := &scheduler{docstoreURL: srv.URL, httpClient: &http.Client{}}
+	_, err := sched.fetchBranchHead(context.Background(), "org/repo", "main")
+	if err == nil {
+		t.Fatal("expected error for non-200 status, got nil")
+	}
+}
+
+func TestFetchBranchHead_NoDocstoreURL(t *testing.T) {
+	sched := &scheduler{docstoreURL: "", httpClient: &http.Client{}}
+	_, err := sched.fetchBranchHead(context.Background(), "org/repo", "main")
+	if err == nil {
+		t.Fatal("expected error when docstore URL is empty, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests: fetchAllRepos
+// ---------------------------------------------------------------------------
+
+func TestFetchAllRepos_HappyPath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+			"repos": []map[string]any{
+				{"name": "org/alpha"},
+				{"name": "org/beta"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	sched := &scheduler{docstoreURL: srv.URL, httpClient: &http.Client{}}
+	repos, err := sched.fetchAllRepos(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(repos) != 2 {
+		t.Fatalf("expected 2 repos, got %d", len(repos))
+	}
+	if repos[0] != "org/alpha" || repos[1] != "org/beta" {
+		t.Errorf("repos = %v, want [org/alpha org/beta]", repos)
+	}
+}
+
+func TestFetchAllRepos_NonOKStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	sched := &scheduler{docstoreURL: srv.URL, httpClient: &http.Client{}}
+	_, err := sched.fetchAllRepos(context.Background())
+	if err == nil {
+		t.Fatal("expected error for non-200 status, got nil")
+	}
+}
+
+func TestFetchAllRepos_NoDocstoreURL(t *testing.T) {
+	sched := &scheduler{docstoreURL: "", httpClient: &http.Client{}}
+	repos, err := sched.fetchAllRepos(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if repos != nil {
+		t.Errorf("expected nil repos for empty docstore URL, got %v", repos)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests: runScheduledJobs — cron expression parsing and job enqueuing
+// ---------------------------------------------------------------------------
+
+// TestRunScheduledJobs_CronMatchesCurrentMinute_EnqueuesJob verifies that a
+// schedule entry whose cron fires at the given minute results in a queued job.
+// Fixed time: 2024-01-15 14:30:00 UTC; cron "30 14 * * *" fires at 14:30 daily.
+func TestRunScheduledJobs_CronMatchesCurrentMinute_EnqueuesJob(t *testing.T) {
+	now := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
+	ciYAML := "on:\n  schedule:\n    - cron: \"30 14 * * *\"\n"
+
+	srv := newScheduleDocstoreServer(t, []string{"org/repo"}, 10, ciYAML)
+	defer srv.Close()
+
+	stub := &stubStore{}
+	sched := &scheduler{store: stub, docstoreURL: srv.URL, httpClient: &http.Client{}}
+
+	sched.runScheduledJobs(context.Background(), now)
+
+	if len(stub.insertedJobs) != 1 {
+		t.Fatalf("expected 1 schedule job, got %d", len(stub.insertedJobs))
+	}
+	j := stub.insertedJobs[0]
+	if j.TriggerType != "schedule" {
+		t.Errorf("TriggerType = %q, want schedule", j.TriggerType)
+	}
+	if j.Repo != "org/repo" {
+		t.Errorf("Repo = %q, want org/repo", j.Repo)
+	}
+	if j.Branch != "main" {
+		t.Errorf("Branch = %q, want main", j.Branch)
+	}
+	if j.Sequence != 10 {
+		t.Errorf("Sequence = %d, want 10", j.Sequence)
+	}
+}
+
+// TestRunScheduledJobs_CronDoesNotMatchCurrentMinute_NoJob verifies that a
+// schedule entry whose cron does NOT fire at the given minute produces no job.
+// Fixed time: 2024-01-15 14:30:00 UTC; cron "0 0 * * *" fires at midnight.
+func TestRunScheduledJobs_CronDoesNotMatchCurrentMinute_NoJob(t *testing.T) {
+	now := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
+	ciYAML := "on:\n  schedule:\n    - cron: \"0 0 * * *\"\n"
+
+	srv := newScheduleDocstoreServer(t, []string{"org/repo"}, 10, ciYAML)
+	defer srv.Close()
+
+	stub := &stubStore{}
+	sched := &scheduler{store: stub, docstoreURL: srv.URL, httpClient: &http.Client{}}
+
+	sched.runScheduledJobs(context.Background(), now)
+
+	if len(stub.insertedJobs) != 0 {
+		t.Fatalf("expected 0 jobs (cron not matching at 14:30), got %d", len(stub.insertedJobs))
+	}
+}
+
+// TestRunScheduledJobs_InvalidCronExpression_NoJob verifies that an invalid
+// cron expression is skipped (logged as a warning) without panicking or
+// enqueuing a job.
+func TestRunScheduledJobs_InvalidCronExpression_NoJob(t *testing.T) {
+	now := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
+	ciYAML := "on:\n  schedule:\n    - cron: \"not-a-cron\"\n"
+
+	srv := newScheduleDocstoreServer(t, []string{"org/repo"}, 10, ciYAML)
+	defer srv.Close()
+
+	stub := &stubStore{}
+	sched := &scheduler{store: stub, docstoreURL: srv.URL, httpClient: &http.Client{}}
+
+	sched.runScheduledJobs(context.Background(), now)
+
+	if len(stub.insertedJobs) != 0 {
+		t.Fatalf("expected 0 jobs (invalid cron skipped), got %d", len(stub.insertedJobs))
+	}
+}
+
+// TestRunScheduledJobs_NoCIConfig_NoJob verifies that repos with no ci.yaml
+// are skipped — no schedule job is enqueued.
+func TestRunScheduledJobs_NoCIConfig_NoJob(t *testing.T) {
+	now := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
+	// Pass empty ciYAML so the server returns 404 for ci.yaml requests.
+	srv := newScheduleDocstoreServer(t, []string{"org/repo"}, 10, "")
+	defer srv.Close()
+
+	stub := &stubStore{}
+	sched := &scheduler{store: stub, docstoreURL: srv.URL, httpClient: &http.Client{}}
+
+	sched.runScheduledJobs(context.Background(), now)
+
+	if len(stub.insertedJobs) != 0 {
+		t.Fatalf("expected 0 jobs (no ci.yaml), got %d", len(stub.insertedJobs))
+	}
+}
+
+// TestRunScheduledJobs_NoScheduleEntries_NoJob verifies that a ci.yaml with
+// an on: block but no schedule entries does not enqueue any schedule jobs.
+func TestRunScheduledJobs_NoScheduleEntries_NoJob(t *testing.T) {
+	now := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
+	ciYAML := "on:\n  push:\n    branches:\n      - main\n"
+
+	srv := newScheduleDocstoreServer(t, []string{"org/repo"}, 10, ciYAML)
+	defer srv.Close()
+
+	stub := &stubStore{}
+	sched := &scheduler{store: stub, docstoreURL: srv.URL, httpClient: &http.Client{}}
+
+	sched.runScheduledJobs(context.Background(), now)
+
+	if len(stub.insertedJobs) != 0 {
+		t.Fatalf("expected 0 jobs (no schedule entries), got %d", len(stub.insertedJobs))
+	}
+}
+
+// TestRunScheduledJobs_MultipleRepos_OnlyMatchingEnqueues verifies that when
+// multiple repos are returned, only the one whose cron fires at the given
+// minute gets a job inserted.
+func TestRunScheduledJobs_MultipleRepos_OnlyMatchingEnqueues(t *testing.T) {
+	// 2024-01-15 14:30:00 UTC — "30 14 * * *" matches, "0 0 * * *" does not.
+	now := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/repos":
+			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+				"repos": []map[string]any{
+					{"name": "org/matching"},
+					{"name": "org/nomatch"},
+				},
+			})
+		case strings.Contains(r.URL.Path, "/-/file/.docstore/ci.yaml"):
+			var ciYAML string
+			if strings.Contains(r.URL.Path, "org/matching") {
+				ciYAML = "on:\n  schedule:\n    - cron: \"30 14 * * *\"\n"
+			} else {
+				ciYAML = "on:\n  schedule:\n    - cron: \"0 0 * * *\"\n"
+			}
+			type fileResp struct {
+				Path    string `json:"path"`
+				Content []byte `json:"content"`
+			}
+			json.NewEncoder(w).Encode(fileResp{Path: ".docstore/ci.yaml", Content: []byte(ciYAML)}) //nolint:errcheck
+		case strings.Contains(r.URL.Path, "/-/branches"):
+			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+				"branches": []map[string]any{
+					{"name": "main", "head_sequence": int64(1)},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	stub := &stubStore{}
+	sched := &scheduler{store: stub, docstoreURL: srv.URL, httpClient: &http.Client{}}
+
+	sched.runScheduledJobs(context.Background(), now)
+
+	if len(stub.insertedJobs) != 1 {
+		t.Fatalf("expected 1 job (only matching repo), got %d", len(stub.insertedJobs))
+	}
+	if stub.insertedJobs[0].Repo != "org/matching" {
+		t.Errorf("Repo = %q, want org/matching", stub.insertedJobs[0].Repo)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests: startReaper — stale job reclamation
+// ---------------------------------------------------------------------------
+
+// TestStartReaper_CallsReapOnInterval verifies that startReaper invokes
+// ReapStaleCIJobs at least once within a short window using a fast ticker.
+func TestStartReaper_CallsReapOnInterval(t *testing.T) {
+	store := &countingStore{
+		reapJobs: []model.CIJob{
+			{ID: "stale-1", Repo: "org/repo", Branch: "main", Status: "queued"},
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	startReaper(ctx, store, 10*time.Millisecond)
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if store.calls() > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if store.calls() == 0 {
+		t.Fatal("ReapStaleCIJobs was never called within 1s")
+	}
+}
+
+// TestStartReaper_ReapError_ContinuesRunning verifies that an error returned
+// by ReapStaleCIJobs does not stop the reaper — it continues ticking.
+func TestStartReaper_ReapError_ContinuesRunning(t *testing.T) {
+	store := &countingStore{reapErr: context.DeadlineExceeded}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	startReaper(ctx, store, 10*time.Millisecond)
+
+	// Wait for multiple calls despite the persistent error.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if store.calls() >= 3 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if store.calls() < 3 {
+		t.Fatalf("expected at least 3 reap calls (reaper continued despite error), got %d", store.calls())
+	}
+}
+
+// TestStartReaper_StopsOnContextCancellation verifies that cancelling the
+// context causes the reaper goroutine to stop accepting new ticks.
+func TestStartReaper_StopsOnContextCancellation(t *testing.T) {
+	store := &countingStore{}
+	ctx, cancel := context.WithCancel(context.Background())
+
+	startReaper(ctx, store, 10*time.Millisecond)
+
+	// Let it run briefly, then cancel.
+	time.Sleep(30 * time.Millisecond)
+	cancel()
+
+	// Record call count shortly after cancellation.
+	time.Sleep(20 * time.Millisecond)
+	countAfterCancel := store.calls()
+
+	// Wait another window and verify count did not grow.
+	time.Sleep(50 * time.Millisecond)
+	if store.calls() > countAfterCancel {
+		t.Errorf("reaper continued after context cancellation: calls before=%d, after=%d",
+			countAfterCancel, store.calls())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests: startCronRunner — goroutine lifecycle
+// ---------------------------------------------------------------------------
+
+// TestStartCronRunner_StopsOnContextCancellation verifies that startCronRunner
+// launches without panicking and its goroutine exits when the context is cancelled.
+func TestStartCronRunner_StopsOnContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	stub := &stubStore{}
+	sched := &scheduler{store: stub, docstoreURL: "", httpClient: &http.Client{}}
+
+	startCronRunner(ctx, sched)
+	// Cancel before the 1-minute ticker ever fires — goroutine should drain ctx.Done().
+	cancel()
+	// Brief sleep to allow the goroutine to exit gracefully.
+	time.Sleep(10 * time.Millisecond)
+	// No assertion beyond "did not panic or deadlock".
 }
