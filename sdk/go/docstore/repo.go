@@ -239,6 +239,35 @@ func (r *RepoClient) Checks(ctx context.Context, branch string, opts ...CheckLis
 }
 
 // ---------------------------------------------------------------------------
+// Proposals
+// ---------------------------------------------------------------------------
+
+// OpenProposal creates a new proposal to merge a branch.
+func (r *RepoClient) OpenProposal(ctx context.Context, req api.CreateProposalRequest) (*api.CreateProposalResponse, error) {
+	var out api.CreateProposalResponse
+	if err := r.client.doJSON(ctx, "POST", repoPath(r.repo, "/proposals"), nil, req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListProposals lists proposals for the repo.
+func (r *RepoClient) ListProposals(ctx context.Context, opts ...ProposalOption) ([]*api.Proposal, error) {
+	params := buildParams(opts)
+	var out []*api.Proposal
+	if err := r.client.doJSON(ctx, "GET", repoPath(r.repo, "/proposals"), params.query, nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// CloseProposal closes an open proposal.
+func (r *RepoClient) CloseProposal(ctx context.Context, proposalID string) error {
+	suffix := "/proposals/" + url.PathEscape(proposalID) + "/close"
+	return r.client.doJSON(ctx, "POST", repoPath(r.repo, suffix), nil, nil, nil)
+}
+
+// ---------------------------------------------------------------------------
 // Roles
 // ---------------------------------------------------------------------------
 

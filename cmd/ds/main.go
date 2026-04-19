@@ -79,7 +79,11 @@ commands:
   release create <name> [--sequence N] [--notes 'text']  Create a named release
   release list                                           List releases
   release show <name>                                    Show release metadata and tree
-  release delete <name>                                  Delete a release (admin only)`
+  release delete <name>                                  Delete a release (admin only)
+
+  proposal open --title "..." [--branch <name>] [--base main] [--description "..."]  Open a proposal
+  proposal list [--state open|closed|merged]             List proposals
+  proposal close <id>                                    Close a proposal`
 
 func main() {
 	if len(os.Args) < 2 {
@@ -762,6 +766,67 @@ func main() {
 			err = app.ReleaseDelete(args[2])
 		default:
 			fmt.Fprintf(os.Stderr, "unknown release subcommand: %s\n", args[1])
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(1)
+		}
+
+	case "proposal":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: ds proposal <open|list|close> [args]")
+			os.Exit(1)
+		}
+		switch args[1] {
+		case "open":
+			title := ""
+			branch := ""
+			base := ""
+			description := ""
+			for i := 2; i < len(args); i++ {
+				switch args[i] {
+				case "--title":
+					if i+1 < len(args) {
+						title = args[i+1]
+						i++
+					}
+				case "--branch":
+					if i+1 < len(args) {
+						branch = args[i+1]
+						i++
+					}
+				case "--base":
+					if i+1 < len(args) {
+						base = args[i+1]
+						i++
+					}
+				case "--description":
+					if i+1 < len(args) {
+						description = args[i+1]
+						i++
+					}
+				}
+			}
+			if title == "" {
+				fmt.Fprintln(os.Stderr, "usage: ds proposal open --title \"...\" [--branch <name>] [--base main] [--description \"...\"]")
+				os.Exit(1)
+			}
+			err = app.ProposalOpen(branch, base, title, description)
+		case "list":
+			state := ""
+			for i := 2; i < len(args); i++ {
+				if args[i] == "--state" && i+1 < len(args) {
+					state = args[i+1]
+					i++
+				}
+			}
+			err = app.ProposalList(state)
+		case "close":
+			if len(args) < 3 {
+				fmt.Fprintln(os.Stderr, "usage: ds proposal close <proposal-id>")
+				os.Exit(1)
+			}
+			err = app.ProposalClose(args[2])
+		default:
+			fmt.Fprintf(os.Stderr, "unknown proposal subcommand: %s\n", args[1])
 			fmt.Fprintln(os.Stderr, usage)
 			os.Exit(1)
 		}
