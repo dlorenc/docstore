@@ -54,6 +54,15 @@ const (
 	ReviewDismissed ReviewStatus = "dismissed"
 )
 
+// ProposalState represents the lifecycle state of a proposal.
+type ProposalState string
+
+const (
+	ProposalOpen   ProposalState = "open"
+	ProposalClosed ProposalState = "closed"
+	ProposalMerged ProposalState = "merged"
+)
+
 // CheckRunStatus represents the state of a CI check run.
 type CheckRunStatus string
 
@@ -144,6 +153,20 @@ type CheckRun struct {
 	Reporter  string         `json:"reporter"`
 	LogURL    *string        `json:"log_url,omitempty"`
 	CreatedAt time.Time      `json:"created_at"`
+}
+
+// Proposal is a request to merge a branch into a base branch.
+type Proposal struct {
+	ID          string        `json:"id"`
+	Repo        string        `json:"repo"`
+	Branch      string        `json:"branch"`
+	BaseBranch  string        `json:"base_branch"`
+	Title       string        `json:"title"`
+	Description string        `json:"description,omitempty"`
+	Author      string        `json:"author"`
+	State       ProposalState `json:"state"`
+	CreatedAt   time.Time     `json:"created_at"`
+	UpdatedAt   time.Time     `json:"updated_at"`
 }
 
 // EventSubscription is a webhook or Pub/Sub delivery target for events.
@@ -562,6 +585,29 @@ type SetRoleRequest struct {
 // RolesResponse is the response for GET /repos/:name/roles.
 type RolesResponse struct {
 	Roles []Role `json:"roles"`
+}
+
+// ---------------------------------------------------------------------------
+// Proposals
+// ---------------------------------------------------------------------------
+
+// CreateProposalRequest is the body for POST /repos/:name/proposals.
+type CreateProposalRequest struct {
+	Branch      string `json:"branch"`
+	BaseBranch  string `json:"base_branch"`
+	Title       string `json:"title"`
+	Description string `json:"description,omitempty"`
+}
+
+// CreateProposalResponse is the response for POST /repos/:name/proposals.
+type CreateProposalResponse struct {
+	ID string `json:"id"`
+}
+
+// UpdateProposalRequest is the body for PATCH /repos/:name/proposals/:proposalID.
+type UpdateProposalRequest struct {
+	Title       *string `json:"title,omitempty"`
+	Description *string `json:"description,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

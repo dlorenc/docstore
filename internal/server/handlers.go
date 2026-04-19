@@ -263,6 +263,39 @@ func (s *server) handleReposPrefix(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
 
+	case endpoint == "proposals":
+		switch r.Method {
+		case http.MethodPost:
+			s.handleCreateProposal(w, r)
+		case http.MethodGet:
+			s.handleListProposals(w, r)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+
+	case strings.HasPrefix(endpoint, "proposals/"):
+		rest := strings.TrimPrefix(endpoint, "proposals/")
+		// Check for /proposals/:id/close
+		if strings.HasSuffix(rest, "/close") {
+			proposalID := strings.TrimSuffix(rest, "/close")
+			r.SetPathValue("proposalID", proposalID)
+			if r.Method == http.MethodPost {
+				s.handleCloseProposal(w, r)
+			} else {
+				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			}
+		} else {
+			r.SetPathValue("proposalID", rest)
+			switch r.Method {
+			case http.MethodGet:
+				s.handleGetProposal(w, r)
+			case http.MethodPatch:
+				s.handleUpdateProposal(w, r)
+			default:
+				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			}
+		}
+
 	default:
 		writeError(w, http.StatusNotFound, "not found")
 	}
@@ -1606,6 +1639,208 @@ func (s *server) handleRebase(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// ---------------------------------------------------------------------------
+// Proposal handlers
+// ---------------------------------------------------------------------------
+
+// handleCreateProposal implements POST /repos/:name/proposals
+func (s *server) handleCreateProposal(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
+
+	author := IdentityFromContext(r.Context())
+
+	var req model.CreateProposalRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Branch == "" {
+		writeError(w, http.StatusBadRequest, "branch is required")
+		return
+	}
+	if req.Title == "" {
+		writeError(w, http.StatusBadRequest, "title is required")
+		return
+	}
+	baseBranch := req.BaseBranch
+	if baseBranch == "" {
+		baseBranch = "main"
+	}
+
+	p, err := s.commitStore.CreateProposal(r.Context(), repo, req.Branch, baseBranch, req.Title, req.Description, author)
+	if err != nil {
+		switch {
+		case errors.Is(err, db.ErrProposalExists):
+			writeError(w, http.StatusConflict, "branch already has an open proposal")
+		case errors.Is(err, db.ErrBranchNotFound):
+			writeError(w, http.StatusNotFound, "branch not found")
+		default:
+			slog.Error("internal error", "op", "create_proposal", "repo", repo, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+
+	s.emit(r.Context(), evtypes.ProposalOpened{
+		Repo:       repo,
+		Branch:     req.Branch,
+		BaseBranch: baseBranch,
+		ProposalID: p.ID,
+		Author:     author,
+	})
+	slog.Info("proposal opened", "repo", repo, "branch", req.Branch, "proposal_id", p.ID, "author", author)
+	writeJSON(w, http.StatusCreated, model.CreateProposalResponse{ID: p.ID})
+}
+
+// handleListProposals implements GET /repos/:name/proposals
+func (s *server) handleListProposals(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
+
+	var state *model.ProposalState
+	if sv := r.URL.Query().Get("state"); sv != "" {
+		ps := model.ProposalState(sv)
+		switch ps {
+		case model.ProposalOpen, model.ProposalClosed, model.ProposalMerged:
+			state = &ps
+		default:
+			writeError(w, http.StatusBadRequest, "invalid state; must be open, closed, or merged")
+			return
+		}
+	}
+
+	proposals, err := s.commitStore.ListProposals(r.Context(), repo, state)
+	if err != nil {
+		slog.Error("internal error", "op", "list_proposals", "repo", repo, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	if proposals == nil {
+		proposals = []*model.Proposal{}
+	}
+	writeJSON(w, http.StatusOK, proposals)
+}
+
+// handleGetProposal implements GET /repos/:name/proposals/:proposalID
+func (s *server) handleGetProposal(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
+
+	proposalID := r.PathValue("proposalID")
+	p, err := s.commitStore.GetProposal(r.Context(), repo, proposalID)
+	if err != nil {
+		if errors.Is(err, db.ErrProposalNotFound) {
+			writeError(w, http.StatusNotFound, "proposal not found")
+		} else {
+			slog.Error("internal error", "op", "get_proposal", "repo", repo, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+// handleUpdateProposal implements PATCH /repos/:name/proposals/:proposalID
+func (s *server) handleUpdateProposal(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
+
+	proposalID := r.PathValue("proposalID")
+	identity := IdentityFromContext(r.Context())
+	role := RoleFromContext(r.Context())
+
+	// Fetch existing proposal to check authz.
+	existing, err := s.commitStore.GetProposal(r.Context(), repo, proposalID)
+	if err != nil {
+		if errors.Is(err, db.ErrProposalNotFound) {
+			writeError(w, http.StatusNotFound, "proposal not found")
+		} else {
+			slog.Error("internal error", "op", "update_proposal", "repo", repo, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+
+	if existing.Author != identity && role != model.RoleMaintainer && role != model.RoleAdmin {
+		writeError(w, http.StatusForbidden, "forbidden: must be proposal author or maintainer")
+		return
+	}
+
+	var req model.UpdateProposalRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	p, err := s.commitStore.UpdateProposal(r.Context(), repo, proposalID, req.Title, req.Description)
+	if err != nil {
+		if errors.Is(err, db.ErrProposalNotFound) {
+			writeError(w, http.StatusNotFound, "proposal not found")
+		} else {
+			slog.Error("internal error", "op", "update_proposal", "repo", repo, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+// handleCloseProposal implements POST /repos/:name/proposals/:proposalID/close
+func (s *server) handleCloseProposal(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
+
+	proposalID := r.PathValue("proposalID")
+	identity := IdentityFromContext(r.Context())
+	role := RoleFromContext(r.Context())
+
+	// Fetch existing proposal to check authz.
+	existing, err := s.commitStore.GetProposal(r.Context(), repo, proposalID)
+	if err != nil {
+		if errors.Is(err, db.ErrProposalNotFound) {
+			writeError(w, http.StatusNotFound, "proposal not found")
+		} else {
+			slog.Error("internal error", "op", "close_proposal", "repo", repo, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+
+	if existing.Author != identity && role != model.RoleMaintainer && role != model.RoleAdmin {
+		writeError(w, http.StatusForbidden, "forbidden: must be proposal author or maintainer")
+		return
+	}
+
+	if err := s.commitStore.CloseProposal(r.Context(), repo, proposalID); err != nil {
+		if errors.Is(err, db.ErrProposalNotFound) {
+			writeError(w, http.StatusNotFound, "proposal not found")
+		} else {
+			slog.Error("internal error", "op", "close_proposal", "repo", repo, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+
+	s.emit(r.Context(), evtypes.ProposalClosed{
+		Repo:       repo,
+		Branch:     existing.Branch,
+		ProposalID: proposalID,
+	})
+	slog.Info("proposal closed", "repo", repo, "proposal_id", proposalID, "by", identity)
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // handleMerge implements POST /repos/:name/merge
 func (s *server) handleMerge(w http.ResponseWriter, r *http.Request) {
 	repo := r.PathValue("name")
@@ -1685,6 +1920,18 @@ func (s *server) handleMerge(w http.ResponseWriter, r *http.Request) {
 	// Invalidate the policy cache: the merge may have updated policies on main.
 	if s.policyCache != nil {
 		s.policyCache.Invalidate(repo)
+	}
+
+	// Best-effort: transition any open proposal for this branch to merged.
+	if mp, mergeProposalErr := s.commitStore.MergeProposal(r.Context(), repo, req.Branch); mergeProposalErr != nil {
+		slog.Warn("failed to merge proposal", "repo", repo, "branch", req.Branch, "error", mergeProposalErr)
+	} else if mp != nil {
+		s.emit(r.Context(), evtypes.ProposalMerged{
+			Repo:       repo,
+			Branch:     req.Branch,
+			BaseBranch: mp.BaseBranch,
+			ProposalID: mp.ID,
+		})
 	}
 
 	s.emit(r.Context(), evtypes.BranchMerged{
