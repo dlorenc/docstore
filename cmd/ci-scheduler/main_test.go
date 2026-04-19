@@ -28,6 +28,7 @@ type stubStore struct {
 	getErr       error
 	reapJobs     []model.CIJob
 	reapErr      error
+	queueDepth   int64
 }
 
 func (s *stubStore) InsertCIJob(_ context.Context, repo, branch string, sequence int64, triggerType, triggerBranch, triggerBaseBranch, triggerProposalID string) (*model.CIJob, error) {
@@ -57,7 +58,7 @@ func (s *stubStore) ReapStaleCIJobs(_ context.Context) ([]model.CIJob, error) {
 }
 
 func (s *stubStore) CountQueuedCIJobs(_ context.Context) (int64, error) {
-	return int64(len(s.insertedJobs)), nil
+	return s.queueDepth, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1231,4 +1232,48 @@ func TestStartCronRunner_StopsOnContextCancellation(t *testing.T) {
 	// Brief sleep to allow the goroutine to exit gracefully.
 	time.Sleep(10 * time.Millisecond)
 	// No assertion beyond "did not panic or deadlock".
+}
+
+// ---------------------------------------------------------------------------
+// Tests: GET /queue-depth — KEDA metrics-api scaler endpoint
+// ---------------------------------------------------------------------------
+
+// TestHandleQueueDepth verifies that GET /queue-depth returns HTTP 200 and the
+// exact JSON body {"queue_depth":N}. This locks the contract that KEDA depends
+// on via valueLocation: "queue_depth" in the ScaledObject.
+func TestHandleQueueDepth(t *testing.T) {
+	stub := &stubStore{queueDepth: 7}
+	sched := &scheduler{store: stub}
+	mux := newMux(sched)
+
+	req := httptest.NewRequest(http.MethodGet, "/queue-depth", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	want := `{"queue_depth":7}`
+	if got := strings.TrimSpace(w.Body.String()); got != want {
+		t.Errorf("body = %q, want %q", got, want)
+	}
+}
+
+// TestHandleQueueDepth_ZeroDepth verifies the response when no jobs are queued.
+func TestHandleQueueDepth_ZeroDepth(t *testing.T) {
+	stub := &stubStore{queueDepth: 0}
+	sched := &scheduler{store: stub}
+	mux := newMux(sched)
+
+	req := httptest.NewRequest(http.MethodGet, "/queue-depth", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	want := `{"queue_depth":0}`
+	if got := strings.TrimSpace(w.Body.String()); got != want {
+		t.Errorf("body = %q, want %q", got, want)
+	}
 }
