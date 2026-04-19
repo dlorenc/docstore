@@ -18,6 +18,7 @@ const (
 	panelDiff panel = iota
 	panelReviews
 	panelChecks
+	panelProposal
 )
 
 // branchDetailModel shows diff, reviews, and checks for a specific branch.
@@ -223,6 +224,14 @@ func (m branchDetailModel) Update(msg tea.Msg) (branchDetailModel, tea.Cmd) {
 			m.mergeMessage = styleApproved.Render(fmt.Sprintf("Merged into main at sequence %d.", msg.sequence))
 		}
 
+	case proposalClosedMsg:
+		if msg.err != nil {
+			m.mergeMessage = styleError.Render("Close proposal failed: " + msg.err.Error())
+		} else {
+			m.loading = true
+			return m, loadBranchDetail(m.client, m.branchName)
+		}
+
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q":
@@ -233,7 +242,7 @@ func (m branchDetailModel) Update(msg tea.Msg) (branchDetailModel, tea.Cmd) {
 			m.quit = true
 
 		case "tab":
-			m.activePanel = (m.activePanel + 1) % 3
+			m.activePanel = (m.activePanel + 1) % 4
 
 		case "p":
 			// Only open proposal overlay if no open proposal exists.
@@ -241,6 +250,12 @@ func (m branchDetailModel) Update(msg tea.Msg) (branchDetailModel, tea.Cmd) {
 				m.showProposalOverlay = true
 				m.proposalOverlay = newProposalOverlay(m.client, m.branchName)
 				return m, m.proposalOverlay.Init()
+			}
+
+		case "X":
+			// Close an open proposal.
+			if m.proposal != nil && m.proposal.State == model.ProposalOpen {
+				return m, closeProposal(m.client, m.proposal.ID)
 			}
 
 		case "r":
@@ -326,6 +341,8 @@ func (m branchDetailModel) View() string {
 			sb.WriteString(m.renderReviews())
 		case panelChecks:
 			sb.WriteString(m.renderChecks())
+		case panelProposal:
+			sb.WriteString(m.renderProposal())
 		}
 	}
 
@@ -353,6 +370,8 @@ func (m branchDetailModel) View() string {
 		helpText := "  tab panels · enter expand/collapse · r review · m merge · R refresh · q back"
 		if m.proposal == nil && !m.loading {
 			helpText = "  tab panels · enter expand/collapse · p proposal · r review · m merge · R refresh · q back"
+		} else if m.proposal != nil && m.proposal.State == model.ProposalOpen && !m.loading {
+			helpText = "  tab panels · enter expand/collapse · X close proposal · r review · m merge · R refresh · q back"
 		}
 		sb.WriteString(styleHelp.Render(helpText))
 	}
@@ -368,6 +387,7 @@ func (m branchDetailModel) renderTabs() string {
 		{"[Diff]", panelDiff},
 		{"Reviews", panelReviews},
 		{"Checks", panelChecks},
+		{"Proposal", panelProposal},
 	}
 	parts := make([]string, len(tabs))
 	for i, t := range tabs {
@@ -516,6 +536,23 @@ func (m branchDetailModel) renderReviews() string {
 			sb.WriteString(line + "\n")
 		}
 	}
+	return sb.String()
+}
+
+func (m branchDetailModel) renderProposal() string {
+	if m.proposal == nil {
+		return "  No open proposal.\n"
+	}
+	p := m.proposal
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("  Title:       %s\n", p.Title))
+	sb.WriteString(fmt.Sprintf("  Author:      %s\n", p.Author))
+	sb.WriteString(fmt.Sprintf("  Base branch: %s\n", p.BaseBranch))
+	sb.WriteString(fmt.Sprintf("  State:       %s\n", string(p.State)))
+	if p.Description != "" {
+		sb.WriteString(fmt.Sprintf("  Description: %s\n", p.Description))
+	}
+	sb.WriteString(fmt.Sprintf("  Created:     %s\n", p.CreatedAt.Format("2006-01-02 15:04:05")))
 	return sb.String()
 }
 
