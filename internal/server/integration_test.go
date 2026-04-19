@@ -1912,3 +1912,255 @@ func TestIntegrationReleases(t *testing.T) {
 		t.Errorf("expected only v2.0 remaining, got %+v", listBody2.Releases)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Issue integration tests
+// ---------------------------------------------------------------------------
+
+func TestIntegrationIssues(t *testing.T) {
+	t.Parallel()
+	database := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
+	seed(t, database)
+
+	handler := server.New(dbpkg.NewStore(database), database, "alice@example.com", "alice@example.com")
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	base := srv.URL + "/repos/default/default/-"
+
+	doReq := func(method, url, body string) *http.Response {
+		t.Helper()
+		var req *http.Request
+		var err error
+		if body != "" {
+			req, err = http.NewRequest(method, url, strings.NewReader(body))
+		} else {
+			req, err = http.NewRequest(method, url, nil)
+		}
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, url, err)
+		}
+		return resp
+	}
+
+	// CREATE issue.
+	createResp := doReq(http.MethodPost, base+"/issues",
+		`{"title":"bug: crash on startup","body":"commit:1 is the culprit"}`)
+	defer createResp.Body.Close()
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create issue: expected 201, got %d", createResp.StatusCode)
+	}
+	var created struct {
+		ID     string `json:"id"`
+		Number int64  `json:"number"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	if created.Number != 1 {
+		t.Errorf("expected issue number 1, got %d", created.Number)
+	}
+
+	// GET issue.
+	getResp := doReq(http.MethodGet, base+"/issues/1", "")
+	defer getResp.Body.Close()
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("get issue: expected 200, got %d", getResp.StatusCode)
+	}
+	var got struct {
+		Number int64  `json:"number"`
+		Title  string `json:"title"`
+		State  string `json:"state"`
+	}
+	if err := json.NewDecoder(getResp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode get response: %v", err)
+	}
+	if got.Title != "bug: crash on startup" {
+		t.Errorf("expected title 'bug: crash on startup', got %q", got.Title)
+	}
+	if got.State != "open" {
+		t.Errorf("expected state open, got %q", got.State)
+	}
+
+	// LIST issues (default: open).
+	listResp := doReq(http.MethodGet, base+"/issues", "")
+	defer listResp.Body.Close()
+	if listResp.StatusCode != http.StatusOK {
+		t.Fatalf("list issues: expected 200, got %d", listResp.StatusCode)
+	}
+	var issueList struct {
+		Issues []struct {
+			Number int64 `json:"number"`
+		} `json:"issues"`
+	}
+	if err := json.NewDecoder(listResp.Body).Decode(&issueList); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if len(issueList.Issues) != 1 {
+		t.Errorf("expected 1 issue, got %d", len(issueList.Issues))
+	}
+
+	// REFS: body mentioned commit:1, so a commit ref should have been auto-created.
+	refsResp := doReq(http.MethodGet, base+"/issues/1/refs", "")
+	defer refsResp.Body.Close()
+	if refsResp.StatusCode != http.StatusOK {
+		t.Fatalf("list refs: expected 200, got %d", refsResp.StatusCode)
+	}
+	var refList struct {
+		Refs []struct {
+			RefType string `json:"ref_type"`
+			RefID   string `json:"ref_id"`
+		} `json:"refs"`
+	}
+	if err := json.NewDecoder(refsResp.Body).Decode(&refList); err != nil {
+		t.Fatalf("decode refs response: %v", err)
+	}
+	if len(refList.Refs) != 1 || refList.Refs[0].RefType != "commit" || refList.Refs[0].RefID != "1" {
+		t.Errorf("expected one commit ref for seq 1, got %+v", refList.Refs)
+	}
+
+	// CLOSE issue.
+	closeResp := doReq(http.MethodPost, base+"/issues/1/close", `{"reason":"completed"}`)
+	defer closeResp.Body.Close()
+	if closeResp.StatusCode != http.StatusOK {
+		t.Fatalf("close issue: expected 200, got %d", closeResp.StatusCode)
+	}
+	var closed struct {
+		State string `json:"state"`
+	}
+	if err := json.NewDecoder(closeResp.Body).Decode(&closed); err != nil {
+		t.Fatalf("decode close response: %v", err)
+	}
+	if closed.State != "closed" {
+		t.Errorf("expected state closed, got %q", closed.State)
+	}
+
+	// LIST: should be empty for default open filter.
+	listClosed := doReq(http.MethodGet, base+"/issues", "")
+	defer listClosed.Body.Close()
+	if err := json.NewDecoder(listClosed.Body).Decode(&issueList); err != nil {
+		t.Fatalf("decode list closed: %v", err)
+	}
+	if len(issueList.Issues) != 0 {
+		t.Errorf("expected 0 open issues after close, got %d", len(issueList.Issues))
+	}
+
+	// REOPEN issue.
+	reopenResp := doReq(http.MethodPost, base+"/issues/1/reopen", "")
+	defer reopenResp.Body.Close()
+	if reopenResp.StatusCode != http.StatusOK {
+		t.Fatalf("reopen issue: expected 200, got %d", reopenResp.StatusCode)
+	}
+	var reopened struct {
+		State string `json:"state"`
+	}
+	if err := json.NewDecoder(reopenResp.Body).Decode(&reopened); err != nil {
+		t.Fatalf("decode reopen response: %v", err)
+	}
+	if reopened.State != "open" {
+		t.Errorf("expected state open after reopen, got %q", reopened.State)
+	}
+
+	// CREATE comment.
+	commentResp := doReq(http.MethodPost, base+"/issues/1/comments", `{"body":"this is a comment"}`)
+	defer commentResp.Body.Close()
+	if commentResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create comment: expected 201, got %d", commentResp.StatusCode)
+	}
+	var commentCreated struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(commentResp.Body).Decode(&commentCreated); err != nil {
+		t.Fatalf("decode comment create: %v", err)
+	}
+	if commentCreated.ID == "" {
+		t.Error("expected non-empty comment ID")
+	}
+
+	// LIST comments.
+	listCommentsResp := doReq(http.MethodGet, base+"/issues/1/comments", "")
+	defer listCommentsResp.Body.Close()
+	if listCommentsResp.StatusCode != http.StatusOK {
+		t.Fatalf("list comments: expected 200, got %d", listCommentsResp.StatusCode)
+	}
+	var commentList struct {
+		Comments []struct {
+			ID   string `json:"id"`
+			Body string `json:"body"`
+		} `json:"comments"`
+	}
+	if err := json.NewDecoder(listCommentsResp.Body).Decode(&commentList); err != nil {
+		t.Fatalf("decode comment list: %v", err)
+	}
+	if len(commentList.Comments) != 1 {
+		t.Errorf("expected 1 comment, got %d", len(commentList.Comments))
+	}
+
+	// UPDATE comment.
+	updateCommentResp := doReq(http.MethodPatch,
+		base+"/issues/1/comments/"+commentCreated.ID,
+		`{"body":"updated comment"}`)
+	defer updateCommentResp.Body.Close()
+	if updateCommentResp.StatusCode != http.StatusOK {
+		t.Fatalf("update comment: expected 200, got %d", updateCommentResp.StatusCode)
+	}
+
+	// ADD explicit ref.
+	addRefResp := doReq(http.MethodPost, base+"/issues/1/refs",
+		`{"ref_type":"commit","ref_id":"2"}`)
+	defer addRefResp.Body.Close()
+	if addRefResp.StatusCode != http.StatusCreated {
+		t.Fatalf("add ref: expected 201, got %d", addRefResp.StatusCode)
+	}
+
+	// LIST refs: now 2 (commit:1 from body + commit:2 from explicit).
+	refsResp2 := doReq(http.MethodGet, base+"/issues/1/refs", "")
+	defer refsResp2.Body.Close()
+	var refList2 struct {
+		Refs []struct{ RefType, RefID string } `json:"refs"`
+	}
+	if err := json.NewDecoder(refsResp2.Body).Decode(&refList2); err != nil {
+		t.Fatalf("decode refs2: %v", err)
+	}
+	if len(refList2.Refs) != 2 {
+		t.Errorf("expected 2 refs, got %d", len(refList2.Refs))
+	}
+
+	// COMMIT issues reverse lookup.
+	commitIssuesResp := doReq(http.MethodGet, base+"/commit/1/issues", "")
+	defer commitIssuesResp.Body.Close()
+	if commitIssuesResp.StatusCode != http.StatusOK {
+		t.Fatalf("commit issues: expected 200, got %d", commitIssuesResp.StatusCode)
+	}
+	var commitIssueList struct {
+		Issues []struct{ Number int64 `json:"number"` } `json:"issues"`
+	}
+	if err := json.NewDecoder(commitIssuesResp.Body).Decode(&commitIssueList); err != nil {
+		t.Fatalf("decode commit issues: %v", err)
+	}
+	if len(commitIssueList.Issues) != 1 || commitIssueList.Issues[0].Number != 1 {
+		t.Errorf("expected issue 1 in commit/1/issues, got %+v", commitIssueList.Issues)
+	}
+
+	// DELETE comment.
+	delCommentResp := doReq(http.MethodDelete,
+		base+"/issues/1/comments/"+commentCreated.ID, "")
+	defer delCommentResp.Body.Close()
+	if delCommentResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete comment: expected 204, got %d", delCommentResp.StatusCode)
+	}
+
+	// GET: 404 for unknown issue.
+	notFoundResp := doReq(http.MethodGet, base+"/issues/999", "")
+	defer notFoundResp.Body.Close()
+	if notFoundResp.StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404 for unknown issue, got %d", notFoundResp.StatusCode)
+	}
+}

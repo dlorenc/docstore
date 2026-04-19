@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -208,11 +209,21 @@ func (s *server) handleReposPrefix(w http.ResponseWriter, r *http.Request) {
 		}
 
 	case strings.HasPrefix(endpoint, "commit/"):
-		if r.Method == http.MethodGet {
-			r.SetPathValue("sequence", strings.TrimPrefix(endpoint, "commit/"))
-			s.handleGetCommit(w, r)
+		rest := strings.TrimPrefix(endpoint, "commit/")
+		if strings.HasSuffix(rest, "/issues") {
+			r.SetPathValue("sequence", strings.TrimSuffix(rest, "/issues"))
+			if r.Method == http.MethodGet {
+				s.handleCommitIssues(w, r)
+			} else {
+				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			}
 		} else {
-			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			if r.Method == http.MethodGet {
+				r.SetPathValue("sequence", rest)
+				s.handleGetCommit(w, r)
+			} else {
+				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			}
 		}
 
 	case strings.HasPrefix(endpoint, "file/"):
@@ -284,6 +295,14 @@ func (s *server) handleReposPrefix(w http.ResponseWriter, r *http.Request) {
 			} else {
 				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 			}
+		} else if strings.HasSuffix(rest, "/issues") {
+			proposalID := strings.TrimSuffix(rest, "/issues")
+			r.SetPathValue("proposalID", proposalID)
+			if r.Method == http.MethodGet {
+				s.handleProposalIssues(w, r)
+			} else {
+				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			}
 		} else {
 			r.SetPathValue("proposalID", rest)
 			switch r.Method {
@@ -294,6 +313,84 @@ func (s *server) handleReposPrefix(w http.ResponseWriter, r *http.Request) {
 			default:
 				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 			}
+		}
+
+	case endpoint == "issues":
+		switch r.Method {
+		case http.MethodGet:
+			s.handleListIssues(w, r)
+		case http.MethodPost:
+			s.handleCreateIssue(w, r)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+
+	case strings.HasPrefix(endpoint, "issues/"):
+		rest := strings.TrimPrefix(endpoint, "issues/")
+		parts := strings.SplitN(rest, "/", 3)
+		r.SetPathValue("number", parts[0])
+		switch len(parts) {
+		case 1:
+			// issues/{number}
+			switch r.Method {
+			case http.MethodGet:
+				s.handleGetIssue(w, r)
+			case http.MethodPatch:
+				s.handleUpdateIssue(w, r)
+			default:
+				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			}
+		case 2:
+			switch parts[1] {
+			case "close":
+				if r.Method == http.MethodPost {
+					s.handleCloseIssue(w, r)
+				} else {
+					writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+				}
+			case "reopen":
+				if r.Method == http.MethodPost {
+					s.handleReopenIssue(w, r)
+				} else {
+					writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+				}
+			case "comments":
+				switch r.Method {
+				case http.MethodGet:
+					s.handleListIssueComments(w, r)
+				case http.MethodPost:
+					s.handleCreateIssueComment(w, r)
+				default:
+					writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+				}
+			case "refs":
+				switch r.Method {
+				case http.MethodGet:
+					s.handleListIssueRefs(w, r)
+				case http.MethodPost:
+					s.handleAddIssueRef(w, r)
+				default:
+					writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+				}
+			default:
+				writeError(w, http.StatusNotFound, "not found")
+			}
+		case 3:
+			if parts[1] == "comments" {
+				r.SetPathValue("commentID", parts[2])
+				switch r.Method {
+				case http.MethodPatch:
+					s.handleUpdateIssueComment(w, r)
+				case http.MethodDelete:
+					s.handleDeleteIssueComment(w, r)
+				default:
+					writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+				}
+			} else {
+				writeError(w, http.StatusNotFound, "not found")
+			}
+		default:
+			writeError(w, http.StatusNotFound, "not found")
 		}
 
 	default:
@@ -1698,6 +1795,7 @@ func (s *server) handleCreateProposal(w http.ResponseWriter, r *http.Request) {
 		Author:     author,
 		Sequence:   headSeq,
 	})
+	s.upsertProposalMentionRefs(r.Context(), repo, p.ID, req.Description)
 	slog.Info("proposal opened", "repo", repo, "branch", req.Branch, "proposal_id", p.ID, "author", author)
 	writeJSON(w, http.StatusCreated, model.CreateProposalResponse{ID: p.ID})
 }
@@ -1802,6 +1900,9 @@ func (s *server) handleUpdateProposal(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "internal server error")
 		}
 		return
+	}
+	if req.Description != nil {
+		s.upsertProposalMentionRefs(r.Context(), repo, proposalID, *req.Description)
 	}
 	writeJSON(w, http.StatusOK, p)
 }
@@ -2711,4 +2812,555 @@ func (s *server) streamSSE(w http.ResponseWriter, r *http.Request, repo string) 
 			flusher.Flush()
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Issue handlers
+// ---------------------------------------------------------------------------
+
+var (
+	reMentionProposal = regexp.MustCompile(`\bproposal:([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\b`)
+	reMentionCommit   = regexp.MustCompile(`\bcommit:(\d+)\b`)
+	reMentionIssue    = regexp.MustCompile(`#(\d+)`)
+)
+
+// parseMentions extracts cross-reference mentions from a text body.
+// Returns proposal UUIDs, commit sequence numbers, and issue numbers.
+func parseMentions(body string) (proposalIDs []string, commitSeqs []int64, issueNums []int64) {
+	for _, m := range reMentionProposal.FindAllStringSubmatch(body, -1) {
+		proposalIDs = append(proposalIDs, m[1])
+	}
+	for _, m := range reMentionCommit.FindAllStringSubmatch(body, -1) {
+		if n, err := strconv.ParseInt(m[1], 10, 64); err == nil {
+			commitSeqs = append(commitSeqs, n)
+		}
+	}
+	for _, m := range reMentionIssue.FindAllStringSubmatch(body, -1) {
+		if n, err := strconv.ParseInt(m[1], 10, 64); err == nil {
+			issueNums = append(issueNums, n)
+		}
+	}
+	return
+}
+
+// upsertIssueBodyRefs creates issue_refs on issueNum for proposal and commit
+// mentions found in body, ignoring duplicate and not-found errors.
+func (s *server) upsertIssueBodyRefs(ctx context.Context, repo string, issueNum int64, body string) {
+	proposalIDs, commitSeqs, _ := parseMentions(body)
+	for _, pid := range proposalIDs {
+		_, err := s.commitStore.CreateIssueRef(ctx, repo, issueNum, model.IssueRefTypeProposal, pid)
+		if err != nil && !errors.Is(err, db.ErrIssueRefExists) && !errors.Is(err, db.ErrIssueNotFound) {
+			slog.Warn("upsert issue ref", "repo", repo, "issue", issueNum, "ref_type", "proposal", "ref_id", pid, "error", err)
+		}
+	}
+	for _, seq := range commitSeqs {
+		refID := strconv.FormatInt(seq, 10)
+		_, err := s.commitStore.CreateIssueRef(ctx, repo, issueNum, model.IssueRefTypeCommit, refID)
+		if err != nil && !errors.Is(err, db.ErrIssueRefExists) && !errors.Is(err, db.ErrIssueNotFound) {
+			slog.Warn("upsert issue ref", "repo", repo, "issue", issueNum, "ref_type", "commit", "ref_id", refID, "error", err)
+		}
+	}
+}
+
+// upsertProposalMentionRefs creates issue_refs for issues mentioned in a proposal body.
+// When a proposal body contains "#N", an issue_ref of type "proposal" pointing at proposalID
+// is upserted on issue N.
+func (s *server) upsertProposalMentionRefs(ctx context.Context, repo, proposalID, body string) {
+	_, _, issueNums := parseMentions(body)
+	for _, num := range issueNums {
+		_, err := s.commitStore.CreateIssueRef(ctx, repo, num, model.IssueRefTypeProposal, proposalID)
+		if err != nil && !errors.Is(err, db.ErrIssueRefExists) && !errors.Is(err, db.ErrIssueNotFound) {
+			slog.Warn("upsert proposal mention ref", "repo", repo, "issue", num, "proposal", proposalID, "error", err)
+		}
+	}
+}
+
+// parseIssueNumber parses the "number" path value into an int64.
+// Writes 400 and returns false on failure.
+func parseIssueNumber(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	n, err := strconv.ParseInt(r.PathValue("number"), 10, 64)
+	if err != nil || n <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid issue number")
+		return 0, false
+	}
+	return n, true
+}
+
+// handleListIssues implements GET /repos/:name/issues
+func (s *server) handleListIssues(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
+
+	state := r.URL.Query().Get("state")
+	if state == "" {
+		state = "open"
+	}
+	switch state {
+	case "open", "closed", "all":
+	default:
+		writeError(w, http.StatusBadRequest, "invalid state; must be open, closed, or all")
+		return
+	}
+	stateFilter := state
+	if state == "all" {
+		stateFilter = ""
+	}
+	authorFilter := r.URL.Query().Get("author")
+
+	issues, err := s.commitStore.ListIssues(r.Context(), repo, stateFilter, authorFilter)
+	if err != nil {
+		slog.Error("internal error", "op", "list_issues", "repo", repo, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	writeJSON(w, http.StatusOK, model.ListIssuesResponse{Issues: issues})
+}
+
+// handleCreateIssue implements POST /repos/:name/issues
+func (s *server) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
+
+	var req model.CreateIssueRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Title == "" {
+		writeError(w, http.StatusBadRequest, "title is required")
+		return
+	}
+
+	author := IdentityFromContext(r.Context())
+	iss, err := s.commitStore.CreateIssue(r.Context(), repo, req.Title, req.Body, author, req.Labels)
+	if err != nil {
+		slog.Error("internal error", "op", "create_issue", "repo", repo, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	s.upsertIssueBodyRefs(r.Context(), repo, iss.Number, req.Body)
+	s.emit(r.Context(), evtypes.IssueOpened{Repo: repo, IssueID: iss.ID, Number: iss.Number, Author: author})
+	slog.Info("issue opened", "repo", repo, "number", iss.Number, "author", author)
+	writeJSON(w, http.StatusCreated, model.CreateIssueResponse{ID: iss.ID, Number: iss.Number})
+}
+
+// handleGetIssue implements GET /repos/:name/issues/:number
+func (s *server) handleGetIssue(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
+
+	number, ok := parseIssueNumber(w, r)
+	if !ok {
+		return
+	}
+
+	iss, err := s.commitStore.GetIssue(r.Context(), repo, number)
+	if err != nil {
+		if errors.Is(err, db.ErrIssueNotFound) {
+			writeError(w, http.StatusNotFound, "issue not found")
+		} else {
+			slog.Error("internal error", "op", "get_issue", "repo", repo, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, iss)
+}
+
+// handleUpdateIssue implements PATCH /repos/:name/issues/:number
+func (s *server) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
+
+	number, ok := parseIssueNumber(w, r)
+	if !ok {
+		return
+	}
+
+	identity := IdentityFromContext(r.Context())
+	role := RoleFromContext(r.Context())
+
+	existing, err := s.commitStore.GetIssue(r.Context(), repo, number)
+	if err != nil {
+		if errors.Is(err, db.ErrIssueNotFound) {
+			writeError(w, http.StatusNotFound, "issue not found")
+		} else {
+			slog.Error("internal error", "op", "update_issue", "repo", repo, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+
+	if existing.Author != identity && role != model.RoleMaintainer && role != model.RoleAdmin {
+		writeError(w, http.StatusForbidden, "forbidden: must be issue author or maintainer")
+		return
+	}
+
+	var req model.UpdateIssueRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	var labelsPtr *[]string
+	if req.Labels != nil {
+		labelsPtr = &req.Labels
+	}
+	iss, err := s.commitStore.UpdateIssue(r.Context(), repo, number, req.Title, req.Body, labelsPtr)
+	if err != nil {
+		if errors.Is(err, db.ErrIssueNotFound) {
+			writeError(w, http.StatusNotFound, "issue not found")
+		} else {
+			slog.Error("internal error", "op", "update_issue", "repo", repo, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+
+	if req.Body != nil {
+		s.upsertIssueBodyRefs(r.Context(), repo, number, *req.Body)
+	}
+	s.emit(r.Context(), evtypes.IssueUpdated{Repo: repo, IssueID: iss.ID, Number: iss.Number})
+	writeJSON(w, http.StatusOK, iss)
+}
+
+// handleCloseIssue implements POST /repos/:name/issues/:number/close
+func (s *server) handleCloseIssue(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
+
+	number, ok := parseIssueNumber(w, r)
+	if !ok {
+		return
+	}
+
+	identity := IdentityFromContext(r.Context())
+	role := RoleFromContext(r.Context())
+
+	existing, err := s.commitStore.GetIssue(r.Context(), repo, number)
+	if err != nil {
+		if errors.Is(err, db.ErrIssueNotFound) {
+			writeError(w, http.StatusNotFound, "issue not found")
+		} else {
+			slog.Error("internal error", "op", "close_issue", "repo", repo, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+
+	if existing.Author != identity && role != model.RoleMaintainer && role != model.RoleAdmin {
+		writeError(w, http.StatusForbidden, "forbidden: must be issue author or maintainer")
+		return
+	}
+
+	var req model.CloseIssueRequest
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+	reason := req.Reason
+	if reason == "" {
+		reason = model.IssueCloseReasonCompleted
+	}
+	switch reason {
+	case model.IssueCloseReasonCompleted, model.IssueCloseReasonNotPlanned, model.IssueCloseReasonDuplicate:
+	default:
+		writeError(w, http.StatusBadRequest, "invalid close reason")
+		return
+	}
+
+	iss, err := s.commitStore.CloseIssue(r.Context(), repo, number, reason, identity)
+	if err != nil {
+		if errors.Is(err, db.ErrIssueNotFound) {
+			writeError(w, http.StatusNotFound, "issue not found")
+		} else {
+			slog.Error("internal error", "op", "close_issue", "repo", repo, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+
+	s.emit(r.Context(), evtypes.IssueClosed{Repo: repo, IssueID: iss.ID, Number: iss.Number, Reason: string(reason), ClosedBy: identity})
+	slog.Info("issue closed", "repo", repo, "number", number, "by", identity)
+	writeJSON(w, http.StatusOK, iss)
+}
+
+// handleReopenIssue implements POST /repos/:name/issues/:number/reopen
+func (s *server) handleReopenIssue(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
+
+	number, ok := parseIssueNumber(w, r)
+	if !ok {
+		return
+	}
+
+	iss, err := s.commitStore.ReopenIssue(r.Context(), repo, number)
+	if err != nil {
+		if errors.Is(err, db.ErrIssueNotFound) {
+			writeError(w, http.StatusNotFound, "issue not found")
+		} else {
+			slog.Error("internal error", "op", "reopen_issue", "repo", repo, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+
+	s.emit(r.Context(), evtypes.IssueReopened{Repo: repo, IssueID: iss.ID, Number: iss.Number})
+	slog.Info("issue reopened", "repo", repo, "number", number)
+	writeJSON(w, http.StatusOK, iss)
+}
+
+// handleListIssueComments implements GET /repos/:name/issues/:number/comments
+func (s *server) handleListIssueComments(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
+
+	number, ok := parseIssueNumber(w, r)
+	if !ok {
+		return
+	}
+
+	comments, err := s.commitStore.ListIssueComments(r.Context(), repo, number)
+	if err != nil {
+		slog.Error("internal error", "op", "list_issue_comments", "repo", repo, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	writeJSON(w, http.StatusOK, model.ListIssueCommentsResponse{Comments: comments})
+}
+
+// handleCreateIssueComment implements POST /repos/:name/issues/:number/comments
+func (s *server) handleCreateIssueComment(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
+
+	number, ok := parseIssueNumber(w, r)
+	if !ok {
+		return
+	}
+
+	var req model.CreateIssueCommentRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Body == "" {
+		writeError(w, http.StatusBadRequest, "body is required")
+		return
+	}
+
+	author := IdentityFromContext(r.Context())
+	c, err := s.commitStore.CreateIssueComment(r.Context(), repo, number, req.Body, author)
+	if err != nil {
+		if errors.Is(err, db.ErrIssueNotFound) {
+			writeError(w, http.StatusNotFound, "issue not found")
+		} else {
+			slog.Error("internal error", "op", "create_issue_comment", "repo", repo, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+
+	s.upsertIssueBodyRefs(r.Context(), repo, number, req.Body)
+	s.emit(r.Context(), evtypes.IssueCommentCreated{Repo: repo, IssueID: c.IssueID, Number: number, CommentID: c.ID, Author: author})
+	slog.Info("issue comment created", "repo", repo, "issue", number, "comment", c.ID, "author", author)
+	writeJSON(w, http.StatusCreated, model.CreateIssueCommentResponse{ID: c.ID})
+}
+
+// handleUpdateIssueComment implements PATCH /repos/:name/issues/:number/comments/:commentID
+func (s *server) handleUpdateIssueComment(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
+
+	number, ok := parseIssueNumber(w, r)
+	if !ok {
+		return
+	}
+
+	commentID := r.PathValue("commentID")
+	identity := IdentityFromContext(r.Context())
+	role := RoleFromContext(r.Context())
+
+	existing, err := s.commitStore.GetIssueComment(r.Context(), repo, commentID)
+	if err != nil {
+		if errors.Is(err, db.ErrIssueCommentNotFound) {
+			writeError(w, http.StatusNotFound, "comment not found")
+		} else {
+			slog.Error("internal error", "op", "update_issue_comment", "repo", repo, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+
+	if existing.Author != identity && role != model.RoleMaintainer && role != model.RoleAdmin {
+		writeError(w, http.StatusForbidden, "forbidden: must be comment author or maintainer")
+		return
+	}
+
+	var req model.UpdateIssueCommentRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Body == "" {
+		writeError(w, http.StatusBadRequest, "body is required")
+		return
+	}
+
+	c, err := s.commitStore.UpdateIssueComment(r.Context(), repo, commentID, req.Body)
+	if err != nil {
+		if errors.Is(err, db.ErrIssueCommentNotFound) {
+			writeError(w, http.StatusNotFound, "comment not found")
+		} else {
+			slog.Error("internal error", "op", "update_issue_comment", "repo", repo, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+
+	s.upsertIssueBodyRefs(r.Context(), repo, number, req.Body)
+	s.emit(r.Context(), evtypes.IssueCommentUpdated{Repo: repo, IssueID: c.IssueID, Number: number, CommentID: c.ID})
+	writeJSON(w, http.StatusOK, c)
+}
+
+// handleDeleteIssueComment implements DELETE /repos/:name/issues/:number/comments/:commentID
+func (s *server) handleDeleteIssueComment(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
+
+	if _, ok := parseIssueNumber(w, r); !ok {
+		return
+	}
+
+	commentID := r.PathValue("commentID")
+	if err := s.commitStore.DeleteIssueComment(r.Context(), repo, commentID); err != nil {
+		if errors.Is(err, db.ErrIssueCommentNotFound) {
+			writeError(w, http.StatusNotFound, "comment not found")
+		} else {
+			slog.Error("internal error", "op", "delete_issue_comment", "repo", repo, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleListIssueRefs implements GET /repos/:name/issues/:number/refs
+func (s *server) handleListIssueRefs(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
+
+	number, ok := parseIssueNumber(w, r)
+	if !ok {
+		return
+	}
+
+	refs, err := s.commitStore.ListIssueRefs(r.Context(), repo, number)
+	if err != nil {
+		slog.Error("internal error", "op", "list_issue_refs", "repo", repo, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	writeJSON(w, http.StatusOK, model.ListIssueRefsResponse{Refs: refs})
+}
+
+// handleAddIssueRef implements POST /repos/:name/issues/:number/refs
+func (s *server) handleAddIssueRef(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
+
+	number, ok := parseIssueNumber(w, r)
+	if !ok {
+		return
+	}
+
+	var req model.AddIssueRefRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	switch req.RefType {
+	case model.IssueRefTypeProposal, model.IssueRefTypeCommit:
+	default:
+		writeError(w, http.StatusBadRequest, "invalid ref_type; must be proposal or commit")
+		return
+	}
+	if req.RefID == "" {
+		writeError(w, http.StatusBadRequest, "ref_id is required")
+		return
+	}
+
+	ref, err := s.commitStore.CreateIssueRef(r.Context(), repo, number, req.RefType, req.RefID)
+	if err != nil {
+		switch {
+		case errors.Is(err, db.ErrIssueNotFound):
+			writeError(w, http.StatusNotFound, "issue not found")
+		case errors.Is(err, db.ErrIssueRefExists):
+			writeError(w, http.StatusConflict, "ref already exists")
+		default:
+			slog.Error("internal error", "op", "add_issue_ref", "repo", repo, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+	writeJSON(w, http.StatusCreated, model.AddIssueRefResponse{ID: ref.ID})
+}
+
+// handleProposalIssues implements GET /repos/:name/proposals/:proposalID/issues
+func (s *server) handleProposalIssues(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
+
+	proposalID := r.PathValue("proposalID")
+	issues, err := s.commitStore.ListIssuesByRef(r.Context(), repo, model.IssueRefTypeProposal, proposalID)
+	if err != nil {
+		slog.Error("internal error", "op", "proposal_issues", "repo", repo, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	writeJSON(w, http.StatusOK, model.ListIssuesResponse{Issues: issues})
+}
+
+// handleCommitIssues implements GET /repos/:name/commit/:sequence/issues
+func (s *server) handleCommitIssues(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
+
+	seqStr := r.PathValue("sequence")
+	issues, err := s.commitStore.ListIssuesByRef(r.Context(), repo, model.IssueRefTypeCommit, seqStr)
+	if err != nil {
+		slog.Error("internal error", "op", "commit_issues", "repo", repo, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	writeJSON(w, http.StatusOK, model.ListIssuesResponse{Issues: issues})
 }
