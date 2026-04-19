@@ -46,6 +46,7 @@ type ciJobStore interface {
 	InsertCIJob(ctx context.Context, repo, branch string, sequence int64, triggerType, triggerBranch, triggerBaseBranch, triggerProposalID string) (*model.CIJob, error)
 	GetCIJob(ctx context.Context, id string) (*model.CIJob, error)
 	ReapStaleCIJobs(ctx context.Context) ([]model.CIJob, error)
+	CountQueuedCIJobs(ctx context.Context) (int64, error)
 }
 
 // ---------------------------------------------------------------------------
@@ -468,12 +469,25 @@ func (s *scheduler) handleGetLogs(w http.ResponseWriter, r *http.Request) {
 // HTTP mux
 // ---------------------------------------------------------------------------
 
+// handleQueueDepth returns the current number of queued CI jobs as JSON.
+// Used by the KEDA metrics-api scaler to drive autoscaling of ci-worker.
+func (s *scheduler) handleQueueDepth(w http.ResponseWriter, r *http.Request) {
+	n, err := s.store.CountQueuedCIJobs(r.Context())
+	if err != nil {
+		http.Error(w, "failed to count queued jobs", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"queue_depth":%d}`, n)
+}
+
 func newMux(sched *scheduler) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /webhook", sched.handleWebhook)
 	mux.HandleFunc("POST /run", sched.handleRun)
 	mux.HandleFunc("GET /run/{id}", sched.handleGetRun)
 	mux.HandleFunc("GET /run/{id}/logs/{check}", sched.handleGetLogs)
+	mux.HandleFunc("GET /queue-depth", sched.handleQueueDepth)
 	return mux
 }
 

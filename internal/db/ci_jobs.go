@@ -160,6 +160,18 @@ func (s *Store) CompleteCIJob(ctx context.Context, id, status string, logURL, er
 	return nil
 }
 
+// CountQueuedCIJobs returns the number of ci_jobs with status 'queued'.
+func (s *Store) CountQueuedCIJobs(ctx context.Context) (int64, error) {
+	var n int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM ci_jobs WHERE status = 'queued'`,
+	).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count queued ci jobs: %w", err)
+	}
+	return n, nil
+}
+
 // ReapStaleCIJobs resets claimed jobs that have not sent a heartbeat in the
 // last 2 minutes back to 'queued' so another worker can pick them up.
 func (s *Store) ReapStaleCIJobs(ctx context.Context) ([]model.CIJob, error) {

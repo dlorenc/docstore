@@ -160,6 +160,17 @@ jobs:
           DIGEST=$(jq -r '."containerimage.digest"' /tmp/ci-worker-metadata.json)
           echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
 
+      - uses: azure/setup-helm@v4
+
+      - name: Install KEDA via Helm
+        run: |
+          helm repo add kedacore https://kedacore.github.io/charts
+          helm repo update
+          helm upgrade --install keda kedacore/keda \
+            --namespace keda \
+            --create-namespace \
+            --wait
+
       - name: Deploy ci-worker to GKE
         run: |
           kubectl apply -f deploy/k8s/ci-worker.yaml
@@ -167,3 +178,5 @@ jobs:
             ci-worker=us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-worker@${{ steps.build.outputs.digest }} \
             -n docstore-ci
           kubectl rollout status deployment/ci-worker -n docstore-ci --timeout=600s
+          kubectl apply -f deploy/k8s/ci-worker-scaledobject.yaml
+          kubectl wait --for=condition=Ready scaledobject/ci-worker -n docstore-ci --timeout=60s
