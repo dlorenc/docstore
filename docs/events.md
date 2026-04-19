@@ -135,6 +135,9 @@ Every event is a CloudEvents 1.0 JSON object:
 }
 ```
 
+When a role is revoked rather than granted, `role` is an empty string (`""`).
+
+
 ---
 
 ## SSE streaming
@@ -221,9 +224,9 @@ Webhook subscriptions provide durable, retried delivery to an HTTPS endpoint. Th
 |---|---|
 | Create subscription (repo-scoped, `repo` field set) | Reader+ on the target repo |
 | Create subscription (global, `repo` field omitted) | Global admin |
-| List subscriptions | Global admin |
-| Delete subscription | Global admin |
-| Resume a suspended subscription | Global admin |
+| List subscriptions | Global admin (all) or any authenticated user (own) |
+| Delete subscription | Global admin or subscription creator |
+| Resume a suspended subscription | Global admin or subscription creator |
 
 ### Event filtering
 
@@ -236,7 +239,9 @@ A subscription receives events based on two optional filters. Both must match fo
 
 ### HMAC-SHA256 request signing
 
-When a subscription is created with a non-empty `secret` in its config, every webhook delivery includes an `X-DocStore-Signature` header:
+Every webhook delivery is an HTTP POST with `Content-Type: application/cloudevents+json`.
+
+When a subscription is created with a non-empty `secret` in its config, every webhook delivery also includes an `X-DocStore-Signature` header:
 
 ```
 X-DocStore-Signature: sha256=<hex-encoded-hmac-sha256>
@@ -278,6 +283,8 @@ def verify(body: bytes, secret: str, header: str) -> bool:
 
 Always use a constant-time comparison (`hmac.Equal` / `hmac.compare_digest`) to prevent timing attacks.
 
+> **Secret storage:** The `secret` value is stored and returned in plaintext. To rotate a secret, delete the subscription and recreate it with a new secret value.
+
 ### Retry and suspend policy
 
 | Behavior | Detail |
@@ -287,6 +294,7 @@ Always use a constant-time comparison (`hmac.Equal` / `hmac.compare_digest`) to 
 | Retry backoff | Exponential: 1 s, 2 s, 4 s, 8 s, …, capped at 1 hour |
 | Max attempts | 10 per outbox row |
 | Auto-suspend | After 10 failed attempts the subscription is suspended and no further events are sent |
+| `failure_count` field | Counts the number of times the subscription has been auto-suspended, not the total number of individual failed delivery attempts |
 | Resume | `POST /subscriptions/{id}/resume` clears the suspension and resets the failure counter |
 | Outbox retention | Delivered rows are deleted after 7 days |
 
@@ -328,7 +336,6 @@ Content-Type: application/json
   "config": {"url": "https://hooks.example.com/docstore", "secret": "my-hmac-secret"},
   "created_at": "2024-06-01T12:00:00Z",
   "created_by": "alice@example.com",
-  "suspended_at": null,
   "failure_count": 0
 }
 ```
@@ -352,7 +359,6 @@ GET /subscriptions
       "config": {"url": "https://hooks.example.com/docstore"},
       "created_at": "2024-06-01T12:00:00Z",
       "created_by": "alice@example.com",
-      "suspended_at": null,
       "failure_count": 0
     }
   ]
@@ -443,7 +449,7 @@ Subscription management is also available via the `ds` CLI:
 # Repo-scoped, specific event types, with HMAC secret
 ds subscriptions create \
   --repo acme/platform \
-  --events com.docstore.commit.created,com.docstore.branch.merged \
+  --event-types com.docstore.commit.created,com.docstore.branch.merged \
   --url https://hooks.example.com/docstore \
   --secret my-hmac-secret
 
