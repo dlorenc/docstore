@@ -20,6 +20,7 @@ DocStore is a server-side version control system for structured documents, built
 | [docs/deployment.md](docs/deployment.md) | Cloud Run + Cloud SQL + GKE setup |
 | [docs/ci.md](docs/ci.md) | CI system: ci-scheduler, ci-worker, `.docstore/ci.yaml` DSL |
 | [docs/policy.md](docs/policy.md) | RBAC roles, OPA policy engine, OWNERS files |
+| [docs/events.md](docs/events.md) | Event types, SSE streaming, webhook subscriptions |
 | [docs/sdk.md](docs/sdk.md) | Go SDK |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Developer setup, testing, adding handlers |
 
