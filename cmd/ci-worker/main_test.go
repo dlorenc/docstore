@@ -519,10 +519,21 @@ func TestHeartbeat_ErrorDoesNotPanic(t *testing.T) {
 
 	hb := &mockHeartbeater{err: errors.New("db gone")}
 	done := make(chan struct{})
-	go heartbeat(context.Background(), hb, "job-1", done)
+
+	finished := make(chan struct{})
+	go func() {
+		heartbeat(context.Background(), hb, "job-1", done)
+		close(finished)
+	}()
 
 	time.Sleep(50 * time.Millisecond)
 	close(done) // should not panic even when HeartbeatCIJob returns an error
+
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("heartbeat goroutine did not stop after done closed")
+	}
 }
 
 // ---------------------------------------------------------------------------
