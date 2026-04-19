@@ -138,7 +138,18 @@ func (m issueOverlayModel) updateCreate(msg tea.Msg) (issueOverlayModel, tea.Cmd
 			return m, nil
 
 		case "enter":
+			if m.focus == issueFocusBody {
+				// Pass enter through to textarea so it inserts a newline.
+				break
+			}
 			if !m.submitting && m.titleInput.Value() != "" {
+				m.submitting = true
+				return m, createIssueCmd(m.client, m.titleInput.Value(), m.bodyArea.Value())
+			}
+			return m, nil
+
+		case "ctrl+enter":
+			if m.focus == issueFocusBody && !m.submitting && m.titleInput.Value() != "" {
 				m.submitting = true
 				return m, createIssueCmd(m.client, m.titleInput.Value(), m.bodyArea.Value())
 			}
@@ -271,7 +282,11 @@ func (m issueOverlayModel) viewCreate() string {
 		sb.WriteString("  Creating...\n")
 	}
 
-	sb.WriteString(styleHelp.Render("  tab toggle · enter submit · esc cancel"))
+	if m.focus == issueFocusBody {
+		sb.WriteString(styleHelp.Render("  tab toggle · ctrl+enter submit · esc cancel"))
+	} else {
+		sb.WriteString(styleHelp.Render("  tab toggle · enter submit · esc cancel"))
+	}
 	return sb.String()
 }
 
