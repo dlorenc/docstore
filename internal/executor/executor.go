@@ -234,10 +234,14 @@ func (e *Executor) runCheck(ctx context.Context, source string, check Check) Che
 		var srcMount llb.State
 		if isHTTP {
 			httpSrc := llb.HTTP(source, llb.Filename("source.tar"))
+			// /src must be declared as an explicit output mount (via llb.AddMount with
+			// llb.Scratch() as the base) so that GetMount("/src") returns the populated
+			// state. Without it, GetMount returns nil and the golang step sees an empty /src.
 			srcMount = llb.Image("busybox:latest").
 				Run(
-					llb.Args([]string{"sh", "-c", "mkdir -p /src && tar -xf /archive/source.tar -C /src"}),
+					llb.Args([]string{"sh", "-c", "tar -xf /archive/source.tar -C /src"}),
 					llb.AddMount("/archive", httpSrc),
+					llb.AddMount("/src", llb.Scratch()),
 				).GetMount("/src")
 		} else if isLocal {
 			srcMount = llb.Local("src")
