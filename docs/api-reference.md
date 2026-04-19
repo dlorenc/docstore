@@ -500,7 +500,7 @@ Create a webhook subscription.
 
 ### `GET /subscriptions`
 
-List all subscriptions. Global admin only.
+List subscriptions. Global admins see all subscriptions; non-admin authenticated users see only their own.
 
 **Response 200:**
 ```json
@@ -511,12 +511,12 @@ A non-null `suspended_at` field means the subscription was automatically suspend
 
 ### `DELETE /subscriptions/{id}`
 
-Delete a subscription. Global admin only.
+Delete a subscription. Global admin or the subscription creator.
 
 **Response 204.**
 
 ### `POST /subscriptions/{id}/resume`
 
-Resume a suspended subscription. Global admin only. Clears `suspended_at` and resets `failure_count` to 0.
+Resume a suspended subscription. Global admin or the subscription creator. Clears `suspended_at` and resets `failure_count` to 0.
 
 **Response 204.**
