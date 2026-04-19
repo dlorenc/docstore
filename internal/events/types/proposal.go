@@ -7,6 +7,7 @@ type ProposalOpened struct {
 	BaseBranch string `json:"base_branch"`
 	ProposalID string `json:"proposal_id"`
 	Author     string `json:"author"`
+	Sequence   int64  `json:"sequence"`
 }
 
 func (e ProposalOpened) Type() string   { return "com.docstore.proposal.opened" }
