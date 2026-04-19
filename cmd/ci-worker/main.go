@@ -475,8 +475,9 @@ func main() {
 
 		// Build trigger context from claimed job.
 		triggerCtx := ciconfig.TriggerContext{
-			Type:   job.TriggerType,
-			Branch: job.TriggerBranch,
+			Type:       job.TriggerType,
+			Branch:     job.TriggerBranch,
+			BaseBranch: job.TriggerBaseBranch,
 		}
 		if job.TriggerProposalID != nil {
 			triggerCtx.ProposalID = *job.TriggerProposalID
