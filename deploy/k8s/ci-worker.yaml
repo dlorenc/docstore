@@ -27,7 +27,7 @@ metadata:
   name: ci-worker
   namespace: docstore-ci
 spec:
-  replicas: 3
+  # replicas is intentionally omitted — KEDA manages the replica count.
   # RollingUpdate: allows the autoscaler (KEDA) to add/remove replicas without
   # killing running workers. Recreate would terminate all pods on any replica
   # count change, interrupting in-flight builds.

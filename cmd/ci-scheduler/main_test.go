@@ -56,6 +56,10 @@ func (s *stubStore) ReapStaleCIJobs(_ context.Context) ([]model.CIJob, error) {
 	return s.reapJobs, s.reapErr
 }
 
+func (s *stubStore) CountQueuedCIJobs(_ context.Context) (int64, error) {
+	return int64(len(s.insertedJobs)), nil
+}
+
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
@@ -793,6 +797,10 @@ func (s *countingStore) ReapStaleCIJobs(_ context.Context) ([]model.CIJob, error
 	defer s.mu.Unlock()
 	s.reapCalls++
 	return s.reapJobs, s.reapErr
+}
+
+func (s *countingStore) CountQueuedCIJobs(_ context.Context) (int64, error) {
+	return 0, nil
 }
 
 func (s *countingStore) calls() int {

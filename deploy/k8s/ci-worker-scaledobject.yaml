@@ -1,20 +1,13 @@
 # KEDA autoscaling for ci-worker.
 #
-# TriggerAuthentication pulls the PostgreSQL connection string from the
-# existing ci-scheduler Secret so KEDA can query the ci_jobs table.
-# ScaledObject scales the ci-worker Deployment between 3 and 10 replicas
-# based on the number of queued jobs.
----
-apiVersion: keda.sh/v1alpha1
-kind: TriggerAuthentication
-metadata:
-  name: ci-worker-db-auth
-  namespace: docstore-ci
-spec:
-  secretTargetRef:
-  - parameter: connection
-    name: ci-scheduler
-    key: database-url
+# Uses the metrics-api trigger pointing at the ci-scheduler /queue-depth
+# endpoint, which returns {"queue_depth": N}. This avoids the Cloud SQL Proxy
+# problem: KEDA's operator runs in its own pod without a sidecar, so it
+# cannot use the localhost:5432 DATABASE_URL. The ci-scheduler already has
+# proxy access and can serve the count directly over HTTP.
+#
+# ScaledObject scales the ci-worker Deployment between 3 and 10 replicas.
+# targetValue: "1" means one replica per queued job (1:1 scaling).
 ---
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
@@ -27,11 +20,10 @@ spec:
   minReplicaCount: 3
   maxReplicaCount: 10
   pollingInterval: 10
-  cooldownPeriod: 30
+  cooldownPeriod: 300
   triggers:
-  - type: postgresql
+  - type: metrics-api
     metadata:
-      query: "SELECT COUNT(*) FROM ci_jobs WHERE status = 'queued'"
-      targetQueryValue: "1"
-    authenticationRef:
-      name: ci-worker-db-auth
+      targetValue: "1"
+      url: "http://ci-scheduler.docstore-ci.svc.cluster.local:8080/queue-depth"
+      valueLocation: "queue_depth"
