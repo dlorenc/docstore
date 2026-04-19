@@ -2448,12 +2448,10 @@ func (s *server) handleChain(w http.ResponseWriter, r *http.Request) {
 // Event subscription handlers (admin only)
 // ---------------------------------------------------------------------------
 
-// handleCreateSubscription implements POST /subscriptions
+// handleCreateSubscription implements POST /subscriptions.
+// Global admin may create subscriptions of any scope. Non-admin users may create
+// repo-scoped subscriptions only if they have at least reader access to that repo.
 func (s *server) handleCreateSubscription(w http.ResponseWriter, r *http.Request) {
-	if !s.requireGlobalAdmin(w, r) {
-		return
-	}
-
 	var req model.CreateSubscriptionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -2492,7 +2490,20 @@ func (s *server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 		slog.Warn("subscription created without webhook secret", "url", webhookURL)
 	}
 
-	req.CreatedBy = IdentityFromContext(r.Context())
+	identity := IdentityFromContext(r.Context())
+	isAdmin := s.globalAdmin != "" && identity == s.globalAdmin
+	if !isAdmin {
+		// Non-admin may only create repo-scoped subscriptions for repos they can read.
+		if req.Repo == nil || *req.Repo == "" {
+			writeError(w, http.StatusForbidden, "forbidden: global admin required for global subscriptions")
+			return
+		}
+		if !s.requireRepoReadAccess(w, r, *req.Repo) {
+			return
+		}
+	}
+
+	req.CreatedBy = identity
 
 	sub, err := s.commitStore.CreateSubscription(r.Context(), req)
 	if err != nil {
@@ -2505,11 +2516,12 @@ func (s *server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusCreated, sub)
 }
 
-// handleListSubscriptions implements GET /subscriptions
+// handleListSubscriptions implements GET /subscriptions.
+// Global admin sees all subscriptions. Non-admin users see only subscriptions
+// they created (filtered by CreatedBy == identity).
 func (s *server) handleListSubscriptions(w http.ResponseWriter, r *http.Request) {
-	if !s.requireGlobalAdmin(w, r) {
-		return
-	}
+	identity := IdentityFromContext(r.Context())
+	isAdmin := s.globalAdmin != "" && identity == s.globalAdmin
 
 	subs, err := s.commitStore.ListSubscriptions(r.Context())
 	if err != nil {
@@ -2520,16 +2532,45 @@ func (s *server) handleListSubscriptions(w http.ResponseWriter, r *http.Request)
 	if subs == nil {
 		subs = []model.EventSubscription{}
 	}
+	// Non-admin users only see subscriptions they created.
+	if !isAdmin {
+		filtered := make([]model.EventSubscription, 0, len(subs))
+		for _, sub := range subs {
+			if sub.CreatedBy == identity {
+				filtered = append(filtered, sub)
+			}
+		}
+		subs = filtered
+	}
 	writeJSON(w, http.StatusOK, model.ListSubscriptionsResponse{Subscriptions: subs})
 }
 
-// handleDeleteSubscription implements DELETE /subscriptions/{id}
+// handleDeleteSubscription implements DELETE /subscriptions/{id}.
+// Global admin may delete any subscription. The subscription creator may also delete it.
 func (s *server) handleDeleteSubscription(w http.ResponseWriter, r *http.Request) {
-	if !s.requireGlobalAdmin(w, r) {
-		return
-	}
+	identity := IdentityFromContext(r.Context())
+	isAdmin := s.globalAdmin != "" && identity == s.globalAdmin
 
 	id := r.PathValue("id")
+
+	if !isAdmin {
+		sub, err := s.commitStore.GetSubscription(r.Context(), id)
+		if err != nil {
+			switch {
+			case errors.Is(err, db.ErrSubscriptionNotFound):
+				writeError(w, http.StatusNotFound, "subscription not found")
+			default:
+				slog.Error("internal error", "op", "get_subscription", "id", id, "error", err)
+				writeError(w, http.StatusInternalServerError, "internal server error")
+			}
+			return
+		}
+		if sub.CreatedBy != identity {
+			writeError(w, http.StatusForbidden, "forbidden: not subscription creator")
+			return
+		}
+	}
+
 	if err := s.commitStore.DeleteSubscription(r.Context(), id); err != nil {
 		switch {
 		case errors.Is(err, db.ErrSubscriptionNotFound):
@@ -2541,17 +2582,36 @@ func (s *server) handleDeleteSubscription(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	slog.Info("subscription deleted", "id", id, "by", IdentityFromContext(r.Context()))
+	slog.Info("subscription deleted", "id", id, "by", identity)
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleResumeSubscription implements POST /subscriptions/{id}/resume
+// handleResumeSubscription implements POST /subscriptions/{id}/resume.
+// Global admin may resume any subscription. The subscription creator may also resume it.
 func (s *server) handleResumeSubscription(w http.ResponseWriter, r *http.Request) {
-	if !s.requireGlobalAdmin(w, r) {
-		return
-	}
+	identity := IdentityFromContext(r.Context())
+	isAdmin := s.globalAdmin != "" && identity == s.globalAdmin
 
 	id := r.PathValue("id")
+
+	if !isAdmin {
+		sub, err := s.commitStore.GetSubscription(r.Context(), id)
+		if err != nil {
+			switch {
+			case errors.Is(err, db.ErrSubscriptionNotFound):
+				writeError(w, http.StatusNotFound, "subscription not found")
+			default:
+				slog.Error("internal error", "op", "get_subscription", "id", id, "error", err)
+				writeError(w, http.StatusInternalServerError, "internal server error")
+			}
+			return
+		}
+		if sub.CreatedBy != identity {
+			writeError(w, http.StatusForbidden, "forbidden: not subscription creator")
+			return
+		}
+	}
+
 	if err := s.commitStore.ResumeSubscription(r.Context(), id); err != nil {
 		switch {
 		case errors.Is(err, db.ErrSubscriptionNotFound):
@@ -2563,7 +2623,7 @@ func (s *server) handleResumeSubscription(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	slog.Info("subscription resumed", "id", id, "by", IdentityFromContext(r.Context()))
+	slog.Info("subscription resumed", "id", id, "by", identity)
 	w.WriteHeader(http.StatusNoContent)
 }
 

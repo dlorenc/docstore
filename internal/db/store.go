@@ -2175,6 +2175,39 @@ func (s *Store) CreateSubscription(ctx context.Context, req model.CreateSubscrip
 	return sub, nil
 }
 
+// GetSubscription returns a single event subscription by ID.
+// Returns ErrSubscriptionNotFound if no subscription with that ID exists.
+func (s *Store) GetSubscription(ctx context.Context, id string) (*model.EventSubscription, error) {
+	var sub model.EventSubscription
+	var repo sql.NullString
+	var eventTypes pq.StringArray
+	var suspendedAt sql.NullTime
+	var configBytes []byte
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, repo, event_types, backend, config, created_at, created_by, suspended_at, failure_count
+		FROM event_subscriptions
+		WHERE id = $1`, id).Scan(
+		&sub.ID, &repo, &eventTypes, &sub.Backend,
+		&configBytes, &sub.CreatedAt, &sub.CreatedBy, &suspendedAt, &sub.FailureCount)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrSubscriptionNotFound
+		}
+		return nil, fmt.Errorf("get subscription: %w", err)
+	}
+	if repo.Valid {
+		sub.Repo = &repo.String
+	}
+	if len(eventTypes) > 0 {
+		sub.EventTypes = []string(eventTypes)
+	}
+	if suspendedAt.Valid {
+		sub.SuspendedAt = &suspendedAt.Time
+	}
+	sub.Config = json.RawMessage(configBytes)
+	return &sub, nil
+}
+
 // ListSubscriptions returns all event subscriptions. If repo is non-nil,
 // only subscriptions matching that repo (or global ones) are returned.
 func (s *Store) ListSubscriptions(ctx context.Context) ([]model.EventSubscription, error) {

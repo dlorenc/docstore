@@ -66,10 +66,11 @@ type mockStore struct {
 	getReviewCommentFn    func(ctx context.Context, repo, id string) (*model.ReviewComment, error)
 	deleteReviewCommentFn func(ctx context.Context, repo, id string) error
 
-	createSubscriptionFn func(ctx context.Context, req model.CreateSubscriptionRequest) (*model.EventSubscription, error)
-	listSubscriptionsFn  func(ctx context.Context) ([]model.EventSubscription, error)
-	deleteSubscriptionFn func(ctx context.Context, id string) error
-	resumeSubscriptionFn func(ctx context.Context, id string) error
+	createSubscriptionFn  func(ctx context.Context, req model.CreateSubscriptionRequest) (*model.EventSubscription, error)
+	getSubscriptionFn     func(ctx context.Context, id string) (*model.EventSubscription, error)
+	listSubscriptionsFn   func(ctx context.Context) ([]model.EventSubscription, error)
+	deleteSubscriptionFn  func(ctx context.Context, id string) error
+	resumeSubscriptionFn  func(ctx context.Context, id string) error
 }
 
 func (m *mockStore) Commit(ctx context.Context, req model.CommitRequest) (*model.CommitResponse, error) {
@@ -343,6 +344,13 @@ func (m *mockStore) CreateSubscription(ctx context.Context, req model.CreateSubs
 		return m.createSubscriptionFn(ctx, req)
 	}
 	return &model.EventSubscription{ID: "test-sub-id", Backend: req.Backend}, nil
+}
+
+func (m *mockStore) GetSubscription(ctx context.Context, id string) (*model.EventSubscription, error) {
+	if m.getSubscriptionFn != nil {
+		return m.getSubscriptionFn(ctx, id)
+	}
+	return nil, db.ErrSubscriptionNotFound
 }
 
 func (m *mockStore) ListSubscriptions(ctx context.Context) ([]model.EventSubscription, error) {
