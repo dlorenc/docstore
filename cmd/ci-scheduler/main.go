@@ -43,7 +43,7 @@ import (
 // ---------------------------------------------------------------------------
 
 type ciJobStore interface {
-	InsertCIJob(ctx context.Context, repo, branch string, sequence int64, triggerType, triggerBranch, triggerProposalID string) (*model.CIJob, error)
+	InsertCIJob(ctx context.Context, repo, branch string, sequence int64, triggerType, triggerBranch, triggerBaseBranch, triggerProposalID string) (*model.CIJob, error)
 	GetCIJob(ctx context.Context, id string) (*model.CIJob, error)
 	ReapStaleCIJobs(ctx context.Context) ([]model.CIJob, error)
 }
@@ -277,7 +277,7 @@ func (s *scheduler) handleCommitCreated(w http.ResponseWriter, r *http.Request, 
 	}
 
 	if cfg == nil || cfg.MatchesPush(data.Branch) {
-		job, err := s.store.InsertCIJob(r.Context(), data.Repo, data.Branch, data.Sequence, "push", data.Branch, "")
+		job, err := s.store.InsertCIJob(r.Context(), data.Repo, data.Branch, data.Sequence, "push", data.Branch, "", "")
 		if err != nil {
 			slog.Error("insert ci job failed", "repo", data.Repo, "branch", data.Branch, "error", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
@@ -299,7 +299,7 @@ func (s *scheduler) handleCommitCreated(w http.ResponseWriter, r *http.Request, 
 			proposalCfgMatch = cfg.MatchesProposal(proposal.BaseBranch)
 		}
 		if proposalCfgMatch {
-			job, err := s.store.InsertCIJob(r.Context(), data.Repo, data.Branch, data.Sequence, "proposal_synchronized", data.Branch, proposal.ID)
+			job, err := s.store.InsertCIJob(r.Context(), data.Repo, data.Branch, data.Sequence, "proposal_synchronized", data.Branch, proposal.BaseBranch, proposal.ID)
 			if err != nil {
 				slog.Error("insert proposal_synchronized ci job failed", "repo", data.Repo, "branch", data.Branch, "proposal_id", proposal.ID, "error", err)
 				http.Error(w, "internal error", http.StatusInternalServerError)
@@ -347,7 +347,7 @@ func (s *scheduler) handleProposalOpened(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	job, err := s.store.InsertCIJob(r.Context(), data.Repo, data.Branch, sequence, "proposal", data.Branch, data.ProposalID)
+	job, err := s.store.InsertCIJob(r.Context(), data.Repo, data.Branch, sequence, "proposal", data.Branch, data.BaseBranch, data.ProposalID)
 	if err != nil {
 		slog.Error("insert proposal ci job failed", "repo", data.Repo, "branch", data.Branch, "proposal_id", data.ProposalID, "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -375,7 +375,7 @@ func (s *scheduler) handleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	job, err := s.store.InsertCIJob(r.Context(), req.Repo, req.Branch, req.HeadSequence, "manual", req.Branch, "")
+	job, err := s.store.InsertCIJob(r.Context(), req.Repo, req.Branch, req.HeadSequence, "manual", req.Branch, "", "")
 	if err != nil {
 		slog.Error("insert ci job failed", "repo", req.Repo, "branch", req.Branch, "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -540,38 +540,6 @@ func (s *scheduler) fetchAllRepos(ctx context.Context) ([]string, error) {
 	return names, nil
 }
 
-// fetchBranchHead fetches the current head sequence of a named branch in the
-// given repo. It is used by the schedule runner to determine the commit to
-// build against, since schedule events carry no sequence of their own.
-func (s *scheduler) fetchBranchHead(ctx context.Context, repo, branch string) (int64, error) {
-	if s.docstoreURL == "" {
-		return 0, fmt.Errorf("docstore URL not configured")
-	}
-	branchesURL := fmt.Sprintf("%s/repos/%s/-/branches", s.docstoreURL, repo)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, branchesURL, nil)
-	if err != nil {
-		return 0, fmt.Errorf("build branches request: %w", err)
-	}
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return 0, fmt.Errorf("fetch branches: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("fetch branches: unexpected status %d", resp.StatusCode)
-	}
-	var branches []model.Branch
-	if err := json.NewDecoder(resp.Body).Decode(&branches); err != nil {
-		return 0, fmt.Errorf("decode branches response: %w", err)
-	}
-	for _, b := range branches {
-		if b.Name == branch {
-			return b.HeadSequence, nil
-		}
-	}
-	return 0, fmt.Errorf("branch %q not found in repo %q", branch, repo)
-}
-
 // runScheduledJobs checks all repos for schedule-triggered CI jobs that should
 // fire at time t (truncated to the minute).
 func (s *scheduler) runScheduledJobs(ctx context.Context, t time.Time) {
@@ -604,7 +572,7 @@ func (s *scheduler) runScheduledJobs(ctx context.Context, t time.Time) {
 			// Check if the cron fires at this minute: the next fire time after
 			// (now - 1 minute) must equal now.
 			if sched.Next(now.Add(-time.Minute)).Equal(now) {
-				job, err := s.store.InsertCIJob(ctx, repo, "main", headSeq, "schedule", "main", "")
+				job, err := s.store.InsertCIJob(ctx, repo, "main", headSeq, "schedule", "main", "", "")
 				if err != nil {
 					slog.Error("schedule runner: insert ci job failed", "repo", repo, "cron", entry.Cron, "error", err)
 					continue
