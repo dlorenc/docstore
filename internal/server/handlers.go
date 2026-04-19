@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -2821,7 +2822,7 @@ func (s *server) streamSSE(w http.ResponseWriter, r *http.Request, repo string) 
 var (
 	reMentionProposal = regexp.MustCompile(`\bproposal:([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\b`)
 	reMentionCommit   = regexp.MustCompile(`\bcommit:(\d+)\b`)
-	reMentionIssue    = regexp.MustCompile(`#(\d+)`)
+	reMentionIssue    = regexp.MustCompile(`(?:^|[^&\w])#(\d+)`)
 )
 
 // parseMentions extracts cross-reference mentions from a text body.
@@ -2836,6 +2837,10 @@ func parseMentions(body string) (proposalIDs []string, commitSeqs []int64, issue
 		}
 	}
 	for _, m := range reMentionIssue.FindAllStringSubmatch(body, -1) {
+		// Skip 6-digit sequences that look like CSS hex colors (#rrggbb).
+		if len(m[1]) == 6 {
+			continue
+		}
 		if n, err := strconv.ParseInt(m[1], 10, 64); err == nil {
 			issueNums = append(issueNums, n)
 		}
@@ -3064,9 +3069,17 @@ func (s *server) handleCloseIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if existing.State == model.IssueStateClosed {
+		writeError(w, http.StatusConflict, "issue is already closed")
+		return
+	}
+
 	var req model.CloseIssueRequest
 	if r.Body != nil {
-		_ = json.NewDecoder(r.Body).Decode(&req)
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
 	}
 	reason := req.Reason
 	if reason == "" {
@@ -3104,6 +3117,30 @@ func (s *server) handleReopenIssue(w http.ResponseWriter, r *http.Request) {
 
 	number, ok := parseIssueNumber(w, r)
 	if !ok {
+		return
+	}
+
+	identity := IdentityFromContext(r.Context())
+	role := RoleFromContext(r.Context())
+
+	existing, err := s.commitStore.GetIssue(r.Context(), repo, number)
+	if err != nil {
+		if errors.Is(err, db.ErrIssueNotFound) {
+			writeError(w, http.StatusNotFound, "issue not found")
+		} else {
+			slog.Error("internal error", "op", "reopen_issue", "repo", repo, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+
+	if existing.Author != identity && role != model.RoleMaintainer && role != model.RoleAdmin {
+		writeError(w, http.StatusForbidden, "forbidden: must be issue author or maintainer")
+		return
+	}
+
+	if existing.State == model.IssueStateOpen {
+		writeError(w, http.StatusConflict, "issue is already open")
 		return
 	}
 
@@ -3211,6 +3248,21 @@ func (s *server) handleUpdateIssueComment(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	issue, err := s.commitStore.GetIssue(r.Context(), repo, number)
+	if err != nil {
+		if errors.Is(err, db.ErrIssueNotFound) {
+			writeError(w, http.StatusNotFound, "comment not found")
+		} else {
+			slog.Error("internal error", "op", "update_issue_comment", "repo", repo, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+	if existing.IssueID != issue.ID {
+		writeError(w, http.StatusNotFound, "comment not found")
+		return
+	}
+
 	if existing.Author != identity && role != model.RoleMaintainer && role != model.RoleAdmin {
 		writeError(w, http.StatusForbidden, "forbidden: must be comment author or maintainer")
 		return
@@ -3249,11 +3301,46 @@ func (s *server) handleDeleteIssueComment(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if _, ok := parseIssueNumber(w, r); !ok {
+	number, ok := parseIssueNumber(w, r)
+	if !ok {
 		return
 	}
 
 	commentID := r.PathValue("commentID")
+	identity := IdentityFromContext(r.Context())
+	role := RoleFromContext(r.Context())
+
+	existing, err := s.commitStore.GetIssueComment(r.Context(), repo, commentID)
+	if err != nil {
+		if errors.Is(err, db.ErrIssueCommentNotFound) {
+			writeError(w, http.StatusNotFound, "comment not found")
+		} else {
+			slog.Error("internal error", "op", "delete_issue_comment", "repo", repo, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+
+	issue, err := s.commitStore.GetIssue(r.Context(), repo, number)
+	if err != nil {
+		if errors.Is(err, db.ErrIssueNotFound) {
+			writeError(w, http.StatusNotFound, "comment not found")
+		} else {
+			slog.Error("internal error", "op", "delete_issue_comment", "repo", repo, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+	if existing.IssueID != issue.ID {
+		writeError(w, http.StatusNotFound, "comment not found")
+		return
+	}
+
+	if existing.Author != identity && role != model.RoleMaintainer && role != model.RoleAdmin {
+		writeError(w, http.StatusForbidden, "forbidden: must be comment author or maintainer")
+		return
+	}
+
 	if err := s.commitStore.DeleteIssueComment(r.Context(), repo, commentID); err != nil {
 		if errors.Is(err, db.ErrIssueCommentNotFound) {
 			writeError(w, http.StatusNotFound, "comment not found")
@@ -3356,6 +3443,10 @@ func (s *server) handleCommitIssues(w http.ResponseWriter, r *http.Request) {
 	}
 
 	seqStr := r.PathValue("sequence")
+	if _, err := strconv.ParseInt(seqStr, 10, 64); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid sequence number")
+		return
+	}
 	issues, err := s.commitStore.ListIssuesByRef(r.Context(), repo, model.IssueRefTypeCommit, seqStr)
 	if err != nil {
 		slog.Error("internal error", "op", "commit_issues", "repo", repo, "error", err)

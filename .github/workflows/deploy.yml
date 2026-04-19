@@ -126,7 +126,7 @@ jobs:
 
   build-and-deploy-ci-worker:
     runs-on: ubuntu-latest
-    needs: [deploy]
+    needs: [deploy, build-and-deploy-ci-scheduler]
     steps:
       - uses: actions/checkout@v4
 
@@ -168,4 +168,4 @@ jobs:
             -n docstore-ci
           kubectl rollout status deployment/ci-worker -n docstore-ci --timeout=600s
           kubectl apply -f deploy/k8s/ci-worker-scaledobject.yaml
-          kubectl wait --for=condition=Ready scaledobject/ci-worker -n docstore-ci --timeout=60s
+          kubectl wait --for=condition=Ready scaledobject/ci-worker -n docstore-ci --timeout=120s
