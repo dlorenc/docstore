@@ -1714,7 +1714,12 @@ func (s *server) handleListProposals(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	proposals, err := s.commitStore.ListProposals(r.Context(), repo, state)
+	var branch *string
+	if bv := r.URL.Query().Get("branch"); bv != "" {
+		branch = &bv
+	}
+
+	proposals, err := s.commitStore.ListProposals(r.Context(), repo, state, branch)
 	if err != nil {
 		slog.Error("internal error", "op", "list_proposals", "repo", repo, "error", err)
 		writeError(w, http.StatusInternalServerError, "internal server error")
