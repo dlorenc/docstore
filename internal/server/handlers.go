@@ -2462,7 +2462,7 @@ func (s *server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if req.Backend != "webhook" {
-		writeError(w, http.StatusBadRequest, "only backend='webhook' is supported in Milestone 1")
+		writeError(w, http.StatusBadRequest, "only backend='webhook' is supported")
 		return
 	}
 	if len(req.Config) == 0 {
