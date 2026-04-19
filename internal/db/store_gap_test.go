@@ -363,3 +363,46 @@ func TestResumeSubscription_NotFound(t *testing.T) {
 		t.Errorf("expected ErrSubscriptionNotFound, got %v", err)
 	}
 }
+
+func TestGetSubscription_Found(t *testing.T) {
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	config, _ := json.Marshal(map[string]string{"url": "https://example.com/hook"})
+	created, err := s.CreateSubscription(ctx, model.CreateSubscriptionRequest{
+		Backend:   "webhook",
+		Config:    config,
+		CreatedBy: "admin@example.com",
+	})
+	if err != nil {
+		t.Fatalf("create subscription: %v", err)
+	}
+
+	got, err := s.GetSubscription(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("get subscription: %v", err)
+	}
+	if got.ID != created.ID {
+		t.Errorf("expected id %q, got %q", created.ID, got.ID)
+	}
+	if got.Backend != "webhook" {
+		t.Errorf("expected backend webhook, got %q", got.Backend)
+	}
+	if got.CreatedBy != "admin@example.com" {
+		t.Errorf("expected created_by admin@example.com, got %q", got.CreatedBy)
+	}
+}
+
+func TestGetSubscription_NotFound(t *testing.T) {
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	_, err := s.GetSubscription(ctx, "00000000-0000-0000-0000-000000000000")
+	if !errors.Is(err, ErrSubscriptionNotFound) {
+		t.Errorf("expected ErrSubscriptionNotFound, got %v", err)
+	}
+}
