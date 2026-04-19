@@ -2315,13 +2315,18 @@ func (s *Store) GetProposal(ctx context.Context, repo, proposalID string) (*mode
 
 // ListProposals returns proposals for a repo ordered by created_at DESC.
 // If state is non-nil, only proposals with that state are returned.
-func (s *Store) ListProposals(ctx context.Context, repo string, state *model.ProposalState) ([]*model.Proposal, error) {
+// If branch is non-nil, only proposals for that branch are returned.
+func (s *Store) ListProposals(ctx context.Context, repo string, state *model.ProposalState, branch *string) ([]*model.Proposal, error) {
 	q := `SELECT id::text, repo, branch, base_branch, title, description, author, state, created_at, updated_at
 	      FROM proposals WHERE repo = $1`
 	args := []interface{}{repo}
 	if state != nil {
-		q += " AND state = $2"
 		args = append(args, string(*state))
+		q += fmt.Sprintf(" AND state = $%d", len(args))
+	}
+	if branch != nil {
+		args = append(args, *branch)
+		q += fmt.Sprintf(" AND branch = $%d", len(args))
 	}
 	q += " ORDER BY created_at DESC"
 
