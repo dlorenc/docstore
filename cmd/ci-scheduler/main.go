@@ -183,39 +183,6 @@ func (s *scheduler) fetchCIConfig(ctx context.Context, repo, branch string, sequ
 	return &cfg, nil
 }
 
-// fetchBranchHead fetches the current head sequence for a branch using the branches list API.
-func (s *scheduler) fetchBranchHead(ctx context.Context, repo, branch string) (int64, error) {
-	if s.docstoreURL == "" {
-		return 0, fmt.Errorf("docstore URL not configured")
-	}
-	branchesURL := fmt.Sprintf("%s/repos/%s/-/branches", s.docstoreURL, repo)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, branchesURL, nil)
-	if err != nil {
-		return 0, fmt.Errorf("build branches request: %w", err)
-	}
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return 0, fmt.Errorf("fetch branches: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("fetch branches: unexpected status %d", resp.StatusCode)
-	}
-	var branches []struct {
-		Name         string `json:"name"`
-		HeadSequence int64  `json:"head_sequence"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&branches); err != nil {
-		return 0, fmt.Errorf("decode branches response: %w", err)
-	}
-	for _, b := range branches {
-		if b.Name == branch {
-			return b.HeadSequence, nil
-		}
-	}
-	return 0, fmt.Errorf("branch not found: %s", branch)
-}
-
 // fetchOpenProposalForBranch returns the open proposal for a branch, or nil if none exists.
 func (s *scheduler) fetchOpenProposalForBranch(ctx context.Context, repo, branch string) (*model.Proposal, error) {
 	if s.docstoreURL == "" {
@@ -354,6 +321,7 @@ func (s *scheduler) handleProposalOpened(w http.ResponseWriter, r *http.Request,
 		BaseBranch string `json:"base_branch"`
 		ProposalID string `json:"proposal_id"`
 		Author     string `json:"author"`
+		Sequence   int64  `json:"sequence"`
 	}
 	if err := json.Unmarshal(raw, &data); err != nil {
 		http.Error(w, "invalid event data", http.StatusBadRequest)
@@ -364,13 +332,7 @@ func (s *scheduler) handleProposalOpened(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	// Fetch the current head sequence for the branch.
-	sequence, err := s.fetchBranchHead(r.Context(), data.Repo, data.Branch)
-	if err != nil {
-		slog.Warn("could not fetch branch head, skipping proposal trigger", "repo", data.Repo, "branch", data.Branch, "error", err)
-		w.WriteHeader(http.StatusOK)
-		return
-	}
+	sequence := data.Sequence
 
 	// Fetch CI config and evaluate proposal trigger filter.
 	cfg, err := s.fetchCIConfig(r.Context(), data.Repo, data.Branch, sequence)
