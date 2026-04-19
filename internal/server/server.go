@@ -107,7 +107,9 @@ type WriteStore interface {
 
 	// Event subscription management
 	CreateSubscription(ctx context.Context, req model.CreateSubscriptionRequest) (*model.EventSubscription, error)
+	GetSubscription(ctx context.Context, id string) (*model.EventSubscription, error)
 	ListSubscriptions(ctx context.Context) ([]model.EventSubscription, error)
+	ListSubscriptionsByCreator(ctx context.Context, createdBy string) ([]model.EventSubscription, error)
 	DeleteSubscription(ctx context.Context, id string) error
 	ResumeSubscription(ctx context.Context, id string) error
 
@@ -201,7 +203,7 @@ func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore Wri
 	//   GET  /repos/acme/myrepo          (bare: GET/DELETE a repo)
 	inner.Handle("/repos/", http.HandlerFunc(s.handleReposPrefix))
 
-	// Event subscription management (global, admin only).
+	// Event subscription management (delegated auth: admin for global, creator for own).
 	inner.HandleFunc("POST /subscriptions", s.handleCreateSubscription)
 	inner.HandleFunc("GET /subscriptions", s.handleListSubscriptions)
 	inner.HandleFunc("DELETE /subscriptions/{id}", s.handleDeleteSubscription)
@@ -315,6 +317,24 @@ func (s *server) requireGlobalAdmin(w http.ResponseWriter, r *http.Request) bool
 	identity := IdentityFromContext(r.Context())
 	if identity != s.globalAdmin {
 		writeError(w, http.StatusForbidden, "forbidden: global admin required")
+		return false
+	}
+	return true
+}
+
+// requireRepoReadAccess checks that the current identity has at least reader
+// access to repo (any assigned role counts). Returns false and writes 403 if not.
+// Returns 500 for unexpected store errors.
+func (s *server) requireRepoReadAccess(w http.ResponseWriter, r *http.Request, repo string) bool {
+	identity := IdentityFromContext(r.Context())
+	_, err := s.commitStore.GetRole(r.Context(), repo, identity)
+	if err != nil {
+		if errors.Is(err, db.ErrRoleNotFound) {
+			writeError(w, http.StatusForbidden, "forbidden: no access to repo")
+		} else {
+			slog.Error("internal error", "op", "get_role", "repo", repo, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
 		return false
 	}
 	return true
