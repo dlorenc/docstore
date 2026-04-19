@@ -100,7 +100,7 @@ func (m branchListModel) View() string {
 			ci := formatCISummary(s.passed, s.failed, s.pending)
 
 			line := fmt.Sprintf("%-30s %-5d %-5d %-20s %-5s %-5s",
-				truncate(b.Name, 30), b.HeadSequence, b.BaseSequence, "", rev, ci)
+				truncate(b.Name, 30), b.HeadSequence, b.BaseSequence, truncate(s.author, 20), rev, ci)
 
 			prefix := "  "
 			if i == m.cursor {
