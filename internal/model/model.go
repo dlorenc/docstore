@@ -69,6 +69,15 @@ type CheckRun = api.CheckRun
 type ReviewComment = api.ReviewComment
 type Release = api.Release
 type EventSubscription = api.EventSubscription
+type Proposal = api.Proposal
+
+type ProposalState = api.ProposalState
+
+const (
+	ProposalOpen   = api.ProposalOpen
+	ProposalClosed = api.ProposalClosed
+	ProposalMerged = api.ProposalMerged
+)
 
 // ---------------------------------------------------------------------------
 // Internal-only types — not part of the HTTP wire surface.
