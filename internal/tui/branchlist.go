@@ -16,6 +16,7 @@ type branchListModel struct {
 	loading    bool
 	err        error
 	openBranch string
+	openIssues bool
 	quit       bool
 
 	refreshing    bool
@@ -66,6 +67,9 @@ func (m branchListModel) Update(msg tea.Msg) (branchListModel, tea.Cmd) {
 				m.openBranch = m.branches[m.cursor].branch.Name
 			}
 
+		case "i":
+			m.openIssues = true
+
 		case "R":
 			m.loading = true
 			m.refreshing = true
@@ -113,11 +117,11 @@ func (m branchListModel) View() string {
 
 	sb.WriteString("\n")
 	if m.refreshing {
-		sb.WriteString(styleHelp.Render("  j/k navigate · enter open · R refresh · q quit  ↻ refreshing…"))
+		sb.WriteString(styleHelp.Render("  j/k navigate · enter open · i issues · R refresh · q quit  ↻ refreshing…"))
 	} else if !m.lastRefreshed.IsZero() {
-		sb.WriteString(styleHelp.Render("  j/k navigate · enter open · R refresh · q quit  · last refreshed at " + m.lastRefreshed.Format("15:04:05")))
+		sb.WriteString(styleHelp.Render("  j/k navigate · enter open · i issues · R refresh · q quit  · last refreshed at " + m.lastRefreshed.Format("15:04:05")))
 	} else {
-		sb.WriteString(styleHelp.Render("  j/k navigate · enter open · R refresh · q quit"))
+		sb.WriteString(styleHelp.Render("  j/k navigate · enter open · i issues · R refresh · q quit"))
 	}
 
 	return sb.String()
