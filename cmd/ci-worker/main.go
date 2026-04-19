@@ -21,6 +21,7 @@ import (
 	_ "github.com/lib/pq"
 	"gopkg.in/yaml.v3"
 
+	"github.com/dlorenc/docstore/internal/ciconfig"
 	"github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/executor"
 	"github.com/dlorenc/docstore/internal/logstore"
@@ -263,6 +264,7 @@ func runJob(
 	docstoreURL string,
 	job *model.CIJob,
 	logDir string,
+	triggerCtx ciconfig.TriggerContext,
 ) (status string, logURL *string, errMsg *string) {
 	fail := func(msg string) (string, *string, *string) {
 		slog.Error("job failed", "job_id", job.ID, "reason", msg)
@@ -308,7 +310,7 @@ func runJob(
 	}
 
 	// 4. Execute all checks.
-	results, err := exec.Run(ctx, srcDir, *cfg)
+	results, err := exec.Run(ctx, srcDir, *cfg, triggerCtx)
 	if err != nil {
 		return fail(fmt.Sprintf("executor: %v", err))
 	}
@@ -471,8 +473,17 @@ func main() {
 		defer os.RemoveAll(logDir)
 		logSrv.setDir(logDir)
 
+		// Build trigger context from claimed job.
+		triggerCtx := ciconfig.TriggerContext{
+			Type:   job.TriggerType,
+			Branch: job.TriggerBranch,
+		}
+		if job.TriggerProposalID != nil {
+			triggerCtx.ProposalID = *job.TriggerProposalID
+		}
+
 		// Execute the job.
-		jobStatus, jobLogURL, jobErrMsg := runJob(ctx, httpClient, exec, ls, docstoreURL, job, logDir)
+		jobStatus, jobLogURL, jobErrMsg := runJob(ctx, httpClient, exec, ls, docstoreURL, job, logDir, triggerCtx)
 
 		// Stop heartbeat and clear log dir.
 		close(hbDone)
