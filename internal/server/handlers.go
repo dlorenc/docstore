@@ -1684,12 +1684,19 @@ func (s *server) handleCreateProposal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var headSeq int64
+	if bi, err := s.readStore.GetBranch(r.Context(), repo, req.Branch); err == nil {
+		headSeq = bi.HeadSequence
+	} else {
+		slog.Warn("could not fetch branch head for proposal event", "repo", repo, "branch", req.Branch, "error", err)
+	}
 	s.emit(r.Context(), evtypes.ProposalOpened{
 		Repo:       repo,
 		Branch:     req.Branch,
 		BaseBranch: baseBranch,
 		ProposalID: p.ID,
 		Author:     author,
+		Sequence:   headSeq,
 	})
 	slog.Info("proposal opened", "repo", repo, "branch", req.Branch, "proposal_id", p.ID, "author", author)
 	writeJSON(w, http.StatusCreated, model.CreateProposalResponse{ID: p.ID})
