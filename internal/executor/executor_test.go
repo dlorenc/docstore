@@ -41,7 +41,6 @@ func newExecutor(t *testing.T) *executor.Executor {
 // and that output from the steps appears in Logs.
 func TestPass(t *testing.T) {
 	exec := newExecutor(t)
-	dir := t.TempDir()
 
 	cfg := executor.Config{
 		Checks: []executor.Check{
@@ -49,7 +48,7 @@ func TestPass(t *testing.T) {
 		},
 	}
 
-	results, err := exec.Run(context.Background(), dir, cfg, ciconfig.TriggerContext{})
+	results, err := exec.Run(context.Background(), "", cfg, ciconfig.TriggerContext{})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -68,7 +67,6 @@ func TestPass(t *testing.T) {
 // TestFail verifies that a check whose step exits non-zero is marked "failed".
 func TestFail(t *testing.T) {
 	exec := newExecutor(t)
-	dir := t.TempDir()
 
 	cfg := executor.Config{
 		Checks: []executor.Check{
@@ -76,7 +74,7 @@ func TestFail(t *testing.T) {
 		},
 	}
 
-	results, err := exec.Run(context.Background(), dir, cfg, ciconfig.TriggerContext{})
+	results, err := exec.Run(context.Background(), "", cfg, ciconfig.TriggerContext{})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -92,7 +90,6 @@ func TestFail(t *testing.T) {
 // correct independent result.
 func TestMultiCheck(t *testing.T) {
 	exec := newExecutor(t)
-	dir := t.TempDir()
 
 	cfg := executor.Config{
 		Checks: []executor.Check{
@@ -101,7 +98,7 @@ func TestMultiCheck(t *testing.T) {
 		},
 	}
 
-	results, err := exec.Run(context.Background(), dir, cfg, ciconfig.TriggerContext{})
+	results, err := exec.Run(context.Background(), "", cfg, ciconfig.TriggerContext{})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -377,7 +374,6 @@ func TestIfConditionAllSkipped(t *testing.T) {
 // the Logs field.
 func TestLogCapture(t *testing.T) {
 	exec := newExecutor(t)
-	dir := t.TempDir()
 
 	cfg := executor.Config{
 		Checks: []executor.Check{
@@ -392,7 +388,7 @@ func TestLogCapture(t *testing.T) {
 		},
 	}
 
-	results, err := exec.Run(context.Background(), dir, cfg, ciconfig.TriggerContext{})
+	results, err := exec.Run(context.Background(), "", cfg, ciconfig.TriggerContext{})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}

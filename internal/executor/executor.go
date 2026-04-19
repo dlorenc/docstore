@@ -62,10 +62,13 @@ func New(buildkitAddr, cacheBucket string) (*Executor, error) {
 	return &Executor{client: c, cacheBucket: cacheBucket}, nil
 }
 
-// Run executes all checks in cfg in parallel against sourceDir.
+// Run executes all checks in cfg in parallel, fetching source from archiveURL.
+// archiveURL must be a tar archive served over HTTP(S); BuildKit fetches it
+// directly so the worker is not in the data path.  Pass "" to use an empty
+// source directory (useful in tests where checks do not read source files).
 // Checks whose if: condition evaluates to false are skipped (omitted from results).
 // It returns once all checks have resolved.
-func (e *Executor) Run(ctx context.Context, sourceDir string, cfg Config, triggerCtx ciconfig.TriggerContext) ([]CheckResult, error) {
+func (e *Executor) Run(ctx context.Context, archiveURL string, cfg Config, triggerCtx ciconfig.TriggerContext) ([]CheckResult, error) {
 	// Pre-filter: evaluate if: conditions before launching goroutines.
 	type indexedCheck struct {
 		idx   int
@@ -106,7 +109,7 @@ func (e *Executor) Run(ctx context.Context, sourceDir string, cfg Config, trigge
 					}
 				}
 			}()
-			results[j] = e.runCheck(ctx, sourceDir, check)
+			results[j] = e.runCheck(ctx, archiveURL, check)
 		}(j, ic.check)
 	}
 	wg.Wait()
@@ -119,7 +122,7 @@ func (e *Executor) Close() error {
 }
 
 // runCheck executes a single check and returns its result.
-func (e *Executor) runCheck(ctx context.Context, sourceDir string, check Check) CheckResult {
+func (e *Executor) runCheck(ctx context.Context, archiveURL string, check Check) CheckResult {
 	var logBuf bytes.Buffer
 	ch := make(chan *client.SolveStatus)
 
@@ -149,10 +152,7 @@ func (e *Executor) runCheck(ctx context.Context, sourceDir string, check Check) 
 		ap.AuthConfigProvider = authprovider.LoadAuthConfig(dockerCfg)
 	}
 
-	localDirs := map[string]string{"src": sourceDir}
-
 	solveOpt := client.SolveOpt{
-		LocalDirs: localDirs,
 		Session: []session.Attachable{
 			authprovider.NewDockerAuthProvider(ap),
 		},
@@ -199,9 +199,24 @@ func (e *Executor) runCheck(ctx context.Context, sourceDir string, check Check) 
 		// share the host network namespace and can reach dockerd via TCP.
 		envOpts = append(envOpts, llb.AddEnv("DOCKER_HOST", "tcp://localhost:2375"))
 
-		source := llb.Local("src")
+		// Build the source mount.  When archiveURL is non-empty BuildKit fetches
+		// the tar directly (no worker intermediary) and a busybox step extracts
+		// it to /src.  The URL includes the commit sequence so BuildKit's HTTP
+		// cache deduplications across parallel checks at the same sequence.
+		// When archiveURL is empty (e.g. tests that do not access source) we use
+		// an empty scratch state.
+		var srcMount llb.State
+		if archiveURL != "" {
+			httpSrc := llb.HTTP(archiveURL, llb.Filename("source.tar"))
+			srcMount = llb.Image("busybox:latest").
+				Run(
+					llb.Args([]string{"sh", "-c", "mkdir -p /src && tar -xf /archive/source.tar -C /src"}),
+					llb.AddMount("/archive", httpSrc),
+				).GetMount("/src")
+		} else {
+			srcMount = llb.Scratch()
+		}
 		state := llb.Image(check.Image).Dir("/src")
-		srcMount := source
 
 		for _, step := range check.Steps {
 			runOpts := []llb.RunOption{
