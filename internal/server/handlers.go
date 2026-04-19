@@ -2445,7 +2445,7 @@ func (s *server) handleChain(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---------------------------------------------------------------------------
-// Event subscription handlers (admin only)
+// Event subscription handlers (delegated auth: admin for global scope, creator for own subscriptions)
 // ---------------------------------------------------------------------------
 
 // handleCreateSubscription implements POST /subscriptions.
