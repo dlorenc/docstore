@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dlorenc/docstore/internal/ciconfig"
 	"github.com/dlorenc/docstore/internal/executor"
 	"github.com/dlorenc/docstore/internal/testutil"
 )
@@ -48,7 +49,7 @@ func TestPass(t *testing.T) {
 		},
 	}
 
-	results, err := exec.Run(context.Background(), dir, cfg)
+	results, err := exec.Run(context.Background(), dir, cfg, ciconfig.TriggerContext{})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -75,7 +76,7 @@ func TestFail(t *testing.T) {
 		},
 	}
 
-	results, err := exec.Run(context.Background(), dir, cfg)
+	results, err := exec.Run(context.Background(), dir, cfg, ciconfig.TriggerContext{})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -100,7 +101,7 @@ func TestMultiCheck(t *testing.T) {
 		},
 	}
 
-	results, err := exec.Run(context.Background(), dir, cfg)
+	results, err := exec.Run(context.Background(), dir, cfg, ciconfig.TriggerContext{})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -141,7 +142,7 @@ func TestLogCapture(t *testing.T) {
 		},
 	}
 
-	results, err := exec.Run(context.Background(), dir, cfg)
+	results, err := exec.Run(context.Background(), dir, cfg, ciconfig.TriggerContext{})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
