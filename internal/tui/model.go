@@ -219,9 +219,14 @@ type proposalOpenedMsg struct {
 	err error
 }
 
+type proposalClosedMsg struct {
+	err error
+}
+
 // branchSummary holds a branch plus its review/check summary.
 type branchSummary struct {
 	branch   model.Branch
+	author   string
 	approved int
 	rejected int
 	passed   int
@@ -247,6 +252,19 @@ func loadBranches(c *tuiClient) tea.Cmd {
 		summaries := make([]branchSummary, 0, len(branches))
 		for _, b := range branches {
 			s := branchSummary{branch: b}
+
+			// Fetch head commit to get branch author.
+			if b.HeadSequence > 0 {
+				commitPath := fmt.Sprintf("/commit/%d", b.HeadSequence)
+				cmResp, cmErr := c.get(commitPath)
+				if cmErr == nil {
+					var cm model.GetCommitResponse
+					if jsonErr := c.decodeJSON(cmResp, &cm); jsonErr == nil {
+						s.author = cm.Author
+					}
+					cmResp.Body.Close()
+				}
+			}
 
 			// Fetch reviews (explicit close per iteration; deduplicate per reviewer).
 			rResp, rErr := c.get("/branch/" + url.PathEscape(b.Name) + "/reviews")
@@ -485,11 +503,11 @@ func mergeBranch(c *tuiClient, branchName string) tea.Cmd {
 	}
 }
 
-func openProposal(c *tuiClient, branchName, title, description string) tea.Cmd {
+func openProposal(c *tuiClient, branchName, title, description, baseBranch string) tea.Cmd {
 	return func() tea.Msg {
 		req := model.CreateProposalRequest{
 			Branch:      branchName,
-			BaseBranch:  "main",
+			BaseBranch:  baseBranch,
 			Title:       title,
 			Description: description,
 		}
@@ -508,6 +526,23 @@ func openProposal(c *tuiClient, branchName, title, description string) tea.Cmd {
 		var r model.CreateProposalResponse
 		json.NewDecoder(resp.Body).Decode(&r)
 		return proposalOpenedMsg{id: r.ID}
+	}
+}
+
+func closeProposal(c *tuiClient, proposalID string) tea.Cmd {
+	return func() tea.Msg {
+		resp, err := c.postJSON("/proposals/"+proposalID+"/close", nil)
+		if err != nil {
+			return proposalClosedMsg{err: err}
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+			var errResp model.ErrorResponse
+			json.NewDecoder(resp.Body).Decode(&errResp)
+			return proposalClosedMsg{err: fmt.Errorf("server error: %s", errResp.Error)}
+		}
+		return proposalClosedMsg{}
 	}
 }
 
