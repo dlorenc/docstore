@@ -2164,3 +2164,387 @@ func TestIntegrationIssues(t *testing.T) {
 		t.Errorf("expected 404 for unknown issue, got %d", notFoundResp.StatusCode)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// seedWithRoles seeds the database with test data plus RBAC roles for alice,
+// bob, and carol.
+// ---------------------------------------------------------------------------
+
+func seedWithRoles(t *testing.T, database *sql.DB) {
+	t.Helper()
+	seed(t, database)
+	roleStmts := []string{
+		`INSERT INTO roles (repo, identity, role) VALUES ('default/default', 'alice@example.com', 'writer')`,
+		`INSERT INTO roles (repo, identity, role) VALUES ('default/default', 'bob@example.com', 'writer')`,
+		`INSERT INTO roles (repo, identity, role) VALUES ('default/default', 'carol@example.com', 'maintainer')`,
+	}
+	for _, stmt := range roleStmts {
+		if _, err := database.Exec(stmt); err != nil {
+			t.Fatalf("seedWithRoles: %v\nstatement: %s", err, stmt)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TEST-1: Cross-identity authz tests
+// ---------------------------------------------------------------------------
+
+func TestIntegrationIssueAuthz(t *testing.T) {
+	t.Parallel()
+	database := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
+	seedWithRoles(t, database)
+
+	makeServer := func(identity string) *httptest.Server {
+		h := server.New(dbpkg.NewStore(database), database, identity, "")
+		return httptest.NewServer(h)
+	}
+
+	aliceSrv := makeServer("alice@example.com")
+	defer aliceSrv.Close()
+	bobSrv := makeServer("bob@example.com")
+	defer bobSrv.Close()
+	carolSrv := makeServer("carol@example.com")
+	defer carolSrv.Close()
+
+	base := "/repos/default/default/-"
+
+	doReq := func(srv *httptest.Server, method, path, body string) *http.Response {
+		t.Helper()
+		var req *http.Request
+		var err error
+		if body != "" {
+			req, err = http.NewRequest(method, srv.URL+path, strings.NewReader(body))
+		} else {
+			req, err = http.NewRequest(method, srv.URL+path, nil)
+		}
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, path, err)
+		}
+		return resp
+	}
+
+	// Alice creates an issue.
+	createResp := doReq(aliceSrv, http.MethodPost, base+"/issues",
+		`{"title":"alice's issue","body":"body text"}`)
+	defer createResp.Body.Close()
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("alice create issue: expected 201, got %d", createResp.StatusCode)
+	}
+	var created struct {
+		Number int64 `json:"number"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	_ = created
+	issueURL := base + "/issues/1"
+
+	// Bob cannot update alice's issue.
+	updateResp := doReq(bobSrv, http.MethodPatch, issueURL, `{"title":"bob changed it"}`)
+	defer updateResp.Body.Close()
+	if updateResp.StatusCode != http.StatusForbidden {
+		t.Errorf("bob update alice's issue: expected 403, got %d", updateResp.StatusCode)
+	}
+
+	// Bob cannot close alice's issue.
+	closeResp := doReq(bobSrv, http.MethodPost, issueURL+"/close", `{"reason":"completed"}`)
+	defer closeResp.Body.Close()
+	if closeResp.StatusCode != http.StatusForbidden {
+		t.Errorf("bob close alice's issue: expected 403, got %d", closeResp.StatusCode)
+	}
+
+	// Alice closes her own issue so bob can try to reopen it.
+	aliceCloseResp := doReq(aliceSrv, http.MethodPost, issueURL+"/close", `{"reason":"completed"}`)
+	defer aliceCloseResp.Body.Close()
+	if aliceCloseResp.StatusCode != http.StatusOK {
+		t.Fatalf("alice close issue: expected 200, got %d", aliceCloseResp.StatusCode)
+	}
+
+	// Bob cannot reopen alice's closed issue.
+	reopenResp := doReq(bobSrv, http.MethodPost, issueURL+"/reopen", "")
+	defer reopenResp.Body.Close()
+	if reopenResp.StatusCode != http.StatusForbidden {
+		t.Errorf("bob reopen alice's issue: expected 403, got %d", reopenResp.StatusCode)
+	}
+
+	// Reopen via alice for comment tests.
+	aliceReopenResp := doReq(aliceSrv, http.MethodPost, issueURL+"/reopen", "")
+	defer aliceReopenResp.Body.Close()
+	if aliceReopenResp.StatusCode != http.StatusOK {
+		t.Fatalf("alice reopen issue: expected 200, got %d", aliceReopenResp.StatusCode)
+	}
+
+	// Alice creates a comment.
+	aliceCommentResp := doReq(aliceSrv, http.MethodPost, issueURL+"/comments",
+		`{"body":"alice's comment"}`)
+	defer aliceCommentResp.Body.Close()
+	if aliceCommentResp.StatusCode != http.StatusCreated {
+		t.Fatalf("alice create comment: expected 201, got %d", aliceCommentResp.StatusCode)
+	}
+	var aliceComment struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(aliceCommentResp.Body).Decode(&aliceComment); err != nil {
+		t.Fatalf("decode alice comment: %v", err)
+	}
+
+	// Bob cannot edit alice's comment.
+	bobEditAliceResp := doReq(bobSrv, http.MethodPatch,
+		issueURL+"/comments/"+aliceComment.ID, `{"body":"bob changed it"}`)
+	defer bobEditAliceResp.Body.Close()
+	if bobEditAliceResp.StatusCode != http.StatusForbidden {
+		t.Errorf("bob edit alice's comment: expected 403, got %d", bobEditAliceResp.StatusCode)
+	}
+
+	// Bob creates his own comment and can edit it.
+	bobCommentResp := doReq(bobSrv, http.MethodPost, issueURL+"/comments",
+		`{"body":"bob's comment"}`)
+	defer bobCommentResp.Body.Close()
+	if bobCommentResp.StatusCode != http.StatusCreated {
+		t.Fatalf("bob create comment: expected 201, got %d", bobCommentResp.StatusCode)
+	}
+	var bobComment struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(bobCommentResp.Body).Decode(&bobComment); err != nil {
+		t.Fatalf("decode bob comment: %v", err)
+	}
+
+	bobEditOwnResp := doReq(bobSrv, http.MethodPatch,
+		issueURL+"/comments/"+bobComment.ID, `{"body":"bob updated his own"}`)
+	defer bobEditOwnResp.Body.Close()
+	if bobEditOwnResp.StatusCode != http.StatusOK {
+		t.Errorf("bob edit own comment: expected 200, got %d", bobEditOwnResp.StatusCode)
+	}
+
+	// Carol (maintainer) can close alice's issue.
+	carolCloseResp := doReq(carolSrv, http.MethodPost, issueURL+"/close", `{"reason":"completed"}`)
+	defer carolCloseResp.Body.Close()
+	if carolCloseResp.StatusCode != http.StatusOK {
+		t.Errorf("carol close alice's issue: expected 200, got %d", carolCloseResp.StatusCode)
+	}
+
+	// Carol (maintainer) can reopen it.
+	carolReopenResp := doReq(carolSrv, http.MethodPost, issueURL+"/reopen", "")
+	defer carolReopenResp.Body.Close()
+	if carolReopenResp.StatusCode != http.StatusOK {
+		t.Errorf("carol reopen issue: expected 200, got %d", carolReopenResp.StatusCode)
+	}
+
+	// Carol (maintainer) can update alice's issue.
+	carolUpdateResp := doReq(carolSrv, http.MethodPatch, issueURL, `{"title":"carol updated"}`)
+	defer carolUpdateResp.Body.Close()
+	if carolUpdateResp.StatusCode != http.StatusOK {
+		t.Errorf("carol update alice's issue: expected 200, got %d", carolUpdateResp.StatusCode)
+	}
+
+	// Carol (maintainer) can delete alice's comment.
+	carolDelResp := doReq(carolSrv, http.MethodDelete,
+		issueURL+"/comments/"+aliceComment.ID, "")
+	defer carolDelResp.Body.Close()
+	if carolDelResp.StatusCode != http.StatusNoContent {
+		t.Errorf("carol delete alice's comment: expected 204, got %d", carolDelResp.StatusCode)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TEST-2: Idempotency tests
+// ---------------------------------------------------------------------------
+
+func TestIntegrationIssueIdempotency(t *testing.T) {
+	t.Parallel()
+	database := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
+	seed(t, database)
+
+	handler := server.New(dbpkg.NewStore(database), database, "alice@example.com", "alice@example.com")
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	base := srv.URL + "/repos/default/default/-"
+
+	doReq := func(method, url, body string) *http.Response {
+		t.Helper()
+		var req *http.Request
+		var err error
+		if body != "" {
+			req, err = http.NewRequest(method, url, strings.NewReader(body))
+		} else {
+			req, err = http.NewRequest(method, url, nil)
+		}
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, url, err)
+		}
+		return resp
+	}
+
+	// Create an issue.
+	createResp := doReq(http.MethodPost, base+"/issues", `{"title":"idempotency test","body":""}`)
+	defer createResp.Body.Close()
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create issue: expected 201, got %d", createResp.StatusCode)
+	}
+	issueURL := base + "/issues/1"
+
+	// Reopen an open issue: should return 409.
+	reopenOpenResp := doReq(http.MethodPost, issueURL+"/reopen", "")
+	defer reopenOpenResp.Body.Close()
+	if reopenOpenResp.StatusCode != http.StatusConflict {
+		t.Errorf("reopen open issue: expected 409, got %d", reopenOpenResp.StatusCode)
+	}
+
+	// Close issue: first close succeeds.
+	close1Resp := doReq(http.MethodPost, issueURL+"/close", `{"reason":"completed"}`)
+	defer close1Resp.Body.Close()
+	if close1Resp.StatusCode != http.StatusOK {
+		t.Fatalf("first close: expected 200, got %d", close1Resp.StatusCode)
+	}
+
+	// Close issue: second close should return 409.
+	close2Resp := doReq(http.MethodPost, issueURL+"/close", `{"reason":"completed"}`)
+	defer close2Resp.Body.Close()
+	if close2Resp.StatusCode != http.StatusConflict {
+		t.Errorf("second close: expected 409, got %d", close2Resp.StatusCode)
+	}
+
+	// Reopen closed issue: succeeds.
+	reopen1Resp := doReq(http.MethodPost, issueURL+"/reopen", "")
+	defer reopen1Resp.Body.Close()
+	if reopen1Resp.StatusCode != http.StatusOK {
+		t.Fatalf("reopen closed issue: expected 200, got %d", reopen1Resp.StatusCode)
+	}
+
+	// Reopen again: should return 409.
+	reopen2Resp := doReq(http.MethodPost, issueURL+"/reopen", "")
+	defer reopen2Resp.Body.Close()
+	if reopen2Resp.StatusCode != http.StatusConflict {
+		t.Errorf("second reopen: expected 409, got %d", reopen2Resp.StatusCode)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TEST-4: PATCH /issues/:number
+// ---------------------------------------------------------------------------
+
+func TestIntegrationIssueUpdate(t *testing.T) {
+	t.Parallel()
+	database := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
+	seed(t, database)
+
+	handler := server.New(dbpkg.NewStore(database), database, "alice@example.com", "alice@example.com")
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	base := srv.URL + "/repos/default/default/-"
+
+	doReq := func(method, url, body string) *http.Response {
+		t.Helper()
+		var req *http.Request
+		var err error
+		if body != "" {
+			req, err = http.NewRequest(method, url, strings.NewReader(body))
+		} else {
+			req, err = http.NewRequest(method, url, nil)
+		}
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, url, err)
+		}
+		return resp
+	}
+
+	// Create an issue.
+	createResp := doReq(http.MethodPost, base+"/issues",
+		`{"title":"original title","body":"original body"}`)
+	defer createResp.Body.Close()
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create issue: expected 201, got %d", createResp.StatusCode)
+	}
+	var created struct {
+		Number int64 `json:"number"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	issueURL := base + "/issues/1"
+
+	// PATCH both title and body.
+	patchResp := doReq(http.MethodPatch, issueURL,
+		`{"title":"updated title","body":"updated body"}`)
+	defer patchResp.Body.Close()
+	if patchResp.StatusCode != http.StatusOK {
+		t.Fatalf("patch issue: expected 200, got %d", patchResp.StatusCode)
+	}
+	var patched struct {
+		Title string `json:"title"`
+		Body  string `json:"body"`
+	}
+	if err := json.NewDecoder(patchResp.Body).Decode(&patched); err != nil {
+		t.Fatalf("decode patch response: %v", err)
+	}
+	if patched.Title != "updated title" {
+		t.Errorf("patch response: expected title 'updated title', got %q", patched.Title)
+	}
+	if patched.Body != "updated body" {
+		t.Errorf("patch response: expected body 'updated body', got %q", patched.Body)
+	}
+
+	// GET: verify the update persisted.
+	getResp := doReq(http.MethodGet, issueURL, "")
+	defer getResp.Body.Close()
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("get issue: expected 200, got %d", getResp.StatusCode)
+	}
+	var got struct {
+		Title string `json:"title"`
+		Body  string `json:"body"`
+	}
+	if err := json.NewDecoder(getResp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode get response: %v", err)
+	}
+	if got.Title != "updated title" {
+		t.Errorf("get after patch: expected title 'updated title', got %q", got.Title)
+	}
+	if got.Body != "updated body" {
+		t.Errorf("get after patch: expected body 'updated body', got %q", got.Body)
+	}
+
+	// PATCH only title (partial update): body should remain unchanged.
+	patch2Resp := doReq(http.MethodPatch, issueURL, `{"title":"title only"}`)
+	defer patch2Resp.Body.Close()
+	if patch2Resp.StatusCode != http.StatusOK {
+		t.Fatalf("partial patch: expected 200, got %d", patch2Resp.StatusCode)
+	}
+	var patched2 struct {
+		Title string `json:"title"`
+		Body  string `json:"body"`
+	}
+	if err := json.NewDecoder(patch2Resp.Body).Decode(&patched2); err != nil {
+		t.Fatalf("decode partial patch response: %v", err)
+	}
+	if patched2.Title != "title only" {
+		t.Errorf("partial patch: expected title 'title only', got %q", patched2.Title)
+	}
+	if patched2.Body != "updated body" {
+		t.Errorf("partial patch: expected body unchanged 'updated body', got %q", patched2.Body)
+	}
+}
