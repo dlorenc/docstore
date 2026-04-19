@@ -30,7 +30,9 @@ import (
 	"time"
 
 	_ "github.com/lib/pq"
+	"gopkg.in/yaml.v3"
 
+	"github.com/dlorenc/docstore/internal/ciconfig"
 	"github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/model"
 )
@@ -40,7 +42,7 @@ import (
 // ---------------------------------------------------------------------------
 
 type ciJobStore interface {
-	InsertCIJob(ctx context.Context, repo, branch string, sequence int64) (*model.CIJob, error)
+	InsertCIJob(ctx context.Context, repo, branch string, sequence int64, triggerType, triggerBranch string) (*model.CIJob, error)
 	GetCIJob(ctx context.Context, id string) (*model.CIJob, error)
 	ReapStaleCIJobs(ctx context.Context) ([]model.CIJob, error)
 }
@@ -142,6 +144,43 @@ func registerWebhookSubscription(ctx context.Context, client *http.Client, docst
 type scheduler struct {
 	store         ciJobStore
 	webhookSecret string
+	docstoreURL   string
+	httpClient    *http.Client
+}
+
+// fetchCIConfig fetches and parses .docstore/ci.yaml from the given repo/branch
+// at the given sequence. Returns nil if the file does not exist (no ci.yaml =
+// no filtering). Returns an error only for unexpected failures.
+func (s *scheduler) fetchCIConfig(ctx context.Context, repo, branch string, sequence int64) (*ciconfig.CIConfig, error) {
+	if s.docstoreURL == "" {
+		return nil, nil
+	}
+	fileURL := fmt.Sprintf("%s/repos/%s/-/file/.docstore/ci.yaml?branch=%s&at=%d",
+		s.docstoreURL, repo, url.QueryEscape(branch), sequence)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fileURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build config request: %w", err)
+	}
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch ci config: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil // no ci.yaml = no filtering
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetch ci config: unexpected status %d", resp.StatusCode)
+	}
+	var fileResp model.FileResponse
+	if err := json.NewDecoder(resp.Body).Decode(&fileResp); err != nil {
+		return nil, fmt.Errorf("decode ci config response: %w", err)
+	}
+	var cfg ciconfig.CIConfig
+	if err := yaml.Unmarshal(fileResp.Content, &cfg); err != nil {
+		return nil, fmt.Errorf("parse ci.yaml: %w", err)
+	}
+	return &cfg, nil
 }
 
 // handleWebhook handles POST /webhook — receives CloudEvents from docstore outbox.
@@ -192,7 +231,20 @@ func (s *scheduler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	job, err := s.store.InsertCIJob(r.Context(), data.Repo, data.Branch, data.Sequence)
+	// Fetch CI config and evaluate push trigger filter.
+	// Fail-open: if the config cannot be fetched, proceed with enqueueing.
+	cfg, err := s.fetchCIConfig(r.Context(), data.Repo, data.Branch, data.Sequence)
+	if err != nil {
+		slog.Warn("could not fetch ci config, proceeding with enqueue", "repo", data.Repo, "branch", data.Branch, "error", err)
+		cfg = nil
+	}
+	if cfg != nil && !cfg.MatchesPush(data.Branch) {
+		slog.Info("push trigger filtered by on: block", "repo", data.Repo, "branch", data.Branch)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	job, err := s.store.InsertCIJob(r.Context(), data.Repo, data.Branch, data.Sequence, "push", data.Branch)
 	if err != nil {
 		slog.Error("insert ci job failed", "repo", data.Repo, "branch", data.Branch, "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -221,7 +273,7 @@ func (s *scheduler) handleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	job, err := s.store.InsertCIJob(r.Context(), req.Repo, req.Branch, req.HeadSequence)
+	job, err := s.store.InsertCIJob(r.Context(), req.Repo, req.Branch, req.HeadSequence, "manual", req.Branch)
 	if err != nil {
 		slog.Error("insert ci job failed", "repo", req.Repo, "branch", req.Branch, "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -407,9 +459,13 @@ func main() {
 	// Start stale job reaper.
 	startReaper(serverCtx, store, 30*time.Second)
 
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+
 	sched := &scheduler{
 		store:         store,
 		webhookSecret: *webhookSecret,
+		docstoreURL:   strings.TrimRight(*docstoreURL, "/"),
+		httpClient:    httpClient,
 	}
 
 	// WriteTimeout is intentionally absent: the log proxy endpoint
