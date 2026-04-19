@@ -22,19 +22,27 @@ export DOCKER_CONFIG="$HOME/.docker"
 #
 # The Kata guest kernel has CONFIG_BLK_DEV_LOOP=y (built-in) but udev does not run
 # inside the VM, so the loop device nodes must be created manually before use.
-echo "setting up loop-backed ext4 for /var/lib/buildkit..." >&2
-mknod /dev/loop-control c 10 237 2>/dev/null || true
-for i in $(seq 0 7); do
-  mknod /dev/loop$i b 7 $i 2>/dev/null || true
-done
-# Sparse file: truncate creates a 20G hole without writing bytes (fast, disk-backed via
-# virtiofs so no RAM pressure). mkfs.ext4 with lazy_itable_init completes in <1s.
-truncate -s 20G /var/lib/buildkit.img
-mkfs.ext4 -F -q -E lazy_itable_init=1,lazy_journal_init=1 /var/lib/buildkit.img
-LOOP=$(losetup -f --show /var/lib/buildkit.img)
-mkdir -p /var/lib/buildkit
-mount "$LOOP" /var/lib/buildkit
-echo "loop-ext4 mounted at /var/lib/buildkit on $LOOP" >&2
+#
+# Guard: on container restart within the same Kata VM the loop device and mount from
+# the previous container run are still active in the VM kernel. Skip setup if already
+# mounted so we don't exhaust the 8 loop devices we create (loop0-loop7).
+if grep -q ' /var/lib/buildkit ' /proc/mounts; then
+  echo "loop-ext4 already mounted at /var/lib/buildkit, reusing" >&2
+else
+  echo "setting up loop-backed ext4 for /var/lib/buildkit..." >&2
+  mknod /dev/loop-control c 10 237 2>/dev/null || true
+  for i in $(seq 0 7); do
+    mknod /dev/loop$i b 7 $i 2>/dev/null || true
+  done
+  # Sparse file: truncate creates a 20G hole without writing bytes (fast, disk-backed via
+  # virtiofs so no RAM pressure). mkfs.ext4 with lazy_itable_init completes in <1s.
+  truncate -s 20G /var/lib/buildkit.img
+  mkfs.ext4 -F -q -E lazy_itable_init=1,lazy_journal_init=1 /var/lib/buildkit.img
+  LOOP=$(losetup -f --show /var/lib/buildkit.img)
+  mkdir -p /var/lib/buildkit
+  mount "$LOOP" /var/lib/buildkit
+  echo "loop-ext4 mounted at /var/lib/buildkit on $LOOP" >&2
+fi
 
 # Start buildkitd in background (standard, non-rootless — runs natively inside Kata VM).
 # --oci-worker-net=host ensures build containers share the host network namespace so they
