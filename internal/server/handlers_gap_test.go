@@ -166,9 +166,9 @@ func TestHandleGetOrg_StoreError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRequireGlobalAdmin_NotConfigured(t *testing.T) {
-	// globalAdmin empty → 403.
+	// globalAdmin empty → 403 on global-admin-only endpoints (e.g. GET /events).
 	srv := New(&mockStore{}, nil, devID, "") // no global admin
-	req := httptest.NewRequest(http.MethodGet, "/subscriptions", nil)
+	req := httptest.NewRequest(http.MethodGet, "/events", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
@@ -177,9 +177,9 @@ func TestRequireGlobalAdmin_NotConfigured(t *testing.T) {
 }
 
 func TestRequireGlobalAdmin_WrongIdentity(t *testing.T) {
-	// identity (devID = "test@example.com") != globalAdmin → 403.
+	// identity (devID = "test@example.com") != globalAdmin → 403 on global-admin-only endpoints.
 	srv := New(&mockStore{}, nil, devID, "admin@other.com")
-	req := httptest.NewRequest(http.MethodGet, "/subscriptions", nil)
+	req := httptest.NewRequest(http.MethodGet, "/events", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
@@ -286,8 +286,8 @@ func TestHandleCreateSubscription_Success(t *testing.T) {
 	}
 }
 
-func TestHandleCreateSubscription_NonAdmin_Forbidden(t *testing.T) {
-	// devID != global admin → 403.
+func TestHandleCreateSubscription_NonAdmin_GlobalScope_Forbidden(t *testing.T) {
+	// Non-admin caller with no repo field: tests the 'no repo field on non-admin' path → 403.
 	srv := New(&mockStore{}, nil, devID, "admin@other.com")
 	body, _ := json.Marshal(map[string]interface{}{
 		"backend": "webhook",
@@ -377,13 +377,14 @@ func TestHandleListSubscriptions_Empty(t *testing.T) {
 	}
 }
 
-func TestHandleListSubscriptions_NonAdmin_Forbidden(t *testing.T) {
+func TestHandleListSubscriptions_NonAdmin_Allowed(t *testing.T) {
+	// Non-admin gets 200 with filtered (own) subscriptions, not 403.
 	srv := New(&mockStore{}, nil, devID, "admin@other.com")
 	req := httptest.NewRequest(http.MethodGet, "/subscriptions", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
 	}
 }
 
@@ -433,7 +434,13 @@ func TestHandleDeleteSubscription_NotFound(t *testing.T) {
 }
 
 func TestHandleDeleteSubscription_NonAdmin_Forbidden(t *testing.T) {
-	srv := New(&mockStore{}, nil, devID, "admin@other.com")
+	// Non-admin trying to delete a subscription they did not create → 403.
+	ms := &mockStore{
+		getSubscriptionFn: func(_ context.Context, id string) (*model.EventSubscription, error) {
+			return &model.EventSubscription{ID: id, Backend: "webhook", CreatedBy: "other@example.com"}, nil
+		},
+	}
+	srv := New(ms, nil, devID, "admin@other.com")
 	req := httptest.NewRequest(http.MethodDelete, "/subscriptions/sub-1", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
@@ -488,7 +495,13 @@ func TestHandleResumeSubscription_NotFound(t *testing.T) {
 }
 
 func TestHandleResumeSubscription_NonAdmin_Forbidden(t *testing.T) {
-	srv := New(&mockStore{}, nil, devID, "admin@other.com")
+	// Non-admin trying to resume a subscription they did not create → 403.
+	ms := &mockStore{
+		getSubscriptionFn: func(_ context.Context, id string) (*model.EventSubscription, error) {
+			return &model.EventSubscription{ID: id, Backend: "webhook", CreatedBy: "other@example.com"}, nil
+		},
+	}
+	srv := New(ms, nil, devID, "admin@other.com")
 	req := httptest.NewRequest(http.MethodPost, "/subscriptions/sub-1/resume", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
@@ -534,5 +547,234 @@ func TestHandleSSEGlobalEvents_NoBroker_ServiceUnavailable(t *testing.T) {
 	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503 (no broker), got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Subscription auth relaxation tests (issue #225)
+// ---------------------------------------------------------------------------
+
+// 1. Non-admin with repo access can create a repo-scoped subscription.
+func TestHandleCreateSubscription_RepoScoped_NonAdmin_Success(t *testing.T) {
+	ms := &mockStore{
+		getRoleFn: func(_ context.Context, repo, identity string) (*model.Role, error) {
+			return &model.Role{Identity: identity, Role: model.RoleReader}, nil
+		},
+	}
+	srv := New(ms, nil, devID, "admin@other.com")
+	repoName := "myorg/myrepo"
+	body, _ := json.Marshal(map[string]interface{}{
+		"repo":    repoName,
+		"backend": "webhook",
+		"config":  map[string]string{"url": "https://example.com/hook", "secret": "s3cr3t"},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/subscriptions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for repo-scoped non-admin, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// 2. Non-admin without repo access cannot create a repo-scoped subscription.
+func TestHandleCreateSubscription_RepoScoped_NoRepoAccess_Forbidden(t *testing.T) {
+	// Default mockStore.getRoleFn returns db.ErrRoleNotFound → no access.
+	srv := New(&mockStore{}, nil, devID, "admin@other.com")
+	repoName := "myorg/myrepo"
+	body, _ := json.Marshal(map[string]interface{}{
+		"repo":    repoName,
+		"backend": "webhook",
+		"config":  map[string]string{"url": "https://example.com/hook"},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/subscriptions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for no repo access, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// 3. Non-admin sees only subscriptions they created (via store-level query).
+func TestHandleListSubscriptions_NonAdmin_FiltersToOwn(t *testing.T) {
+	ms := &mockStore{
+		listSubscriptionsByCreatorFn: func(_ context.Context, createdBy string) ([]model.EventSubscription, error) {
+			// Store returns only the caller's subscriptions.
+			return []model.EventSubscription{
+				{ID: "sub-1", Backend: "webhook", CreatedBy: createdBy},
+			}, nil
+		},
+	}
+	srv := New(ms, nil, devID, "admin@other.com")
+	req := httptest.NewRequest(http.MethodGet, "/subscriptions", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var resp model.ListSubscriptionsResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Subscriptions) != 1 {
+		t.Errorf("expected 1 subscription (own), got %d", len(resp.Subscriptions))
+	}
+	if len(resp.Subscriptions) == 1 && resp.Subscriptions[0].ID != "sub-1" {
+		t.Errorf("expected sub-1, got %q", resp.Subscriptions[0].ID)
+	}
+}
+
+// 4. Global admin sees all subscriptions, not just their own.
+func TestHandleListSubscriptions_Admin_SeesAll(t *testing.T) {
+	ms := &mockStore{
+		listSubscriptionsFn: func(_ context.Context) ([]model.EventSubscription, error) {
+			return []model.EventSubscription{
+				{ID: "sub-1", Backend: "webhook", CreatedBy: devID},
+				{ID: "sub-2", Backend: "webhook", CreatedBy: "other@example.com"},
+			}, nil
+		},
+	}
+	srv := New(ms, nil, devID, devID) // devID is global admin
+	req := httptest.NewRequest(http.MethodGet, "/subscriptions", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var resp model.ListSubscriptionsResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Subscriptions) != 2 {
+		t.Errorf("expected 2 subscriptions (all), got %d", len(resp.Subscriptions))
+	}
+}
+
+// 5. Subscription creator (non-admin) can delete their own subscription.
+func TestHandleDeleteSubscription_Creator_Success(t *testing.T) {
+	ms := &mockStore{
+		getSubscriptionFn: func(_ context.Context, id string) (*model.EventSubscription, error) {
+			return &model.EventSubscription{ID: id, Backend: "webhook", CreatedBy: devID}, nil
+		},
+	}
+	srv := New(ms, nil, devID, "admin@other.com")
+	req := httptest.NewRequest(http.MethodDelete, "/subscriptions/sub-1", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 for creator delete, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// 6. Non-creator non-admin cannot delete someone else's subscription.
+func TestHandleDeleteSubscription_NotCreator_Forbidden(t *testing.T) {
+	ms := &mockStore{
+		getSubscriptionFn: func(_ context.Context, id string) (*model.EventSubscription, error) {
+			return &model.EventSubscription{ID: id, Backend: "webhook", CreatedBy: "other@example.com"}, nil
+		},
+	}
+	srv := New(ms, nil, devID, "admin@other.com")
+	req := httptest.NewRequest(http.MethodDelete, "/subscriptions/sub-1", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for non-creator delete, got %d", rec.Code)
+	}
+}
+
+// 7. Subscription creator (non-admin) can resume their own subscription.
+func TestHandleResumeSubscription_Creator_Success(t *testing.T) {
+	ms := &mockStore{
+		getSubscriptionFn: func(_ context.Context, id string) (*model.EventSubscription, error) {
+			return &model.EventSubscription{ID: id, Backend: "webhook", CreatedBy: devID}, nil
+		},
+	}
+	srv := New(ms, nil, devID, "admin@other.com")
+	req := httptest.NewRequest(http.MethodPost, "/subscriptions/sub-1/resume", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 for creator resume, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// 8. Non-creator non-admin cannot resume someone else's subscription.
+func TestHandleResumeSubscription_NotCreator_Forbidden(t *testing.T) {
+	ms := &mockStore{
+		getSubscriptionFn: func(_ context.Context, id string) (*model.EventSubscription, error) {
+			return &model.EventSubscription{ID: id, Backend: "webhook", CreatedBy: "other@example.com"}, nil
+		},
+	}
+	srv := New(ms, nil, devID, "admin@other.com")
+	req := httptest.NewRequest(http.MethodPost, "/subscriptions/sub-1/resume", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for non-creator resume, got %d", rec.Code)
+	}
+}
+
+// 9. Non-admin caller, GetSubscription returns generic error → 500 for delete.
+func TestHandleDeleteSubscription_NonAdmin_StoreError(t *testing.T) {
+	ms := &mockStore{
+		getSubscriptionFn: func(_ context.Context, id string) (*model.EventSubscription, error) {
+			return nil, errors.New("db connection reset")
+		},
+	}
+	srv := New(ms, nil, devID, "admin@other.com")
+	req := httptest.NewRequest(http.MethodDelete, "/subscriptions/sub-1", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 for store error on non-admin delete, got %d", rec.Code)
+	}
+}
+
+// 10. Non-admin caller, GetSubscription returns generic error → 500 for resume.
+func TestHandleResumeSubscription_NonAdmin_StoreError(t *testing.T) {
+	ms := &mockStore{
+		getSubscriptionFn: func(_ context.Context, id string) (*model.EventSubscription, error) {
+			return nil, errors.New("db connection reset")
+		},
+	}
+	srv := New(ms, nil, devID, "admin@other.com")
+	req := httptest.NewRequest(http.MethodPost, "/subscriptions/sub-1/resume", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 for store error on non-admin resume, got %d", rec.Code)
+	}
+}
+
+// 11. Non-admin caller, GetSubscription returns ErrSubscriptionNotFound → 404 for delete.
+func TestHandleDeleteSubscription_NonAdmin_NotFound(t *testing.T) {
+	ms := &mockStore{
+		getSubscriptionFn: func(_ context.Context, id string) (*model.EventSubscription, error) {
+			return nil, db.ErrSubscriptionNotFound
+		},
+	}
+	srv := New(ms, nil, devID, "admin@other.com")
+	req := httptest.NewRequest(http.MethodDelete, "/subscriptions/sub-1", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for not-found on non-admin delete, got %d", rec.Code)
+	}
+}
+
+// 12. Non-admin caller, GetSubscription returns ErrSubscriptionNotFound → 404 for resume.
+func TestHandleResumeSubscription_NonAdmin_NotFound(t *testing.T) {
+	ms := &mockStore{
+		getSubscriptionFn: func(_ context.Context, id string) (*model.EventSubscription, error) {
+			return nil, db.ErrSubscriptionNotFound
+		},
+	}
+	srv := New(ms, nil, devID, "admin@other.com")
+	req := httptest.NewRequest(http.MethodPost, "/subscriptions/sub-1/resume", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for not-found on non-admin resume, got %d", rec.Code)
 	}
 }
