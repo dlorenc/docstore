@@ -297,17 +297,23 @@ func runJob(
 		return fail(fmt.Sprintf("pull source: %v", err))
 	}
 
-	// 3. Mark each check as pending.
+	// 3. Mark each check as pending (in parallel).
+	var wg sync.WaitGroup
 	for _, check := range cfg.Checks {
-		if err := postCheckRun(ctx, httpClient, docstoreURL, job.Repo, model.CreateCheckRunRequest{
-			Branch:    job.Branch,
-			CheckName: check.Name,
-			Status:    model.CheckRunPending,
-			Sequence:  &job.Sequence,
-		}); err != nil {
-			slog.Warn("mark pending failed", "check", check.Name, "error", err)
-		}
+		wg.Add(1)
+		go func(checkName string) {
+			defer wg.Done()
+			if err := postCheckRun(ctx, httpClient, docstoreURL, job.Repo, model.CreateCheckRunRequest{
+				Branch:    job.Branch,
+				CheckName: checkName,
+				Status:    model.CheckRunPending,
+				Sequence:  &job.Sequence,
+			}); err != nil {
+				slog.Warn("mark pending failed", "check", checkName, "error", err)
+			}
+		}(check.Name)
 	}
+	wg.Wait()
 
 	// 4. Execute all checks.
 	results, err := exec.Run(ctx, srcDir, *cfg, triggerCtx)
