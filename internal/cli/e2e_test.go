@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -500,6 +501,117 @@ func TestRoles_EndToEnd(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Deleted role for 'alice@example.com'") {
 		t.Errorf("expected deletion message, got: %s", out.String())
+	}
+}
+
+// TestSubscriptions_EndToEnd verifies subscription create, list, and delete via a real server.
+func TestSubscriptions_EndToEnd(t *testing.T) {
+	t.Parallel()
+	srv := newRealServer(t)
+	app, out := newTestApp(t, srv)
+	app.DefaultRemote = srv.URL
+
+	// Create org and repo.
+	if err := app.OrgsCreate("suborg"); err != nil {
+		t.Fatalf("OrgsCreate: %v", err)
+	}
+	if err := app.ReposCreate("suborg", "subrepo"); err != nil {
+		t.Fatalf("ReposCreate: %v", err)
+	}
+	repo := "suborg/subrepo"
+
+	// Set up workspace config so RolesSet can resolve the repo.
+	if err := os.MkdirAll(filepath.Join(app.Dir, configDir), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.saveConfig(&Config{Remote: srv.URL, Repo: repo, Branch: "main", Author: "test@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Give the test identity a role on the repo.
+	if err := app.RolesSet("test@example.com", "writer"); err != nil {
+		t.Fatalf("RolesSet: %v", err)
+	}
+
+	// Start a local HTTP server as the webhook target.
+	webhookSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(webhookSrv.Close)
+
+	// Create subscription.
+	out.Reset()
+	if err := app.SubscriptionCreate(webhookSrv.URL, "testsecret", &repo, nil); err != nil {
+		t.Fatalf("SubscriptionCreate: %v", err)
+	}
+	createOutput := out.String()
+	if !strings.Contains(createOutput, "Created subscription '") {
+		t.Fatalf("expected creation message, got: %s", createOutput)
+	}
+
+	// Parse subscription ID from "Created subscription 'ID'".
+	start := strings.Index(createOutput, "'") + 1
+	end := strings.LastIndex(createOutput, "'")
+	if start <= 0 || end <= start {
+		t.Fatalf("could not parse subscription ID from: %s", createOutput)
+	}
+	subID := createOutput[start:end]
+
+	// List subscriptions — ID should appear.
+	out.Reset()
+	if err := app.SubscriptionList(); err != nil {
+		t.Fatalf("SubscriptionList: %v", err)
+	}
+	if !strings.Contains(out.String(), subID) {
+		t.Errorf("expected subscription ID %q in listing, got: %s", subID, out.String())
+	}
+
+	// Delete subscription.
+	out.Reset()
+	if err := app.SubscriptionDelete(subID); err != nil {
+		t.Fatalf("SubscriptionDelete: %v", err)
+	}
+	if !strings.Contains(out.String(), "Deleted subscription '"+subID+"'") {
+		t.Errorf("expected deletion message, got: %s", out.String())
+	}
+
+	// List subscriptions again — ID should be gone.
+	out.Reset()
+	if err := app.SubscriptionList(); err != nil {
+		t.Fatalf("SubscriptionList after delete: %v", err)
+	}
+	if strings.Contains(out.String(), subID) {
+		t.Errorf("expected subscription %q to be gone, got: %s", subID, out.String())
+	}
+}
+
+// TestSubscriptions_GlobalForbidden verifies that a non-admin cannot create a global subscription.
+func TestSubscriptions_GlobalForbidden(t *testing.T) {
+	t.Parallel()
+
+	// Create a server where the test identity is NOT the global admin.
+	database := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
+	writeStore := dbpkg.NewStore(database)
+	handler := server.New(writeStore, database, "nonadmin@example.com", "admin@example.com")
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	app, _ := newTestApp(t, srv)
+	app.DefaultRemote = srv.URL
+
+	// Start a local HTTP server as the webhook target.
+	webhookSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(webhookSrv.Close)
+
+	// Global subscription (repo=nil) should be forbidden for a non-admin.
+	err := app.SubscriptionCreate(webhookSrv.URL, "testsecret", nil, nil)
+	if err == nil {
+		t.Fatal("expected forbidden error for global subscription as non-admin, got nil")
+	}
+	if !strings.Contains(err.Error(), "forbidden") {
+		t.Errorf("expected forbidden error, got: %v", err)
 	}
 }
 
