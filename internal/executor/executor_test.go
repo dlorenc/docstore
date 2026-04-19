@@ -407,6 +407,39 @@ func TestLocalPathSource(t *testing.T) {
 	}
 }
 
+// TestPathTraversalRejected verifies that a local source path containing ".."
+// segments is rejected before any build is attempted.
+func TestPathTraversalRejected(t *testing.T) {
+	exec := newExecutor(t)
+
+	cfg := executor.Config{
+		Checks: []executor.Check{
+			{Name: "ci/test", Image: "alpine", Steps: []string{"echo hi"}},
+		},
+	}
+
+	badPaths := []string{
+		"../../etc/passwd",
+		"../secret",
+		"foo/../../bar",
+	}
+	for _, path := range badPaths {
+		results, err := exec.Run(context.Background(), path, cfg, ciconfig.TriggerContext{})
+		if err != nil {
+			t.Fatalf("Run(%q): unexpected error: %v", path, err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("Run(%q): expected 1 result, got %d", path, len(results))
+		}
+		if results[0].Status != "failed" {
+			t.Errorf("Run(%q): expected status failed, got %s (logs: %s)", path, results[0].Status, results[0].Logs)
+		}
+		if !strings.Contains(results[0].Logs, "..") {
+			t.Errorf("Run(%q): expected error message mentioning '..', got: %s", path, results[0].Logs)
+		}
+	}
+}
+
 // TestLogCapture verifies that stdout and stderr from steps both appear in
 // the Logs field.
 func TestLogCapture(t *testing.T) {
