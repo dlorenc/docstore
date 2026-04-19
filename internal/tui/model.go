@@ -195,6 +195,7 @@ type branchDetailLoadedMsg struct {
 	checks        []model.CheckRun
 	headSeq       int64
 	baseSeq       int64
+	mainHeadSeq   int64 // current head sequence of main branch
 	baseTreePaths map[string]bool
 	proposal      *model.Proposal // nil if no open proposal
 	err           error
@@ -312,12 +313,14 @@ func loadBranchDetail(c *tuiClient, branchName string) tea.Cmd {
 		if err := c.decodeJSON(bResp, &allBranches); err != nil {
 			return branchDetailLoadedMsg{err: err}
 		}
-		var headSeq, baseSeq int64
+		var headSeq, baseSeq, mainHeadSeq int64
 		for _, b := range allBranches {
 			if b.Name == branchName {
 				headSeq = b.HeadSequence
 				baseSeq = b.BaseSequence
-				break
+			}
+			if b.Name == "main" {
+				mainHeadSeq = b.HeadSequence
 			}
 		}
 
@@ -400,6 +403,7 @@ func loadBranchDetail(c *tuiClient, branchName string) tea.Cmd {
 			checks:        checks,
 			headSeq:       headSeq,
 			baseSeq:       baseSeq,
+			mainHeadSeq:   mainHeadSeq,
 			baseTreePaths: baseTreePaths,
 			proposal:      openProposal,
 		}
