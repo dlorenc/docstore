@@ -83,4 +83,8 @@ type ListReleasesResponse = api.ListReleasesResponse
 type CreateSubscriptionRequest = api.CreateSubscriptionRequest
 type ListSubscriptionsResponse = api.ListSubscriptionsResponse
 
+type CreateProposalRequest = api.CreateProposalRequest
+type CreateProposalResponse = api.CreateProposalResponse
+type UpdateProposalRequest = api.UpdateProposalRequest
+
 type ErrorResponse = api.ErrorResponse
