@@ -35,6 +35,9 @@ type branchDetailModel struct {
 	baseSeq       int64
 	baseTreePaths map[string]bool
 
+	// Proposal state for the current branch.
+	proposal *model.Proposal // nil = not yet loaded or no open proposal
+
 	activePanel    panel
 	diffCursor     int
 	expandedFiles  map[int]bool
@@ -48,6 +51,10 @@ type branchDetailModel struct {
 	// Review overlay.
 	showReviewOverlay bool
 	reviewOverlay     reviewOverlayModel
+
+	// Proposal overlay.
+	showProposalOverlay bool
+	proposalOverlay     proposalOverlayModel
 
 	// Auto-refresh: true when any HEAD check is pending.
 	autoRefreshPending bool
@@ -79,6 +86,35 @@ func (m branchDetailModel) Init() tea.Cmd {
 }
 
 func (m branchDetailModel) Update(msg tea.Msg) (branchDetailModel, tea.Cmd) {
+	// If proposal overlay is active, delegate to it.
+	if m.showProposalOverlay {
+		switch msg := msg.(type) {
+		case tea.KeyMsg:
+			if msg.String() == "esc" {
+				m.showProposalOverlay = false
+				return m, nil
+			}
+			if msg.String() == "ctrl+c" {
+				m.quit = true
+				return m, tea.Quit
+			}
+		case proposalOpenedMsg:
+			if msg.err == nil {
+				m.showProposalOverlay = false
+				m.loading = true
+				return m, loadBranchDetail(m.client, m.branchName)
+			}
+		}
+		var cmd tea.Cmd
+		m.proposalOverlay, cmd = m.proposalOverlay.Update(msg)
+		if m.proposalOverlay.submitted {
+			m.showProposalOverlay = false
+			m.loading = true
+			return m, loadBranchDetail(m.client, m.branchName)
+		}
+		return m, cmd
+	}
+
 	// If review overlay is active, delegate to it.
 	if m.showReviewOverlay {
 		switch msg := msg.(type) {
@@ -159,6 +195,7 @@ func (m branchDetailModel) Update(msg tea.Msg) (branchDetailModel, tea.Cmd) {
 			m.headSeq = msg.headSeq
 			m.baseSeq = msg.baseSeq
 			m.baseTreePaths = msg.baseTreePaths
+			m.proposal = msg.proposal
 		}
 		// Auto-refresh: schedule a tick if any HEAD check is pending.
 		m.autoRefreshPending = false
@@ -197,6 +234,14 @@ func (m branchDetailModel) Update(msg tea.Msg) (branchDetailModel, tea.Cmd) {
 
 		case "tab":
 			m.activePanel = (m.activePanel + 1) % 3
+
+		case "p":
+			// Only open proposal overlay if no open proposal exists.
+			if m.proposal == nil {
+				m.showProposalOverlay = true
+				m.proposalOverlay = newProposalOverlay(m.client, m.branchName)
+				return m, m.proposalOverlay.Init()
+			}
 
 		case "r":
 			m.showReviewOverlay = true
@@ -245,8 +290,24 @@ func (m branchDetailModel) Update(msg tea.Msg) (branchDetailModel, tea.Cmd) {
 func (m branchDetailModel) View() string {
 	var sb strings.Builder
 
-	// Title.
+	// Title with proposal indicator.
+	proposalIndicator := "[no proposal]"
+	if m.loading {
+		proposalIndicator = ""
+	} else if m.proposal != nil {
+		switch m.proposal.State {
+		case model.ProposalOpen:
+			proposalIndicator = styleApproved.Render("[proposal open]")
+		case model.ProposalClosed:
+			proposalIndicator = styleStale.Render("[proposal closed]")
+		case model.ProposalMerged:
+			proposalIndicator = stylePassed.Render("[proposal merged]")
+		}
+	}
 	title := fmt.Sprintf("%s  [head:%d  base:%d]", m.branchName, m.headSeq, m.baseSeq)
+	if proposalIndicator != "" {
+		title += "  " + proposalIndicator
+	}
 	sb.WriteString(styleTitle.Render(title) + "\n")
 
 	// Tab bar.
@@ -283,9 +344,17 @@ func (m branchDetailModel) View() string {
 		sb.WriteString("\n")
 		sb.WriteString(styleBorder.Render(m.reviewOverlay.View()))
 		sb.WriteString("\n")
+	} else if m.showProposalOverlay {
+		sb.WriteString("\n")
+		sb.WriteString(styleBorder.Render(m.proposalOverlay.View()))
+		sb.WriteString("\n")
 	} else {
 		sb.WriteString("\n")
-		sb.WriteString(styleHelp.Render("  tab panels · enter expand/collapse · r review · m merge · R refresh · q back"))
+		helpText := "  tab panels · enter expand/collapse · r review · m merge · R refresh · q back"
+		if m.proposal == nil && !m.loading {
+			helpText = "  tab panels · enter expand/collapse · p proposal · r review · m merge · R refresh · q back"
+		}
+		sb.WriteString(styleHelp.Render(helpText))
 	}
 
 	return sb.String()
