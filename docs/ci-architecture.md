@@ -5,13 +5,24 @@ DocStore CI runs on GKE using [Kata Containers](https://katacontainers.io/) with
 ## Architecture Overview
 
 ```
-docstore repo push
-  └─► docstore server fires webhook (com.docstore.commit.created)
-        └─► ci-scheduler (standard GKE node, :8080)
-              └─► INSERT INTO ci_jobs (status='queued')
-                    └─► ci-worker pod (Kata CLH microVM) polls ci_jobs
-                          └─► claim job → run buildkitd executor
-                                └─► results → ci_jobs + logs → GCS
+docstore events (CloudEvents via outbox)
+  ├─ com.docstore.commit.created  ──────────────────────────────┐
+  └─ com.docstore.proposal.opened ──────────────────────────────┤
+                                                                 ▼
+                                               ci-scheduler (standard GKE node, :8080)
+                                               ├─ POST /webhook   ← webhook delivery
+                                               ├─ POST /run       ← manual trigger
+                                               └─ cron runner     ← schedule trigger
+                                                         │
+                                               INSERT INTO ci_jobs (trigger_type, ...)
+                                                         │
+                                               ci-worker pod (Kata CLH microVM) polls ci_jobs
+                                               ├─ claim job (SKIP LOCKED)
+                                               ├─ fetch .docstore/ci.yaml (branch under test)
+                                               ├─ evaluate if: conditions
+                                               ├─ run checks via BuildKit executor
+                                               ├─ upload logs → GCS
+                                               └─ POST check_runs → docstore
 ```
 
 ### Components
@@ -40,15 +51,57 @@ ci-worker pods (kata-clh microVM)
   └─► log HTTP  :8081  (proxied through ci-scheduler for live log streaming)
 ```
 
+### Event subscription and routing
+
+ci-scheduler subscribes to docstore events at startup. When `RUNNER_URL` is set, the scheduler automatically registers a webhook subscription with docstore on boot:
+
+```
+POST /repos/*/subscriptions   (wildcard — all repos)
+  backend: webhook
+  endpoint: <RUNNER_URL>/webhook
+  event_types: [com.docstore.commit.created, com.docstore.proposal.opened]
+```
+
+Deliveries are HMAC-SHA256 signed using `WEBHOOK_SECRET`. The scheduler verifies the `X-DocStore-Signature` header on every request and rejects unverified payloads.
+
+**Incoming event types and what they trigger:**
+
+| CloudEvent type | Trigger type enqueued | Condition |
+|---|---|---|
+| `com.docstore.commit.created` | `push` | Always, unless `on.push.branches` filter excludes the branch |
+| `com.docstore.commit.created` | `proposal_synchronized` | Additionally, if the pushed branch has an open proposal and `on.proposal` is configured |
+| `com.docstore.proposal.opened` | `proposal` | If `on.proposal.base_branches` matches the proposal's base branch |
+| *(cron runner)* | `schedule` | If the current minute matches a `on.schedule[].cron` expression |
+| `POST /run` (manual) | `manual` | Always |
+
+The `proposal_synchronized` trigger is synthetic — ci-scheduler detects it by querying `GET /repos/:name/-/proposals?state=open&branch=<branch>` after receiving a `commit.created` event. No separate event is emitted by docstore.
+
 ### Job lifecycle
 
-1. Docstore outbox dispatches `com.docstore.commit.created` to `POST /webhook` on ci-scheduler.
-2. ci-scheduler verifies the HMAC signature, parses the CloudEvent, and inserts a row into `ci_jobs` with `status='queued'`.
-3. A ci-worker pod polls `ClaimCIJob` (atomic `UPDATE ... WHERE status='queued' LIMIT 1 RETURNING *`).
-4. The worker fetches `.docstore/ci.yaml` from `main`, downloads the branch source tree as a tar archive, executes all checks via BuildKit, uploads logs to GCS, and posts `check_runs` back to docstore.
-5. The worker calls `CompleteCIJob` (sets `status='done'` or `'failed'`) and exits.
-6. The Deployment controller replaces the exited pod, maintaining the pool size (3 replicas by default).
-7. ci-scheduler reaps jobs whose `last_heartbeat_at` has gone stale (missed heartbeats from crashed workers) every 30 seconds, resetting them to `queued`.
+1. An event arrives at `POST /webhook` (or the cron runner fires, or `POST /run` is called).
+2. ci-scheduler verifies the HMAC signature (webhook path only), parses the CloudEvent, and reads `.docstore/ci.yaml` from the branch under test.
+3. The `on:` block in ci.yaml is evaluated against the event. If no trigger matches, the request is acknowledged and no job is enqueued.
+4. A `ci_jobs` row is inserted with `status='queued'` and trigger metadata (`trigger_type`, `trigger_branch`, `trigger_base_branch`, `trigger_proposal_id`).
+5. A ci-worker pod polls `ClaimCIJob` (atomic `UPDATE … WHERE status='queued' LIMIT 1 … SKIP LOCKED RETURNING *`).
+6. The worker builds a `TriggerContext` from the job row and fetches `.docstore/ci.yaml` from the branch under test at the pinned sequence.
+7. For each check, the worker evaluates the `if:` expression against the `TriggerContext`. Checks that evaluate to false are skipped entirely.
+8. Remaining checks are executed concurrently via BuildKit LLB inside the Kata microVM.
+9. The worker uploads logs to GCS, posts `check_runs` back to docstore, and calls `CompleteCIJob`.
+10. The Deployment controller replaces the exited pod, maintaining the pool size.
+11. ci-scheduler reaps jobs whose `last_heartbeat_at` has gone stale (missed heartbeats from crashed workers) every 30 seconds, resetting them to `queued`.
+
+### Trigger context
+
+Each `ci_jobs` row carries the full trigger context, which is surfaced to ci-worker and used to evaluate `if:` expressions:
+
+| Column | Type | Description |
+|---|---|---|
+| `trigger_type` | text | `push`, `proposal`, `proposal_synchronized`, `manual`, `schedule` |
+| `trigger_branch` | text | Branch that triggered the run |
+| `trigger_base_branch` | text | Proposal target branch (`proposal`/`proposal_synchronized` only) |
+| `trigger_proposal_id` | text | Proposal UUID (`proposal`/`proposal_synchronized` only) |
+
+These map directly to the `event.*` fields available in `if:` expressions (see [proposals-and-ci-triggers.md](proposals-and-ci-triggers.md)).
 
 ### Manual trigger
 
@@ -58,7 +111,7 @@ curl -X POST http://<ci-scheduler-ip>:8080/run \
   -d '{"repo": "acme/myrepo", "branch": "feature/x", "head_sequence": 42}'
 ```
 
-Returns `{"run_id": "..."}`. Poll status with `GET /run/{id}`.
+Returns `{"run_id": "..."}`. Poll status with `GET /run/{id}`. Manual runs use `trigger_type=manual` and bypass the `on:` block filter — they always enqueue regardless of what triggers are configured.
 
 ---
 
