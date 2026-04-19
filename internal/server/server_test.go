@@ -66,11 +66,12 @@ type mockStore struct {
 	getReviewCommentFn    func(ctx context.Context, repo, id string) (*model.ReviewComment, error)
 	deleteReviewCommentFn func(ctx context.Context, repo, id string) error
 
-	createSubscriptionFn  func(ctx context.Context, req model.CreateSubscriptionRequest) (*model.EventSubscription, error)
-	getSubscriptionFn     func(ctx context.Context, id string) (*model.EventSubscription, error)
-	listSubscriptionsFn   func(ctx context.Context) ([]model.EventSubscription, error)
-	deleteSubscriptionFn  func(ctx context.Context, id string) error
-	resumeSubscriptionFn  func(ctx context.Context, id string) error
+	createSubscriptionFn             func(ctx context.Context, req model.CreateSubscriptionRequest) (*model.EventSubscription, error)
+	getSubscriptionFn                func(ctx context.Context, id string) (*model.EventSubscription, error)
+	listSubscriptionsFn              func(ctx context.Context) ([]model.EventSubscription, error)
+	listSubscriptionsByCreatorFn     func(ctx context.Context, createdBy string) ([]model.EventSubscription, error)
+	deleteSubscriptionFn             func(ctx context.Context, id string) error
+	resumeSubscriptionFn             func(ctx context.Context, id string) error
 }
 
 func (m *mockStore) Commit(ctx context.Context, req model.CommitRequest) (*model.CommitResponse, error) {
@@ -356,6 +357,13 @@ func (m *mockStore) GetSubscription(ctx context.Context, id string) (*model.Even
 func (m *mockStore) ListSubscriptions(ctx context.Context) ([]model.EventSubscription, error) {
 	if m.listSubscriptionsFn != nil {
 		return m.listSubscriptionsFn(ctx)
+	}
+	return []model.EventSubscription{}, nil
+}
+
+func (m *mockStore) ListSubscriptionsByCreator(ctx context.Context, createdBy string) ([]model.EventSubscription, error) {
+	if m.listSubscriptionsByCreatorFn != nil {
+		return m.listSubscriptionsByCreatorFn(ctx, createdBy)
 	}
 	return []model.EventSubscription{}, nil
 }

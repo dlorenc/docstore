@@ -2518,12 +2518,18 @@ func (s *server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 
 // handleListSubscriptions implements GET /subscriptions.
 // Global admin sees all subscriptions. Non-admin users see only subscriptions
-// they created (filtered by CreatedBy == identity).
+// they created (queried directly by created_by at the store level).
 func (s *server) handleListSubscriptions(w http.ResponseWriter, r *http.Request) {
 	identity := IdentityFromContext(r.Context())
 	isAdmin := s.globalAdmin != "" && identity == s.globalAdmin
 
-	subs, err := s.commitStore.ListSubscriptions(r.Context())
+	var subs []model.EventSubscription
+	var err error
+	if isAdmin {
+		subs, err = s.commitStore.ListSubscriptions(r.Context())
+	} else {
+		subs, err = s.commitStore.ListSubscriptionsByCreator(r.Context(), identity)
+	}
 	if err != nil {
 		slog.Error("internal error", "op", "list_subscriptions", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal server error")
@@ -2531,16 +2537,6 @@ func (s *server) handleListSubscriptions(w http.ResponseWriter, r *http.Request)
 	}
 	if subs == nil {
 		subs = []model.EventSubscription{}
-	}
-	// Non-admin users only see subscriptions they created.
-	if !isAdmin {
-		filtered := make([]model.EventSubscription, 0, len(subs))
-		for _, sub := range subs {
-			if sub.CreatedBy == identity {
-				filtered = append(filtered, sub)
-			}
-		}
-		subs = filtered
 	}
 	writeJSON(w, http.StatusOK, model.ListSubscriptionsResponse{Subscriptions: subs})
 }

@@ -2249,6 +2249,47 @@ func (s *Store) ListSubscriptions(ctx context.Context) ([]model.EventSubscriptio
 	return subs, nil
 }
 
+// ListSubscriptionsByCreator returns all event subscriptions created by the given identity.
+func (s *Store) ListSubscriptionsByCreator(ctx context.Context, createdBy string) ([]model.EventSubscription, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, repo, event_types, backend, config, created_at, created_by, suspended_at, failure_count
+		FROM event_subscriptions
+		WHERE created_by = $1
+		ORDER BY created_at`, createdBy)
+	if err != nil {
+		return nil, fmt.Errorf("list subscriptions by creator: %w", err)
+	}
+	defer rows.Close()
+
+	var subs []model.EventSubscription
+	for rows.Next() {
+		var sub model.EventSubscription
+		var repo sql.NullString
+		var eventTypes pq.StringArray
+		var suspendedAt sql.NullTime
+		var configBytes []byte
+		if err := rows.Scan(&sub.ID, &repo, &eventTypes, &sub.Backend,
+			&configBytes, &sub.CreatedAt, &sub.CreatedBy, &suspendedAt, &sub.FailureCount); err != nil {
+			return nil, fmt.Errorf("scan subscription: %w", err)
+		}
+		if repo.Valid {
+			sub.Repo = &repo.String
+		}
+		if len(eventTypes) > 0 {
+			sub.EventTypes = []string(eventTypes)
+		}
+		if suspendedAt.Valid {
+			sub.SuspendedAt = &suspendedAt.Time
+		}
+		sub.Config = json.RawMessage(configBytes)
+		subs = append(subs, sub)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate subscriptions: %w", err)
+	}
+	return subs, nil
+}
+
 // DeleteSubscription deletes a subscription by ID.
 func (s *Store) DeleteSubscription(ctx context.Context, id string) error {
 	res, err := s.db.ExecContext(ctx,

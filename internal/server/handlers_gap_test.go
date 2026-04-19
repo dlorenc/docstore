@@ -286,8 +286,8 @@ func TestHandleCreateSubscription_Success(t *testing.T) {
 	}
 }
 
-func TestHandleCreateSubscription_NonAdmin_Forbidden(t *testing.T) {
-	// devID != global admin → 403.
+func TestHandleCreateSubscription_NonAdmin_GlobalScope_Forbidden(t *testing.T) {
+	// Non-admin caller with no repo field: tests the 'no repo field on non-admin' path → 403.
 	srv := New(&mockStore{}, nil, devID, "admin@other.com")
 	body, _ := json.Marshal(map[string]interface{}{
 		"backend": "webhook",
@@ -596,13 +596,13 @@ func TestHandleCreateSubscription_RepoScoped_NoRepoAccess_Forbidden(t *testing.T
 	}
 }
 
-// 3. Non-admin sees only subscriptions they created.
+// 3. Non-admin sees only subscriptions they created (via store-level query).
 func TestHandleListSubscriptions_NonAdmin_FiltersToOwn(t *testing.T) {
 	ms := &mockStore{
-		listSubscriptionsFn: func(_ context.Context) ([]model.EventSubscription, error) {
+		listSubscriptionsByCreatorFn: func(_ context.Context, createdBy string) ([]model.EventSubscription, error) {
+			// Store returns only the caller's subscriptions.
 			return []model.EventSubscription{
-				{ID: "sub-1", Backend: "webhook", CreatedBy: devID},
-				{ID: "sub-2", Backend: "webhook", CreatedBy: "other@example.com"},
+				{ID: "sub-1", Backend: "webhook", CreatedBy: createdBy},
 			}, nil
 		},
 	}
@@ -712,5 +712,69 @@ func TestHandleResumeSubscription_NotCreator_Forbidden(t *testing.T) {
 	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for non-creator resume, got %d", rec.Code)
+	}
+}
+
+// 9. Non-admin caller, GetSubscription returns generic error → 500 for delete.
+func TestHandleDeleteSubscription_NonAdmin_StoreError(t *testing.T) {
+	ms := &mockStore{
+		getSubscriptionFn: func(_ context.Context, id string) (*model.EventSubscription, error) {
+			return nil, errors.New("db connection reset")
+		},
+	}
+	srv := New(ms, nil, devID, "admin@other.com")
+	req := httptest.NewRequest(http.MethodDelete, "/subscriptions/sub-1", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 for store error on non-admin delete, got %d", rec.Code)
+	}
+}
+
+// 10. Non-admin caller, GetSubscription returns generic error → 500 for resume.
+func TestHandleResumeSubscription_NonAdmin_StoreError(t *testing.T) {
+	ms := &mockStore{
+		getSubscriptionFn: func(_ context.Context, id string) (*model.EventSubscription, error) {
+			return nil, errors.New("db connection reset")
+		},
+	}
+	srv := New(ms, nil, devID, "admin@other.com")
+	req := httptest.NewRequest(http.MethodPost, "/subscriptions/sub-1/resume", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 for store error on non-admin resume, got %d", rec.Code)
+	}
+}
+
+// 11. Non-admin caller, GetSubscription returns ErrSubscriptionNotFound → 404 for delete.
+func TestHandleDeleteSubscription_NonAdmin_NotFound(t *testing.T) {
+	ms := &mockStore{
+		getSubscriptionFn: func(_ context.Context, id string) (*model.EventSubscription, error) {
+			return nil, db.ErrSubscriptionNotFound
+		},
+	}
+	srv := New(ms, nil, devID, "admin@other.com")
+	req := httptest.NewRequest(http.MethodDelete, "/subscriptions/sub-1", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for not-found on non-admin delete, got %d", rec.Code)
+	}
+}
+
+// 12. Non-admin caller, GetSubscription returns ErrSubscriptionNotFound → 404 for resume.
+func TestHandleResumeSubscription_NonAdmin_NotFound(t *testing.T) {
+	ms := &mockStore{
+		getSubscriptionFn: func(_ context.Context, id string) (*model.EventSubscription, error) {
+			return nil, db.ErrSubscriptionNotFound
+		},
+	}
+	srv := New(ms, nil, devID, "admin@other.com")
+	req := httptest.NewRequest(http.MethodPost, "/subscriptions/sub-1/resume", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for not-found on non-admin resume, got %d", rec.Code)
 	}
 }
