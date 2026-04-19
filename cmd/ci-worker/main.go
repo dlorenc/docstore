@@ -1,13 +1,11 @@
 package main
 
 import (
-	"archive/tar"
 	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -137,52 +135,6 @@ func fetchConfig(ctx context.Context, client *http.Client, docstoreURL, repo, br
 	return &cfg, nil
 }
 
-func pullBranchSource(ctx context.Context, client *http.Client, docstoreURL, repo, branch string, headSeq int64) (string, error) {
-	tempDir, err := os.MkdirTemp("", "ci-worker-src-*")
-	if err != nil {
-		return "", fmt.Errorf("create temp dir: %w", err)
-	}
-
-	archiveURL := fmt.Sprintf("%s/repos/%s/-/archive?branch=%s&at=%d",
-		docstoreURL, repo, url.QueryEscape(branch), headSeq)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, archiveURL, nil)
-	if err != nil {
-		return tempDir, fmt.Errorf("create archive request: %w", err)
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return tempDir, fmt.Errorf("fetch archive: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return tempDir, fmt.Errorf("fetch archive: unexpected status %d", resp.StatusCode)
-	}
-
-	tr := tar.NewReader(resp.Body)
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return tempDir, fmt.Errorf("read archive: %w", err)
-		}
-		destPath := filepath.Join(tempDir, filepath.FromSlash(hdr.Name))
-		if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
-			return tempDir, fmt.Errorf("create dir for %s: %w", hdr.Name, err)
-		}
-		content, err := io.ReadAll(tr)
-		if err != nil {
-			return tempDir, fmt.Errorf("read archive entry %s: %w", hdr.Name, err)
-		}
-		if err := os.WriteFile(destPath, content, 0o644); err != nil {
-			return tempDir, fmt.Errorf("write file %s: %w", hdr.Name, err)
-		}
-	}
-
-	return tempDir, nil
-}
 
 func postCheckRun(ctx context.Context, client *http.Client, docstoreURL, repo string, req model.CreateCheckRunRequest) error {
 	body, err := json.Marshal(req)
@@ -288,14 +240,11 @@ func runJob(
 		return "passed", nil, nil
 	}
 
-	// 2. Pull branch source into temp dir.
-	srcDir, err := pullBranchSource(ctx, httpClient, docstoreURL, job.Repo, job.Branch, job.Sequence)
-	if srcDir != "" {
-		defer os.RemoveAll(srcDir)
-	}
-	if err != nil {
-		return fail(fmt.Sprintf("pull source: %v", err))
-	}
+	// 2. Construct the archive URL; BuildKit fetches it directly via llb.HTTP.
+	// The sequence parameter makes the URL content-addressed, so BuildKit's
+	// HTTP cache deduplicates fetches across parallel checks at the same commit.
+	archiveURL := fmt.Sprintf("%s/repos/%s/-/archive?branch=%s&at=%d",
+		docstoreURL, job.Repo, url.QueryEscape(job.Branch), job.Sequence)
 
 	// 3. Mark each check as pending (in parallel).
 	var pendingWg sync.WaitGroup
@@ -316,7 +265,7 @@ func runJob(
 	pendingWg.Wait()
 
 	// 4. Execute all checks.
-	results, err := exec.Run(ctx, srcDir, *cfg, triggerCtx)
+	results, err := exec.Run(ctx, archiveURL, *cfg, triggerCtx)
 	if err != nil {
 		return fail(fmt.Sprintf("executor: %v", err))
 	}
