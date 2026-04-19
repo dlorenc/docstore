@@ -406,3 +406,44 @@ func TestGetSubscription_NotFound(t *testing.T) {
 		t.Errorf("expected ErrSubscriptionNotFound, got %v", err)
 	}
 }
+
+func TestListSubscriptionsByCreator_FiltersCorrectly(t *testing.T) {
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	config, _ := json.Marshal(map[string]string{"url": "https://example.com/hook"})
+
+	// Create a subscription for alice.
+	if _, err := s.CreateSubscription(ctx, model.CreateSubscriptionRequest{
+		Backend:   "webhook",
+		Config:    config,
+		CreatedBy: "alice@example.com",
+	}); err != nil {
+		t.Fatalf("create alice subscription: %v", err)
+	}
+
+	// Create a subscription for bob.
+	if _, err := s.CreateSubscription(ctx, model.CreateSubscriptionRequest{
+		Backend:   "webhook",
+		Config:    config,
+		CreatedBy: "bob@example.com",
+	}); err != nil {
+		t.Fatalf("create bob subscription: %v", err)
+	}
+
+	// ListSubscriptionsByCreator for alice should return only alice's subscription.
+	subs, err := s.ListSubscriptionsByCreator(ctx, "alice@example.com")
+	if err != nil {
+		t.Fatalf("list by creator: %v", err)
+	}
+	for _, sub := range subs {
+		if sub.CreatedBy != "alice@example.com" {
+			t.Errorf("expected only alice's subscriptions, got created_by=%q", sub.CreatedBy)
+		}
+	}
+	if len(subs) == 0 {
+		t.Error("expected at least one subscription for alice")
+	}
+}

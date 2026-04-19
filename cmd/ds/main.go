@@ -889,6 +889,8 @@ func main() {
 			err = app.SubscriptionList()
 		} else {
 			switch args[1] {
+			case "list":
+				err = app.SubscriptionList()
 			case "create":
 				webhookURL := ""
 				secret := ""
