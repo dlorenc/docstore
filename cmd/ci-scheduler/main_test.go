@@ -28,13 +28,15 @@ type stubStore struct {
 	reapErr      error
 }
 
-func (s *stubStore) InsertCIJob(_ context.Context, repo, branch string, sequence int64) (*model.CIJob, error) {
+func (s *stubStore) InsertCIJob(_ context.Context, repo, branch string, sequence int64, triggerType, triggerBranch string) (*model.CIJob, error) {
 	j := &model.CIJob{
-		ID:       "test-uuid",
-		Repo:     repo,
-		Branch:   branch,
-		Sequence: sequence,
-		Status:   "queued",
+		ID:            "test-uuid",
+		Repo:          repo,
+		Branch:        branch,
+		Sequence:      sequence,
+		Status:        "queued",
+		TriggerType:   triggerType,
+		TriggerBranch: triggerBranch,
 	}
 	s.insertedJobs = append(s.insertedJobs, j)
 	return j, nil
@@ -388,5 +390,160 @@ func TestHandleRun_MissingRepo_Returns400(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests: push trigger type is recorded
+// ---------------------------------------------------------------------------
+
+func TestHandleWebhook_SetsTrigerTypePush(t *testing.T) {
+	stub := &stubStore{}
+	sched := &scheduler{store: stub, webhookSecret: ""}
+
+	body := commitCreatedEvent("myrepo", "feat", 3)
+	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	sched.handleWebhook(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if len(stub.insertedJobs) != 1 {
+		t.Fatalf("expected 1 inserted job, got %d", len(stub.insertedJobs))
+	}
+	j := stub.insertedJobs[0]
+	if j.TriggerType != "push" {
+		t.Errorf("TriggerType = %q, want %q", j.TriggerType, "push")
+	}
+	if j.TriggerBranch != "feat" {
+		t.Errorf("TriggerBranch = %q, want %q", j.TriggerBranch, "feat")
+	}
+}
+
+func TestHandleRun_SetsTrigerTypeManual(t *testing.T) {
+	stub := &stubStore{}
+	sched := &scheduler{store: stub}
+
+	body, _ := json.Marshal(map[string]any{
+		"repo":          "org/repo",
+		"branch":        "main",
+		"head_sequence": 10,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/run", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	sched.handleRun(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", w.Code)
+	}
+	if len(stub.insertedJobs) != 1 {
+		t.Fatalf("expected 1 job, got %d", len(stub.insertedJobs))
+	}
+	j := stub.insertedJobs[0]
+	if j.TriggerType != "manual" {
+		t.Errorf("TriggerType = %q, want %q", j.TriggerType, "manual")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests: on: block branch filtering in webhook handler
+// ---------------------------------------------------------------------------
+
+// newCIConfigServer returns a test HTTP server that serves the given ci.yaml content.
+func newCIConfigServer(t *testing.T, ciYAML string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		type fileResp struct {
+			Path    string `json:"path"`
+			Content []byte `json:"content"`
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(fileResp{Path: ".docstore/ci.yaml", Content: []byte(ciYAML)}) //nolint:errcheck
+	}))
+}
+
+func TestHandleWebhook_OnPushBranchFilter_SkipsNonMatchingBranch(t *testing.T) {
+	ciYAML := "on:\n  push:\n    branches:\n      - main\n"
+	srv := newCIConfigServer(t, ciYAML)
+	defer srv.Close()
+
+	stub := &stubStore{}
+	sched := &scheduler{
+		store:       stub,
+		docstoreURL: srv.URL,
+		httpClient:  &http.Client{},
+	}
+
+	// Event for branch "feature/foo" — should be filtered out.
+	body := commitCreatedEvent("myrepo", "feature/foo", 5)
+	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	sched.handleWebhook(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if len(stub.insertedJobs) != 0 {
+		t.Fatalf("expected 0 inserted jobs (filtered), got %d", len(stub.insertedJobs))
+	}
+}
+
+func TestHandleWebhook_OnPushBranchFilter_AllowsMatchingBranch(t *testing.T) {
+	ciYAML := "on:\n  push:\n    branches:\n      - main\n"
+	srv := newCIConfigServer(t, ciYAML)
+	defer srv.Close()
+
+	stub := &stubStore{}
+	sched := &scheduler{
+		store:       stub,
+		docstoreURL: srv.URL,
+		httpClient:  &http.Client{},
+	}
+
+	// Event for branch "main" — should pass through.
+	body := commitCreatedEvent("myrepo", "main", 6)
+	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	sched.handleWebhook(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if len(stub.insertedJobs) != 1 {
+		t.Fatalf("expected 1 inserted job, got %d", len(stub.insertedJobs))
+	}
+}
+
+func TestHandleWebhook_NoCIYAML_AlwaysEnqueues(t *testing.T) {
+	// Server returns 404 for all requests (no ci.yaml configured).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	stub := &stubStore{}
+	sched := &scheduler{
+		store:       stub,
+		docstoreURL: srv.URL,
+		httpClient:  &http.Client{},
+	}
+
+	body := commitCreatedEvent("myrepo", "feature/anything", 7)
+	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	sched.handleWebhook(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if len(stub.insertedJobs) != 1 {
+		t.Fatalf("expected 1 inserted job (no ci.yaml = always run), got %d", len(stub.insertedJobs))
 	}
 }
