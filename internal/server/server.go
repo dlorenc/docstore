@@ -110,6 +110,14 @@ type WriteStore interface {
 	ListSubscriptions(ctx context.Context) ([]model.EventSubscription, error)
 	DeleteSubscription(ctx context.Context, id string) error
 	ResumeSubscription(ctx context.Context, id string) error
+
+	// Proposal management
+	CreateProposal(ctx context.Context, repo, branch, baseBranch, title, description, author string) (*model.Proposal, error)
+	GetProposal(ctx context.Context, repo, proposalID string) (*model.Proposal, error)
+	ListProposals(ctx context.Context, repo string, state *model.ProposalState) ([]*model.Proposal, error)
+	UpdateProposal(ctx context.Context, repo, proposalID string, title, description *string) (*model.Proposal, error)
+	CloseProposal(ctx context.Context, repo, proposalID string) error
+	MergeProposal(ctx context.Context, repo, branch string) (*model.Proposal, error)
 }
 
 // CommitStore is an alias for backward compatibility with tests.

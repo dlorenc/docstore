@@ -366,6 +366,30 @@ func (m *mockStore) ResumeSubscription(ctx context.Context, id string) error {
 	return nil
 }
 
+func (m *mockStore) CreateProposal(_ context.Context, _, _, _, _, _, _ string) (*model.Proposal, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockStore) GetProposal(_ context.Context, _, _ string) (*model.Proposal, error) {
+	return nil, db.ErrProposalNotFound
+}
+
+func (m *mockStore) ListProposals(_ context.Context, _ string, _ *model.ProposalState) ([]*model.Proposal, error) {
+	return []*model.Proposal{}, nil
+}
+
+func (m *mockStore) UpdateProposal(_ context.Context, _, _ string, _, _ *string) (*model.Proposal, error) {
+	return nil, db.ErrProposalNotFound
+}
+
+func (m *mockStore) CloseProposal(_ context.Context, _, _ string) error {
+	return db.ErrProposalNotFound
+}
+
+func (m *mockStore) MergeProposal(_ context.Context, _, _ string) (*model.Proposal, error) {
+	return nil, nil
+}
+
 func (m *mockStore) CreateReviewComment(ctx context.Context, repo, branch, path, versionID, body, author string, reviewID *string) (*model.ReviewComment, error) {
 	if m.createReviewCommentFn != nil {
 		return m.createReviewCommentFn(ctx, repo, branch, path, versionID, body, author, reviewID)
