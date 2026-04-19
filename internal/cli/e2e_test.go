@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -656,5 +657,133 @@ func TestRolesSet_InvalidRole(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "role must be one of") {
 		t.Errorf("expected role validation error, got: %v", err)
+	}
+}
+
+// TestIssues_EndToEnd exercises the full issue lifecycle against a real server.
+func TestIssues_EndToEnd(t *testing.T) {
+	t.Parallel()
+	srv := newRealServer(t)
+	app, out := newTestApp(t, srv)
+
+	// Set up workspace config.
+	if err := os.MkdirAll(filepath.Join(app.Dir, configDir), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.saveConfig(&Config{Remote: srv.URL, Repo: "default/default", Branch: "main", Author: "test@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create an issue.
+	out.Reset()
+	if err := app.IssueCreate("Fix the widget", "This widget is broken."); err != nil {
+		t.Fatalf("IssueCreate: %v", err)
+	}
+	createOut := out.String()
+	if !strings.Contains(createOut, "Created issue #") {
+		t.Fatalf("expected creation message, got: %s", createOut)
+	}
+	// Parse issue number from "Created issue #N\n".
+	var issueNum int64
+	if _, scanErr := fmt.Sscanf(createOut, "Created issue #%d", &issueNum); scanErr != nil {
+		t.Fatalf("could not parse issue number from: %s", createOut)
+	}
+
+	// List issues — should appear.
+	out.Reset()
+	if err := app.IssueList("open", ""); err != nil {
+		t.Fatalf("IssueList: %v", err)
+	}
+	if !strings.Contains(out.String(), "Fix the widget") {
+		t.Errorf("expected issue in listing, got: %s", out.String())
+	}
+
+	// Show issue.
+	out.Reset()
+	if err := app.IssueShow(issueNum); err != nil {
+		t.Fatalf("IssueShow: %v", err)
+	}
+	showOut := out.String()
+	if !strings.Contains(showOut, "Fix the widget") {
+		t.Errorf("expected issue title in show output, got: %s", showOut)
+	}
+	if !strings.Contains(showOut, "This widget is broken.") {
+		t.Errorf("expected issue body in show output, got: %s", showOut)
+	}
+
+	// Add a comment.
+	out.Reset()
+	if err := app.IssueCommentAdd(issueNum, "I can reproduce this."); err != nil {
+		t.Fatalf("IssueCommentAdd: %v", err)
+	}
+	if !strings.Contains(out.String(), "Added comment ") {
+		t.Errorf("expected added comment message, got: %s", out.String())
+	}
+	// Parse comment ID.
+	commentOut := out.String()
+	commentID := strings.TrimSpace(strings.TrimPrefix(commentOut, "Added comment "))
+
+	// Edit the comment.
+	out.Reset()
+	if err := app.IssueCommentEdit(issueNum, commentID, "I can reproduce this consistently."); err != nil {
+		t.Fatalf("IssueCommentEdit: %v", err)
+	}
+	if !strings.Contains(out.String(), "Updated comment "+commentID) {
+		t.Errorf("expected update message, got: %s", out.String())
+	}
+
+	// Tie a proposal ref.
+	out.Reset()
+	proposalUUID := "00000000-0000-0000-0000-000000000001"
+	if err := app.IssueTie(issueNum, "proposal", proposalUUID); err != nil {
+		t.Fatalf("IssueTie: %v", err)
+	}
+	if !strings.Contains(out.String(), "Tied proposal") {
+		t.Errorf("expected tie message, got: %s", out.String())
+	}
+
+	// List refs.
+	out.Reset()
+	if err := app.IssueRefs(issueNum); err != nil {
+		t.Fatalf("IssueRefs: %v", err)
+	}
+	if !strings.Contains(out.String(), proposalUUID) {
+		t.Errorf("expected proposal UUID in refs, got: %s", out.String())
+	}
+
+	// Close the issue.
+	out.Reset()
+	if err := app.IssueClose(issueNum, "completed"); err != nil {
+		t.Fatalf("IssueClose: %v", err)
+	}
+	if !strings.Contains(out.String(), "Closed issue #") {
+		t.Errorf("expected close message, got: %s", out.String())
+	}
+
+	// List open issues — should be empty now.
+	out.Reset()
+	if err := app.IssueList("open", ""); err != nil {
+		t.Fatalf("IssueList after close: %v", err)
+	}
+	if strings.Contains(out.String(), "Fix the widget") {
+		t.Errorf("expected issue to be absent from open list, got: %s", out.String())
+	}
+
+	// Reopen the issue.
+	out.Reset()
+	if err := app.IssueReopen(issueNum); err != nil {
+		t.Fatalf("IssueReopen: %v", err)
+	}
+	if !strings.Contains(out.String(), "Reopened issue #") {
+		t.Errorf("expected reopen message, got: %s", out.String())
+	}
+
+	// List open issues again — should appear.
+	out.Reset()
+	if err := app.IssueList("open", ""); err != nil {
+		t.Fatalf("IssueList after reopen: %v", err)
+	}
+	if !strings.Contains(out.String(), "Fix the widget") {
+		t.Errorf("expected issue back in open list, got: %s", out.String())
 	}
 }
