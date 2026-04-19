@@ -20,6 +20,7 @@ import (
 	"github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/events"
 	evtypes "github.com/dlorenc/docstore/internal/events/types"
+	mergeutil "github.com/dlorenc/docstore/internal/merge"
 	"github.com/dlorenc/docstore/internal/model"
 	"github.com/dlorenc/docstore/internal/policy"
 	"github.com/dlorenc/docstore/internal/store"
@@ -249,23 +250,36 @@ func (s *server) handleReposPrefix(w http.ResponseWriter, r *http.Request) {
 
 	case strings.HasPrefix(endpoint, "branch/"):
 		bpath := strings.TrimPrefix(endpoint, "branch/")
-		switch r.Method {
-		case http.MethodDelete:
-			r.SetPathValue("bname", bpath)
-			s.handleDeleteBranch(w, r)
-		case http.MethodPatch:
-			r.SetPathValue("bname", bpath)
-			s.handleUpdateBranch(w, r)
-		case http.MethodGet:
-			if strings.HasSuffix(bpath, "/status") {
-				branchName := strings.TrimSuffix(bpath, "/status")
-				s.handleBranchStatus(w, r, repoName, branchName)
-			} else {
-				r.SetPathValue("branch", bpath)
-				s.handleBranchGet(w, r)
+		if strings.HasSuffix(bpath, "/auto-merge") {
+			branchName := strings.TrimSuffix(bpath, "/auto-merge")
+			r.SetPathValue("bname", branchName)
+			switch r.Method {
+			case http.MethodPost:
+				s.handleEnableAutoMerge(w, r)
+			case http.MethodDelete:
+				s.handleDisableAutoMerge(w, r)
+			default:
+				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 			}
-		default:
-			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		} else {
+			switch r.Method {
+			case http.MethodDelete:
+				r.SetPathValue("bname", bpath)
+				s.handleDeleteBranch(w, r)
+			case http.MethodPatch:
+				r.SetPathValue("bname", bpath)
+				s.handleUpdateBranch(w, r)
+			case http.MethodGet:
+				if strings.HasSuffix(bpath, "/status") {
+					branchName := strings.TrimSuffix(bpath, "/status")
+					s.handleBranchStatus(w, r, repoName, branchName)
+				} else {
+					r.SetPathValue("branch", bpath)
+					s.handleBranchGet(w, r)
+				}
+			default:
+				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			}
 		}
 
 	case endpoint == "events":
@@ -1558,6 +1572,69 @@ func (s *server) handleUpdateBranch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, model.UpdateBranchResponse{Name: bname, Draft: req.Draft})
 }
 
+// handleEnableAutoMerge implements POST /repos/:name/-/branch/:bname/auto-merge (writer+)
+// Enables auto-merge on the branch. When all policies are satisfied and CI checks
+// pass, the branch will be automatically merged.
+func (s *server) handleEnableAutoMerge(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	bname := r.PathValue("bname")
+
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
+	if bname == "main" {
+		writeError(w, http.StatusBadRequest, "cannot enable auto-merge on branch 'main'")
+		return
+	}
+
+	if err := s.commitStore.SetBranchAutoMerge(r.Context(), repo, bname, true); err != nil {
+		switch {
+		case errors.Is(err, db.ErrBranchNotFound):
+			writeError(w, http.StatusNotFound, "branch not found")
+		default:
+			slog.Error("internal error", "op", "enable_auto_merge", "repo", repo, "branch", bname, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+
+	identity := IdentityFromContext(r.Context())
+	s.emit(r.Context(), evtypes.BranchAutoMergeEnabled{Repo: repo, Branch: bname, EnabledBy: identity})
+	slog.Info("auto-merge enabled", "repo", repo, "branch", bname, "by", identity)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleDisableAutoMerge implements DELETE /repos/:name/-/branch/:bname/auto-merge (writer+)
+// Disables auto-merge on the branch.
+func (s *server) handleDisableAutoMerge(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	bname := r.PathValue("bname")
+
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
+	if bname == "main" {
+		writeError(w, http.StatusBadRequest, "cannot disable auto-merge on branch 'main'")
+		return
+	}
+
+	if err := s.commitStore.SetBranchAutoMerge(r.Context(), repo, bname, false); err != nil {
+		switch {
+		case errors.Is(err, db.ErrBranchNotFound):
+			writeError(w, http.StatusNotFound, "branch not found")
+		default:
+			slog.Error("internal error", "op", "disable_auto_merge", "repo", repo, "branch", bname, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+
+	identity := IdentityFromContext(r.Context())
+	s.emit(r.Context(), evtypes.BranchAutoMergeDisabled{Repo: repo, Branch: bname, DisabledBy: identity})
+	slog.Info("auto-merge disabled", "repo", repo, "branch", bname, "by", identity)
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // handleDeleteBranch implements DELETE /repos/:name/branch/{bname}
 func (s *server) handleDeleteBranch(w http.ResponseWriter, r *http.Request) {
 	repo := r.PathValue("name")
@@ -2068,99 +2145,7 @@ func (s *server) handleMerge(w http.ResponseWriter, r *http.Request) {
 // directory→owners map from the policy cache; it is resolved per changed path
 // before being placed on the Input.
 func (s *server) assembleMergeInput(ctx context.Context, repo, branch, actor string, owners map[string][]string) (*policy.Input, error) {
-	// Collect branch info for head/base sequence.
-	branchInfo, err := s.readStore.GetBranch(ctx, repo, branch)
-	if err != nil {
-		return nil, fmt.Errorf("get branch info: %w", err)
-	}
-	if branchInfo == nil {
-		return nil, nil // branch not found
-	}
-
-	// Collect changed paths.
-	diff, err := s.readStore.GetDiff(ctx, repo, branch)
-	if err != nil {
-		return nil, fmt.Errorf("get diff: %w", err)
-	}
-	var changedPaths []string
-	if diff != nil {
-		for _, e := range diff.BranchChanges {
-			changedPaths = append(changedPaths, e.Path)
-		}
-	}
-
-	// Collect reviews filtered to the current head sequence (stale reviews excluded).
-	reviews, err := s.commitStore.ListReviews(ctx, repo, branch, &branchInfo.HeadSequence)
-	if err != nil {
-		return nil, fmt.Errorf("list reviews: %w", err)
-	}
-	checkRuns, err := s.commitStore.ListCheckRuns(ctx, repo, branch, &branchInfo.HeadSequence)
-	if err != nil {
-		return nil, fmt.Errorf("list check runs: %w", err)
-	}
-
-	// Fetch the open proposal for this branch (nil if none exists).
-	openState := model.ProposalOpen
-	proposals, err := s.commitStore.ListProposals(ctx, repo, &openState, &branch)
-	if err != nil {
-		return nil, fmt.Errorf("list proposals: %w", err)
-	}
-	var proposalInput *policy.ProposalInput
-	if len(proposals) > 0 {
-		p := proposals[0]
-		proposalInput = &policy.ProposalInput{
-			ID:         p.ID,
-			BaseBranch: p.BaseBranch,
-			Title:      p.Title,
-			State:      string(p.State),
-		}
-	}
-
-	// Look up actor roles (empty slice if not assigned).
-	actorRoles := []string{}
-	if r, err := s.commitStore.GetRole(ctx, repo, actor); err == nil && r != nil {
-		actorRoles = []string{string(r.Role)}
-	}
-
-	// Build OPA input.
-	reviewInputs := make([]policy.ReviewInput, len(reviews))
-	for i, rev := range reviews {
-		reviewInputs[i] = policy.ReviewInput{
-			Reviewer: rev.Reviewer,
-			Status:   string(rev.Status),
-			Sequence: rev.Sequence,
-		}
-	}
-	checkInputs := make([]policy.CheckRunInput, len(checkRuns))
-	for i, cr := range checkRuns {
-		checkInputs[i] = policy.CheckRunInput{
-			CheckName: cr.CheckName,
-			Status:    string(cr.Status),
-			Sequence:  cr.Sequence,
-		}
-	}
-
-	// Resolve owners per changed path so policies can use input.owners["path"].
-	resolvedOwners := make(map[string][]string)
-	for _, p := range changedPaths {
-		resolvedOwners[p] = policy.ResolveOwners(owners, p)
-	}
-
-	return &policy.Input{
-		Actor:        actor,
-		ActorRoles:   actorRoles,
-		Action:       "merge",
-		Repo:         repo,
-		Branch:       branch,
-		Draft:        branchInfo.Draft,
-		ChangedPaths: changedPaths,
-		Reviews:      reviewInputs,
-		CheckRuns:    checkInputs,
-		Owners:       resolvedOwners,
-		HeadSeq:      branchInfo.HeadSequence,
-		BaseSeq:      branchInfo.BaseSequence,
-		Proposal:     proposalInput,
-	}, nil
+	return mergeutil.AssembleInput(ctx, s.readStore, s.commitStore, repo, branch, actor, owners)
 }
 
 // evaluateMergePolicy evaluates all OPA policies for a pending merge.
@@ -2168,39 +2153,7 @@ func (s *server) assembleMergeInput(ctx context.Context, repo, branch, actor str
 // Returns an error only for unexpected infrastructure failures.
 // When readStore or policyCache are nil, or no policies exist, the merge is allowed.
 func (s *server) evaluateMergePolicy(ctx context.Context, repo, branch, actor string) ([]model.PolicyResult, error) {
-	if s.policyCache == nil || s.readStore == nil {
-		return nil, nil
-	}
-
-	engine, owners, err := s.policyCache.Load(ctx, repo, s.readStore)
-	if err != nil {
-		return nil, err
-	}
-	if engine == nil {
-		return nil, nil // bootstrap mode
-	}
-
-	input, err := s.assembleMergeInput(ctx, repo, branch, actor, owners)
-	if err != nil {
-		return nil, err
-	}
-	if input == nil {
-		return nil, nil // branch not found — let the merge handler surface the error
-	}
-
-	results, err := engine.Evaluate(ctx, *input)
-	if err != nil {
-		return nil, fmt.Errorf("evaluate policies: %w", err)
-	}
-
-	// Collect any failing policies.
-	var denied []model.PolicyResult
-	for _, r := range results {
-		if !r.Pass {
-			denied = append(denied, r)
-		}
-	}
-	return denied, nil
+	return mergeutil.EvaluatePolicy(ctx, s.policyCache, s.readStore, s.commitStore, repo, branch, actor)
 }
 
 // ---------------------------------------------------------------------------
@@ -2235,11 +2188,24 @@ func (s *server) handleBranchStatus(w http.ResponseWriter, r *http.Request, repo
 		}
 	}
 
+	// Fetch branch info to populate auto_merge in the response.
+	branchInfo, err := s.readStore.GetBranch(r.Context(), repo, branch)
+	if err != nil {
+		slog.Error("get branch error", "op", "branch_status", "repo", repo, "branch", branch, "error", err)
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if branchInfo == nil {
+		writeError(w, http.StatusNotFound, "branch not found")
+		return
+	}
+
 	if engine == nil {
 		// Bootstrap mode: no policies defined.
 		writeJSON(w, http.StatusOK, model.BranchStatusResponse{
 			Mergeable: true,
 			Policies:  []model.PolicyResult{},
+			AutoMerge: branchInfo.AutoMerge,
 		})
 		return
 	}
@@ -2276,6 +2242,7 @@ func (s *server) handleBranchStatus(w http.ResponseWriter, r *http.Request, repo
 	writeJSON(w, http.StatusOK, model.BranchStatusResponse{
 		Mergeable: mergeable,
 		Policies:  results,
+		AutoMerge: branchInfo.AutoMerge,
 	})
 }
 

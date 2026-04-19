@@ -260,6 +260,7 @@ type BranchInfo struct {
 	BaseSequence int64  `json:"base_sequence"`
 	Status       string `json:"status"`
 	Draft        bool   `json:"draft"`
+	AutoMerge    bool   `json:"auto_merge"`
 }
 
 // DiffEntry represents a file changed on a branch relative to its base.
@@ -288,9 +289,9 @@ type DiffResult struct {
 func (s *Store) GetBranch(ctx context.Context, repo, branch string) (*BranchInfo, error) {
 	var b BranchInfo
 	err := s.db.QueryRowContext(ctx,
-		"SELECT name, head_sequence, base_sequence, status, draft FROM branches WHERE repo = $1 AND name = $2",
+		"SELECT name, head_sequence, base_sequence, status, draft, auto_merge FROM branches WHERE repo = $1 AND name = $2",
 		repo, branch,
-	).Scan(&b.Name, &b.HeadSequence, &b.BaseSequence, &b.Status, &b.Draft)
+	).Scan(&b.Name, &b.HeadSequence, &b.BaseSequence, &b.Status, &b.Draft, &b.AutoMerge)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -304,7 +305,7 @@ func (s *Store) GetBranch(ctx context.Context, repo, branch string) (*BranchInfo
 // includeDraft=true includes draft branches; onlyDraft=true returns only draft branches.
 // By default (both false), draft branches are excluded.
 func (s *Store) ListBranches(ctx context.Context, repo, statusFilter string, includeDraft, onlyDraft bool) ([]BranchInfo, error) {
-	q := "SELECT name, head_sequence, base_sequence, status, draft FROM branches WHERE repo = $1"
+	q := "SELECT name, head_sequence, base_sequence, status, draft, auto_merge FROM branches WHERE repo = $1"
 	args := []interface{}{repo}
 
 	if statusFilter != "" {
@@ -328,7 +329,7 @@ func (s *Store) ListBranches(ctx context.Context, repo, statusFilter string, inc
 	var branches []BranchInfo
 	for rows.Next() {
 		var b BranchInfo
-		if err := rows.Scan(&b.Name, &b.HeadSequence, &b.BaseSequence, &b.Status, &b.Draft); err != nil {
+		if err := rows.Scan(&b.Name, &b.HeadSequence, &b.BaseSequence, &b.Status, &b.Draft, &b.AutoMerge); err != nil {
 			return nil, err
 		}
 		branches = append(branches, b)

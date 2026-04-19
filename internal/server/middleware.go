@@ -300,6 +300,11 @@ func roleAllows(role model.RoleType, method, subPath string, r *http.Request) bo
 		return role == model.RoleMaintainer || role == model.RoleAdmin
 	}
 
+	// POST/DELETE /branch/*/auto-merge — writer+.
+	if strings.HasPrefix(subPath, "branch/") && strings.HasSuffix(subPath, "/auto-merge") {
+		return role == model.RoleWriter || role == model.RoleMaintainer || role == model.RoleAdmin
+	}
+
 	// DELETE /branch/* — maintainer+.
 	if method == http.MethodDelete && strings.HasPrefix(subPath, "branch/") {
 		return role == model.RoleMaintainer || role == model.RoleAdmin
