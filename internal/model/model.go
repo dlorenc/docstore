@@ -110,6 +110,7 @@ type CIJob struct {
 	CreatedAt       time.Time  `json:"created_at"`
 	TriggerType       string  `json:"trigger_type,omitempty"`
 	TriggerBranch     string  `json:"trigger_branch,omitempty"`
+	TriggerBaseBranch string  `json:"trigger_base_branch,omitempty"`
 	TriggerProposalID *string `json:"trigger_proposal_id,omitempty"`
 }
 
