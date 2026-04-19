@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strconv"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -196,6 +197,7 @@ type branchDetailLoadedMsg struct {
 	headSeq       int64
 	baseSeq       int64
 	baseTreePaths map[string]bool
+	fileContents  map[string]fileDiffData
 	proposal      *model.Proposal // nil if no open proposal
 	err           error
 }
@@ -394,6 +396,51 @@ func loadBranchDetail(c *tuiClient, branchName string) tea.Cmd {
 			pResp.Body.Close()
 		}
 
+		// Fetch file content for each non-binary changed file so the diff tab
+		// can render inline diffs when the user expands a file.
+		fileContents := make(map[string]fileDiffData, len(diff.BranchChanges))
+		for _, entry := range diff.BranchChanges {
+			if entry.Binary {
+				continue
+			}
+			changeType := "~"
+			if entry.VersionID == nil {
+				changeType = "-"
+			} else if !baseTreePaths[entry.Path] {
+				changeType = "+"
+			}
+
+			var baseBytes, headBytes []byte
+
+			// Fetch head content when the file exists at head.
+			if entry.VersionID != nil && headSeq > 0 {
+				path := "/file/" + entry.Path + "?branch=" + url.QueryEscape(branchName) +
+					"&at=" + strconv.FormatInt(headSeq, 10)
+				if fResp, fErr := c.get(path); fErr == nil {
+					var fr model.FileResponse
+					if decErr := c.decodeJSON(fResp, &fr); decErr == nil {
+						headBytes = fr.Content
+					}
+					fResp.Body.Close()
+				}
+			}
+
+			// Fetch base content when the file existed before the branch changes.
+			if baseTreePaths[entry.Path] && baseSeq > 0 {
+				path := "/file/" + entry.Path + "?branch=" + url.QueryEscape(branchName) +
+					"&at=" + strconv.FormatInt(baseSeq, 10)
+				if fResp, fErr := c.get(path); fErr == nil {
+					var fr model.FileResponse
+					if decErr := c.decodeJSON(fResp, &fr); decErr == nil {
+						baseBytes = fr.Content
+					}
+					fResp.Body.Close()
+				}
+			}
+
+			fileContents[entry.Path] = computeFileDiff(baseBytes, headBytes, changeType)
+		}
+
 		return branchDetailLoadedMsg{
 			diff:          &diff,
 			reviews:       reviews,
@@ -401,6 +448,7 @@ func loadBranchDetail(c *tuiClient, branchName string) tea.Cmd {
 			headSeq:       headSeq,
 			baseSeq:       baseSeq,
 			baseTreePaths: baseTreePaths,
+			fileContents:  fileContents,
 			proposal:      openProposal,
 		}
 	}

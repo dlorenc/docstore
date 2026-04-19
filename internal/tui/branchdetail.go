@@ -20,6 +20,18 @@ const (
 	panelChecks
 )
 
+// diffHunkLine is a single line in a computed line-level diff.
+type diffHunkLine struct {
+	kind byte   // '+', '-', or ' '
+	text string
+}
+
+// fileDiffData holds pre-computed diff lines for a single changed file.
+type fileDiffData struct {
+	hunks []diffHunkLine
+	err   string // non-empty if fetch or diff computation failed
+}
+
 // branchDetailModel shows diff, reviews, and checks for a specific branch.
 type branchDetailModel struct {
 	client     *tuiClient
@@ -34,14 +46,14 @@ type branchDetailModel struct {
 	headSeq       int64
 	baseSeq       int64
 	baseTreePaths map[string]bool
+	fileContents  map[string]fileDiffData // pre-fetched diffs keyed by path
 
 	// Proposal state for the current branch.
 	proposal *model.Proposal // nil = not yet loaded or no open proposal
 
-	activePanel    panel
-	diffCursor     int
-	expandedFiles  map[int]bool
-	diffFileHunks  []string // raw diff content per file (simplified)
+	activePanel   panel
+	diffCursor    int
+	expandedFiles map[int]bool
 
 	// Merge confirmation state.
 	merging        bool
@@ -195,6 +207,7 @@ func (m branchDetailModel) Update(msg tea.Msg) (branchDetailModel, tea.Cmd) {
 			m.headSeq = msg.headSeq
 			m.baseSeq = msg.baseSeq
 			m.baseTreePaths = msg.baseTreePaths
+			m.fileContents = msg.fileContents
 			m.proposal = msg.proposal
 		}
 		// Auto-refresh: schedule a tick if any HEAD check is pending.
@@ -441,12 +454,14 @@ func (m branchDetailModel) renderDiff() string {
 			sb.WriteString(prefix + iconStyled + " " + pathLabel + "\n")
 		}
 
-		// If expanded, show placeholder or binary notice.
+		// If expanded, show diff content or binary notice.
 		if m.expandedFiles[i] {
 			if f.binary {
 				sb.WriteString(styleModified.Render("    binary file, no preview") + "\n")
+			} else if data, ok := m.fileContents[f.path]; ok {
+				sb.WriteString(renderFileDiff(data))
 			} else {
-				sb.WriteString(styleModified.Render("    (file contents diff not available in current view)") + "\n")
+				sb.WriteString(styleModified.Render("    (diff not available)") + "\n")
 			}
 		}
 	}
@@ -573,4 +588,118 @@ func (m branchDetailModel) renderChecks() string {
 		}
 	}
 	return sb.String()
+}
+
+// renderFileDiff renders pre-computed diff hunks as coloured lines.
+func renderFileDiff(data fileDiffData) string {
+	var sb strings.Builder
+	if data.err != "" {
+		sb.WriteString(styleModified.Render("    "+data.err) + "\n")
+		return sb.String()
+	}
+	const maxLines = 300
+	hunks := data.hunks
+	truncated := false
+	if len(hunks) > maxLines {
+		hunks = hunks[:maxLines]
+		truncated = true
+	}
+	for _, h := range hunks {
+		line := "    " + string([]byte{h.kind}) + " " + h.text
+		switch h.kind {
+		case '+':
+			sb.WriteString(styleAdded.Render(line) + "\n")
+		case '-':
+			sb.WriteString(styleRemoved.Render(line) + "\n")
+		default:
+			sb.WriteString(styleStale.Render(line) + "\n")
+		}
+	}
+	if truncated {
+		sb.WriteString(styleModified.Render("    ... (output truncated)") + "\n")
+	}
+	return sb.String()
+}
+
+// computeFileDiff builds a fileDiffData from raw base and head file content.
+// changeType is "+", "-", or "~".
+func computeFileDiff(baseContent, headContent []byte, changeType string) fileDiffData {
+	splitLines := func(b []byte) []string {
+		lines := strings.Split(string(b), "\n")
+		// Trim trailing empty line produced by a trailing newline.
+		if len(lines) > 0 && lines[len(lines)-1] == "" {
+			lines = lines[:len(lines)-1]
+		}
+		return lines
+	}
+
+	switch changeType {
+	case "+":
+		lines := splitLines(headContent)
+		hunks := make([]diffHunkLine, len(lines))
+		for i, l := range lines {
+			hunks[i] = diffHunkLine{'+', l}
+		}
+		return fileDiffData{hunks: hunks}
+	case "-":
+		lines := splitLines(baseContent)
+		hunks := make([]diffHunkLine, len(lines))
+		for i, l := range lines {
+			hunks[i] = diffHunkLine{'-', l}
+		}
+		return fileDiffData{hunks: hunks}
+	default: // "~"
+		base := splitLines(baseContent)
+		head := splitLines(headContent)
+		if len(base)+len(head) > 4000 {
+			return fileDiffData{err: "(file too large to diff inline)"}
+		}
+		return fileDiffData{hunks: lcsLineDiff(base, head)}
+	}
+}
+
+// lcsLineDiff computes a line-level diff of base → head using LCS.
+func lcsLineDiff(base, head []string) []diffHunkLine {
+	m, n := len(base), len(head)
+
+	// Build DP table.
+	dp := make([][]int, m+1)
+	for i := range dp {
+		dp[i] = make([]int, n+1)
+	}
+	for i := 1; i <= m; i++ {
+		for j := 1; j <= n; j++ {
+			if base[i-1] == head[j-1] {
+				dp[i][j] = dp[i-1][j-1] + 1
+			} else if dp[i-1][j] >= dp[i][j-1] {
+				dp[i][j] = dp[i-1][j]
+			} else {
+				dp[i][j] = dp[i][j-1]
+			}
+		}
+	}
+
+	// Traceback (builds result in reverse).
+	result := make([]diffHunkLine, 0, m+n)
+	i, j := m, n
+	for i > 0 || j > 0 {
+		switch {
+		case i > 0 && j > 0 && base[i-1] == head[j-1]:
+			result = append(result, diffHunkLine{' ', base[i-1]})
+			i--
+			j--
+		case j > 0 && (i == 0 || dp[i][j-1] > dp[i-1][j]):
+			result = append(result, diffHunkLine{'+', head[j-1]})
+			j--
+		default:
+			result = append(result, diffHunkLine{'-', base[i-1]})
+			i--
+		}
+	}
+
+	// Reverse to get forward order.
+	for l, r := 0, len(result)-1; l < r; l, r = l+1, r-1 {
+		result[l], result[r] = result[r], result[l]
+	}
+	return result
 }
