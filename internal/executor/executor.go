@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"runtime"
 	"strings"
@@ -19,6 +20,8 @@ import (
 	"github.com/moby/buildkit/session"
 	"github.com/moby/buildkit/session/auth/authprovider"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
+
+	"github.com/dlorenc/docstore/internal/ciconfig"
 )
 
 // Config mirrors the .docstore/ci.yaml DSL and is used for both JSON decode
@@ -32,6 +35,8 @@ type Check struct {
 	Name  string   `json:"name"  yaml:"name"`
 	Image string   `json:"image" yaml:"image"`
 	Steps []string `json:"steps" yaml:"steps"`
+	If    string   `json:"if,omitempty"    yaml:"if,omitempty"`    // expression; empty = always run
+	Needs []string `json:"needs,omitempty" yaml:"needs,omitempty"` // parsed but not yet implemented
 }
 
 // CheckResult is the result of executing a single check.
@@ -58,25 +63,51 @@ func New(buildkitAddr, cacheBucket string) (*Executor, error) {
 }
 
 // Run executes all checks in cfg in parallel against sourceDir.
+// Checks whose if: condition evaluates to false are skipped (omitted from results).
 // It returns once all checks have resolved.
-func (e *Executor) Run(ctx context.Context, sourceDir string, cfg Config) ([]CheckResult, error) {
-	results := make([]CheckResult, len(cfg.Checks))
-	var wg sync.WaitGroup
+func (e *Executor) Run(ctx context.Context, sourceDir string, cfg Config, triggerCtx ciconfig.TriggerContext) ([]CheckResult, error) {
+	// Pre-filter: evaluate if: conditions before launching goroutines.
+	type indexedCheck struct {
+		idx   int
+		check Check
+	}
+	var toRun []indexedCheck
 	for i, check := range cfg.Checks {
+		if check.If == "" {
+			toRun = append(toRun, indexedCheck{i, check})
+			continue
+		}
+		run, err := ciconfig.EvalIf(check.If, triggerCtx)
+		if err != nil {
+			slog.Warn("if: condition evaluation error, running job anyway",
+				"check", check.Name, "if", check.If, "error", err)
+			toRun = append(toRun, indexedCheck{i, check})
+			continue
+		}
+		if !run {
+			slog.Info("skipping job: if condition false", "check", check.Name, "if", check.If)
+			continue
+		}
+		toRun = append(toRun, indexedCheck{i, check})
+	}
+
+	results := make([]CheckResult, len(toRun))
+	var wg sync.WaitGroup
+	for j, ic := range toRun {
 		wg.Add(1)
-		go func(i int, check Check) {
+		go func(j int, check Check) {
 			defer wg.Done()
 			defer func() {
 				if r := recover(); r != nil {
-					results[i] = CheckResult{
+					results[j] = CheckResult{
 						Name:   check.Name,
 						Status: "failed",
 						Logs:   fmt.Sprintf("panic: %v", r),
 					}
 				}
 			}()
-			results[i] = e.runCheck(ctx, sourceDir, check)
-		}(i, check)
+			results[j] = e.runCheck(ctx, sourceDir, check)
+		}(j, ic.check)
 	}
 	wg.Wait()
 	return results, nil
