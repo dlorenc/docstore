@@ -14,13 +14,21 @@ type CIConfig struct {
 
 // TriggerConfig holds the trigger definitions for a CI config.
 type TriggerConfig struct {
-	Push *PushTrigger `yaml:"push"`
+	Push     *PushTrigger     `yaml:"push"`
+	Proposal *ProposalTrigger `yaml:"proposal"`
 }
 
 // PushTrigger configures which branches a push event triggers CI for.
 type PushTrigger struct {
 	// Branches is a list of glob patterns. A nil or empty list means all branches.
 	Branches []string `yaml:"branches"`
+}
+
+// ProposalTrigger configures which proposals trigger CI runs.
+type ProposalTrigger struct {
+	// BaseBranches is a list of glob patterns for target base branches.
+	// A nil or empty list means all base branches.
+	BaseBranches []string `yaml:"base_branches"`
 }
 
 // MatchesPush reports whether a commit to branch should trigger a push-based CI run.
@@ -50,6 +58,39 @@ func (cfg *CIConfig) MatchesPush(branch string) bool {
 			continue
 		}
 		if g.Match(branch) {
+			return true
+		}
+	}
+	return false
+}
+
+// MatchesProposal reports whether a proposal targeting baseBranch should trigger a CI run.
+//
+// Rules:
+//   - No on: block (cfg.On == nil)             → always match (backward compat)
+//   - on: exists, no proposal: key             → never match
+//   - on: proposal: with no base_branches list → always match (all base branches)
+//   - on: proposal: base_branches: [pat, ...]  → match if baseBranch matches any pattern
+//
+// Patterns are evaluated using gobwas/glob which supports **, *, ? and
+// character classes.
+func (cfg *CIConfig) MatchesProposal(baseBranch string) bool {
+	if cfg.On == nil {
+		return true
+	}
+	if cfg.On.Proposal == nil {
+		return false
+	}
+	if len(cfg.On.Proposal.BaseBranches) == 0 {
+		return true
+	}
+	for _, pattern := range cfg.On.Proposal.BaseBranches {
+		g, err := glob.Compile(pattern)
+		if err != nil {
+			// Skip invalid patterns rather than treating them as a match.
+			continue
+		}
+		if g.Match(baseBranch) {
 			return true
 		}
 	}

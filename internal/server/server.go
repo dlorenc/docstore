@@ -114,7 +114,7 @@ type WriteStore interface {
 	// Proposal management
 	CreateProposal(ctx context.Context, repo, branch, baseBranch, title, description, author string) (*model.Proposal, error)
 	GetProposal(ctx context.Context, repo, proposalID string) (*model.Proposal, error)
-	ListProposals(ctx context.Context, repo string, state *model.ProposalState) ([]*model.Proposal, error)
+	ListProposals(ctx context.Context, repo string, state *model.ProposalState, branch *string) ([]*model.Proposal, error)
 	UpdateProposal(ctx context.Context, repo, proposalID string, title, description *string) (*model.Proposal, error)
 	CloseProposal(ctx context.Context, repo, proposalID string) error
 	MergeProposal(ctx context.Context, repo, branch string) (*model.Proposal, error)

@@ -42,7 +42,7 @@ import (
 // ---------------------------------------------------------------------------
 
 type ciJobStore interface {
-	InsertCIJob(ctx context.Context, repo, branch string, sequence int64, triggerType, triggerBranch string) (*model.CIJob, error)
+	InsertCIJob(ctx context.Context, repo, branch string, sequence int64, triggerType, triggerBranch, triggerProposalID string) (*model.CIJob, error)
 	GetCIJob(ctx context.Context, id string) (*model.CIJob, error)
 	ReapStaleCIJobs(ctx context.Context) ([]model.CIJob, error)
 }
@@ -113,7 +113,7 @@ func registerWebhookSubscription(ctx context.Context, client *http.Client, docst
 	}
 	createBody, _ := json.Marshal(createReq{
 		Backend:    "webhook",
-		EventTypes: []string{"com.docstore.commit.created"},
+		EventTypes: []string{"com.docstore.commit.created", "com.docstore.proposal.opened"},
 		Config:     cfgJSON,
 	})
 	createReq2, err := http.NewRequestWithContext(ctx, http.MethodPost, subsURL, bytes.NewReader(createBody))
@@ -183,6 +183,68 @@ func (s *scheduler) fetchCIConfig(ctx context.Context, repo, branch string, sequ
 	return &cfg, nil
 }
 
+// fetchBranchHead fetches the current head sequence for a branch using the branches list API.
+func (s *scheduler) fetchBranchHead(ctx context.Context, repo, branch string) (int64, error) {
+	if s.docstoreURL == "" {
+		return 0, fmt.Errorf("docstore URL not configured")
+	}
+	branchesURL := fmt.Sprintf("%s/repos/%s/-/branches", s.docstoreURL, repo)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, branchesURL, nil)
+	if err != nil {
+		return 0, fmt.Errorf("build branches request: %w", err)
+	}
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("fetch branches: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("fetch branches: unexpected status %d", resp.StatusCode)
+	}
+	var branches []struct {
+		Name         string `json:"name"`
+		HeadSequence int64  `json:"head_sequence"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&branches); err != nil {
+		return 0, fmt.Errorf("decode branches response: %w", err)
+	}
+	for _, b := range branches {
+		if b.Name == branch {
+			return b.HeadSequence, nil
+		}
+	}
+	return 0, fmt.Errorf("branch not found: %s", branch)
+}
+
+// fetchOpenProposalForBranch returns the open proposal for a branch, or nil if none exists.
+func (s *scheduler) fetchOpenProposalForBranch(ctx context.Context, repo, branch string) (*model.Proposal, error) {
+	if s.docstoreURL == "" {
+		return nil, nil
+	}
+	proposalsURL := fmt.Sprintf("%s/repos/%s/-/proposals?state=open&branch=%s",
+		s.docstoreURL, repo, url.QueryEscape(branch))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, proposalsURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build proposals request: %w", err)
+	}
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch proposals: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetch proposals: unexpected status %d", resp.StatusCode)
+	}
+	var proposals []*model.Proposal
+	if err := json.NewDecoder(resp.Body).Decode(&proposals); err != nil {
+		return nil, fmt.Errorf("decode proposals response: %w", err)
+	}
+	if len(proposals) == 0 {
+		return nil, nil
+	}
+	return proposals[0], nil
+}
+
 // handleWebhook handles POST /webhook — receives CloudEvents from docstore outbox.
 func (s *scheduler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
@@ -211,18 +273,25 @@ func (s *scheduler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Unknown event types are silently acknowledged (forward-compat).
-	if env.Type != "com.docstore.commit.created" {
+	switch env.Type {
+	case "com.docstore.commit.created":
+		s.handleCommitCreated(w, r, env.Data)
+	case "com.docstore.proposal.opened":
+		s.handleProposalOpened(w, r, env.Data)
+	default:
+		// Unknown event types are silently acknowledged (forward-compat).
 		w.WriteHeader(http.StatusOK)
-		return
 	}
+}
 
+// handleCommitCreated processes com.docstore.commit.created events.
+func (s *scheduler) handleCommitCreated(w http.ResponseWriter, r *http.Request, raw json.RawMessage) {
 	var data struct {
 		Repo     string `json:"repo"`
 		Branch   string `json:"branch"`
 		Sequence int64  `json:"sequence"`
 	}
-	if err := json.Unmarshal(env.Data, &data); err != nil {
+	if err := json.Unmarshal(raw, &data); err != nil {
 		http.Error(w, "invalid event data", http.StatusBadRequest)
 		return
 	}
@@ -238,20 +307,90 @@ func (s *scheduler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("could not fetch ci config, proceeding with enqueue", "repo", data.Repo, "branch", data.Branch, "error", err)
 		cfg = nil
 	}
-	if cfg != nil && !cfg.MatchesPush(data.Branch) {
+
+	if cfg == nil || cfg.MatchesPush(data.Branch) {
+		job, err := s.store.InsertCIJob(r.Context(), data.Repo, data.Branch, data.Sequence, "push", data.Branch, "")
+		if err != nil {
+			slog.Error("insert ci job failed", "repo", data.Repo, "branch", data.Branch, "error", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		slog.Info("ci job queued (push)", "id", job.ID, "repo", data.Repo, "branch", data.Branch, "sequence", data.Sequence)
+	} else {
 		slog.Info("push trigger filtered by on: block", "repo", data.Repo, "branch", data.Branch)
+	}
+
+	// Also check if the branch has an open proposal and enqueue a proposal_synchronized job.
+	proposal, err := s.fetchOpenProposalForBranch(r.Context(), data.Repo, data.Branch)
+	if err != nil {
+		slog.Warn("could not check open proposals, skipping proposal_synchronized trigger", "repo", data.Repo, "branch", data.Branch, "error", err)
+	} else if proposal != nil {
+		// Evaluate proposal trigger filter.
+		proposalCfgMatch := true
+		if cfg != nil {
+			proposalCfgMatch = cfg.MatchesProposal(proposal.BaseBranch)
+		}
+		if proposalCfgMatch {
+			job, err := s.store.InsertCIJob(r.Context(), data.Repo, data.Branch, data.Sequence, "proposal_synchronized", data.Branch, proposal.ID)
+			if err != nil {
+				slog.Error("insert proposal_synchronized ci job failed", "repo", data.Repo, "branch", data.Branch, "proposal_id", proposal.ID, "error", err)
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			slog.Info("ci job queued (proposal_synchronized)", "id", job.ID, "repo", data.Repo, "branch", data.Branch, "proposal_id", proposal.ID)
+		} else {
+			slog.Info("proposal_synchronized trigger filtered by on: block", "repo", data.Repo, "branch", data.Branch)
+		}
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+// handleProposalOpened processes com.docstore.proposal.opened events.
+func (s *scheduler) handleProposalOpened(w http.ResponseWriter, r *http.Request, raw json.RawMessage) {
+	var data struct {
+		Repo       string `json:"repo"`
+		Branch     string `json:"branch"`
+		BaseBranch string `json:"base_branch"`
+		ProposalID string `json:"proposal_id"`
+		Author     string `json:"author"`
+	}
+	if err := json.Unmarshal(raw, &data); err != nil {
+		http.Error(w, "invalid event data", http.StatusBadRequest)
+		return
+	}
+	if data.Repo == "" || data.Branch == "" {
+		http.Error(w, "missing repo or branch in event data", http.StatusBadRequest)
+		return
+	}
+
+	// Fetch the current head sequence for the branch.
+	sequence, err := s.fetchBranchHead(r.Context(), data.Repo, data.Branch)
+	if err != nil {
+		slog.Warn("could not fetch branch head, skipping proposal trigger", "repo", data.Repo, "branch", data.Branch, "error", err)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 
-	job, err := s.store.InsertCIJob(r.Context(), data.Repo, data.Branch, data.Sequence, "push", data.Branch)
+	// Fetch CI config and evaluate proposal trigger filter.
+	cfg, err := s.fetchCIConfig(r.Context(), data.Repo, data.Branch, sequence)
 	if err != nil {
-		slog.Error("insert ci job failed", "repo", data.Repo, "branch", data.Branch, "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		slog.Warn("could not fetch ci config, proceeding with enqueue", "repo", data.Repo, "branch", data.Branch, "error", err)
+		cfg = nil
+	}
+	if cfg != nil && !cfg.MatchesProposal(data.BaseBranch) {
+		slog.Info("proposal trigger filtered by on: block", "repo", data.Repo, "branch", data.Branch, "base_branch", data.BaseBranch)
+		w.WriteHeader(http.StatusOK)
 		return
 	}
 
-	slog.Info("ci job queued", "id", job.ID, "repo", data.Repo, "branch", data.Branch, "sequence", data.Sequence)
+	job, err := s.store.InsertCIJob(r.Context(), data.Repo, data.Branch, sequence, "proposal", data.Branch, data.ProposalID)
+	if err != nil {
+		slog.Error("insert proposal ci job failed", "repo", data.Repo, "branch", data.Branch, "proposal_id", data.ProposalID, "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	slog.Info("ci job queued (proposal)", "id", job.ID, "repo", data.Repo, "branch", data.Branch, "proposal_id", data.ProposalID)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -273,7 +412,7 @@ func (s *scheduler) handleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	job, err := s.store.InsertCIJob(r.Context(), req.Repo, req.Branch, req.HeadSequence, "manual", req.Branch)
+	job, err := s.store.InsertCIJob(r.Context(), req.Repo, req.Branch, req.HeadSequence, "manual", req.Branch, "")
 	if err != nil {
 		slog.Error("insert ci job failed", "repo", req.Repo, "branch", req.Branch, "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
