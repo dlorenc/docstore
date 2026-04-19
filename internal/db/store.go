@@ -128,6 +128,8 @@ var (
 	ErrSubscriptionNotFound   = errors.New("subscription not found")
 	ErrCommentNotFound        = errors.New("comment not found")
 	ErrCIJobNotFound          = errors.New("ci job not found")
+	ErrProposalNotFound       = errors.New("proposal not found")
+	ErrProposalExists         = errors.New("branch already has an open proposal")
 )
 
 // rebaseFile is one file within a replayed commit group.
@@ -2246,4 +2248,199 @@ func (s *Store) ResumeSubscription(ctx context.Context, id string) error {
 		return ErrSubscriptionNotFound
 	}
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Proposal store methods
+// ---------------------------------------------------------------------------
+
+// CreateProposal opens a new proposal for a branch. Returns ErrProposalExists if
+// the branch already has an open proposal (enforced by unique partial index).
+func (s *Store) CreateProposal(ctx context.Context, repo, branch, baseBranch, title, description, author string) (*model.Proposal, error) {
+	id := uuid.New().String()
+	var p model.Proposal
+	p.ID = id
+	p.Repo = repo
+	p.Branch = branch
+	p.BaseBranch = baseBranch
+	p.Title = title
+	p.Description = description
+	p.Author = author
+	p.State = model.ProposalOpen
+
+	var nullDesc sql.NullString
+	if description != "" {
+		nullDesc = sql.NullString{String: description, Valid: true}
+	}
+
+	err := s.db.QueryRowContext(ctx,
+		`INSERT INTO proposals (id, repo, branch, base_branch, title, description, author, state)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, 'open')
+		 RETURNING created_at, updated_at`,
+		id, repo, branch, baseBranch, title, nullDesc, author,
+	).Scan(&p.CreatedAt, &p.UpdatedAt)
+	if err != nil {
+		if isDuplicateKeyError(err) {
+			return nil, ErrProposalExists
+		}
+		if isForeignKeyViolation(err) {
+			return nil, ErrBranchNotFound
+		}
+		return nil, fmt.Errorf("insert proposal: %w", err)
+	}
+	return &p, nil
+}
+
+// GetProposal returns a single proposal by ID within a repo.
+// Returns ErrProposalNotFound if no matching proposal exists.
+func (s *Store) GetProposal(ctx context.Context, repo, proposalID string) (*model.Proposal, error) {
+	var p model.Proposal
+	var nullDesc sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id::text, repo, branch, base_branch, title, description, author, state, created_at, updated_at
+		 FROM proposals WHERE repo = $1 AND id = $2::uuid`,
+		repo, proposalID,
+	).Scan(&p.ID, &p.Repo, &p.Branch, &p.BaseBranch, &p.Title, &nullDesc, &p.Author, &p.State, &p.CreatedAt, &p.UpdatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrProposalNotFound
+		}
+		return nil, fmt.Errorf("get proposal: %w", err)
+	}
+	if nullDesc.Valid {
+		p.Description = nullDesc.String
+	}
+	return &p, nil
+}
+
+// ListProposals returns proposals for a repo ordered by created_at DESC.
+// If state is non-nil, only proposals with that state are returned.
+func (s *Store) ListProposals(ctx context.Context, repo string, state *model.ProposalState) ([]*model.Proposal, error) {
+	q := `SELECT id::text, repo, branch, base_branch, title, description, author, state, created_at, updated_at
+	      FROM proposals WHERE repo = $1`
+	args := []interface{}{repo}
+	if state != nil {
+		q += " AND state = $2"
+		args = append(args, string(*state))
+	}
+	q += " ORDER BY created_at DESC"
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list proposals: %w", err)
+	}
+	defer rows.Close()
+
+	var proposals []*model.Proposal
+	for rows.Next() {
+		var p model.Proposal
+		var nullDesc sql.NullString
+		if err := rows.Scan(&p.ID, &p.Repo, &p.Branch, &p.BaseBranch, &p.Title, &nullDesc, &p.Author, &p.State, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan proposal: %w", err)
+		}
+		if nullDesc.Valid {
+			p.Description = nullDesc.String
+		}
+		proposals = append(proposals, &p)
+	}
+	return proposals, rows.Err()
+}
+
+// UpdateProposal updates the title and/or description of a proposal.
+// Returns ErrProposalNotFound if no matching proposal exists.
+func (s *Store) UpdateProposal(ctx context.Context, repo, proposalID string, title, description *string) (*model.Proposal, error) {
+	if title == nil && description == nil {
+		return s.GetProposal(ctx, repo, proposalID)
+	}
+
+	setClauses := []string{"updated_at = now()"}
+	args := []interface{}{}
+	argIdx := 1
+
+	if title != nil {
+		setClauses = append(setClauses, fmt.Sprintf("title = $%d", argIdx))
+		args = append(args, *title)
+		argIdx++
+	}
+	if description != nil {
+		setClauses = append(setClauses, fmt.Sprintf("description = $%d", argIdx))
+		args = append(args, *description)
+		argIdx++
+	}
+
+	setSQL := ""
+	for i, c := range setClauses {
+		if i > 0 {
+			setSQL += ", "
+		}
+		setSQL += c
+	}
+
+	args = append(args, repo, proposalID)
+	q := fmt.Sprintf(
+		`UPDATE proposals SET %s WHERE repo = $%d AND id = $%d::uuid
+		 RETURNING id::text, repo, branch, base_branch, title, description, author, state, created_at, updated_at`,
+		setSQL, argIdx, argIdx+1,
+	)
+
+	var p model.Proposal
+	var nullDesc sql.NullString
+	err := s.db.QueryRowContext(ctx, q, args...).Scan(
+		&p.ID, &p.Repo, &p.Branch, &p.BaseBranch, &p.Title, &nullDesc, &p.Author, &p.State, &p.CreatedAt, &p.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrProposalNotFound
+		}
+		return nil, fmt.Errorf("update proposal: %w", err)
+	}
+	if nullDesc.Valid {
+		p.Description = nullDesc.String
+	}
+	return &p, nil
+}
+
+// CloseProposal sets a proposal's state to closed.
+// Returns ErrProposalNotFound if no matching proposal exists.
+func (s *Store) CloseProposal(ctx context.Context, repo, proposalID string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE proposals SET state = 'closed', updated_at = now()
+		 WHERE repo = $1 AND id = $2::uuid`,
+		repo, proposalID,
+	)
+	if err != nil {
+		return fmt.Errorf("close proposal: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	}
+	if n == 0 {
+		return ErrProposalNotFound
+	}
+	return nil
+}
+
+// MergeProposal finds the open proposal for the given branch and sets its state
+// to merged. It is a no-op (returns nil, nil) if no open proposal exists.
+// Returns the merged proposal so the caller can emit an event.
+func (s *Store) MergeProposal(ctx context.Context, repo, branch string) (*model.Proposal, error) {
+	var p model.Proposal
+	var nullDesc sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		`UPDATE proposals SET state = 'merged', updated_at = now()
+		 WHERE repo = $1 AND branch = $2 AND state = 'open'
+		 RETURNING id::text, repo, branch, base_branch, title, description, author, state, created_at, updated_at`,
+		repo, branch,
+	).Scan(&p.ID, &p.Repo, &p.Branch, &p.BaseBranch, &p.Title, &nullDesc, &p.Author, &p.State, &p.CreatedAt, &p.UpdatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil // no-op: no open proposal for this branch
+		}
+		return nil, fmt.Errorf("merge proposal: %w", err)
+	}
+	if nullDesc.Valid {
+		p.Description = nullDesc.String
+	}
+	return &p, nil
 }
