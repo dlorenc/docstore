@@ -2837,6 +2837,10 @@ func parseMentions(body string) (proposalIDs []string, commitSeqs []int64, issue
 		}
 	}
 	for _, m := range reMentionIssue.FindAllStringSubmatch(body, -1) {
+		// Skip 6-digit sequences that look like CSS hex colors (#rrggbb).
+		if len(m[1]) == 6 {
+			continue
+		}
 		if n, err := strconv.ParseInt(m[1], 10, 64); err == nil {
 			issueNums = append(issueNums, n)
 		}
