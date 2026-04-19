@@ -22,6 +22,8 @@ type view int
 const (
 	viewBranchList view = iota
 	viewBranchDetail
+	viewIssueList
+	viewIssueDetail
 )
 
 // tuiClient wraps HTTP calls for the TUI.
@@ -123,6 +125,8 @@ type topModel struct {
 
 	branchList   branchListModel
 	branchDetail branchDetailModel
+	issueList    issueListModel
+	issueDetail  issueDetailModel
 }
 
 // newTopModel creates the initial top-level model.
@@ -151,6 +155,12 @@ func (m topModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.activeView = viewBranchDetail
 			return m, m.branchDetail.Init()
 		}
+		if m.branchList.openIssues {
+			m.branchList.openIssues = false
+			m.issueList = newIssueListModel(m.client)
+			m.activeView = viewIssueList
+			return m, m.issueList.Init()
+		}
 		if m.branchList.quit {
 			return m, tea.Quit
 		}
@@ -170,6 +180,41 @@ func (m topModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		return m, cmd
+
+	case viewIssueList:
+		newList, cmd := m.issueList.Update(msg)
+		m.issueList = newList
+
+		if m.issueList.openIssue != nil {
+			issue := m.issueList.openIssue
+			m.issueList.openIssue = nil
+			m.issueDetail = newIssueDetailModel(m.client, issue)
+			m.activeView = viewIssueDetail
+			return m, m.issueDetail.Init()
+		}
+		if m.issueList.goBack {
+			m.issueList.goBack = false
+			m.activeView = viewBranchList
+			return m, m.branchList.Init()
+		}
+		if m.issueList.quit {
+			return m, tea.Quit
+		}
+		return m, cmd
+
+	case viewIssueDetail:
+		newDetail, cmd := m.issueDetail.Update(msg)
+		m.issueDetail = newDetail
+
+		if m.issueDetail.goBack {
+			m.issueDetail.goBack = false
+			m.activeView = viewIssueList
+			return m, m.issueList.Init()
+		}
+		if m.issueDetail.quit {
+			return m, tea.Quit
+		}
+		return m, cmd
 	}
 	return m, nil
 }
@@ -180,6 +225,10 @@ func (m topModel) View() string {
 		return m.branchList.View()
 	case viewBranchDetail:
 		return m.branchDetail.View()
+	case viewIssueList:
+		return m.issueList.View()
+	case viewIssueDetail:
+		return m.issueDetail.View()
 	}
 	return ""
 }
@@ -221,6 +270,34 @@ type proposalOpenedMsg struct {
 }
 
 type proposalClosedMsg struct {
+	err error
+}
+
+type issuesLoadedMsg struct {
+	issues []model.Issue
+	err    error
+}
+
+type issueDetailLoadedMsg struct {
+	issue    *model.Issue
+	comments []model.IssueComment
+	refs     []model.IssueRef
+	err      error
+}
+
+type issueCreatedMsg struct {
+	id     string
+	number int64
+	err    error
+}
+
+type issueClosedMsg struct {
+	issue *model.Issue
+	err   error
+}
+
+type issueCommentCreatedMsg struct {
+	id  string
 	err error
 }
 
@@ -586,5 +663,144 @@ func submitReview(c *tuiClient, branchName, status, body string) tea.Cmd {
 		var r model.CreateReviewResponse
 		json.NewDecoder(resp.Body).Decode(&r)
 		return reviewSubmittedMsg{id: r.ID}
+	}
+}
+
+// --- Issue commands ---
+
+func loadIssues(c *tuiClient, state string) tea.Cmd {
+	return func() tea.Msg {
+		path := "/issues"
+		if state != "" {
+			path += "?state=" + state
+		}
+		resp, err := c.get(path)
+		if err != nil {
+			return issuesLoadedMsg{err: err}
+		}
+		defer resp.Body.Close()
+
+		var issues []model.Issue
+		if err := c.decodeJSON(resp, &issues); err != nil {
+			return issuesLoadedMsg{err: fmt.Errorf("loading issues: %w", err)}
+		}
+		if issues == nil {
+			issues = []model.Issue{}
+		}
+		return issuesLoadedMsg{issues: issues}
+	}
+}
+
+func loadIssueDetail(c *tuiClient, number int64) tea.Cmd {
+	return func() tea.Msg {
+		issPath := fmt.Sprintf("/issues/%d", number)
+		iResp, err := c.get(issPath)
+		if err != nil {
+			return issueDetailLoadedMsg{err: err}
+		}
+		defer iResp.Body.Close()
+		var iss model.Issue
+		if err := c.decodeJSON(iResp, &iss); err != nil {
+			return issueDetailLoadedMsg{err: fmt.Errorf("loading issue: %w", err)}
+		}
+
+		cResp, err := c.get(fmt.Sprintf("/issues/%d/comments", number))
+		if err != nil {
+			return issueDetailLoadedMsg{err: err}
+		}
+		defer cResp.Body.Close()
+		var comments []model.IssueComment
+		if err := c.decodeJSON(cResp, &comments); err != nil {
+			return issueDetailLoadedMsg{err: fmt.Errorf("loading comments: %w", err)}
+		}
+		if comments == nil {
+			comments = []model.IssueComment{}
+		}
+
+		rResp, err := c.get(fmt.Sprintf("/issues/%d/refs", number))
+		if err != nil {
+			return issueDetailLoadedMsg{err: err}
+		}
+		defer rResp.Body.Close()
+		var refs []model.IssueRef
+		if err := c.decodeJSON(rResp, &refs); err != nil {
+			return issueDetailLoadedMsg{err: fmt.Errorf("loading refs: %w", err)}
+		}
+		if refs == nil {
+			refs = []model.IssueRef{}
+		}
+
+		return issueDetailLoadedMsg{issue: &iss, comments: comments, refs: refs}
+	}
+}
+
+func createIssueCmd(c *tuiClient, title, body string) tea.Cmd {
+	return func() tea.Msg {
+		req := model.CreateIssueRequest{
+			Title: title,
+			Body:  body,
+		}
+		resp, err := c.postJSON("/issues", req)
+		if err != nil {
+			return issueCreatedMsg{err: err}
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+			var errResp model.ErrorResponse
+			json.NewDecoder(resp.Body).Decode(&errResp)
+			return issueCreatedMsg{err: fmt.Errorf("server error: %s", errResp.Error)}
+		}
+
+		var r model.CreateIssueResponse
+		json.NewDecoder(resp.Body).Decode(&r)
+		return issueCreatedMsg{id: r.ID, number: r.Number}
+	}
+}
+
+func closeIssueCmd(c *tuiClient, number int64, reason model.IssueCloseReason) tea.Cmd {
+	return func() tea.Msg {
+		req := model.CloseIssueRequest{Reason: reason}
+		path := fmt.Sprintf("/issues/%d/close", number)
+		resp, err := c.postJSON(path, req)
+		if err != nil {
+			return issueClosedMsg{err: err}
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+			var errResp model.ErrorResponse
+			json.NewDecoder(resp.Body).Decode(&errResp)
+			return issueClosedMsg{err: fmt.Errorf("server error: %s", errResp.Error)}
+		}
+
+		var iss model.Issue
+		if resp.StatusCode == http.StatusOK {
+			json.NewDecoder(resp.Body).Decode(&iss)
+			return issueClosedMsg{issue: &iss}
+		}
+		return issueClosedMsg{}
+	}
+}
+
+func createIssueCommentCmd(c *tuiClient, number int64, body string) tea.Cmd {
+	return func() tea.Msg {
+		req := model.CreateIssueCommentRequest{Body: body}
+		path := fmt.Sprintf("/issues/%d/comments", number)
+		resp, err := c.postJSON(path, req)
+		if err != nil {
+			return issueCommentCreatedMsg{err: err}
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+			var errResp model.ErrorResponse
+			json.NewDecoder(resp.Body).Decode(&errResp)
+			return issueCommentCreatedMsg{err: fmt.Errorf("server error: %s", errResp.Error)}
+		}
+
+		var r model.CreateIssueCommentResponse
+		json.NewDecoder(resp.Body).Decode(&r)
+		return issueCommentCreatedMsg{id: r.ID}
 	}
 }
