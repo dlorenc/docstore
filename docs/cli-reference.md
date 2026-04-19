@@ -348,6 +348,63 @@ ds repo get <owner/name>         # get repo details
 ds repo delete <owner/name>      # delete a repo
 ```
 
+## Event subscriptions
+
+Subscription management via the CLI requires the appropriate role (reader+ for repo-scoped, global admin for global). See [docs/events.md](events.md) for the full guide.
+
+### `ds subscriptions create`
+
+Create a webhook subscription.
+
+```
+ds subscriptions create --url <url> [--repo <owner/name>] [--events <type1,type2,...>] [--secret <secret>]
+```
+
+- `--url` — Required. HTTPS endpoint to deliver events to.
+- `--repo` — Scope to a specific repo. Omit for a global subscription (admin-only).
+- `--events` — Comma-separated list of event types to receive. Omit to receive all types.
+- `--secret` — HMAC-SHA256 signing secret. When set, deliveries include `X-DocStore-Signature: sha256=<hmac>`.
+
+```bash
+# Repo-scoped, specific event types, with HMAC signing
+ds subscriptions create \
+  --repo acme/platform \
+  --events com.docstore.commit.created,com.docstore.branch.merged \
+  --url https://hooks.example.com/docstore \
+  --secret my-hmac-secret
+
+# Global subscription, all event types
+ds subscriptions create --url https://hooks.example.com/global
+```
+
+### `ds subscriptions list`
+
+List all subscriptions.
+
+```
+ds subscriptions list
+```
+
+Prints each subscription's ID, repo scope, event filter, URL, status, and failure count. Suspended subscriptions are marked `[suspended]`.
+
+### `ds subscriptions delete`
+
+Delete a subscription.
+
+```
+ds subscriptions delete <id>
+```
+
+### `ds subscriptions resume`
+
+Resume a suspended subscription.
+
+```
+ds subscriptions resume <id>
+```
+
+Clears the suspension and resets the failure counter to 0. The subscription immediately re-enters the active delivery queue.
+
 ## Role management
 
 Role commands are scoped to the current workspace's repo.
