@@ -12,10 +12,16 @@ type CIConfig struct {
 	On *TriggerConfig `yaml:"on"`
 }
 
+// ScheduleEntry holds a single cron-based schedule trigger.
+type ScheduleEntry struct {
+	Cron string `yaml:"cron"`
+}
+
 // TriggerConfig holds the trigger definitions for a CI config.
 type TriggerConfig struct {
 	Push     *PushTrigger     `yaml:"push"`
 	Proposal *ProposalTrigger `yaml:"proposal"`
+	Schedule []ScheduleEntry  `yaml:"schedule"`
 }
 
 // PushTrigger configures which branches a push event triggers CI for.

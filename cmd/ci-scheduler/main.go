@@ -30,6 +30,7 @@ import (
 	"time"
 
 	_ "github.com/lib/pq"
+	"github.com/robfig/cron/v3"
 	"gopkg.in/yaml.v3"
 
 	"github.com/dlorenc/docstore/internal/ciconfig"
@@ -515,6 +516,99 @@ func newMux(sched *scheduler) *http.ServeMux {
 }
 
 // ---------------------------------------------------------------------------
+// Schedule-based cron runner
+// ---------------------------------------------------------------------------
+
+// fetchAllRepos fetches all repo names from docstore (GET /repos).
+func (s *scheduler) fetchAllRepos(ctx context.Context) ([]string, error) {
+	if s.docstoreURL == "" {
+		return nil, nil
+	}
+	reposURL := s.docstoreURL + "/repos"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reposURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build repos request: %w", err)
+	}
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch repos: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetch repos: unexpected status %d", resp.StatusCode)
+	}
+	var result model.ReposResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode repos response: %w", err)
+	}
+	names := make([]string, 0, len(result.Repos))
+	for _, r := range result.Repos {
+		names = append(names, r.Name)
+	}
+	return names, nil
+}
+
+// runScheduledJobs checks all repos for schedule-triggered CI jobs that should
+// fire at time t (truncated to the minute).
+func (s *scheduler) runScheduledJobs(ctx context.Context, t time.Time) {
+	repos, err := s.fetchAllRepos(ctx)
+	if err != nil {
+		slog.Error("schedule runner: fetch repos failed", "error", err)
+		return
+	}
+	now := t.Truncate(time.Minute)
+	for _, repo := range repos {
+		headSeq, err := s.fetchBranchHead(ctx, repo, "main")
+		if err != nil {
+			slog.Warn("schedule runner: fetch branch head failed", "repo", repo, "error", err)
+			continue
+		}
+		cfg, err := s.fetchCIConfig(ctx, repo, "main", headSeq)
+		if err != nil {
+			slog.Warn("schedule runner: fetch ci config failed", "repo", repo, "error", err)
+			continue
+		}
+		if cfg == nil || cfg.On == nil || len(cfg.On.Schedule) == 0 {
+			continue
+		}
+		for _, entry := range cfg.On.Schedule {
+			sched, err := cron.ParseStandard(entry.Cron)
+			if err != nil {
+				slog.Warn("schedule runner: invalid cron expression", "repo", repo, "cron", entry.Cron, "error", err)
+				continue
+			}
+			// Check if the cron fires at this minute: the next fire time after
+			// (now - 1 minute) must equal now.
+			if sched.Next(now.Add(-time.Minute)).Equal(now) {
+				job, err := s.store.InsertCIJob(ctx, repo, "main", headSeq, "schedule", "main", "")
+				if err != nil {
+					slog.Error("schedule runner: insert ci job failed", "repo", repo, "cron", entry.Cron, "error", err)
+					continue
+				}
+				slog.Info("ci job queued (schedule)", "id", job.ID, "repo", repo, "cron", entry.Cron)
+			}
+		}
+	}
+}
+
+// startCronRunner starts a goroutine that fires every minute and enqueues
+// schedule-triggered CI jobs for all repos whose ci.yaml schedules match.
+func startCronRunner(ctx context.Context, sched *scheduler) {
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case t := <-ticker.C:
+				sched.runScheduledJobs(ctx, t)
+			}
+		}
+	}()
+}
+
+// ---------------------------------------------------------------------------
 // Stale job reaper
 // ---------------------------------------------------------------------------
 
@@ -606,6 +700,9 @@ func main() {
 		docstoreURL:   strings.TrimRight(*docstoreURL, "/"),
 		httpClient:    httpClient,
 	}
+
+	// Start schedule-based cron runner.
+	startCronRunner(serverCtx, sched)
 
 	// WriteTimeout is intentionally absent: the log proxy endpoint
 	// (GET /run/{id}/logs/{check}) streams responses from the worker and
