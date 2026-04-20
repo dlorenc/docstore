@@ -33,6 +33,8 @@ commands:
   resolve <path>                                  Resolve a merge/rebase conflict
   verify                                          Verify commit chain integrity
   ready                                           Mark current branch as ready (not draft)
+  auto-merge enable [--branch <name>]             Enable auto-merge for the current branch
+  auto-merge disable [--branch <name>]            Disable auto-merge for the current branch
   branches [--status active|merged|abandoned] [--draft] [--include-draft]  List branches
   reviews [--branch <name>]                       List reviews for a branch
   review --status approved|rejected [--body "…"] [--branch <name>]  Submit a review
@@ -715,6 +717,29 @@ func main() {
 
 	case "ready":
 		err = app.Ready()
+
+	case "auto-merge":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: ds auto-merge enable|disable [--branch <name>]")
+			os.Exit(1)
+		}
+		subCmd := args[1]
+		branch := ""
+		for i := 2; i < len(args); i++ {
+			if args[i] == "--branch" && i+1 < len(args) {
+				branch = args[i+1]
+				i++
+			}
+		}
+		switch subCmd {
+		case "enable":
+			err = app.AutoMergeEnable(branch)
+		case "disable":
+			err = app.AutoMergeDisable(branch)
+		default:
+			fmt.Fprintf(os.Stderr, "unknown auto-merge subcommand: %s\n", subCmd)
+			os.Exit(1)
+		}
 
 	case "purge":
 		olderThan := ""
