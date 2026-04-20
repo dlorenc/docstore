@@ -1127,6 +1127,16 @@ func TestHandleBranches_DraftFilter(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
 	}
+	// Assert the response is a bare []store.BranchInfo, not a wrapped envelope.
+	// This catches any change that wraps the array (e.g. {"branches":[...]})
+	// which would break clients like cmd/ci-scheduler that decode the bare array.
+	var branches []store.BranchInfo
+	if err := json.Unmarshal(rec.Body.Bytes(), &branches); err != nil {
+		t.Fatalf("response body not decodeable as []store.BranchInfo (envelope mismatch?): %v\nbody: %s", err, rec.Body.String())
+	}
+	if len(branches) == 0 {
+		t.Fatal("expected at least one branch in decoded response")
+	}
 	if !gotOnlyDraft {
 		t.Error("expected onlyDraft=true to be passed to store")
 	}
@@ -1138,6 +1148,11 @@ func TestHandleBranches_DraftFilter(t *testing.T) {
 	rec = httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
+	// Assert response shape for second request too.
+	var branches2 []store.BranchInfo
+	if err := json.Unmarshal(rec.Body.Bytes(), &branches2); err != nil {
+		t.Fatalf("second response body not decodeable as []store.BranchInfo: %v", err)
+	}
 	if !gotIncludeDraft {
 		t.Error("expected includeDraft=true to be passed to store")
 	}
