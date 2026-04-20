@@ -13,10 +13,13 @@ import (
 
 	_ "github.com/lib/pq"
 
+	"github.com/dlorenc/docstore/internal/automerge"
 	"github.com/dlorenc/docstore/internal/blob"
 	"github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/events"
+	"github.com/dlorenc/docstore/internal/policy"
 	"github.com/dlorenc/docstore/internal/server"
+	"github.com/dlorenc/docstore/internal/store"
 )
 
 func main() {
@@ -139,6 +142,13 @@ func main() {
 
 	srv := server.NewWithBroker(commitStore, database, bs, broker, *devIdentity, *bootstrapAdmin)
 
+	// Start the auto-merge worker. It subscribes to check.reported and
+	// review.submitted events and merges branches with auto_merge=true.
+	readStore := store.New(database)
+	autoMergeWorker := automerge.New(broker, commitStore, readStore, policy.NewCache())
+	workerCtx, workerCancel := context.WithCancel(context.Background())
+	go autoMergeWorker.Run(workerCtx)
+
 	httpServer := &http.Server{
 		Addr:         ":" + port,
 		Handler:      srv,
@@ -162,8 +172,9 @@ func main() {
 	<-quit
 	logger.Info("shutting down")
 
-	// Stop the outbox dispatcher.
+	// Stop the outbox dispatcher and auto-merge worker.
 	dispatchCancel()
+	workerCancel()
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
