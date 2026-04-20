@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	exec2 "os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -484,4 +485,10 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer shutdownCancel()
 	_ = logHTTP.Shutdown(shutdownCtx)
+
+	// Signal cloud-sql-proxy sidecar to exit so the Job pod reaches Succeeded.
+	// Requires shareProcessNamespace: true on the pod spec.
+	if out, err := exec2.Command("pkill", "-TERM", "cloud-sql-proxy").CombinedOutput(); err != nil {
+		slog.Info("cloud-sql-proxy not signalled (not running?)", "output", string(out))
+	}
 }
