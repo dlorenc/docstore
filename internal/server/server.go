@@ -146,6 +146,22 @@ type WriteStore interface {
 // CommitStore is an alias for backward compatibility with tests.
 type CommitStore = WriteStore
 
+// ReadStore is the read-only data access interface used by the server's GET handlers.
+// It is exported so external test packages can inject test doubles for contract tests.
+type ReadStore = readStore
+
+// NewWithReadStore constructs a handler with explicitly injected read and write stores.
+// Intended for contract tests outside this package that need to verify the server's
+// wire format against clients that consume the API (e.g. cmd/ci-scheduler).
+func NewWithReadStore(ws WriteStore, rs ReadStore, devIdentity, bootstrapAdmin string) http.Handler {
+	s := &server{
+		commitStore: ws,
+		readStore:   rs,
+		policyCache: policy.NewCache(),
+	}
+	return s.buildHandler(devIdentity, bootstrapAdmin, ws)
+}
+
 // New returns an http.Handler with all routes registered.
 // devIdentity, if non-empty, bypasses IAP JWT validation (for local dev/testing).
 // bootstrapAdmin, if non-empty, has admin access to any repo with no existing admin.
