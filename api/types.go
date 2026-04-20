@@ -122,6 +122,7 @@ type Branch struct {
 	BaseSequence int64        `json:"base_sequence"`
 	Status       BranchStatus `json:"status"`
 	Draft        bool         `json:"draft"`
+	AutoMerge    bool         `json:"auto_merge"`
 }
 
 // Role maps an identity to a coarse-grained permission level on a repo.
@@ -318,6 +319,7 @@ type PolicyResult struct {
 type BranchStatusResponse struct {
 	Mergeable bool           `json:"mergeable"`
 	Policies  []PolicyResult `json:"policies"`
+	AutoMerge bool           `json:"auto_merge"`
 }
 
 // ---------------------------------------------------------------------------
