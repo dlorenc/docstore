@@ -840,10 +840,8 @@ func newScheduleDocstoreServer(t *testing.T, repoNames []string, headSeq int64, 
 			}
 			json.NewEncoder(w).Encode(fileResp{Path: ".docstore/ci.yaml", Content: []byte(ciYAML)}) //nolint:errcheck
 		case strings.Contains(r.URL.Path, "/-/branches"):
-			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
-				"branches": []map[string]any{
-					{"name": "main", "head_sequence": headSeq},
-				},
+			json.NewEncoder(w).Encode([]map[string]any{ //nolint:errcheck
+				{"name": "main", "head_sequence": headSeq},
 			})
 		default:
 			http.NotFound(w, r)
@@ -858,11 +856,9 @@ func newScheduleDocstoreServer(t *testing.T, repoNames []string, headSeq int64, 
 func TestFetchBranchHead_HappyPath(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
-			"branches": []map[string]any{
-				{"name": "feat", "head_sequence": int64(5)},
-				{"name": "main", "head_sequence": int64(99)},
-			},
+		json.NewEncoder(w).Encode([]map[string]any{ //nolint:errcheck
+			{"name": "feat", "head_sequence": int64(5)},
+			{"name": "main", "head_sequence": int64(99)},
 		})
 	}))
 	defer srv.Close()
@@ -880,10 +876,8 @@ func TestFetchBranchHead_HappyPath(t *testing.T) {
 func TestFetchBranchHead_BranchNotFound(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
-			"branches": []map[string]any{
-				{"name": "other", "head_sequence": int64(1)},
-			},
+		json.NewEncoder(w).Encode([]map[string]any{ //nolint:errcheck
+			{"name": "other", "head_sequence": int64(1)},
 		})
 	}))
 	defer srv.Close()
@@ -1116,10 +1110,8 @@ func TestRunScheduledJobs_MultipleRepos_OnlyMatchingEnqueues(t *testing.T) {
 			}
 			json.NewEncoder(w).Encode(fileResp{Path: ".docstore/ci.yaml", Content: []byte(ciYAML)}) //nolint:errcheck
 		case strings.Contains(r.URL.Path, "/-/branches"):
-			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
-				"branches": []map[string]any{
-					{"name": "main", "head_sequence": int64(1)},
-				},
+			json.NewEncoder(w).Encode([]map[string]any{ //nolint:errcheck
+				{"name": "main", "head_sequence": int64(1)},
 			})
 		default:
 			http.NotFound(w, r)

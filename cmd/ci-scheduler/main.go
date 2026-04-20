@@ -513,11 +513,11 @@ func (s *scheduler) fetchBranchHead(ctx context.Context, repo, branch string) (i
 	if resp.StatusCode != http.StatusOK {
 		return 0, fmt.Errorf("fetch branches: unexpected status %d", resp.StatusCode)
 	}
-	var result model.BranchesResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	var branches []model.Branch
+	if err := json.NewDecoder(resp.Body).Decode(&branches); err != nil {
 		return 0, fmt.Errorf("decode branches response: %w", err)
 	}
-	for _, b := range result.Branches {
+	for _, b := range branches {
 		if b.Name == branch {
 			return b.HeadSequence, nil
 		}
