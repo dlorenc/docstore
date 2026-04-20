@@ -629,6 +629,28 @@ func (s *Store) UpdateBranchDraft(ctx context.Context, repo, name string, draft 
 	return nil
 }
 
+// SetBranchAutoMerge sets the auto_merge flag on a branch.
+// Returns ErrBranchNotFound if the branch does not exist.
+func (s *Store) SetBranchAutoMerge(ctx context.Context, repo, name string, autoMerge bool) error {
+	res, err := s.db.ExecContext(ctx,
+		"UPDATE branches SET auto_merge = $1 WHERE repo = $2 AND name = $3",
+		autoMerge, repo, name,
+	)
+	if err != nil {
+		slog.Error("set branch auto_merge failed", "repo", repo, "branch", name, "error", err)
+		return fmt.Errorf("set branch auto_merge: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	}
+	if n == 0 {
+		return ErrBranchNotFound
+	}
+	slog.Info("branch auto_merge updated", "repo", repo, "branch", name, "auto_merge", autoMerge)
+	return nil
+}
+
 // Merge merges a branch into main. It detects conflicts (paths changed on
 // both the branch and main since the branch's base_sequence) and either
 // aborts with conflict details or fast-forwards main.
