@@ -160,6 +160,16 @@ jobs:
           DIGEST=$(jq -r '."containerimage.digest"' /tmp/ci-worker-metadata.json)
           echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
 
+      - name: Install KEDA via Helm
+        run: |
+          helm repo add kedacore https://kedacore.github.io/charts
+          helm repo update
+          helm upgrade --install keda kedacore/keda \
+            --namespace keda \
+            --create-namespace \
+            --wait \
+            --timeout 180s
+
       - name: Deploy ci-worker to GKE
         run: |
           kubectl delete deployment ci-worker --ignore-not-found -n docstore-ci
