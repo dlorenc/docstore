@@ -102,4 +102,6 @@ type AddIssueRefRequest = api.AddIssueRefRequest
 type AddIssueRefResponse = api.AddIssueRefResponse
 type ListIssueRefsResponse = api.ListIssueRefsResponse
 
+type AgentContextResponse = api.AgentContextResponse
+
 type ErrorResponse = api.ErrorResponse
