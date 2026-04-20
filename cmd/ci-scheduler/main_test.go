@@ -604,6 +604,7 @@ func newDocstoreServer(t *testing.T, ciYAML string, branches []map[string]any, p
 			}
 			json.NewEncoder(w).Encode(fileResp{Path: ".docstore/ci.yaml", Content: []byte(ciYAML)}) //nolint:errcheck
 		case strings.Contains(r.URL.Path, "/-/branches"):
+			// Bare array — must match real server format. See TestBranchesEndpointContract.
 			json.NewEncoder(w).Encode(branches) //nolint:errcheck
 		case strings.Contains(r.URL.Path, "/-/proposals"):
 			json.NewEncoder(w).Encode(proposals) //nolint:errcheck
@@ -840,6 +841,7 @@ func newScheduleDocstoreServer(t *testing.T, repoNames []string, headSeq int64, 
 			}
 			json.NewEncoder(w).Encode(fileResp{Path: ".docstore/ci.yaml", Content: []byte(ciYAML)}) //nolint:errcheck
 		case strings.Contains(r.URL.Path, "/-/branches"):
+			// Bare array — must match real server format. See TestBranchesEndpointContract.
 			json.NewEncoder(w).Encode([]map[string]any{ //nolint:errcheck
 				{"name": "main", "head_sequence": headSeq},
 			})
@@ -854,6 +856,13 @@ func newScheduleDocstoreServer(t *testing.T, repoNames []string, headSeq int64, 
 // ---------------------------------------------------------------------------
 
 func TestFetchBranchHead_HappyPath(t *testing.T) {
+	// NOTE: this mock returns a bare JSON array — NOT a wrapped struct like
+	// {"branches":[...]}. The format must match the real server handler in
+	// internal/server/handlers.go (handleBranches). TestBranchesEndpointContract
+	// in contract_test.go enforces this cross-package contract automatically.
+	// Regression: a previous commit decoded model.BranchesResponse here while
+	// the server was returning a bare array; both sides were wrong in sync so
+	// CI stayed green for months before the mismatch was discovered.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode([]map[string]any{ //nolint:errcheck
