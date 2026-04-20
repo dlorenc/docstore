@@ -1,8 +1,9 @@
-# GKE Kata Containers deployment for ci-worker.
+# KEDA ScaledJob for ci-worker.
 #
-# ci-worker pods each claim exactly one job from the ci_jobs queue, execute
-# it inside a Kata Cloud-Hypervisor microVM, upload logs, and then exit.
-# The Deployment controller replaces exited pods to maintain the pool size.
+# Replaces the previous Deployment + ScaledObject setup. A ScaledJob is the
+# correct primitive for a process that runs once per queue item and exits:
+# KEDA creates a fresh Job pod per queue item, it runs once, exits cleanly,
+# with no restart policy fighting or CrashLoopBackOff.
 #
 # Kata CLH provides a real kernel per pod so Docker/buildkitd run natively
 # inside the VM — no DinD nesting, no privileged containers required.
@@ -21,91 +22,83 @@ metadata:
   annotations:
     iam.gke.io/gcp-service-account: ci-runner@dlorenc-chainguard.iam.gserviceaccount.com
 ---
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: keda.sh/v1alpha1
+kind: ScaledJob
 metadata:
   name: ci-worker
   namespace: docstore-ci
 spec:
-  # replicas is intentionally omitted — KEDA manages the replica count.
-  # RollingUpdate: allows the autoscaler (KEDA) to add/remove replicas without
-  # killing running workers. Recreate would terminate all pods on any replica
-  # count change, interrupting in-flight builds.
-  strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxSurge: 3
-      maxUnavailable: 0
-  selector:
-    matchLabels:
-      app: ci-worker
-  template:
+  jobTargetRef:
+    template:
+      spec:
+        restartPolicy: Never
+        serviceAccountName: ci-worker
+        runtimeClassName: kata-clh
+        nodeSelector:
+          runtime: kata
+        containers:
+        - name: ci-worker
+          image: us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-worker:latest
+          # privileged=true is safe inside a Kata CLH microVM — the VM is the
+          # security boundary, not the container security context. buildkitd and
+          # dockerd both require SYS_ADMIN (bind mounts, overlayfs) and NET_ADMIN
+          # (bridge networking). Kata sets privileged_without_host_devices=true so
+          # host devices are not exposed into the VM.
+          securityContext:
+            privileged: true
+          env:
+          - name: DOCSTORE_URL
+            value: https://docstore-efuj4cj54a-uc.a.run.app
+          - name: POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          - name: POD_IP
+            valueFrom:
+              fieldRef:
+                fieldPath: status.podIP
+          - name: DATABASE_URL
+            valueFrom:
+              secretKeyRef:
+                name: ci-scheduler
+                key: database-url
+          - name: LOG_STORE
+            value: gcs
+          - name: LOG_BUCKET
+            value: docstore-ci-logs
+          - name: CACHE_REF
+            value: us-central1-docker.pkg.dev/dlorenc-chainguard/images/buildcache
+          ports:
+          - containerPort: 8081
+          resources:
+            requests:
+              cpu: "2000m"
+              memory: "8Gi"
+            limits:
+              cpu: "2000m"
+              memory: "8Gi"
+        - name: cloud-sql-proxy
+          image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2
+          args:
+            - dlorenc-chainguard:us-central1:docstore-mvp
+            - --port=5432
+          securityContext:
+            runAsNonRoot: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+  minReplicaCount: 0
+  maxReplicaCount: 10
+  pollingInterval: 10
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  triggers:
+  - type: metrics-api
     metadata:
-      labels:
-        app: ci-worker
-    spec:
-      serviceAccountName: ci-worker
-      runtimeClassName: kata-clh
-      nodeSelector:
-        runtime: kata
-      containers:
-      - name: ci-worker
-        image: us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-worker:latest
-        # privileged=true is safe inside a Kata CLH microVM — the VM is the
-        # security boundary, not the container security context. buildkitd and
-        # dockerd both require SYS_ADMIN (bind mounts, overlayfs) and NET_ADMIN
-        # (bridge networking). Kata sets privileged_without_host_devices=true so
-        # host devices are not exposed into the VM.
-        securityContext:
-          privileged: true
-        env:
-        - name: DOCSTORE_URL
-          value: https://docstore-efuj4cj54a-uc.a.run.app
-        - name: POD_NAME
-          valueFrom:
-            fieldRef:
-              fieldPath: metadata.name
-        - name: POD_IP
-          valueFrom:
-            fieldRef:
-              fieldPath: status.podIP
-        - name: DATABASE_URL
-          valueFrom:
-            secretKeyRef:
-              name: ci-scheduler
-              key: database-url
-        - name: LOG_STORE
-          value: gcs
-        - name: LOG_BUCKET
-          value: docstore-ci-logs
-        - name: CACHE_REF
-          value: us-central1-docker.pkg.dev/dlorenc-chainguard/images/buildcache
-        ports:
-        - containerPort: 8081
-        resources:
-          requests:
-            cpu: "2000m"
-            memory: "8Gi"
-          limits:
-            cpu: "2000m"
-            memory: "8Gi"
-        readinessProbe:
-          tcpSocket:
-            port: 8081
-          initialDelaySeconds: 30
-          periodSeconds: 10
-          failureThreshold: 6
-      - name: cloud-sql-proxy
-        image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2
-        args:
-          - dlorenc-chainguard:us-central1:docstore-mvp
-          - --port=5432
-        securityContext:
-          runAsNonRoot: true
-        resources:
-          requests:
-            cpu: 100m
-            memory: 128Mi
-          limits:
-            cpu: 100m
-            memory: 128Mi
+      targetValue: "1"
+      url: "http://ci-scheduler.docstore-ci.svc.cluster.local:8080/queue-depth"
+      valueLocation: "queue_depth"
