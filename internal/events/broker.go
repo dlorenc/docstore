@@ -83,15 +83,19 @@ func (b *Broker) fanOutSSE(e Event) {
 	repo := repoFromSource(e.Source())
 
 	// Collect the set of matching subscriber keys.
+	// Also check global wildcard keys ("*/*" and "*/<type>") so that
+	// subscribers using repo="*" receive events from all repos.
 	wildcardKey := repo + "/*"
 	typeKey := repo + "/" + e.Type()
+	globalWildcardKey := "*/*"
+	globalTypeKey := "*/" + e.Type()
 
 	b.mu.RLock()
 	// Collect unique channels (a subscriber might appear under both keys theoretically,
 	// but our Subscribe logic ensures each channel is under exactly one set of keys).
 	seen := make(map[chan Event]struct{})
 	var targets []chan Event
-	for _, k := range []string{wildcardKey, typeKey} {
+	for _, k := range []string{wildcardKey, typeKey, globalWildcardKey, globalTypeKey} {
 		for _, ch := range b.subs[k] {
 			if _, ok := seen[ch]; !ok {
 				seen[ch] = struct{}{}
