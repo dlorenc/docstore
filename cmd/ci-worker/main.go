@@ -365,15 +365,25 @@ func main() {
 	}
 	waitCancel()
 
-	// Connect to Postgres.
+	// Connect to Postgres — retry to allow cloud-sql-proxy sidecar time to start.
 	sqlDB, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		slog.Error("open db", "error", err)
 		os.Exit(1)
 	}
-	if err := sqlDB.Ping(); err != nil {
-		slog.Error("ping db", "error", err)
-		os.Exit(1)
+	{
+		dbCtx, dbCancel := context.WithTimeout(ctx, 2*time.Minute)
+		for {
+			if err := sqlDB.PingContext(dbCtx); err == nil {
+				break
+			} else if dbCtx.Err() != nil {
+				slog.Error("ping db: timed out waiting for cloud-sql-proxy", "error", err)
+				os.Exit(1)
+			}
+			slog.Info("waiting for db", "error", err)
+			time.Sleep(2 * time.Second)
+		}
+		dbCancel()
 	}
 	defer sqlDB.Close()
 	store := db.NewStore(sqlDB)
