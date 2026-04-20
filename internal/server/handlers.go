@@ -273,6 +273,9 @@ func (s *server) handleReposPrefix(w http.ResponseWriter, r *http.Request) {
 				if strings.HasSuffix(bpath, "/status") {
 					branchName := strings.TrimSuffix(bpath, "/status")
 					s.handleBranchStatus(w, r, repoName, branchName)
+				} else if strings.HasSuffix(bpath, "/agent-context") {
+					branchName := strings.TrimSuffix(bpath, "/agent-context")
+					s.handleAgentContext(w, r, repoName, branchName)
 				} else {
 					r.SetPathValue("branch", bpath)
 					s.handleBranchGet(w, r)
@@ -2243,6 +2246,260 @@ func (s *server) handleBranchStatus(w http.ResponseWriter, r *http.Request, repo
 		Mergeable: mergeable,
 		Policies:  results,
 		AutoMerge: branchInfo.AutoMerge,
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Agent context handler
+// ---------------------------------------------------------------------------
+
+// handleAgentContext implements GET /repos/:name/-/branch/:branch/agent-context.
+// It assembles all branch review context in a single atomic response for LLM agents,
+// following the same assembly logic as handleBranchStatus.
+func (s *server) handleAgentContext(w http.ResponseWriter, r *http.Request, repo, branch string) {
+	if s.readStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "read store not available")
+		return
+	}
+
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
+
+	ctx := r.Context()
+	actor := IdentityFromContext(ctx)
+
+	// Load branch info.
+	branchInfo, err := s.readStore.GetBranch(ctx, repo, branch)
+	if err != nil {
+		slog.Error("internal error", "op", "agent_context_branch", "repo", repo, "branch", branch, "error", err)
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if branchInfo == nil {
+		writeError(w, http.StatusNotFound, "branch not found")
+		return
+	}
+
+	// Load diff.
+	diff, err := s.readStore.GetDiff(ctx, repo, branch)
+	if err != nil {
+		slog.Error("internal error", "op", "agent_context_diff", "repo", repo, "branch", branch, "error", err)
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if diff == nil {
+		diff = &store.DiffResult{}
+	}
+
+	// Load reviews filtered to current head sequence.
+	reviews, err := s.commitStore.ListReviews(ctx, repo, branch, &branchInfo.HeadSequence)
+	if err != nil {
+		slog.Error("internal error", "op", "agent_context_reviews", "repo", repo, "branch", branch, "error", err)
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if reviews == nil {
+		reviews = []model.Review{}
+	}
+
+	// Load check runs filtered to current head sequence.
+	checkRuns, err := s.commitStore.ListCheckRuns(ctx, repo, branch, &branchInfo.HeadSequence)
+	if err != nil {
+		slog.Error("internal error", "op", "agent_context_checks", "repo", repo, "branch", branch, "error", err)
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if checkRuns == nil {
+		checkRuns = []model.CheckRun{}
+	}
+
+	// Load the open proposal for this branch (if any).
+	openState := model.ProposalOpen
+	proposalPtrs, err := s.commitStore.ListProposals(ctx, repo, &openState, &branch)
+	if err != nil {
+		slog.Error("internal error", "op", "agent_context_proposals", "repo", repo, "branch", branch, "error", err)
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	proposals := make([]model.Proposal, len(proposalPtrs))
+	for i, p := range proposalPtrs {
+		proposals[i] = *p
+	}
+
+	// Load linked issues from the first open proposal (if one exists).
+	linkedIssues := []model.Issue{}
+	if len(proposalPtrs) > 0 {
+		linkedIssues, err = s.commitStore.ListIssuesByRef(ctx, repo, model.IssueRefTypeProposal, proposalPtrs[0].ID)
+		if err != nil {
+			slog.Error("internal error", "op", "agent_context_issues", "repo", repo, "branch", branch, "error", err)
+			writeError(w, http.StatusInternalServerError, "query failed")
+			return
+		}
+		if linkedIssues == nil {
+			linkedIssues = []model.Issue{}
+		}
+	}
+
+	// Collect recent commits on this branch via the chain.
+	// Cap to the last 50 sequences to bound the query range.
+	const maxCommitRange = int64(50)
+	recentCommits := []store.ChainEntry{}
+	if branchInfo.HeadSequence > branchInfo.BaseSequence {
+		from := branchInfo.BaseSequence + 1
+		if branchInfo.HeadSequence-from+1 > maxCommitRange {
+			from = branchInfo.HeadSequence - maxCommitRange + 1
+		}
+		chainEntries, err := s.readStore.GetChain(ctx, repo, from, branchInfo.HeadSequence)
+		if err != nil {
+			slog.Error("internal error", "op", "agent_context_commits", "repo", repo, "branch", branch, "error", err)
+			writeError(w, http.StatusInternalServerError, "query failed")
+			return
+		}
+		for _, e := range chainEntries {
+			if e.Branch == branch {
+				recentCommits = append(recentCommits, e)
+			}
+		}
+	}
+
+	// Collect changed paths for ownership resolution.
+	var changedPaths []string
+	for _, e := range diff.BranchChanges {
+		changedPaths = append(changedPaths, e.Path)
+	}
+
+	// Load policies and resolve file ownership.
+	fileOwnership := make(map[string][]string)
+	policyResults := []model.PolicyResult{}
+	mergeable := true
+
+	if s.policyCache != nil {
+		engine, owners, err := s.policyCache.Load(ctx, repo, s.readStore)
+		if err != nil {
+			slog.Error("policy cache load error", "op", "agent_context", "repo", repo, "error", err)
+			writeError(w, http.StatusInternalServerError, "policy evaluation error")
+			return
+		}
+		if engine != nil {
+			// Resolve file ownership per changed path.
+			for _, p := range changedPaths {
+				fileOwnership[p] = policy.ResolveOwners(owners, p)
+			}
+
+			// Get actor roles for policy input.
+			actorRoles := []string{}
+			if role, err := s.commitStore.GetRole(ctx, repo, actor); err == nil && role != nil {
+				actorRoles = []string{string(role.Role)}
+			}
+
+			// Build proposal input for policy evaluation.
+			var proposalInput *policy.ProposalInput
+			if len(proposalPtrs) > 0 {
+				p := proposalPtrs[0]
+				proposalInput = &policy.ProposalInput{
+					ID:         p.ID,
+					BaseBranch: p.BaseBranch,
+					Title:      p.Title,
+					State:      string(p.State),
+				}
+			}
+
+			// Build review and check inputs.
+			reviewInputs := make([]policy.ReviewInput, len(reviews))
+			for i, rev := range reviews {
+				reviewInputs[i] = policy.ReviewInput{
+					Reviewer: rev.Reviewer,
+					Status:   string(rev.Status),
+					Sequence: rev.Sequence,
+				}
+			}
+			checkInputs := make([]policy.CheckRunInput, len(checkRuns))
+			for i, cr := range checkRuns {
+				checkInputs[i] = policy.CheckRunInput{
+					CheckName: cr.CheckName,
+					Status:    string(cr.Status),
+					Sequence:  cr.Sequence,
+				}
+			}
+			resolvedOwners := make(map[string][]string)
+			for _, p := range changedPaths {
+				resolvedOwners[p] = policy.ResolveOwners(owners, p)
+			}
+
+			input := policy.Input{
+				Actor:        actor,
+				ActorRoles:   actorRoles,
+				Action:       "merge",
+				Repo:         repo,
+				Branch:       branch,
+				Draft:        branchInfo.Draft,
+				ChangedPaths: changedPaths,
+				Reviews:      reviewInputs,
+				CheckRuns:    checkInputs,
+				Owners:       resolvedOwners,
+				HeadSeq:      branchInfo.HeadSequence,
+				BaseSeq:      branchInfo.BaseSequence,
+				Proposal:     proposalInput,
+			}
+
+			results, err := engine.Evaluate(ctx, input)
+			if err != nil {
+				slog.Error("policy evaluation error", "op", "agent_context", "repo", repo, "branch", branch, "error", err)
+				writeError(w, http.StatusInternalServerError, "policy evaluation error")
+				return
+			}
+			if results != nil {
+				policyResults = results
+			}
+			for _, res := range policyResults {
+				if !res.Pass {
+					mergeable = false
+					break
+				}
+			}
+		}
+	}
+
+	// Convert diff from store types to API types.
+	diffResp := model.DiffResponse{
+		BranchChanges: make([]model.DiffEntry, len(diff.BranchChanges)),
+		MainChanges:   make([]model.DiffEntry, len(diff.MainChanges)),
+	}
+	for i, e := range diff.BranchChanges {
+		diffResp.BranchChanges[i] = model.DiffEntry{Path: e.Path, VersionID: e.VersionID, Binary: e.Binary}
+	}
+	for i, e := range diff.MainChanges {
+		diffResp.MainChanges[i] = model.DiffEntry{Path: e.Path, VersionID: e.VersionID, Binary: e.Binary}
+	}
+	for _, c := range diff.Conflicts {
+		diffResp.Conflicts = append(diffResp.Conflicts, model.ConflictEntry{
+			Path:            c.Path,
+			MainVersionID:   c.MainVersionID,
+			BranchVersionID: c.BranchVersionID,
+		})
+	}
+
+	branchResp := model.Branch{
+		Name:         branchInfo.Name,
+		HeadSequence: branchInfo.HeadSequence,
+		BaseSequence: branchInfo.BaseSequence,
+		Status:       model.BranchStatus(branchInfo.Status),
+		Draft:        branchInfo.Draft,
+		AutoMerge:    branchInfo.AutoMerge,
+	}
+
+	writeJSON(w, http.StatusOK, model.AgentContextResponse{
+		Branch:        branchResp,
+		Diff:          diffResp,
+		Reviews:       reviews,
+		CheckRuns:     checkRuns,
+		Proposals:     proposals,
+		LinkedIssues:  linkedIssues,
+		FileOwnership: fileOwnership,
+		RecentCommits: recentCommits,
+		Policies:      policyResults,
+		Mergeable:     mergeable,
 	})
 }
 
