@@ -834,6 +834,26 @@ type ListIssueRefsResponse struct {
 }
 
 // ---------------------------------------------------------------------------
+// GET /repos/:name/-/branch/:branch/agent-context
+// ---------------------------------------------------------------------------
+
+// AgentContextResponse is the response for GET /repos/:name/-/branch/:branch/agent-context.
+// It bundles diff, reviews, check runs, proposals, linked issues, file ownership,
+// recent commits, policy results, and mergeability in one atomic snapshot for LLM agents.
+type AgentContextResponse struct {
+	Branch        Branch              `json:"branch"`
+	Diff          DiffResponse        `json:"diff"`
+	Reviews       []Review            `json:"reviews"`
+	CheckRuns     []CheckRun          `json:"check_runs"`
+	Proposals     []Proposal          `json:"proposals"`
+	LinkedIssues  []Issue             `json:"linked_issues"`
+	FileOwnership map[string][]string `json:"file_ownership"`
+	RecentCommits []ChainEntry        `json:"recent_commits"`
+	Policies      []PolicyResult      `json:"policies"`
+	Mergeable     bool                `json:"mergeable"`
+}
+
+// ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
 
