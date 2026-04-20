@@ -69,6 +69,7 @@ type WriteStore interface {
 	Commit(ctx context.Context, req model.CommitRequest) (*model.CommitResponse, error)
 	CreateBranch(ctx context.Context, req model.CreateBranchRequest) (*model.CreateBranchResponse, error)
 	UpdateBranchDraft(ctx context.Context, repo, name string, draft bool) error
+	SetBranchAutoMerge(ctx context.Context, repo, name string, autoMerge bool) error
 	Merge(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error)
 	DeleteBranch(ctx context.Context, repo, name string) error
 	Rebase(ctx context.Context, req model.RebaseRequest) (*model.RebaseResponse, []db.MergeConflict, error)

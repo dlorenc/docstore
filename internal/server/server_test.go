@@ -92,6 +92,10 @@ func (m *mockStore) UpdateBranchDraft(ctx context.Context, repo, name string, dr
 	return nil
 }
 
+func (m *mockStore) SetBranchAutoMerge(ctx context.Context, repo, name string, autoMerge bool) error {
+	return nil
+}
+
 func (m *mockStore) Merge(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error) {
 	if m.mergeFn != nil {
 		return m.mergeFn(ctx, req)

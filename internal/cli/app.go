@@ -583,6 +583,67 @@ func (a *App) Ready() error {
 	return nil
 }
 
+// AutoMergeEnable enables auto-merge on the current (or specified) branch.
+// When all CI checks pass and merge policies are satisfied, the branch will
+// be merged automatically.
+func (a *App) AutoMergeEnable(branch string) error {
+	cfg, err := a.loadConfig()
+	if err != nil {
+		return err
+	}
+	if branch == "" {
+		branch = cfg.Branch
+	}
+	if branch == "" || branch == "main" {
+		return fmt.Errorf("no branch checked out (or on main)")
+	}
+
+	resp, err := a.postJSON(cfg, repoBase(cfg)+"/branch/"+branch+"/auto-merge", nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		return a.readError(resp)
+	}
+
+	fmt.Fprintf(a.Out, "Auto-merge enabled for branch '%s'\n", branch)
+	return nil
+}
+
+// AutoMergeDisable disables auto-merge on the current (or specified) branch.
+func (a *App) AutoMergeDisable(branch string) error {
+	cfg, err := a.loadConfig()
+	if err != nil {
+		return err
+	}
+	if branch == "" {
+		branch = cfg.Branch
+	}
+	if branch == "" || branch == "main" {
+		return fmt.Errorf("no branch checked out (or on main)")
+	}
+
+	req, err := http.NewRequest("DELETE", repoBase(cfg)+"/branch/"+branch+"/auto-merge", nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-DocStore-Identity", cfg.Author)
+	resp, err := a.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		return a.readError(resp)
+	}
+
+	fmt.Fprintf(a.Out, "Auto-merge disabled for branch '%s'\n", branch)
+	return nil
+}
+
 // Checkout switches to an existing branch and syncs files from the server.
 func (a *App) Checkout(branch string) error {
 	cfg, err := a.loadConfig()
