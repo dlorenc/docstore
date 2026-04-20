@@ -162,10 +162,8 @@ jobs:
 
       - name: Deploy ci-worker to GKE
         run: |
+          kubectl delete deployment ci-worker --ignore-not-found -n docstore-ci
           kubectl apply -f deploy/k8s/ci-worker.yaml
-          kubectl set image deployment/ci-worker \
-            ci-worker=us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-worker@${{ steps.build.outputs.digest }} \
-            -n docstore-ci
-          kubectl rollout status deployment/ci-worker -n docstore-ci --timeout=600s
-          kubectl apply -f deploy/k8s/ci-worker-scaledobject.yaml
-          kubectl wait --for=condition=Ready scaledobject/ci-worker -n docstore-ci --timeout=120s
+          kubectl patch scaledjob ci-worker -n docstore-ci \
+            --type='json' \
+            -p='[{"op":"replace","path":"/spec/jobTargetRef/template/spec/containers/0/image","value":"us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-worker@${{ steps.build.outputs.digest }}"}]'
