@@ -72,6 +72,9 @@ type mockStore struct {
 	listSubscriptionsByCreatorFn     func(ctx context.Context, createdBy string) ([]model.EventSubscription, error)
 	deleteSubscriptionFn             func(ctx context.Context, id string) error
 	resumeSubscriptionFn             func(ctx context.Context, id string) error
+
+	listProposalsFn   func(ctx context.Context, repo string, state *model.ProposalState, branch *string) ([]*model.Proposal, error)
+	listIssuesByRefFn func(ctx context.Context, repo string, refType model.IssueRefType, refID string) ([]model.Issue, error)
 }
 
 func (m *mockStore) Commit(ctx context.Context, req model.CommitRequest) (*model.CommitResponse, error) {
@@ -394,7 +397,10 @@ func (m *mockStore) GetProposal(_ context.Context, _, _ string) (*model.Proposal
 	return nil, db.ErrProposalNotFound
 }
 
-func (m *mockStore) ListProposals(_ context.Context, _ string, _ *model.ProposalState, _ *string) ([]*model.Proposal, error) {
+func (m *mockStore) ListProposals(ctx context.Context, repo string, state *model.ProposalState, branch *string) ([]*model.Proposal, error) {
+	if m.listProposalsFn != nil {
+		return m.listProposalsFn(ctx, repo, state, branch)
+	}
 	return []*model.Proposal{}, nil
 }
 
@@ -477,7 +483,10 @@ func (m *mockStore) CreateIssueRef(_ context.Context, _ string, _ int64, _ model
 func (m *mockStore) ListIssueRefs(_ context.Context, _ string, _ int64) ([]model.IssueRef, error) {
 	return []model.IssueRef{}, nil
 }
-func (m *mockStore) ListIssuesByRef(_ context.Context, _ string, _ model.IssueRefType, _ string) ([]model.Issue, error) {
+func (m *mockStore) ListIssuesByRef(ctx context.Context, repo string, refType model.IssueRefType, refID string) ([]model.Issue, error) {
+	if m.listIssuesByRefFn != nil {
+		return m.listIssuesByRefFn(ctx, repo, refType, refID)
+	}
 	return []model.Issue{}, nil
 }
 
@@ -3563,5 +3572,240 @@ func TestHandleArchive_BranchNotFound(t *testing.T) {
 	h.ServeHTTP(w, req)
 	if w.Code != http.StatusNotFound {
 		t.Errorf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Agent context handler tests
+// ---------------------------------------------------------------------------
+
+// TestAgentContext_NoReadStore verifies 503 when the server has no read store.
+func TestAgentContext_NoReadStore(t *testing.T) {
+	srv := New(nil, nil, devID, "")
+
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/default/-/branch/feature/x/agent-context", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestAgentContext_BranchNotFound verifies 404 when the branch does not exist.
+func TestAgentContext_BranchNotFound(t *testing.T) {
+	rs := &mockReadStore{
+		getBranchFn: func(_ context.Context, _, _ string) (*store.BranchInfo, error) {
+			return nil, nil
+		},
+	}
+	ms := &mockStore{
+		listReviewsFn:   func(_ context.Context, _, _ string, _ *int64) ([]model.Review, error) { return nil, nil },
+		listCheckRunsFn: func(_ context.Context, _, _ string, _ *int64) ([]model.CheckRun, error) { return nil, nil },
+	}
+	srv := newTestHandler(ms, rs, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/default/-/branch/nonexistent/agent-context", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestAgentContext_Bootstrap verifies that the endpoint returns 200 with a
+// complete response when no policies are defined (bootstrap mode).
+func TestAgentContext_Bootstrap(t *testing.T) {
+	vid := "v1"
+	rs := &mockReadStore{
+		getBranchFn: func(_ context.Context, _, branch string) (*store.BranchInfo, error) {
+			return &store.BranchInfo{
+				Name:         branch,
+				HeadSequence: 3,
+				BaseSequence: 1,
+				Status:       "active",
+				Draft:        false,
+			}, nil
+		},
+		getDiffFn: func(_ context.Context, _, _ string) (*store.DiffResult, error) {
+			return &store.DiffResult{
+				BranchChanges: []store.DiffEntry{{Path: "foo.go", VersionID: &vid}},
+			}, nil
+		},
+		getChainFn: func(_ context.Context, _ string, from, to int64) ([]store.ChainEntry, error) {
+			return []store.ChainEntry{
+				{Sequence: 2, Branch: "feature/x", Author: "alice", Message: "add foo"},
+				{Sequence: 3, Branch: "feature/x", Author: "alice", Message: "fix foo"},
+			}, nil
+		},
+	}
+	ms := &mockStore{
+		listReviewsFn: func(_ context.Context, _, _ string, _ *int64) ([]model.Review, error) {
+			return []model.Review{{ID: "r1", Branch: "feature/x", Reviewer: "bob", Status: model.ReviewApproved}}, nil
+		},
+		listCheckRunsFn: func(_ context.Context, _, _ string, _ *int64) ([]model.CheckRun, error) {
+			return []model.CheckRun{{ID: "c1", CheckName: "ci", Status: model.CheckRunPassed}}, nil
+		},
+	}
+	// nil policy cache → bootstrap mode
+	srv := newTestHandler(ms, rs, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/default/-/branch/feature/x/agent-context", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp model.AgentContextResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if resp.Branch.Name != "feature/x" {
+		t.Errorf("expected branch name feature/x, got %q", resp.Branch.Name)
+	}
+	if resp.Branch.HeadSequence != 3 {
+		t.Errorf("expected head_sequence 3, got %d", resp.Branch.HeadSequence)
+	}
+	if len(resp.Diff.BranchChanges) != 1 || resp.Diff.BranchChanges[0].Path != "foo.go" {
+		t.Errorf("unexpected diff: %+v", resp.Diff)
+	}
+	if len(resp.Reviews) != 1 || resp.Reviews[0].ID != "r1" {
+		t.Errorf("unexpected reviews: %+v", resp.Reviews)
+	}
+	if len(resp.CheckRuns) != 1 || resp.CheckRuns[0].CheckName != "ci" {
+		t.Errorf("unexpected check_runs: %+v", resp.CheckRuns)
+	}
+	if len(resp.RecentCommits) != 2 {
+		t.Errorf("expected 2 recent commits, got %d: %+v", len(resp.RecentCommits), resp.RecentCommits)
+	}
+	if !resp.Mergeable {
+		t.Error("expected mergeable=true in bootstrap mode")
+	}
+	if len(resp.Policies) != 0 {
+		t.Errorf("expected no policies in bootstrap mode, got: %+v", resp.Policies)
+	}
+}
+
+// TestAgentContext_PolicyDeny verifies that a failing policy sets mergeable=false.
+func TestAgentContext_PolicyDeny(t *testing.T) {
+	engine := mustBuildEngine(t, "require_review", `
+package docstore.require_review
+default allow = false
+default reason = "a review is required"
+`)
+
+	ms := &mockStore{
+		listReviewsFn:   func(_ context.Context, _, _ string, _ *int64) ([]model.Review, error) { return nil, nil },
+		listCheckRunsFn: func(_ context.Context, _, _ string, _ *int64) ([]model.CheckRun, error) { return nil, nil },
+	}
+	pc := &mockPolicyCache{
+		loadFn: func(_ context.Context, _ string, _ policy.ReadStore) (*policy.Engine, map[string][]string, error) {
+			return engine, nil, nil
+		},
+	}
+	rs := &mockReadStore{}
+
+	srv := newTestHandler(ms, rs, pc)
+
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/default/-/branch/feature/x/agent-context", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp model.AgentContextResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Mergeable {
+		t.Error("expected mergeable=false with denying policy")
+	}
+	if len(resp.Policies) != 1 || resp.Policies[0].Pass {
+		t.Errorf("expected 1 failing policy, got: %+v", resp.Policies)
+	}
+}
+
+// TestAgentContext_PolicyAllow verifies that an allowing policy sets mergeable=true.
+func TestAgentContext_PolicyAllow(t *testing.T) {
+	engine := mustBuildEngine(t, "always_allow", `
+package docstore.always_allow
+default allow = true
+`)
+
+	ms := &mockStore{
+		listReviewsFn:   func(_ context.Context, _, _ string, _ *int64) ([]model.Review, error) { return nil, nil },
+		listCheckRunsFn: func(_ context.Context, _, _ string, _ *int64) ([]model.CheckRun, error) { return nil, nil },
+	}
+	pc := &mockPolicyCache{
+		loadFn: func(_ context.Context, _ string, _ policy.ReadStore) (*policy.Engine, map[string][]string, error) {
+			return engine, nil, nil
+		},
+	}
+	rs := &mockReadStore{}
+
+	srv := newTestHandler(ms, rs, pc)
+
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/default/-/branch/feature/x/agent-context", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp model.AgentContextResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.Mergeable {
+		t.Errorf("expected mergeable=true with allowing policy, policies: %+v", resp.Policies)
+	}
+}
+
+// TestAgentContext_LinkedIssues verifies that linked issues are included when a
+// proposal exists for the branch.
+func TestAgentContext_LinkedIssues(t *testing.T) {
+	proposalID := "prop-1"
+	ms := &mockStore{
+		listReviewsFn:   func(_ context.Context, _, _ string, _ *int64) ([]model.Review, error) { return nil, nil },
+		listCheckRunsFn: func(_ context.Context, _, _ string, _ *int64) ([]model.CheckRun, error) { return nil, nil },
+		listProposalsFn: func(_ context.Context, _ string, _ *model.ProposalState, _ *string) ([]*model.Proposal, error) {
+			return []*model.Proposal{
+				{ID: proposalID, Branch: "feature/x", BaseBranch: "main", Title: "my proposal", State: model.ProposalOpen},
+			}, nil
+		},
+		listIssuesByRefFn: func(_ context.Context, _ string, refType model.IssueRefType, refID string) ([]model.Issue, error) {
+			if refType != model.IssueRefTypeProposal || refID != proposalID {
+				return nil, nil
+			}
+			return []model.Issue{{ID: "issue-1", Number: 42, Title: "Fix bug"}}, nil
+		},
+	}
+	rs := &mockReadStore{}
+	srv := newTestHandler(ms, rs, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/repos/default/default/-/branch/feature/x/agent-context", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp model.AgentContextResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Proposals) != 1 || resp.Proposals[0].ID != proposalID {
+		t.Errorf("expected 1 proposal with ID %q, got: %+v", proposalID, resp.Proposals)
+	}
+	if len(resp.LinkedIssues) != 1 || resp.LinkedIssues[0].Number != 42 {
+		t.Errorf("expected 1 linked issue with number 42, got: %+v", resp.LinkedIssues)
 	}
 }
