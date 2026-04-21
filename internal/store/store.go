@@ -255,6 +255,7 @@ LIMIT $5`
 
 // BranchInfo describes a branch for listing.
 type BranchInfo struct {
+	Repo         string `json:"repo"`
 	Name         string `json:"name"`
 	HeadSequence int64  `json:"head_sequence"`
 	BaseSequence int64  `json:"base_sequence"`
@@ -298,6 +299,7 @@ func (s *Store) GetBranch(ctx context.Context, repo, branch string) (*BranchInfo
 		}
 		return nil, err
 	}
+	b.Repo = repo
 	return &b, nil
 }
 
@@ -332,6 +334,7 @@ func (s *Store) ListBranches(ctx context.Context, repo, statusFilter string, inc
 		if err := rows.Scan(&b.Name, &b.HeadSequence, &b.BaseSequence, &b.Status, &b.Draft, &b.AutoMerge); err != nil {
 			return nil, err
 		}
+		b.Repo = repo
 		branches = append(branches, b)
 	}
 	return branches, rows.Err()

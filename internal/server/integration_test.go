@@ -958,6 +958,7 @@ func TestIntegrationReviewFlow(t *testing.T) {
 
 	var reviews []struct {
 		ID       string `json:"id"`
+		Repo     string `json:"repo"`
 		Reviewer string `json:"reviewer"`
 		Status   string `json:"status"`
 	}
@@ -969,6 +970,9 @@ func TestIntegrationReviewFlow(t *testing.T) {
 	}
 	if reviews[0].Status != "approved" {
 		t.Errorf("expected status approved, got %q", reviews[0].Status)
+	}
+	if reviews[0].Repo != "default/default" {
+		t.Errorf("expected repo default/default, got %q", reviews[0].Repo)
 	}
 
 	// Step 6: alice makes another commit — the prior review becomes stale.
@@ -1037,6 +1041,7 @@ func TestIntegrationCheckRunFlow(t *testing.T) {
 
 	var checks []struct {
 		ID        string `json:"id"`
+		Repo      string `json:"repo"`
 		CheckName string `json:"check_name"`
 		Status    string `json:"status"`
 	}
@@ -1048,6 +1053,9 @@ func TestIntegrationCheckRunFlow(t *testing.T) {
 	}
 	if checks[0].Status != "passed" {
 		t.Errorf("expected status passed, got %q", checks[0].Status)
+	}
+	if checks[0].Repo != "default/default" {
+		t.Errorf("expected repo default/default, got %q", checks[0].Repo)
 	}
 }
 

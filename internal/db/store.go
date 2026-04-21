@@ -1179,6 +1179,7 @@ func (s *Store) CreateReview(ctx context.Context, repo, branch, reviewer string,
 
 	return &model.Review{
 		ID:        id,
+		Repo:      repo,
 		Branch:    branch,
 		Reviewer:  reviewer,
 		Sequence:  headSeq,
@@ -1211,6 +1212,7 @@ func (s *Store) ListReviews(ctx context.Context, repo, branch string, atSeq *int
 	var reviews []model.Review
 	for rows.Next() {
 		var rev model.Review
+		rev.Repo = repo
 		rev.Branch = branch
 		var statusStr string
 		if err := rows.Scan(&rev.ID, &rev.Reviewer, &rev.Sequence, &statusStr, &rev.Body, &rev.CreatedAt); err != nil {
@@ -1430,6 +1432,7 @@ func (s *Store) CreateCheckRun(ctx context.Context, repo, branch, checkName stri
 
 	return &model.CheckRun{
 		ID:        id,
+		Repo:      repo,
 		Branch:    branch,
 		Sequence:  headSeq,
 		CheckName: checkName,
@@ -1572,6 +1575,7 @@ func (s *Store) ListCheckRuns(ctx context.Context, repo, branch string, atSeq *i
 	var checkRuns []model.CheckRun
 	for rows.Next() {
 		var cr model.CheckRun
+		cr.Repo = repo
 		cr.Branch = branch
 		var statusStr string
 		var nullLogURL sql.NullString
