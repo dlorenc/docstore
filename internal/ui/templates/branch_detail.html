@@ -1,0 +1,125 @@
+{{define "content"}}
+{{with .Body}}
+{{$ctx := .Ctx}}
+{{$page := .}}
+<div class="headline">
+  <h1>{{.Repo.Name}} / {{$ctx.Branch.Name}}</h1>
+  <span>
+    {{if $ctx.Branch.Draft}}<span class="badge warn">draft</span>{{end}}
+    {{if $ctx.Branch.AutoMerge}}<span class="badge neutral">auto-merge</span>{{end}}
+    <span class="badge neutral">{{$ctx.Branch.Status}}</span>
+  </span>
+</div>
+<div class="meta" style="margin-bottom:14px">head {{$ctx.Branch.HeadSequence}} · base {{$ctx.Branch.BaseSequence}}</div>
+
+{{if $ctx.Mergeable}}
+<div class="summary-hero ok">
+  <span class="verdict">✓ Mergeable</span>
+  <span class="reasons">all policies and checks pass</span>
+</div>
+{{else}}
+<div class="summary-hero bad">
+  <span class="verdict">✗ Blocked</span>
+  <span class="reasons">{{range $i, $r := $page.Blockers}}{{if $i}}<span class="sep">·</span>{{end}}{{$r}}{{end}}{{if not $page.Blockers}}branch is not mergeable{{end}}</span>
+</div>
+{{end}}
+
+<h2>Policies ({{len $ctx.Policies}})</h2>
+<div class="card">
+  {{if not $ctx.Policies}}<div class="empty">no policies configured for this repo</div>{{end}}
+  {{range $ctx.Policies}}
+  <div class="policy-row">
+    <span class="name">{{.Name}}</span>
+    <span class="badge {{if .Pass}}ok{{else}}bad{{end}}">{{if .Pass}}pass{{else}}fail{{end}}</span>
+    <span class="reason">{{.Reason}}</span>
+  </div>
+  {{end}}
+</div>
+
+<div class="two-col">
+  <div>
+    <h2>Checks ({{len $ctx.CheckRuns}})</h2>
+    <div class="card" data-poll-url="/ui/_/r/{{.Repo.Name}}/b/{{$ctx.Branch.Name}}/checks" data-poll-interval="10000">
+      {{template "branch_checks.html" $ctx}}
+    </div>
+  </div>
+  <div>
+    <h2>Reviews ({{len $ctx.Reviews}})</h2>
+    <div class="card">
+      {{if not $ctx.Reviews}}<div class="empty">no reviews yet</div>{{end}}
+      {{range $ctx.Reviews}}
+      <div class="row">
+        <div>
+          <strong>{{.Reviewer}}</strong>
+          <span class="badge {{statusClass (printf "%s" .Status)}}">{{.Status}}</span>
+          <div class="meta">@ seq {{.Sequence}} · {{relTime .CreatedAt}}</div>
+        </div>
+      </div>
+      {{if .Body}}<div class="row-body">{{.Body}}</div>{{end}}
+      {{end}}
+    </div>
+  </div>
+</div>
+
+<h2>Diff</h2>
+<div class="card">
+  {{template "diffBlock" (dict "Title" "branch changes" "Entries" $ctx.Diff.BranchChanges "Repo" .Repo.Name "Branch" $ctx.Branch.Name "Ownership" $ctx.FileOwnership)}}
+  {{if $ctx.Diff.MainChanges}}
+    {{template "diffBlock" (dict "Title" "main changes since branch" "Entries" $ctx.Diff.MainChanges "Repo" .Repo.Name "Branch" "main" "Ownership" $ctx.FileOwnership)}}
+  {{end}}
+  {{if $ctx.Diff.Conflicts}}
+    <div class="diff-block-heading">conflicts <span class="count">({{len $ctx.Diff.Conflicts}})</span></div>
+    {{range $ctx.Diff.Conflicts}}
+    <div class="diff-line mod"><span class="path">{{.Path}}</span><span class="meta">main {{shortHash .MainVersionID}} · branch {{shortHash .BranchVersionID}}</span></div>
+    {{end}}
+  {{end}}
+</div>
+
+<h2>Proposal</h2>
+<div class="card">
+  {{if not $ctx.Proposals}}<div class="empty">no proposal opened for this branch</div>{{end}}
+  {{range $ctx.Proposals}}
+  <div class="row">
+    <div>
+      <strong>{{.Title}}</strong>
+      <div class="meta">{{.Author}} · opened {{relTime .CreatedAt}} · into {{.BaseBranch}}</div>
+    </div>
+    <span class="badge {{statusClass (printf "%s" .State)}}">{{.State}}</span>
+  </div>
+  {{if .Description}}<div class="row-body">{{.Description}}</div>{{end}}
+  {{end}}
+</div>
+
+<h2>Linked issues ({{len $ctx.LinkedIssues}})</h2>
+<div class="card">
+  {{if not $ctx.LinkedIssues}}<div class="empty">no linked issues</div>{{end}}
+  <div class="row-list">
+    {{range $ctx.LinkedIssues}}
+    <div class="row">
+      <div>#{{.Number}} <strong>{{.Title}}</strong> <span class="meta">by {{.Author}} · {{relTime .CreatedAt}}</span></div>
+      <span class="badge {{statusClass (printf "%s" .State)}}">{{.State}}</span>
+    </div>
+    {{end}}
+  </div>
+</div>
+
+<h2>Recent commits ({{len $ctx.RecentCommits}})</h2>
+<div class="card">
+  {{if not $ctx.RecentCommits}}<div class="empty">no commits on this branch yet</div>{{else}}
+  <table class="grid">
+    <thead><tr><th>seq</th><th>message</th><th>author</th><th>when</th></tr></thead>
+    <tbody>
+    {{range $ctx.RecentCommits}}
+    <tr>
+      <td>{{.Sequence}}</td>
+      <td>{{.Message}}</td>
+      <td>{{.Author}}</td>
+      <td class="meta">{{relTime .CreatedAt}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{end}}
+</div>
+{{end}}
+{{end}}
