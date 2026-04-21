@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -161,6 +162,60 @@ func TestSSE_FilterByType(t *testing.T) {
 		}
 	}
 	t.Fatal("did not receive branch.created event")
+}
+
+func TestSSE_SinceSeqReplay(t *testing.T) {
+	t.Parallel()
+	db := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
+	seedForEvents(t, db)
+	db.Exec(`INSERT INTO roles (repo, identity, role) VALUES ('default/default', 'test@example.com', 'admin') ON CONFLICT DO NOTHING`)
+
+	srv, broker := newEventTestServer(t, db)
+
+	// Record the current tail so we know where to start replaying from.
+	seq0, err := broker.CurrentSeq(context.Background())
+	if err != nil {
+		t.Fatalf("CurrentSeq: %v", err)
+	}
+
+	// Emit three events before the client connects.
+	broker.Emit(context.Background(), &branchCreatedStub{repo: "default/default"})
+	broker.Emit(context.Background(), &commitCreatedStub{repo: "default/default"})
+	broker.Emit(context.Background(), &branchCreatedStub{repo: "default/default"})
+
+	// Connect with ?since_seq pointing to the position before the emits.
+	// The handler must replay all three events immediately.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet,
+		fmt.Sprintf("%s/repos/default/default/-/events?since_seq=%d", srv.URL, seq0), nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("SSE connect: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	// Count data lines; expect at least 3 replayed events.
+	received := 0
+	scanner := bufio.NewScanner(resp.Body)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if !scanner.Scan() {
+			break
+		}
+		if strings.HasPrefix(scanner.Text(), "data: ") {
+			received++
+			if received >= 3 {
+				return // success
+			}
+		}
+	}
+	t.Fatalf("expected at least 3 replayed events via since_seq, got %d", received)
 }
 
 // Stub event types for testing.
