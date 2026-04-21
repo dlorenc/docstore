@@ -1,10 +1,12 @@
 package db
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -1848,7 +1850,7 @@ func TestCreateCheckRun_Success(t *testing.T) {
 	s := NewStore(d)
 	ctx := context.Background()
 
-	cr, err := s.CreateCheckRun(ctx, "default/default", "main", "ci/build", model.CheckRunPassed, "ci-bot", nil, nil, 1)
+	cr, err := s.CreateCheckRun(ctx, "default/default", "main", "ci/build", model.CheckRunPassed, "ci-bot", nil, nil, 1, nil)
 	if err != nil {
 		t.Fatalf("CreateCheckRun: %v", err)
 	}
@@ -1884,12 +1886,55 @@ func TestCreateCheckRun_RecordedAtHeadSequence(t *testing.T) {
 		t.Fatalf("commit: %v", err)
 	}
 
-	cr, err := s.CreateCheckRun(ctx, "default/default", "main", "ci/build", model.CheckRunPassed, "ci-bot", nil, nil, 1)
+	cr, err := s.CreateCheckRun(ctx, "default/default", "main", "ci/build", model.CheckRunPassed, "ci-bot", nil, nil, 1, nil)
 	if err != nil {
 		t.Fatalf("CreateCheckRun: %v", err)
 	}
 	if cr.Sequence != 1 {
 		t.Errorf("expected sequence 1 (head), got %d", cr.Sequence)
+	}
+}
+
+func TestCreateCheckRun_WithMetadata(t *testing.T) {
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	meta := json.RawMessage(`{"key":"value"}`)
+	wantMeta := `{"key": "value"}`
+	cr, err := s.CreateCheckRun(ctx, "default/default", "main", "ci/build", model.CheckRunPassed, "ci-bot", nil, nil, 1, meta)
+	if err != nil {
+		t.Fatalf("CreateCheckRun: %v", err)
+	}
+	var gotBuf, wantBuf bytes.Buffer
+	if err := json.Compact(&gotBuf, cr.Metadata); err != nil {
+		t.Fatalf("compact returned metadata: %v", err)
+	}
+	if err := json.Compact(&wantBuf, []byte(wantMeta)); err != nil {
+		t.Fatalf("compact wantMeta: %v", err)
+	}
+	if gotBuf.String() != wantBuf.String() {
+		t.Errorf("returned metadata: got %s, want %s", cr.Metadata, wantMeta)
+	}
+
+	runs, err := s.ListCheckRuns(ctx, "default/default", "main", nil, false)
+	if err != nil {
+		t.Fatalf("ListCheckRuns: %v", err)
+	}
+	if len(runs) == 0 {
+		t.Fatal("expected at least one check run")
+	}
+	gotBuf.Reset()
+	wantBuf.Reset()
+	if err := json.Compact(&gotBuf, runs[0].Metadata); err != nil {
+		t.Fatalf("compact listed metadata: %v", err)
+	}
+	if err := json.Compact(&wantBuf, []byte(wantMeta)); err != nil {
+		t.Fatalf("compact wantMeta: %v", err)
+	}
+	if gotBuf.String() != wantBuf.String() {
+		t.Errorf("listed metadata: got %s, want %s", runs[0].Metadata, wantMeta)
 	}
 }
 
@@ -1899,11 +1944,11 @@ func TestListCheckRuns_ByBranch(t *testing.T) {
 	s := NewStore(d)
 	ctx := context.Background()
 
-	_, err := s.CreateCheckRun(ctx, "default/default", "main", "ci/build", model.CheckRunPassed, "ci-bot", nil, nil, 1)
+	_, err := s.CreateCheckRun(ctx, "default/default", "main", "ci/build", model.CheckRunPassed, "ci-bot", nil, nil, 1, nil)
 	if err != nil {
 		t.Fatalf("check 1: %v", err)
 	}
-	_, err = s.CreateCheckRun(ctx, "default/default", "main", "ci/lint", model.CheckRunFailed, "ci-bot", nil, nil, 1)
+	_, err = s.CreateCheckRun(ctx, "default/default", "main", "ci/lint", model.CheckRunFailed, "ci-bot", nil, nil, 1, nil)
 	if err != nil {
 		t.Fatalf("check 2: %v", err)
 	}
@@ -1926,12 +1971,12 @@ func TestListCheckRuns_UpsertSameAttempt(t *testing.T) {
 	ctx := context.Background()
 
 	// Post pending at attempt 1.
-	_, err := s.CreateCheckRun(ctx, "default/default", "main", "ci/build", model.CheckRunPending, "ci-bot", nil, nil, 1)
+	_, err := s.CreateCheckRun(ctx, "default/default", "main", "ci/build", model.CheckRunPending, "ci-bot", nil, nil, 1, nil)
 	if err != nil {
 		t.Fatalf("check pending: %v", err)
 	}
 	// Post passed at same attempt — should upsert (update status).
-	_, err = s.CreateCheckRun(ctx, "default/default", "main", "ci/build", model.CheckRunPassed, "ci-bot", nil, nil, 1)
+	_, err = s.CreateCheckRun(ctx, "default/default", "main", "ci/build", model.CheckRunPassed, "ci-bot", nil, nil, 1, nil)
 	if err != nil {
 		t.Fatalf("check passed: %v", err)
 	}
@@ -1958,7 +2003,7 @@ func TestRetryChecks(t *testing.T) {
 	ctx := context.Background()
 
 	// First attempt: passed.
-	_, err := s.CreateCheckRun(ctx, "default/default", "main", "ci/build", model.CheckRunPassed, "ci-bot", nil, nil, 1)
+	_, err := s.CreateCheckRun(ctx, "default/default", "main", "ci/build", model.CheckRunPassed, "ci-bot", nil, nil, 1, nil)
 	if err != nil {
 		t.Fatalf("CreateCheckRun: %v", err)
 	}
@@ -2474,7 +2519,7 @@ func TestPurge_DeletesReviewsAndChecks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create review: %v", err)
 	}
-	_, err = s.CreateCheckRun(ctx, "default/default", "feature/rev", "ci/build", model.CheckRunPassed, "ci-bot", nil, nil, 1)
+	_, err = s.CreateCheckRun(ctx, "default/default", "feature/rev", "ci/build", model.CheckRunPassed, "ci-bot", nil, nil, 1, nil)
 	if err != nil {
 		t.Fatalf("create check_run: %v", err)
 	}

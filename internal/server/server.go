@@ -78,7 +78,7 @@ type WriteStore interface {
 	// Review and check-run operations
 	CreateReview(ctx context.Context, repo, branch, reviewer string, status model.ReviewStatus, body string) (*model.Review, error)
 	ListReviews(ctx context.Context, repo, branch string, atSeq *int64) ([]model.Review, error)
-	CreateCheckRun(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64, attempt int16) (*model.CheckRun, error)
+	CreateCheckRun(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64, attempt int16, metadata json.RawMessage) (*model.CheckRun, error)
 	ListCheckRuns(ctx context.Context, repo, branch string, atSeq *int64, history bool) ([]model.CheckRun, error)
 	RetryChecks(ctx context.Context, repo, branch string, seq int64, checks []string) (int16, error)
 
