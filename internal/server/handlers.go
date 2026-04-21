@@ -2502,6 +2502,7 @@ func (s *server) AssembleAgentContext(ctx context.Context, repo, branch, actor s
 
 	return &model.AgentContextResponse{
 		Branch: model.Branch{
+			Repo:         repo,
 			Name:         branchInfo.Name,
 			HeadSequence: branchInfo.HeadSequence,
 			BaseSequence: branchInfo.BaseSequence,
