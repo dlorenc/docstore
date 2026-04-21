@@ -1,0 +1,38 @@
+{{define "content"}}
+{{with .Body}}
+{{$page := .}}
+<div class="headline">
+  <h1>{{$page.Repo.Name}} <span class="meta">{{$page.Branch}}:{{$page.Path}}</span></h1>
+  <span class="meta">
+    {{if $page.File}}{{shortHash $page.File.ContentHash}}{{if $page.File.ContentType}} · {{$page.File.ContentType}}{{end}}<span class="dot">·</span>{{end}}
+    <a href="/ui/r/{{$page.Repo.Name}}/b/{{$page.Branch}}">branch: {{$page.Branch}} →</a>
+  </span>
+</div>
+
+<div class="two-col">
+  <div class="tree">
+    {{if $page.ParentDir}}<a class="item dir" href="/ui/r/{{$page.Repo.Name}}/f/{{$page.ParentDir}}?branch={{$page.Branch}}">..</a>{{end}}
+    {{range $page.Tree}}
+      {{if .IsDir}}
+        <a class="item dir" href="/ui/r/{{$page.Repo.Name}}/f/{{.Path}}?branch={{$page.Branch}}">{{.Name}}/</a>
+      {{else}}
+        <a class="item file" href="/ui/r/{{$page.Repo.Name}}/f/{{.Path}}?branch={{$page.Branch}}">{{.Name}}</a>
+      {{end}}
+    {{end}}
+    {{if not $page.Tree}}<div class="empty">empty</div>{{end}}
+  </div>
+
+  <div>
+    {{if $page.File}}
+    <pre class="code">
+    {{- range lines $page.File.Content}}<div class="ln"><span class="num">{{.Num}}</span><span class="text">{{.Text}}</span></div>{{end -}}
+    </pre>
+    {{else if $page.Path}}
+    <div class="card empty">file not found at this branch</div>
+    {{else}}
+    <div class="card empty">select a file from the tree</div>
+    {{end}}
+  </div>
+</div>
+{{end}}
+{{end}}
