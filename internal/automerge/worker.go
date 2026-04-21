@@ -5,8 +5,10 @@ package automerge
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
+	"time"
 
 	"github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/events"
@@ -50,36 +52,56 @@ func New(broker *events.Broker, st Store, rs mergeutil.ReadStore, pc mergeutil.P
 	}
 }
 
-// Run starts the event loop. It blocks until ctx is cancelled.
+// Run starts the event loop. It polls event_log for check.reported and
+// review.submitted events and attempts auto-merge when a branch qualifies.
+// Blocks until ctx is cancelled.
 func (w *Worker) Run(ctx context.Context) {
 	if w.broker == nil || w.store == nil || w.readStore == nil {
 		return
 	}
 
-	ch, unsub := w.broker.Subscribe("*", []string{
+	targetTypes := []string{
 		"com.docstore.check.reported",
 		"com.docstore.review.submitted",
-	})
-	defer unsub()
+	}
+
+	// Start from the current tail so we don't replay historical events.
+	sinceSeq, err := w.broker.CurrentSeq(ctx)
+	if err != nil {
+		slog.Error("auto-merge: CurrentSeq failed", "error", err)
+	}
 
 	for {
-		select {
-		case <-ctx.Done():
-			return
-		case ev, ok := <-ch:
-			if !ok {
+		evs, pollErr := w.broker.Poll(ctx, "*", sinceSeq, targetTypes)
+		if pollErr != nil {
+			if ctx.Err() != nil {
 				return
 			}
-			var repo, branch string
-			switch e := ev.(type) {
-			case evtypes.CheckReported:
-				repo, branch = e.Repo, e.Branch
-			case evtypes.ReviewSubmitted:
-				repo, branch = e.Repo, e.Branch
-			default:
+			slog.Error("auto-merge: poll failed", "error", pollErr)
+		}
+
+		for _, ev := range evs {
+			sinceSeq = ev.Seq
+			var envelope struct {
+				Data struct {
+					Branch string `json:"branch"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(ev.Payload, &envelope); err != nil {
+				slog.Warn("auto-merge: unmarshal event payload failed",
+					"type", ev.Type, "seq", ev.Seq, "error", err)
 				continue
 			}
-			w.tryAutoMerge(ctx, repo, branch)
+			w.tryAutoMerge(ctx, ev.Repo, envelope.Data.Branch)
+		}
+
+		// Wait for a new event notification (or give up after 30 s and re-poll).
+		waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		w.broker.WaitForEvent(waitCtx) //nolint:errcheck
+		cancel()
+
+		if ctx.Err() != nil {
+			return
 		}
 	}
 }
