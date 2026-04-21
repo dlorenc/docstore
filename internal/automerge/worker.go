@@ -66,9 +66,22 @@ func (w *Worker) Run(ctx context.Context) {
 	}
 
 	// Start from the current tail so we don't replay historical events.
-	sinceSeq, err := w.broker.CurrentSeq(ctx)
-	if err != nil {
-		slog.Error("auto-merge: CurrentSeq failed", "error", err)
+	// Retry with backoff until CurrentSeq succeeds — proceeding with 0 would
+	// replay all historical events and trigger spurious auto-merges.
+	var sinceSeq int64
+	for {
+		seq, err := w.broker.CurrentSeq(ctx)
+		if err != nil {
+			slog.Error("auto-merge: CurrentSeq failed, retrying in 5s", "error", err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(5 * time.Second):
+			}
+			continue
+		}
+		sinceSeq = seq
+		break
 	}
 
 	for {
@@ -90,6 +103,11 @@ func (w *Worker) Run(ctx context.Context) {
 			if err := json.Unmarshal(ev.Payload, &envelope); err != nil {
 				slog.Warn("auto-merge: unmarshal event payload failed",
 					"type", ev.Type, "seq", ev.Seq, "error", err)
+				continue
+			}
+			if envelope.Data.Branch == "" {
+				slog.Warn("auto-merge: event missing branch field, skipping",
+					"type", ev.Type, "seq", ev.Seq, "repo", ev.Repo)
 				continue
 			}
 			w.tryAutoMerge(ctx, ev.Repo, envelope.Data.Branch)
