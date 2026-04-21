@@ -2253,96 +2253,78 @@ func (s *server) handleBranchStatus(w http.ResponseWriter, r *http.Request, repo
 // Agent context handler
 // ---------------------------------------------------------------------------
 
-// handleAgentContext implements GET /repos/:name/-/branch/:branch/agent-context.
-// It assembles all branch review context in a single atomic response for LLM agents,
-// following the same assembly logic as handleBranchStatus.
-func (s *server) handleAgentContext(w http.ResponseWriter, r *http.Request, repo, branch string) {
+// ErrAgentContextBranchNotFound is returned by assembleAgentContext when the
+// named branch does not exist on the repo. Callers translate this to 404.
+var ErrAgentContextBranchNotFound = errors.New("branch not found")
+
+// ErrAgentContextReadStoreUnavailable is returned when the server was built
+// without a read store. Callers translate this to 503.
+var ErrAgentContextReadStoreUnavailable = errors.New("read store not available")
+
+// AssembleAgentContext builds the full branch-context snapshot (diff, reviews,
+// checks, proposals, linked issues, policies, recent commits) in one pass.
+//
+// Exported so in-process consumers (e.g. the UI package) can render the same
+// view humans and agents see without going back over HTTP.
+func (s *server) AssembleAgentContext(ctx context.Context, repo, branch, actor string) (*model.AgentContextResponse, error) {
 	if s.readStore == nil {
-		writeError(w, http.StatusServiceUnavailable, "read store not available")
-		return
+		return nil, ErrAgentContextReadStoreUnavailable
 	}
 
-	if !s.validateRepo(w, r, repo) {
-		return
-	}
-
-	ctx := r.Context()
-	actor := IdentityFromContext(ctx)
-
-	// Load branch info.
 	branchInfo, err := s.readStore.GetBranch(ctx, repo, branch)
 	if err != nil {
-		slog.Error("internal error", "op", "agent_context_branch", "repo", repo, "branch", branch, "error", err)
-		writeError(w, http.StatusInternalServerError, "query failed")
-		return
+		return nil, fmt.Errorf("get branch: %w", err)
 	}
 	if branchInfo == nil {
-		writeError(w, http.StatusNotFound, "branch not found")
-		return
+		return nil, ErrAgentContextBranchNotFound
 	}
 
-	// Load diff.
 	diff, err := s.readStore.GetDiff(ctx, repo, branch)
 	if err != nil {
-		slog.Error("internal error", "op", "agent_context_diff", "repo", repo, "branch", branch, "error", err)
-		writeError(w, http.StatusInternalServerError, "query failed")
-		return
+		return nil, fmt.Errorf("get diff: %w", err)
 	}
 	if diff == nil {
 		diff = &store.DiffResult{}
 	}
 
-	// Load reviews filtered to current head sequence.
 	reviews, err := s.commitStore.ListReviews(ctx, repo, branch, &branchInfo.HeadSequence)
 	if err != nil {
-		slog.Error("internal error", "op", "agent_context_reviews", "repo", repo, "branch", branch, "error", err)
-		writeError(w, http.StatusInternalServerError, "query failed")
-		return
+		return nil, fmt.Errorf("list reviews: %w", err)
 	}
 	if reviews == nil {
 		reviews = []model.Review{}
 	}
 
-	// Load check runs filtered to current head sequence.
 	checkRuns, err := s.commitStore.ListCheckRuns(ctx, repo, branch, &branchInfo.HeadSequence)
 	if err != nil {
-		slog.Error("internal error", "op", "agent_context_checks", "repo", repo, "branch", branch, "error", err)
-		writeError(w, http.StatusInternalServerError, "query failed")
-		return
+		return nil, fmt.Errorf("list check runs: %w", err)
 	}
 	if checkRuns == nil {
 		checkRuns = []model.CheckRun{}
 	}
 
-	// Load the open proposal for this branch (if any).
 	openState := model.ProposalOpen
 	proposalPtrs, err := s.commitStore.ListProposals(ctx, repo, &openState, &branch)
 	if err != nil {
-		slog.Error("internal error", "op", "agent_context_proposals", "repo", repo, "branch", branch, "error", err)
-		writeError(w, http.StatusInternalServerError, "query failed")
-		return
+		return nil, fmt.Errorf("list proposals: %w", err)
 	}
 	proposals := make([]model.Proposal, len(proposalPtrs))
 	for i, p := range proposalPtrs {
 		proposals[i] = *p
 	}
 
-	// Load linked issues from the first open proposal (if one exists).
 	linkedIssues := []model.Issue{}
 	if len(proposalPtrs) > 0 {
 		linkedIssues, err = s.commitStore.ListIssuesByRef(ctx, repo, model.IssueRefTypeProposal, proposalPtrs[0].ID)
 		if err != nil {
-			slog.Error("internal error", "op", "agent_context_issues", "repo", repo, "branch", branch, "error", err)
-			writeError(w, http.StatusInternalServerError, "query failed")
-			return
+			return nil, fmt.Errorf("list issues by ref: %w", err)
 		}
 		if linkedIssues == nil {
 			linkedIssues = []model.Issue{}
 		}
 	}
 
-	// Collect recent commits on this branch via the chain.
-	// Cap to the last 50 sequences to bound the query range.
+	// Cap chain queries to the last 50 sequences on the branch.
 	const maxCommitRange = int64(50)
 	recentCommits := []store.ChainEntry{}
 	if branchInfo.HeadSequence > branchInfo.BaseSequence {
@@ -2352,9 +2334,7 @@ func (s *server) handleAgentContext(w http.ResponseWriter, r *http.Request, repo
 		}
 		chainEntries, err := s.readStore.GetChain(ctx, repo, from, branchInfo.HeadSequence)
 		if err != nil {
-			slog.Error("internal error", "op", "agent_context_commits", "repo", repo, "branch", branch, "error", err)
-			writeError(w, http.StatusInternalServerError, "query failed")
-			return
+			return nil, fmt.Errorf("get chain: %w", err)
 		}
 		for _, e := range chainEntries {
 			if e.Branch == branch {
@@ -2363,13 +2343,11 @@ func (s *server) handleAgentContext(w http.ResponseWriter, r *http.Request, repo
 		}
 	}
 
-	// Collect changed paths for ownership resolution.
 	var changedPaths []string
 	for _, e := range diff.BranchChanges {
 		changedPaths = append(changedPaths, e.Path)
 	}
 
-	// Load policies and resolve file ownership.
 	fileOwnership := make(map[string][]string)
 	policyResults := []model.PolicyResult{}
 	mergeable := true
@@ -2377,23 +2355,18 @@ func (s *server) handleAgentContext(w http.ResponseWriter, r *http.Request, repo
 	if s.policyCache != nil {
 		engine, owners, err := s.policyCache.Load(ctx, repo, s.readStore)
 		if err != nil {
-			slog.Error("policy cache load error", "op", "agent_context", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "policy evaluation error")
-			return
+			return nil, fmt.Errorf("policy cache load: %w", err)
 		}
 		if engine != nil {
-			// Resolve file ownership per changed path.
 			for _, p := range changedPaths {
 				fileOwnership[p] = policy.ResolveOwners(owners, p)
 			}
 
-			// Get actor roles for policy input.
 			actorRoles := []string{}
 			if role, err := s.commitStore.GetRole(ctx, repo, actor); err == nil && role != nil {
 				actorRoles = []string{string(role.Role)}
 			}
 
-			// Build proposal input for policy evaluation.
 			var proposalInput *policy.ProposalInput
 			if len(proposalPtrs) > 0 {
 				p := proposalPtrs[0]
@@ -2405,7 +2378,6 @@ func (s *server) handleAgentContext(w http.ResponseWriter, r *http.Request, repo
 				}
 			}
 
-			// Build review and check inputs.
 			reviewInputs := make([]policy.ReviewInput, len(reviews))
 			for i, rev := range reviews {
 				reviewInputs[i] = policy.ReviewInput{
@@ -2445,9 +2417,7 @@ func (s *server) handleAgentContext(w http.ResponseWriter, r *http.Request, repo
 
 			results, err := engine.Evaluate(ctx, input)
 			if err != nil {
-				slog.Error("policy evaluation error", "op", "agent_context", "repo", repo, "branch", branch, "error", err)
-				writeError(w, http.StatusInternalServerError, "policy evaluation error")
-				return
+				return nil, fmt.Errorf("policy evaluate: %w", err)
 			}
 			if results != nil {
 				policyResults = results
@@ -2461,7 +2431,6 @@ func (s *server) handleAgentContext(w http.ResponseWriter, r *http.Request, repo
 		}
 	}
 
-	// Convert diff from store types to API types.
 	diffResp := model.DiffResponse{
 		BranchChanges: make([]model.DiffEntry, len(diff.BranchChanges)),
 		MainChanges:   make([]model.DiffEntry, len(diff.MainChanges)),
@@ -2480,17 +2449,15 @@ func (s *server) handleAgentContext(w http.ResponseWriter, r *http.Request, repo
 		})
 	}
 
-	branchResp := model.Branch{
-		Name:         branchInfo.Name,
-		HeadSequence: branchInfo.HeadSequence,
-		BaseSequence: branchInfo.BaseSequence,
-		Status:       model.BranchStatus(branchInfo.Status),
-		Draft:        branchInfo.Draft,
-		AutoMerge:    branchInfo.AutoMerge,
-	}
-
-	writeJSON(w, http.StatusOK, model.AgentContextResponse{
-		Branch:        branchResp,
+	return &model.AgentContextResponse{
+		Branch: model.Branch{
+			Name:         branchInfo.Name,
+			HeadSequence: branchInfo.HeadSequence,
+			BaseSequence: branchInfo.BaseSequence,
+			Status:       model.BranchStatus(branchInfo.Status),
+			Draft:        branchInfo.Draft,
+			AutoMerge:    branchInfo.AutoMerge,
+		},
 		Diff:          diffResp,
 		Reviews:       reviews,
 		CheckRuns:     checkRuns,
@@ -2500,7 +2467,34 @@ func (s *server) handleAgentContext(w http.ResponseWriter, r *http.Request, repo
 		RecentCommits: recentCommits,
 		Policies:      policyResults,
 		Mergeable:     mergeable,
-	})
+	}, nil
+}
+
+// handleAgentContext implements GET /repos/:name/-/branch/:branch/agent-context.
+// It is a thin HTTP wrapper over AssembleAgentContext.
+func (s *server) handleAgentContext(w http.ResponseWriter, r *http.Request, repo, branch string) {
+	if s.readStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "read store not available")
+		return
+	}
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
+
+	resp, err := s.AssembleAgentContext(r.Context(), repo, branch, IdentityFromContext(r.Context()))
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrAgentContextBranchNotFound):
+			writeError(w, http.StatusNotFound, "branch not found")
+		case errors.Is(err, ErrAgentContextReadStoreUnavailable):
+			writeError(w, http.StatusServiceUnavailable, "read store not available")
+		default:
+			slog.Error("internal error", "op", "agent_context", "repo", repo, "branch", branch, "error", err)
+			writeError(w, http.StatusInternalServerError, "query failed")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // ---------------------------------------------------------------------------
