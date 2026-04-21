@@ -1,5 +1,7 @@
 package types
 
+import "github.com/dlorenc/docstore/api"
+
 // BranchCreated is emitted when a new branch is created.
 type BranchCreated struct {
 	Repo         string `json:"repo"`
@@ -14,10 +16,11 @@ func (e BranchCreated) Data() any      { return e }
 
 // BranchMerged is emitted when a branch is merged into main.
 type BranchMerged struct {
-	Repo     string `json:"repo"`
-	Branch   string `json:"branch"`
-	Sequence int64  `json:"sequence"`
-	MergedBy string `json:"merged_by"`
+	Repo         string                    `json:"repo"`
+	Branch       string                    `json:"branch"`
+	Sequence     int64                     `json:"sequence"`
+	MergedBy     string                    `json:"merged_by"`
+	BranchStatus *api.BranchStatusResponse `json:"branch_status,omitempty"`
 }
 
 func (e BranchMerged) Type() string   { return "com.docstore.branch.merged" }
@@ -26,12 +29,13 @@ func (e BranchMerged) Data() any      { return e }
 
 // BranchRebased is emitted when a branch is rebased onto main.
 type BranchRebased struct {
-	Repo            string `json:"repo"`
-	Branch          string `json:"branch"`
-	NewBaseSequence int64  `json:"new_base_sequence"`
-	NewHeadSequence int64  `json:"new_head_sequence"`
-	CommitsReplayed int64  `json:"commits_replayed"`
-	RebasedBy       string `json:"rebased_by"`
+	Repo            string                    `json:"repo"`
+	Branch          string                    `json:"branch"`
+	NewBaseSequence int64                     `json:"new_base_sequence"`
+	NewHeadSequence int64                     `json:"new_head_sequence"`
+	CommitsReplayed int64                     `json:"commits_replayed"`
+	RebasedBy       string                    `json:"rebased_by"`
+	BranchStatus    *api.BranchStatusResponse `json:"branch_status,omitempty"`
 }
 
 func (e BranchRebased) Type() string   { return "com.docstore.branch.rebased" }
