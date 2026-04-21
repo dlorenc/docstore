@@ -8,3 +8,6 @@ CREATE TABLE event_log (
 
 -- Index for repo-scoped SSE polling (WHERE repo = $1 AND seq > $2).
 CREATE INDEX event_log_repo_seq ON event_log (repo, seq);
+
+-- Index for wildcard-repo queries (WHERE seq > $1, no repo filter).
+CREATE INDEX event_log_seq ON event_log (seq);
