@@ -1,12 +1,15 @@
 package types
 
+import "github.com/dlorenc/docstore/api"
+
 // ReviewSubmitted is emitted when a review is submitted.
 type ReviewSubmitted struct {
-	Repo     string `json:"repo"`
-	Branch   string `json:"branch"`
-	Sequence int64  `json:"sequence"`
-	Reviewer string `json:"reviewer"`
-	Status   string `json:"status"`
+	Repo         string                    `json:"repo"`
+	Branch       string                    `json:"branch"`
+	Sequence     int64                     `json:"sequence"`
+	Reviewer     string                    `json:"reviewer"`
+	Status       string                    `json:"status"`
+	BranchStatus *api.BranchStatusResponse `json:"branch_status,omitempty"`
 }
 
 func (e ReviewSubmitted) Type() string   { return "com.docstore.review.submitted" }
