@@ -54,7 +54,8 @@ type mockStore struct {
 	listInvitesFn     func(ctx context.Context, org string) ([]model.OrgInvite, error)
 	acceptInviteFn    func(ctx context.Context, org, token, identity string) error
 	revokeInviteFn    func(ctx context.Context, org, inviteID string) error
-	updateBranchDraftFn func(ctx context.Context, repo, name string, draft bool) error
+	updateBranchDraftFn    func(ctx context.Context, repo, name string, draft bool) error
+	setBranchAutoMergeFn   func(ctx context.Context, repo, name string, autoMerge bool) error
 
 	createReleaseFn        func(ctx context.Context, repo, name string, sequence int64, body, createdBy string) (*model.Release, error)
 	getReleaseFn           func(ctx context.Context, repo, name string) (*model.Release, error)
@@ -97,6 +98,9 @@ func (m *mockStore) UpdateBranchDraft(ctx context.Context, repo, name string, dr
 }
 
 func (m *mockStore) SetBranchAutoMerge(ctx context.Context, repo, name string, autoMerge bool) error {
+	if m.setBranchAutoMergeFn != nil {
+		return m.setBranchAutoMergeFn(ctx, repo, name, autoMerge)
+	}
 	return nil
 }
 
