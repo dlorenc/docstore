@@ -1,6 +1,7 @@
 package db
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -1906,7 +1907,14 @@ func TestCreateCheckRun_WithMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateCheckRun: %v", err)
 	}
-	if string(cr.Metadata) != wantMeta {
+	var gotBuf, wantBuf bytes.Buffer
+	if err := json.Compact(&gotBuf, cr.Metadata); err != nil {
+		t.Fatalf("compact returned metadata: %v", err)
+	}
+	if err := json.Compact(&wantBuf, []byte(wantMeta)); err != nil {
+		t.Fatalf("compact wantMeta: %v", err)
+	}
+	if gotBuf.String() != wantBuf.String() {
 		t.Errorf("returned metadata: got %s, want %s", cr.Metadata, wantMeta)
 	}
 
@@ -1917,7 +1925,15 @@ func TestCreateCheckRun_WithMetadata(t *testing.T) {
 	if len(runs) == 0 {
 		t.Fatal("expected at least one check run")
 	}
-	if string(runs[0].Metadata) != wantMeta {
+	gotBuf.Reset()
+	wantBuf.Reset()
+	if err := json.Compact(&gotBuf, runs[0].Metadata); err != nil {
+		t.Fatalf("compact listed metadata: %v", err)
+	}
+	if err := json.Compact(&wantBuf, []byte(wantMeta)); err != nil {
+		t.Fatalf("compact wantMeta: %v", err)
+	}
+	if gotBuf.String() != wantBuf.String() {
 		t.Errorf("listed metadata: got %s, want %s", runs[0].Metadata, wantMeta)
 	}
 }
