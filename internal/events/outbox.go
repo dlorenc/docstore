@@ -89,11 +89,7 @@ func startPGListener(ctx context.Context, dsn string, broker *Broker) {
 		select {
 		case <-ctx.Done():
 			return
-		case _, ok := <-listener.Notify:
-			if !ok {
-				// Channel closed — listener reconnecting; keep waiting.
-				continue
-			}
+		case <-listener.Notify:
 			broker.Notify()
 		}
 	}
