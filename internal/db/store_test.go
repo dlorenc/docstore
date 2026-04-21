@@ -1901,12 +1901,13 @@ func TestCreateCheckRun_WithMetadata(t *testing.T) {
 	ctx := context.Background()
 
 	meta := json.RawMessage(`{"key":"value"}`)
+	wantMeta := `{"key": "value"}`
 	cr, err := s.CreateCheckRun(ctx, "default/default", "main", "ci/build", model.CheckRunPassed, "ci-bot", nil, nil, 1, meta)
 	if err != nil {
 		t.Fatalf("CreateCheckRun: %v", err)
 	}
-	if string(cr.Metadata) != string(meta) {
-		t.Errorf("returned metadata: got %s, want %s", cr.Metadata, meta)
+	if string(cr.Metadata) != wantMeta {
+		t.Errorf("returned metadata: got %s, want %s", cr.Metadata, wantMeta)
 	}
 
 	runs, err := s.ListCheckRuns(ctx, "default/default", "main", nil, false)
@@ -1916,8 +1917,8 @@ func TestCreateCheckRun_WithMetadata(t *testing.T) {
 	if len(runs) == 0 {
 		t.Fatal("expected at least one check run")
 	}
-	if string(runs[0].Metadata) != string(meta) {
-		t.Errorf("listed metadata: got %s, want %s", runs[0].Metadata, meta)
+	if string(runs[0].Metadata) != wantMeta {
+		t.Errorf("listed metadata: got %s, want %s", runs[0].Metadata, wantMeta)
 	}
 }
 
