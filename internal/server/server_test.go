@@ -1731,7 +1731,7 @@ func TestHandleGetReviews(t *testing.T) {
 				t.Errorf("expected branch feature/x, got %q", branch)
 			}
 			return []model.Review{
-				{ID: "r1", Branch: "feature/x", Reviewer: "alice", Sequence: 2, Status: model.ReviewApproved},
+				{ID: "r1", Repo: "default/default", Branch: "feature/x", Reviewer: "alice", Sequence: 2, Status: model.ReviewApproved},
 			}, nil
 		},
 	}
@@ -1754,6 +1754,9 @@ func TestHandleGetReviews(t *testing.T) {
 	if reviews[0].ID != "r1" {
 		t.Errorf("expected id r1, got %q", reviews[0].ID)
 	}
+	if reviews[0].Repo != "default/default" {
+		t.Errorf("expected repo default/default, got %q", reviews[0].Repo)
+	}
 }
 
 func TestHandleGetChecks(t *testing.T) {
@@ -1766,7 +1769,7 @@ func TestHandleGetChecks(t *testing.T) {
 				t.Errorf("expected branch feature/x, got %q", branch)
 			}
 			return []model.CheckRun{
-				{ID: "cr1", Branch: "feature/x", CheckName: "ci/build", Sequence: 2, Status: model.CheckRunPassed, Reporter: "ci-bot"},
+				{ID: "cr1", Repo: "default/default", Branch: "feature/x", CheckName: "ci/build", Sequence: 2, Status: model.CheckRunPassed, Reporter: "ci-bot"},
 			}, nil
 		},
 	}
@@ -1788,6 +1791,9 @@ func TestHandleGetChecks(t *testing.T) {
 	}
 	if checkRuns[0].ID != "cr1" {
 		t.Errorf("expected id cr1, got %q", checkRuns[0].ID)
+	}
+	if checkRuns[0].Repo != "default/default" {
+		t.Errorf("expected repo default/default, got %q", checkRuns[0].Repo)
 	}
 }
 
