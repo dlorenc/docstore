@@ -155,6 +155,7 @@ type CheckRun struct {
 	LogURL    *string        `json:"log_url,omitempty"`
 	CreatedAt time.Time      `json:"created_at"`
 	Attempt   int16          `json:"attempt"`
+	Metadata  json.RawMessage `json:"metadata,omitempty"`
 }
 
 // Proposal is a request to merge a branch into a base branch.
@@ -501,8 +502,9 @@ type CreateCheckRunRequest struct {
 	CheckName string         `json:"check_name"`
 	Status    CheckRunStatus `json:"status"`
 	LogURL    *string        `json:"log_url,omitempty"`
-	Sequence  *int64         `json:"sequence,omitempty"`
-	Attempt   *int16         `json:"attempt,omitempty"`
+	Sequence  *int64          `json:"sequence,omitempty"`
+	Attempt   *int16          `json:"attempt,omitempty"`
+	Metadata  json.RawMessage `json:"metadata,omitempty"`
 }
 
 // CreateCheckRunResponse is the response for POST /check.
