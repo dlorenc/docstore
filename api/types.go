@@ -117,6 +117,7 @@ type Repo struct {
 
 // Branch is a named pointer to a sequence.
 type Branch struct {
+	Repo         string       `json:"repo"`
 	Name         string       `json:"name"`
 	HeadSequence int64        `json:"head_sequence"`
 	BaseSequence int64        `json:"base_sequence"`
@@ -135,6 +136,7 @@ type Role struct {
 // head sequence.
 type Review struct {
 	ID        string       `json:"id"`
+	Repo      string       `json:"repo"`
 	Branch    string       `json:"branch"`
 	Reviewer  string       `json:"reviewer"`
 	Sequence  int64        `json:"sequence"`
@@ -147,6 +149,7 @@ type Review struct {
 // head sequence.
 type CheckRun struct {
 	ID        string         `json:"id"`
+	Repo      string         `json:"repo"`
 	Branch    string         `json:"branch"`
 	Sequence  int64          `json:"sequence"`
 	CheckName string         `json:"check_name"`
