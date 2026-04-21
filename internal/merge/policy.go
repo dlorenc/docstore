@@ -24,7 +24,7 @@ type ReadStore interface {
 // *db.Store satisfies this interface.
 type QueryStore interface {
 	ListReviews(ctx context.Context, repo, branch string, atSeq *int64) ([]model.Review, error)
-	ListCheckRuns(ctx context.Context, repo, branch string, atSeq *int64) ([]model.CheckRun, error)
+	ListCheckRuns(ctx context.Context, repo, branch string, atSeq *int64, history bool) ([]model.CheckRun, error)
 	ListProposals(ctx context.Context, repo string, state *model.ProposalState, branch *string) ([]*model.Proposal, error)
 	GetRole(ctx context.Context, repo, identity string) (*model.Role, error)
 }
@@ -63,7 +63,7 @@ func AssembleInput(ctx context.Context, rs ReadStore, qs QueryStore, repo, branc
 	if err != nil {
 		return nil, fmt.Errorf("list reviews: %w", err)
 	}
-	checkRuns, err := qs.ListCheckRuns(ctx, repo, branch, &branchInfo.HeadSequence)
+	checkRuns, err := qs.ListCheckRuns(ctx, repo, branch, &branchInfo.HeadSequence, false)
 	if err != nil {
 		return nil, fmt.Errorf("list check runs: %w", err)
 	}

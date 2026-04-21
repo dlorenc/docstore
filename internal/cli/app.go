@@ -2002,6 +2002,50 @@ func (a *App) branchHeadSequence(cfg *Config, branch string) (int64, error) {
 	return 0, fmt.Errorf("branch %q not found", branch)
 }
 
+// RetryChecks requests a retry of CI checks for a branch.
+// If checks is empty, all failed checks at the branch's current head sequence are retried.
+func (a *App) RetryChecks(branch string, checks []string) error {
+	cfg, err := a.loadConfig()
+	if err != nil {
+		return err
+	}
+	if branch == "" {
+		branch = cfg.Branch
+	}
+
+	seq, err := a.branchHeadSequence(cfg, branch)
+	if err != nil {
+		return err
+	}
+
+	req := model.RetryChecksRequest{
+		Branch:   branch,
+		Sequence: seq,
+		Checks:   checks,
+	}
+	resp, err := a.postJSON(cfg, repoBase(cfg)+"/checks/retry", req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusAccepted {
+		return a.readError(resp)
+	}
+
+	var retryResp model.RetryChecksResponse
+	if err := json.NewDecoder(resp.Body).Decode(&retryResp); err != nil {
+		return fmt.Errorf("decoding response: %w", err)
+	}
+
+	if len(checks) == 0 {
+		fmt.Fprintf(a.Out, "Retrying all failed checks on branch '%s' at sequence %d (attempt %d)\n", branch, seq, retryResp.Attempt)
+	} else {
+		fmt.Fprintf(a.Out, "Retrying checks %v on branch '%s' at sequence %d (attempt %d)\n", checks, branch, seq, retryResp.Attempt)
+	}
+	return nil
+}
+
 // TUI launches the terminal UI reading config from .docstore/config.json.
 func (a *App) TUI() error {
 	cfg, err := a.loadConfig()
