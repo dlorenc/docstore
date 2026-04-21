@@ -70,7 +70,7 @@ Deployment is automated via GitHub Actions (`.github/workflows/deploy.yml`) on e
 2. Deploys to Cloud Run with:
    - Cloud SQL instance: `dlorenc-chainguard:us-central1:docstore-mvp`
    - Secret: `DATABASE_URL` from `docstore-db-url` in Secret Manager
-   - 1 min instance, 1 max instance (no horizontal scaling; SSE broker is in-process)
+   - 1 min instance, auto-scaling enabled (SSE events are DB-backed via event_log)
    - `--no-cpu-throttling` — keeps the CPU active for background goroutines
    - VPC egress via `--network=default --subnet=default --vpc-egress=private-ranges-only` so Cloud Run can reach the internal GKE load balancer
 
@@ -90,7 +90,7 @@ gcloud run deploy docstore \
   --add-cloudsql-instances=dlorenc-chainguard:us-central1:docstore-mvp \
   --update-secrets=DATABASE_URL=docstore-db-url:latest \
   --allow-unauthenticated \
-  --min-instances=1 --max-instances=1 \
+  --min-instances=1 \
   --no-cpu-throttling \
   --port=8080
 ```
@@ -173,6 +173,6 @@ The deploy workflow (`deploy.yml`) also builds and deploys both CI binaries afte
    ds roles set alice@example.com admin
    ```
 
-## Horizontal scaling note
+## Horizontal scaling
 
-The event broker (`internal/events.Broker`) is in-process. With multiple Cloud Run instances, SSE streams (`GET /events`, `GET /repos/{name}/-/events`) only receive events from the instance that processed the mutation. Keep `--max-instances=1` unless you drop the SSE feature.
+The event broker persists all events to the `event_log` PostgreSQL table and uses `pg_notify` for real-time wake-ups. SSE streams (`GET /events`, `GET /repos/{name}/-/events`) poll `event_log` directly, so every instance sees every event regardless of which instance processed the original mutation. Multiple Cloud Run instances are fully supported.
