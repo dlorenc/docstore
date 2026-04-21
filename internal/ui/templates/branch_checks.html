@@ -1,0 +1,36 @@
+{{define "branch_checks.html"}}
+{{if not .CheckRuns}}<div class="empty">no checks yet</div>{{end}}
+{{$passed := 0}}
+{{range .CheckRuns}}{{if eq (printf "%s" .Status) "passed"}}{{$passed = add $passed 1}}{{end}}{{end}}
+{{range .CheckRuns}}
+{{if ne (printf "%s" .Status) "passed"}}
+{{if .LogURL}}
+<a class="check-row link" href="{{.LogURL}}" target="_blank" rel="noopener">
+  <div>
+    <strong>{{.CheckName}}</strong>
+    <span class="badge {{statusClass (printf "%s" .Status)}}">{{.Status}}</span>
+    <div class="meta">{{.Reporter}} @ seq {{.Sequence}} · {{relTime .CreatedAt}}</div>
+  </div>
+  <span class="open-log">logs →</span>
+</a>
+{{else}}
+<div class="check-row">
+  <div>
+    <strong>{{.CheckName}}</strong>
+    <span class="badge {{statusClass (printf "%s" .Status)}}">{{.Status}}</span>
+    <div class="meta">{{.Reporter}} @ seq {{.Sequence}} · {{relTime .CreatedAt}}</div>
+  </div>
+</div>
+{{end}}
+{{end}}
+{{end}}
+{{if gt $passed 0}}
+<div class="checks-collapsed">
+  <span class="badge ok">{{$passed}} passed</span>
+  <span style="margin-left:8px">
+    {{$first := true}}
+    {{range .CheckRuns}}{{if eq (printf "%s" .Status) "passed"}}{{if not $first}}, {{end}}{{.CheckName}}{{$first = false}}{{end}}{{end}}
+  </span>
+</div>
+{{end}}
+{{end}}

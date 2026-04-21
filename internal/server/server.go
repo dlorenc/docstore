@@ -16,6 +16,7 @@ import (
 	"github.com/dlorenc/docstore/internal/model"
 	"github.com/dlorenc/docstore/internal/policy"
 	"github.com/dlorenc/docstore/internal/store"
+	"github.com/dlorenc/docstore/internal/ui"
 )
 
 // readStore is the interface for all read operations used by handlers.
@@ -239,6 +240,22 @@ func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore Wri
 	//   POST /repos/acme/myrepo/-/commit
 	//   GET  /repos/acme/myrepo          (bare: GET/DELETE a repo)
 	inner.Handle("/repos/", http.HandlerFunc(s.handleReposPrefix))
+
+	// Minimal read-only web UI. Registered on `inner` so it shares IAP + RBAC
+	// middleware. Only wires up when both a read store and write store are
+	// present — read-only mode still works for browsing, but we need the write
+	// store for repo/org listings.
+	if s.readStore != nil && writeStore != nil {
+		assemble := func(ctx context.Context, repo, branch string) (*model.AgentContextResponse, error) {
+			return s.AssembleAgentContext(ctx, repo, branch, IdentityFromContext(ctx))
+		}
+		uiHandler, err := ui.NewHandler(s.readStore, writeStore, assemble)
+		if err != nil {
+			slog.Error("ui init failed", "error", err)
+		} else {
+			uiHandler.Register(inner)
+		}
+	}
 
 	// Event subscription management (delegated auth: admin for global, creator for own).
 	inner.HandleFunc("POST /subscriptions", s.handleCreateSubscription)
