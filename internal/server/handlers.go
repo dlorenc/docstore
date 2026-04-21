@@ -3069,9 +3069,10 @@ func (s *server) streamSSE(w http.ResponseWriter, r *http.Request, repo string) 
 		seq, err := s.broker.CurrentSeq(ctx)
 		if err != nil {
 			slog.Error("SSE: CurrentSeq failed", "error", err)
-		} else {
-			sinceSeq = seq
+			writeError(w, http.StatusServiceUnavailable, "event streaming temporarily unavailable")
+			return
 		}
+		sinceSeq = seq
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
