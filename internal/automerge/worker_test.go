@@ -2,15 +2,35 @@ package automerge
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"testing"
 
-	"github.com/dlorenc/docstore/internal/db"
+	dbpkg "github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/events"
-	evtypes "github.com/dlorenc/docstore/internal/events/types"
 	mergeutil "github.com/dlorenc/docstore/internal/merge"
 	"github.com/dlorenc/docstore/internal/model"
 	"github.com/dlorenc/docstore/internal/store"
+	"github.com/dlorenc/docstore/internal/testutil"
 )
+
+// ---------------------------------------------------------------------------
+// Test infrastructure
+// ---------------------------------------------------------------------------
+
+var sharedAdminDSN string
+
+func TestMain(m *testing.M) {
+	dsn, cleanup, err := testutil.StartSharedPostgres()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "start shared postgres: %v\n", err)
+		os.Exit(1)
+	}
+	sharedAdminDSN = dsn
+	code := m.Run()
+	cleanup()
+	os.Exit(code)
+}
 
 // ---------------------------------------------------------------------------
 // Mock Store (implements automerge.Store)
@@ -18,7 +38,7 @@ import (
 
 type mockStore struct {
 	setBranchAutoMergeFn func(ctx context.Context, repo, name string, autoMerge bool) error
-	mergeFn              func(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error)
+	mergeFn              func(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []dbpkg.MergeConflict, error)
 	mergeProposalFn      func(ctx context.Context, repo, branch string) (*model.Proposal, error)
 	listReviewsFn        func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.Review, error)
 	listCheckRunsFn      func(ctx context.Context, repo, branch string, atSeq *int64, history bool) ([]model.CheckRun, error)
@@ -40,7 +60,7 @@ func (m *mockStore) SetBranchAutoMerge(ctx context.Context, repo, name string, a
 	return nil
 }
 
-func (m *mockStore) Merge(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error) {
+func (m *mockStore) Merge(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []dbpkg.MergeConflict, error) {
 	m.mergeCalled = true
 	if m.mergeFn != nil {
 		return m.mergeFn(ctx, req)
@@ -110,8 +130,6 @@ func (m *mockReadStore) GetFile(ctx context.Context, repo, branch, path string, 
 	return nil, nil
 }
 
-// Ensure mockReadStore also satisfies mergeutil.QueryStore (via mockStore) —
-// the worker passes w.store as the QueryStore argument to EvaluatePolicy.
 var _ mergeutil.ReadStore = (*mockReadStore)(nil)
 
 // ---------------------------------------------------------------------------
@@ -126,16 +144,6 @@ func activeBranch() *store.BranchInfo {
 		Draft:     false,
 		AutoMerge: true,
 	}
-}
-
-// subscribeAll subscribes to all event types and returns a buffered channel.
-func subscribeAll(broker *events.Broker) <-chan events.Event {
-	ch, _ := broker.Subscribe("*", []string{
-		"com.docstore.branch.merged",
-		"com.docstore.branch.automerge.failed",
-		"com.docstore.proposal.merged",
-	})
-	return ch
 }
 
 // ---------------------------------------------------------------------------
@@ -194,48 +202,51 @@ func TestTryAutoMerge_SkipsWhenNotActive(t *testing.T) {
 }
 
 func TestTryAutoMerge_MergesWhenAllowed(t *testing.T) {
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 	rs := &mockReadStore{
 		getBranchFn: func(_ context.Context, _, _ string) (*store.BranchInfo, error) {
 			return activeBranch(), nil
 		},
 	}
 	ms := &mockStore{}
-	broker := events.NewBroker(nil)
-	evCh := subscribeAll(broker)
+	broker := events.NewBroker(d)
 	w := New(broker, ms, rs, nil) // nil policyCache → all merges allowed
 
+	seq, _ := broker.CurrentSeq(context.Background())
 	w.tryAutoMerge(context.Background(), "myrepo", "my-feature")
 
 	if !ms.mergeCalled {
 		t.Fatal("expected Merge to be called")
 	}
 
-	// Expect a BranchMerged event.
-	select {
-	case ev := <-evCh:
-		if _, ok := ev.(evtypes.BranchMerged); !ok {
-			t.Errorf("expected BranchMerged event, got %T", ev)
-		}
-	default:
-		t.Error("expected BranchMerged event but channel was empty")
+	evs, err := broker.Poll(context.Background(), "*", seq, []string{"com.docstore.branch.merged"})
+	if err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+	if len(evs) == 0 {
+		t.Error("expected BranchMerged event in event_log")
+	}
+	if len(evs) > 0 && evs[0].Type != "com.docstore.branch.merged" {
+		t.Errorf("expected branch.merged event, got %q", evs[0].Type)
 	}
 }
 
 func TestTryAutoMerge_DisablesOnConflict(t *testing.T) {
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 	rs := &mockReadStore{
 		getBranchFn: func(_ context.Context, _, _ string) (*store.BranchInfo, error) {
 			return activeBranch(), nil
 		},
 	}
 	ms := &mockStore{
-		mergeFn: func(_ context.Context, _ model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error) {
-			return nil, []db.MergeConflict{{Path: "README.md"}}, db.ErrMergeConflict
+		mergeFn: func(_ context.Context, _ model.MergeRequest) (*model.MergeResponse, []dbpkg.MergeConflict, error) {
+			return nil, []dbpkg.MergeConflict{{Path: "README.md"}}, dbpkg.ErrMergeConflict
 		},
 	}
-	broker := events.NewBroker(nil)
-	evCh := subscribeAll(broker)
+	broker := events.NewBroker(d)
 	w := New(broker, ms, rs, nil)
 
+	seq, _ := broker.CurrentSeq(context.Background())
 	w.tryAutoMerge(context.Background(), "myrepo", "my-feature")
 
 	if !ms.setBranchAutoMergeCalled {
@@ -245,18 +256,17 @@ func TestTryAutoMerge_DisablesOnConflict(t *testing.T) {
 		t.Error("expected SetBranchAutoMerge(false) on conflict")
 	}
 
-	// Expect a BranchAutoMergeFailed event.
-	select {
-	case ev := <-evCh:
-		if _, ok := ev.(evtypes.BranchAutoMergeFailed); !ok {
-			t.Errorf("expected BranchAutoMergeFailed event, got %T", ev)
-		}
-	default:
-		t.Error("expected BranchAutoMergeFailed event but channel was empty")
+	evs, err := broker.Poll(context.Background(), "*", seq, []string{"com.docstore.branch.automerge.failed"})
+	if err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+	if len(evs) == 0 {
+		t.Error("expected BranchAutoMergeFailed event in event_log")
 	}
 }
 
 func TestTryAutoMerge_EmitsProposalMerged(t *testing.T) {
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 	rs := &mockReadStore{
 		getBranchFn: func(_ context.Context, _, _ string) (*store.BranchInfo, error) {
 			return activeBranch(), nil
@@ -268,35 +278,22 @@ func TestTryAutoMerge_EmitsProposalMerged(t *testing.T) {
 			return &model.Proposal{ID: proposalID, Branch: "my-feature", BaseBranch: "main"}, nil
 		},
 	}
-	broker := events.NewBroker(nil)
-	evCh := subscribeAll(broker)
-	// Also subscribe to proposal.merged
-	propCh, _ := broker.Subscribe("*", []string{"com.docstore.proposal.merged"})
+	broker := events.NewBroker(d)
 	w := New(broker, ms, rs, nil)
 
+	seq, _ := broker.CurrentSeq(context.Background())
 	w.tryAutoMerge(context.Background(), "myrepo", "my-feature")
 
 	if !ms.mergeCalled {
 		t.Fatal("expected Merge to be called")
 	}
 
-	// Drain evCh looking for ProposalMerged; also check propCh.
-	var gotProposalMerged bool
-	for i := 0; i < 2; i++ {
-		select {
-		case ev := <-evCh:
-			if _, ok := ev.(evtypes.ProposalMerged); ok {
-				gotProposalMerged = true
-			}
-		case ev := <-propCh:
-			if _, ok := ev.(evtypes.ProposalMerged); ok {
-				gotProposalMerged = true
-			}
-		default:
-		}
+	evs, err := broker.Poll(context.Background(), "*", seq, []string{"com.docstore.proposal.merged"})
+	if err != nil {
+		t.Fatalf("Poll: %v", err)
 	}
-	if !gotProposalMerged {
-		t.Error("expected ProposalMerged event to be emitted")
+	if len(evs) == 0 {
+		t.Error("expected ProposalMerged event in event_log")
 	}
 }
 

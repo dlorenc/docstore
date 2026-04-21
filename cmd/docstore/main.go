@@ -138,7 +138,7 @@ func main() {
 	// The dispatcher runs until dispatchCancel is called on shutdown.
 	broker := events.NewBroker(database)
 	dispatchCtx, dispatchCancel := context.WithCancel(context.Background())
-	events.StartDispatcher(dispatchCtx, database)
+	events.StartDispatcher(dispatchCtx, database, dsn, broker)
 
 	srv := server.NewWithBroker(commitStore, database, bs, broker, *devIdentity, *bootstrapAdmin)
 

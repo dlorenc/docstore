@@ -3,129 +3,171 @@ package events
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
+
+	"github.com/lib/pq"
 )
 
-// Broker is the in-process event fan-out hub.
-// It fans out emitted events to SSE subscribers and writes outbox rows for
-// webhook subscriptions. SSE delivery is in-memory and best-effort; clients
-// that disconnect miss events. Webhook delivery is durable via the outbox.
-//
-// Horizontal scaling note: SSE fan-out is in-memory. Works correctly at
-// --max-instances=1 only. See OPERATIONS.md for details.
-type Broker struct {
-	db  *sql.DB
-	mu  sync.RWMutex
-	// subs maps "repo/*" or "repo/<full-type>" to subscriber channels.
-	subs map[string][]chan Event
+// LoggedEvent is a single row from the event_log table.
+type LoggedEvent struct {
+	Seq     int64
+	Repo    string
+	Type    string
+	Payload json.RawMessage
 }
 
-// NewBroker creates a new Broker. db is used for outbox writes on Emit.
-// Pass nil to disable webhook outbox writes (e.g. in tests that only need SSE).
+// Broker is the event hub. It persists events to the event_log table,
+// sends pg_notify for real-time wake-up, and exposes Poll/WaitForEvent
+// for SSE clients and background workers.
+// Because delivery is DB-backed, multiple server instances all see
+// every event — no --max-instances=1 constraint.
+type Broker struct {
+	db *sql.DB
+	mu sync.Mutex
+	// waitCh is closed whenever Notify is called, waking all WaitForEvent
+	// callers. A new channel is created after each close.
+	waitCh chan struct{}
+}
+
+// NewBroker creates a new Broker. db is used for event_log and outbox writes.
+// Pass nil to disable DB writes (e.g. unit tests that do not need persistence).
 func NewBroker(db *sql.DB) *Broker {
 	return &Broker{
-		db:   db,
-		subs: make(map[string][]chan Event),
+		db:     db,
+		waitCh: make(chan struct{}),
 	}
 }
 
-// Subscribe registers a channel to receive events for the given repo.
-// If types is empty, all events for the repo are received.
-// Otherwise, only events whose Type() matches one of the provided types
-// are received. Types must be the full CloudEvents type, e.g.
-// "com.docstore.commit.created".
-// Returns the channel and an unsubscribe function that must be called
-// when the subscriber is done (e.g. on client disconnect).
-func (b *Broker) Subscribe(repo string, types []string) (<-chan Event, func()) {
-	ch := make(chan Event, 64)
-	keys := subscriberKeys(repo, types)
-
+// Notify wakes all WaitForEvent callers. It is called by the pg_notify
+// listener goroutine in StartDispatcher whenever a new event_log row appears.
+func (b *Broker) Notify() {
 	b.mu.Lock()
-	for _, k := range keys {
-		b.subs[k] = append(b.subs[k], ch)
-	}
+	old := b.waitCh
+	b.waitCh = make(chan struct{})
 	b.mu.Unlock()
-
-	unsub := func() {
-		b.mu.Lock()
-		for _, k := range keys {
-			b.subs[k] = removeChannel(b.subs[k], ch)
-		}
-		b.mu.Unlock()
-		// Drain and close so SSE goroutine can exit cleanly.
-		for len(ch) > 0 {
-			<-ch
-		}
-		close(ch)
-	}
-	return ch, unsub
+	close(old)
 }
 
-// Emit publishes an event to all matching SSE subscribers and writes outbox
-// rows for each matching webhook subscription. Outbox writes are best-effort;
-// errors are logged but not returned.
-func (b *Broker) Emit(ctx context.Context, e Event) {
-	b.fanOutSSE(e)
+// WaitForEvent blocks until Notify is called or ctx is cancelled.
+// Returns nil when woken by a notification, or ctx.Err() on cancellation.
+func (b *Broker) WaitForEvent(ctx context.Context) error {
+	b.mu.Lock()
+	ch := b.waitCh
+	b.mu.Unlock()
+	select {
+	case <-ch:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
 
+// CurrentSeq returns the current maximum sequence number in event_log.
+// Returns 0 if the table is empty or db is nil.
+func (b *Broker) CurrentSeq(ctx context.Context) (int64, error) {
+	if b.db == nil {
+		return 0, nil
+	}
+	var seq int64
+	err := b.db.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(seq), 0) FROM event_log`,
+	).Scan(&seq)
+	return seq, err
+}
+
+// Poll returns logged events with seq > sinceSeq.
+// If repo is "*", events from all repos are returned.
+// If types is empty, all event types are returned.
+// Results are ordered by seq ASC, capped at 200 rows per call.
+func (b *Broker) Poll(ctx context.Context, repo string, sinceSeq int64, types []string) ([]LoggedEvent, error) {
+	if b.db == nil {
+		return nil, nil
+	}
+
+	var (
+		sqlRows *sql.Rows
+		err     error
+	)
+
+	switch {
+	case repo == "*" && len(types) == 0:
+		sqlRows, err = b.db.QueryContext(ctx,
+			`SELECT seq, repo, type, payload FROM event_log
+			 WHERE seq > $1 ORDER BY seq LIMIT 200`,
+			sinceSeq)
+	case repo == "*":
+		sqlRows, err = b.db.QueryContext(ctx,
+			`SELECT seq, repo, type, payload FROM event_log
+			 WHERE seq > $1 AND type = ANY($2) ORDER BY seq LIMIT 200`,
+			sinceSeq, pq.Array(types))
+	case len(types) == 0:
+		sqlRows, err = b.db.QueryContext(ctx,
+			`SELECT seq, repo, type, payload FROM event_log
+			 WHERE seq > $1 AND repo = $2 ORDER BY seq LIMIT 200`,
+			sinceSeq, repo)
+	default:
+		sqlRows, err = b.db.QueryContext(ctx,
+			`SELECT seq, repo, type, payload FROM event_log
+			 WHERE seq > $1 AND repo = $2 AND type = ANY($3) ORDER BY seq LIMIT 200`,
+			sinceSeq, repo, pq.Array(types))
+	}
+	if err != nil {
+		return nil, fmt.Errorf("poll event_log: %w", err)
+	}
+	defer sqlRows.Close()
+
+	var evs []LoggedEvent
+	for sqlRows.Next() {
+		var ev LoggedEvent
+		if err := sqlRows.Scan(&ev.Seq, &ev.Repo, &ev.Type, &ev.Payload); err != nil {
+			return nil, fmt.Errorf("scan event_log row: %w", err)
+		}
+		evs = append(evs, ev)
+	}
+	return evs, sqlRows.Err()
+}
+
+// Emit persists an event to event_log, sends a pg_notify wake-up, and writes
+// outbox rows for matching webhook subscriptions.
+// All DB operations are best-effort; errors are logged but not returned.
+func (b *Broker) Emit(ctx context.Context, e Event) {
 	if b.db == nil {
 		return
 	}
+
+	payload, err := ToCloudEvent(e)
+	if err != nil {
+		slog.Error("events: serialize event failed", "type", e.Type(), "error", err)
+		return
+	}
+
+	repo := repoFromSource(e.Source())
+
+	if _, err := b.db.ExecContext(ctx,
+		`INSERT INTO event_log (repo, type, payload) VALUES ($1, $2, $3)`,
+		repo, e.Type(), payload,
+	); err != nil {
+		slog.Error("events: event_log insert failed", "type", e.Type(), "error", err)
+	}
+
+	// Wake any pq.Listener goroutines on all instances.
+	if _, err := b.db.ExecContext(ctx,
+		`SELECT pg_notify('event_log', $1)`, repo,
+	); err != nil {
+		slog.Warn("events: pg_notify failed", "type", e.Type(), "error", err)
+	}
+
 	if err := insertOutboxForEvent(ctx, b.db, e); err != nil {
 		slog.Error("events: outbox insert failed", "type", e.Type(), "source", e.Source(), "error", err)
 	}
-}
 
-// fanOutSSE sends an event to all SSE subscribers whose keys match the event.
-func (b *Broker) fanOutSSE(e Event) {
-	// Derive the repo name from the source URI.
-	repo := repoFromSource(e.Source())
-
-	// Collect the set of matching subscriber keys.
-	// Also check global wildcard keys ("*/*" and "*/<type>") so that
-	// subscribers using repo="*" receive events from all repos.
-	wildcardKey := repo + "/*"
-	typeKey := repo + "/" + e.Type()
-	globalWildcardKey := "*/*"
-	globalTypeKey := "*/" + e.Type()
-
-	b.mu.RLock()
-	// Collect unique channels (a subscriber might appear under both keys theoretically,
-	// but our Subscribe logic ensures each channel is under exactly one set of keys).
-	seen := make(map[chan Event]struct{})
-	var targets []chan Event
-	for _, k := range []string{wildcardKey, typeKey, globalWildcardKey, globalTypeKey} {
-		for _, ch := range b.subs[k] {
-			if _, ok := seen[ch]; !ok {
-				seen[ch] = struct{}{}
-				targets = append(targets, ch)
-			}
-		}
-	}
-	b.mu.RUnlock()
-
-	for _, ch := range targets {
-		select {
-		case ch <- e:
-		default:
-			// Slow consumer; drop event rather than block.
-			slog.Warn("events: SSE subscriber too slow, dropping event",
-				"type", e.Type(), "repo", repo)
-		}
-	}
-}
-
-// subscriberKeys returns the broker map keys for the given repo and type filter.
-func subscriberKeys(repo string, types []string) []string {
-	if len(types) == 0 {
-		return []string{repo + "/*"}
-	}
-	keys := make([]string, len(types))
-	for i, t := range types {
-		keys[i] = repo + "/" + t
-	}
-	return keys
+	// Wake local waiters immediately. Cross-instance waiters are woken via
+	// the pg_notify → pq.Listener → Notify() path in StartDispatcher.
+	b.Notify()
 }
 
 // repoFromSource extracts the repo name from a CloudEvents source URI.
@@ -136,15 +178,4 @@ func repoFromSource(source string) string {
 		return source[len("/repos/"):]
 	}
 	return source
-}
-
-// removeChannel removes ch from slice without preserving order.
-func removeChannel(slice []chan Event, ch chan Event) []chan Event {
-	for i, c := range slice {
-		if c == ch {
-			slice[i] = slice[len(slice)-1]
-			return slice[:len(slice)-1]
-		}
-	}
-	return slice
 }

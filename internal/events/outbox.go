@@ -26,11 +26,17 @@ type outboxRow struct {
 	WebhookSecret  string
 }
 
-// StartDispatcher starts the outbox dispatcher goroutine. It polls for pending
-// outbox rows every 5 seconds, delivers webhooks with exponential backoff, and
-// cleans up delivered rows older than 7 days every hour.
-// The goroutine stops when ctx is cancelled (e.g. on SIGTERM).
-func StartDispatcher(ctx context.Context, db *sql.DB) {
+// StartDispatcher starts the outbox dispatcher and event_log cleanup goroutines.
+// It polls for pending outbox rows every 5 seconds, delivers webhooks with
+// exponential backoff, cleans up delivered outbox rows older than 7 days every
+// hour, and cleans up event_log rows older than 30 days every hour.
+//
+// dsn is the PostgreSQL DSN used to open a pq.Listener for pg_notify wake-ups.
+// broker.Notify() is called each time a new event_log notification arrives,
+// waking SSE clients and background workers via WaitForEvent.
+//
+// The goroutines stop when ctx is cancelled (e.g. on SIGTERM).
+func StartDispatcher(ctx context.Context, db *sql.DB, dsn string, broker *Broker) {
 	go func() {
 		pollTicker := time.NewTicker(5 * time.Second)
 		cleanupTicker := time.NewTicker(time.Hour)
@@ -47,9 +53,57 @@ func StartDispatcher(ctx context.Context, db *sql.DB) {
 				if err := cleanupOutbox(ctx, db); err != nil {
 					slog.Error("outbox: cleanup failed", "error", err)
 				}
+				if err := cleanupEventLog(ctx, db); err != nil {
+					slog.Error("event_log: cleanup failed", "error", err)
+				}
 			}
 		}
 	}()
+
+	go startPGListener(ctx, dsn, broker)
+}
+
+// startPGListener opens a pq.Listener on the "event_log" channel and calls
+// broker.Notify() each time a pg_notify arrives. This wakes WaitForEvent
+// callers on this instance without polling.
+func startPGListener(ctx context.Context, dsn string, broker *Broker) {
+	if dsn == "" || broker == nil {
+		return
+	}
+	listener := pq.NewListener(dsn,
+		10*time.Second, time.Minute,
+		func(ev pq.ListenerEventType, err error) {
+			if err != nil {
+				slog.Warn("pg_listen: connection event", "error", err)
+			}
+		},
+	)
+	if err := listener.Listen("event_log"); err != nil {
+		slog.Error("pg_listen: listen failed", "error", err)
+		listener.Close()
+		return
+	}
+	defer listener.Close()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case _, ok := <-listener.Notify:
+			if !ok {
+				// Channel closed — listener reconnecting; keep waiting.
+				continue
+			}
+			broker.Notify()
+		}
+	}
+}
+
+// cleanupEventLog deletes event_log rows older than 30 days.
+func cleanupEventLog(ctx context.Context, db *sql.DB) error {
+	_, err := db.ExecContext(ctx,
+		`DELETE FROM event_log WHERE created_at < now() - interval '30 days'`)
+	return err
 }
 
 // processOutboxBatch claims and delivers one batch of pending outbox rows.

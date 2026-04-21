@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/dlorenc/docstore/internal/db"
-	"github.com/dlorenc/docstore/internal/events"
 	evtypes "github.com/dlorenc/docstore/internal/events/types"
 	mergeutil "github.com/dlorenc/docstore/internal/merge"
 	"github.com/dlorenc/docstore/internal/model"
@@ -3032,7 +3031,9 @@ func (s *server) handleSSEGlobalEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 // streamSSE is the shared SSE streaming implementation.
-// repo is the repo to subscribe to (or "*" for global admin stream).
+// repo is the repo to stream events for (or "*" for global admin stream).
+// Clients may pass ?since_seq=N to replay events from a known position,
+// enabling reconnect without missing events.
 func (s *server) streamSSE(w http.ResponseWriter, r *http.Request, repo string) {
 	if s.broker == nil {
 		writeError(w, http.StatusServiceUnavailable, "event streaming not available")
@@ -3056,8 +3057,22 @@ func (s *server) streamSSE(w http.ResponseWriter, r *http.Request, repo string) 
 		}
 	}
 
-	ch, unsub := s.broker.Subscribe(repo, types)
-	defer unsub()
+	ctx := r.Context()
+
+	// Determine starting sequence. If the client supplies ?since_seq, replay
+	// from that position. Otherwise start from the current tail so the client
+	// only sees new events going forward.
+	var sinceSeq int64
+	if raw := r.URL.Query().Get("since_seq"); raw != "" {
+		sinceSeq, _ = strconv.ParseInt(raw, 10, 64)
+	} else {
+		seq, err := s.broker.CurrentSeq(ctx)
+		if err != nil {
+			slog.Error("SSE: CurrentSeq failed", "error", err)
+		} else {
+			sinceSeq = seq
+		}
+	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -3066,27 +3081,30 @@ func (s *server) streamSSE(w http.ResponseWriter, r *http.Request, repo string) 
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	keepAlive := time.NewTicker(15 * time.Second)
-	defer keepAlive.Stop()
-
-	ctx := r.Context()
 	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-keepAlive.C:
-			fmt.Fprint(w, ": keepalive\n\n")
-			flusher.Flush()
-		case e, ok := <-ch:
-			if !ok {
+		evs, err := s.broker.Poll(ctx, repo, sinceSeq, types)
+		if err != nil {
+			if ctx.Err() != nil {
 				return
 			}
-			data, err := events.ToCloudEvent(e)
-			if err != nil {
-				slog.Error("SSE: serialize event failed", "error", err)
-				continue
-			}
-			fmt.Fprintf(w, "data: %s\n\n", data)
+			slog.Error("SSE: poll failed", "error", err)
+		}
+		for _, ev := range evs {
+			fmt.Fprintf(w, "id: %d\ndata: %s\n\n", ev.Seq, ev.Payload)
+			flusher.Flush()
+			sinceSeq = ev.Seq
+		}
+
+		// Wait for the next notification (or keepalive timeout).
+		waitCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		waitErr := s.broker.WaitForEvent(waitCtx)
+		cancel()
+
+		if ctx.Err() != nil {
+			return
+		}
+		if errors.Is(waitErr, context.DeadlineExceeded) {
+			fmt.Fprint(w, ": keepalive\n\n")
 			flusher.Flush()
 		}
 	}
