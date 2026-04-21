@@ -708,6 +708,10 @@ func (s *Store) Merge(ctx context.Context, req model.MergeRequest) (*model.Merge
 	}
 
 	if len(branchChanges) == 0 {
+		// For dry_run, return without modifying state (defer will rollback).
+		if req.DryRun {
+			return &model.MergeResponse{Sequence: mainHead}, nil, nil
+		}
 		// Nothing to merge — mark branch as merged anyway.
 		_, err = tx.ExecContext(ctx,
 			"UPDATE branches SET status = 'merged' WHERE repo = $1 AND name = $2",
@@ -804,6 +808,12 @@ func (s *Store) Merge(ctx context.Context, req model.MergeRequest) (*model.Merge
 	mergeHash := computeCommitHash(prevHash, newSeq, req.Repo, "main", req.Author, mergeMsg, mergeCreatedAt, hashFiles)
 	if err := updateCommitHash(ctx, tx, req.Repo, newSeq, mergeHash); err != nil {
 		return nil, nil, fmt.Errorf("store merge commit hash: %w", err)
+	}
+
+	// For dry_run, return computed sequence without committing (defer will rollback).
+	if req.DryRun {
+		slog.Info("merge dry-run complete", "repo", req.Repo, "branch", req.Branch, "sequence", newSeq, "files", len(branchChanges))
+		return &model.MergeResponse{Sequence: newSeq}, nil, nil
 	}
 
 	if err := tx.Commit(); err != nil {
