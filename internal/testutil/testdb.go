@@ -73,9 +73,25 @@ func TestDBFromShared(t testing.TB, adminDSN string, migrate func(*sql.DB) error
 	return testDBFromDSN(t, adminDSN, migrate)
 }
 
+// TestDBAndDSNFromShared is like TestDBFromShared but also returns the DSN
+// for the isolated test database. Use when you need the DSN directly (e.g.
+// for pq.Listener or other low-level PostgreSQL drivers).
+func TestDBAndDSNFromShared(t testing.TB, adminDSN string, migrate func(*sql.DB) error) (*sql.DB, string) {
+	t.Helper()
+	return testDBAndDSN(t, adminDSN, migrate)
+}
+
 // testDBFromDSN is the legacy path: use a pre-existing PostgreSQL server via DSN.
 // It creates a unique database per test so parallel tests don't interfere.
 func testDBFromDSN(t testing.TB, dsn string, migrate func(*sql.DB) error) *sql.DB {
+	t.Helper()
+	d, _ := testDBAndDSN(t, dsn, migrate)
+	return d
+}
+
+// testDBAndDSN creates an isolated test database and returns both the *sql.DB
+// and the DSN string for that database.
+func testDBAndDSN(t testing.TB, dsn string, migrate func(*sql.DB) error) (*sql.DB, string) {
 	t.Helper()
 
 	// Connect to the server using the provided DSN (admin connection).
@@ -138,7 +154,7 @@ func testDBFromDSN(t testing.TB, dsn string, migrate func(*sql.DB) error) *sql.D
 		t.Fatalf("run migrations: %v", err)
 	}
 
-	return d
+	return d, testDSN
 }
 
 // replaceDBName replaces the database name in a PostgreSQL DSN. It handles
