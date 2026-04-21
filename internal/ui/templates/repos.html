@@ -1,0 +1,22 @@
+{{define "content"}}
+<h1>Repos</h1>
+{{with .Body}}
+{{if not .Orgs}}
+  <div class="card empty">No repos yet. Use <code>ds repos create</code> to add one.</div>
+{{else}}
+  {{range .Orgs}}
+  <div class="card">
+    <h2>{{.Name}}</h2>
+    <div class="row-list">
+      {{range .Repos}}
+      <a href="/ui/r/{{.Name}}">
+        <span>{{.Name}}</span>
+        <span class="meta">by {{.CreatedBy}} · {{relTime .CreatedAt}}</span>
+      </a>
+      {{end}}
+    </div>
+  </div>
+  {{end}}
+{{end}}
+{{end}}
+{{end}}
