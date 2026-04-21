@@ -3089,6 +3089,7 @@ func (s *server) streamSSE(w http.ResponseWriter, r *http.Request, repo string) 
 				return
 			}
 			slog.Error("SSE: poll failed", "error", err)
+			time.Sleep(2 * time.Second)
 		}
 		for _, ev := range evs {
 			fmt.Fprintf(w, "id: %d\ndata: %s\n\n", ev.Seq, ev.Payload)
