@@ -897,7 +897,7 @@ func (s *server) handleCheck(w http.ResponseWriter, r *http.Request) {
 	if req.Attempt != nil {
 		attempt = *req.Attempt
 	}
-	cr, err := s.commitStore.CreateCheckRun(r.Context(), repo, req.Branch, req.CheckName, req.Status, reporter, req.LogURL, req.Sequence, attempt)
+	cr, err := s.commitStore.CreateCheckRun(r.Context(), repo, req.Branch, req.CheckName, req.Status, reporter, req.LogURL, req.Sequence, attempt, req.Metadata)
 	if err != nil {
 		switch {
 		case errors.Is(err, db.ErrBranchNotFound):
