@@ -91,6 +91,7 @@ func (w *Worker) Run(ctx context.Context) {
 				return
 			}
 			slog.Error("auto-merge: poll failed", "error", pollErr)
+			time.Sleep(2 * time.Second)
 		}
 
 		for _, ev := range evs {
