@@ -1848,7 +1848,7 @@ func TestCreateCheckRun_Success(t *testing.T) {
 	s := NewStore(d)
 	ctx := context.Background()
 
-	cr, err := s.CreateCheckRun(ctx, "default/default", "main", "ci/build", model.CheckRunPassed, "ci-bot", nil, nil)
+	cr, err := s.CreateCheckRun(ctx, "default/default", "main", "ci/build", model.CheckRunPassed, "ci-bot", nil, nil, 1)
 	if err != nil {
 		t.Fatalf("CreateCheckRun: %v", err)
 	}
@@ -1863,6 +1863,9 @@ func TestCreateCheckRun_Success(t *testing.T) {
 	}
 	if cr.Reporter != "ci-bot" {
 		t.Errorf("expected reporter ci-bot, got %q", cr.Reporter)
+	}
+	if cr.Attempt != 1 {
+		t.Errorf("expected attempt 1, got %d", cr.Attempt)
 	}
 }
 
@@ -1881,7 +1884,7 @@ func TestCreateCheckRun_RecordedAtHeadSequence(t *testing.T) {
 		t.Fatalf("commit: %v", err)
 	}
 
-	cr, err := s.CreateCheckRun(ctx, "default/default", "main", "ci/build", model.CheckRunPassed, "ci-bot", nil, nil)
+	cr, err := s.CreateCheckRun(ctx, "default/default", "main", "ci/build", model.CheckRunPassed, "ci-bot", nil, nil, 1)
 	if err != nil {
 		t.Fatalf("CreateCheckRun: %v", err)
 	}
@@ -1896,16 +1899,16 @@ func TestListCheckRuns_ByBranch(t *testing.T) {
 	s := NewStore(d)
 	ctx := context.Background()
 
-	_, err := s.CreateCheckRun(ctx, "default/default", "main", "ci/build", model.CheckRunPassed, "ci-bot", nil, nil)
+	_, err := s.CreateCheckRun(ctx, "default/default", "main", "ci/build", model.CheckRunPassed, "ci-bot", nil, nil, 1)
 	if err != nil {
 		t.Fatalf("check 1: %v", err)
 	}
-	_, err = s.CreateCheckRun(ctx, "default/default", "main", "ci/lint", model.CheckRunFailed, "ci-bot", nil, nil)
+	_, err = s.CreateCheckRun(ctx, "default/default", "main", "ci/lint", model.CheckRunFailed, "ci-bot", nil, nil, 1)
 	if err != nil {
 		t.Fatalf("check 2: %v", err)
 	}
 
-	crs, err := s.ListCheckRuns(ctx, "default/default", "main", nil)
+	crs, err := s.ListCheckRuns(ctx, "default/default", "main", nil, false)
 	if err != nil {
 		t.Fatalf("ListCheckRuns: %v", err)
 	}
@@ -1914,33 +1917,83 @@ func TestListCheckRuns_ByBranch(t *testing.T) {
 	}
 }
 
-func TestListCheckRuns_LatestPerName(t *testing.T) {
+// TestListCheckRuns_UpsertSameAttempt verifies that posting pending then final
+// status for the same (check_name, attempt) updates the row in place.
+func TestListCheckRuns_UpsertSameAttempt(t *testing.T) {
 	t.Parallel()
 	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
 	s := NewStore(d)
 	ctx := context.Background()
 
-	// First run: pending
-	_, err := s.CreateCheckRun(ctx, "default/default", "main", "ci/build", model.CheckRunPending, "ci-bot", nil, nil)
+	// Post pending at attempt 1.
+	_, err := s.CreateCheckRun(ctx, "default/default", "main", "ci/build", model.CheckRunPending, "ci-bot", nil, nil, 1)
 	if err != nil {
-		t.Fatalf("check 1: %v", err)
+		t.Fatalf("check pending: %v", err)
 	}
-	// Second run: passed (same check_name, more recent)
-	_, err = s.CreateCheckRun(ctx, "default/default", "main", "ci/build", model.CheckRunPassed, "ci-bot", nil, nil)
+	// Post passed at same attempt — should upsert (update status).
+	_, err = s.CreateCheckRun(ctx, "default/default", "main", "ci/build", model.CheckRunPassed, "ci-bot", nil, nil, 1)
 	if err != nil {
-		t.Fatalf("check 2: %v", err)
+		t.Fatalf("check passed: %v", err)
 	}
 
-	crs, err := s.ListCheckRuns(ctx, "default/default", "main", nil)
+	// history=false: only 1 row (latest attempt per check_name).
+	crs, err := s.ListCheckRuns(ctx, "default/default", "main", nil, false)
 	if err != nil {
 		t.Fatalf("ListCheckRuns: %v", err)
 	}
-	if len(crs) != 2 {
-		t.Fatalf("expected 2 check runs total, got %d", len(crs))
+	if len(crs) != 1 {
+		t.Fatalf("expected 1 check run (upserted), got %d", len(crs))
 	}
-	// Most recent first: passed should be first.
 	if crs[0].Status != model.CheckRunPassed {
-		t.Errorf("expected most recent check run (passed) first, got %q", crs[0].Status)
+		t.Errorf("expected passed after upsert, got %q", crs[0].Status)
+	}
+}
+
+// TestRetryChecks verifies that RetryChecks inserts pending rows at the next
+// attempt number and that history=true returns all attempts.
+func TestRetryChecks(t *testing.T) {
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
+	s := NewStore(d)
+	ctx := context.Background()
+
+	// First attempt: passed.
+	_, err := s.CreateCheckRun(ctx, "default/default", "main", "ci/build", model.CheckRunPassed, "ci-bot", nil, nil, 1)
+	if err != nil {
+		t.Fatalf("CreateCheckRun: %v", err)
+	}
+
+	// Retry all checks at sequence 0.
+	attempt, err := s.RetryChecks(ctx, "default/default", "main", 0, nil)
+	if err != nil {
+		t.Fatalf("RetryChecks: %v", err)
+	}
+	if attempt != 2 {
+		t.Fatalf("expected attempt 2, got %d", attempt)
+	}
+
+	// history=false: only 1 row (latest attempt=2, pending).
+	crs, err := s.ListCheckRuns(ctx, "default/default", "main", nil, false)
+	if err != nil {
+		t.Fatalf("ListCheckRuns false: %v", err)
+	}
+	if len(crs) != 1 {
+		t.Fatalf("expected 1 check run (latest attempt), got %d", len(crs))
+	}
+	if crs[0].Attempt != 2 {
+		t.Errorf("expected attempt 2, got %d", crs[0].Attempt)
+	}
+	if crs[0].Status != model.CheckRunPending {
+		t.Errorf("expected pending, got %q", crs[0].Status)
+	}
+
+	// history=true: 2 rows (attempt 1 and attempt 2).
+	all, err := s.ListCheckRuns(ctx, "default/default", "main", nil, true)
+	if err != nil {
+		t.Fatalf("ListCheckRuns true: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("expected 2 rows with history=true, got %d", len(all))
 	}
 }
 
@@ -2421,7 +2474,7 @@ func TestPurge_DeletesReviewsAndChecks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create review: %v", err)
 	}
-	_, err = s.CreateCheckRun(ctx, "default/default", "feature/rev", "ci/build", model.CheckRunPassed, "ci-bot", nil, nil)
+	_, err = s.CreateCheckRun(ctx, "default/default", "feature/rev", "ci/build", model.CheckRunPassed, "ci-bot", nil, nil, 1)
 	if err != nil {
 		t.Fatalf("create check_run: %v", err)
 	}

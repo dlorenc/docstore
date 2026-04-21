@@ -154,6 +154,7 @@ type CheckRun struct {
 	Reporter  string         `json:"reporter"`
 	LogURL    *string        `json:"log_url,omitempty"`
 	CreatedAt time.Time      `json:"created_at"`
+	Attempt   int16          `json:"attempt"`
 }
 
 // Proposal is a request to merge a branch into a base branch.
@@ -501,6 +502,7 @@ type CreateCheckRunRequest struct {
 	Status    CheckRunStatus `json:"status"`
 	LogURL    *string        `json:"log_url,omitempty"`
 	Sequence  *int64         `json:"sequence,omitempty"`
+	Attempt   *int16         `json:"attempt,omitempty"`
 }
 
 // CreateCheckRunResponse is the response for POST /check.
@@ -508,6 +510,22 @@ type CreateCheckRunResponse struct {
 	ID       string  `json:"id"`
 	Sequence int64   `json:"sequence"`
 	LogURL   *string `json:"log_url,omitempty"`
+}
+
+// ---------------------------------------------------------------------------
+// POST /checks/retry
+// ---------------------------------------------------------------------------
+
+// RetryChecksRequest is the body for POST /checks/retry.
+type RetryChecksRequest struct {
+	Branch   string   `json:"branch"`
+	Sequence int64    `json:"sequence"`
+	Checks   []string `json:"checks"` // empty = retry all failed
+}
+
+// RetryChecksResponse is the response for POST /checks/retry.
+type RetryChecksResponse struct {
+	Attempt int16 `json:"attempt"`
 }
 
 // ---------------------------------------------------------------------------
