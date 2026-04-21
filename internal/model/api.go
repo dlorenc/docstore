@@ -56,6 +56,8 @@ type CreateReviewCommentResponse = api.CreateReviewCommentResponse
 
 type CreateCheckRunRequest = api.CreateCheckRunRequest
 type CreateCheckRunResponse = api.CreateCheckRunResponse
+type RetryChecksRequest = api.RetryChecksRequest
+type RetryChecksResponse = api.RetryChecksResponse
 
 type CreateOrgRequest = api.CreateOrgRequest
 type CreateOrgResponse = api.CreateOrgResponse
