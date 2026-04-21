@@ -1,0 +1,12 @@
+{{define "diffBlock"}}
+<div class="diff-block-heading">{{.Title}} <span class="count">({{len .Entries}})</span></div>
+{{if not .Entries}}<div class="empty">no changes</div>{{end}}
+{{$own := .Ownership}}
+{{range .Entries}}
+<div class="diff-line {{diffClass .VersionID}}">
+  <span class="path"><a href="/ui/r/{{$.Repo}}/f/{{.Path}}?branch={{$.Branch}}">{{.Path}}</a></span>
+  {{if $own}}{{with index $own .Path}}{{if .}}<span class="owners">{{range $i, $o := .}}{{if $i}}, {{end}}{{$o}}{{end}}</span>{{end}}{{end}}{{end}}
+  <span class="meta">{{if .VersionID}}{{shortHash .VersionID}}{{else}}deleted{{end}}{{if .Binary}} · binary{{end}}</span>
+</div>
+{{end}}
+{{end}}
