@@ -404,6 +404,7 @@ type MergeRequest struct {
 	Repo   string `json:"repo,omitempty"`
 	Branch string `json:"branch"`
 	Author string `json:"author,omitempty"`
+	DryRun bool   `json:"dry_run,omitempty"`
 }
 
 // MergeResponse is the response for a successful POST /merge.
