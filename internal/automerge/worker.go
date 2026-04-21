@@ -25,7 +25,7 @@ type Store interface {
 	MergeProposal(ctx context.Context, repo, branch string) (*model.Proposal, error)
 	// Policy input assembly (satisfies mergeutil.QueryStore)
 	ListReviews(ctx context.Context, repo, branch string, atSeq *int64) ([]model.Review, error)
-	ListCheckRuns(ctx context.Context, repo, branch string, atSeq *int64) ([]model.CheckRun, error)
+	ListCheckRuns(ctx context.Context, repo, branch string, atSeq *int64, history bool) ([]model.CheckRun, error)
 	ListProposals(ctx context.Context, repo string, state *model.ProposalState, branch *string) ([]*model.Proposal, error)
 	GetRole(ctx context.Context, repo, identity string) (*model.Role, error)
 }
