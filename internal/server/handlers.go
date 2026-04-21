@@ -855,12 +855,17 @@ func (s *server) handleReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	bs, bsErr := s.computeBranchStatus(r.Context(), repo, req.Branch, reviewer)
+	if bsErr != nil {
+		slog.Warn("branch status computation failed", "op", "review", "repo", repo, "branch", req.Branch, "error", bsErr)
+	}
 	s.emit(r.Context(), evtypes.ReviewSubmitted{
-		Repo:     repo,
-		Branch:   req.Branch,
-		Sequence: review.Sequence,
-		Reviewer: reviewer,
-		Status:   string(req.Status),
+		Repo:         repo,
+		Branch:       req.Branch,
+		Sequence:     review.Sequence,
+		Reviewer:     reviewer,
+		Status:       string(req.Status),
+		BranchStatus: bs,
 	})
 	slog.Info("review submitted", "repo", repo, "branch", req.Branch, "reviewer", reviewer, "status", req.Status)
 	writeJSON(w, http.StatusCreated, model.CreateReviewResponse{
@@ -908,13 +913,18 @@ func (s *server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	bs, bsErr := s.computeBranchStatus(r.Context(), repo, req.Branch, reporter)
+	if bsErr != nil {
+		slog.Warn("branch status computation failed", "op", "check", "repo", repo, "branch", req.Branch, "error", bsErr)
+	}
 	s.emit(r.Context(), evtypes.CheckReported{
-		Repo:      repo,
-		Branch:    req.Branch,
-		Sequence:  cr.Sequence,
-		CheckName: req.CheckName,
-		Status:    string(req.Status),
-		Reporter:  reporter,
+		Repo:         repo,
+		Branch:       req.Branch,
+		Sequence:     cr.Sequence,
+		CheckName:    req.CheckName,
+		Status:       string(req.Status),
+		Reporter:     reporter,
+		BranchStatus: bs,
 	})
 	writeJSON(w, http.StatusCreated, model.CreateCheckRunResponse{
 		ID:       cr.ID,
@@ -1855,6 +1865,10 @@ func (s *server) handleRebase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	bs, bsErr := s.computeBranchStatus(r.Context(), repo, req.Branch, req.Author)
+	if bsErr != nil {
+		slog.Warn("branch status computation failed", "op", "rebase", "repo", repo, "branch", req.Branch, "error", bsErr)
+	}
 	s.emit(r.Context(), evtypes.BranchRebased{
 		Repo:            repo,
 		Branch:          req.Branch,
@@ -1862,6 +1876,7 @@ func (s *server) handleRebase(w http.ResponseWriter, r *http.Request) {
 		NewHeadSequence: resp.NewHeadSequence,
 		CommitsReplayed: resp.CommitsReplayed,
 		RebasedBy:       req.Author,
+		BranchStatus:    bs,
 	})
 	slog.Info("branch rebased", "repo", repo, "branch", req.Branch, "by", req.Author, "commits_replayed", resp.CommitsReplayed)
 	writeJSON(w, http.StatusOK, resp)
@@ -2185,11 +2200,16 @@ func (s *server) handleMerge(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	bsMerge, bsMergeErr := s.computeBranchStatus(r.Context(), repo, req.Branch, req.Author)
+	if bsMergeErr != nil {
+		slog.Warn("branch status computation failed", "op", "merge", "repo", repo, "branch", req.Branch, "error", bsMergeErr)
+	}
 	s.emit(r.Context(), evtypes.BranchMerged{
-		Repo:     repo,
-		Branch:   req.Branch,
-		Sequence: resp.Sequence,
-		MergedBy: req.Author,
+		Repo:         repo,
+		Branch:       req.Branch,
+		Sequence:     resp.Sequence,
+		MergedBy:     req.Author,
+		BranchStatus: bsMerge,
 	})
 	slog.Info("branch merged", "repo", repo, "branch", req.Branch, "by", req.Author, "sequence", resp.Sequence)
 	writeJSON(w, http.StatusOK, resp)
@@ -2220,6 +2240,76 @@ func (s *server) evaluateMergePolicy(ctx context.Context, repo, branch, actor st
 // Branch status handler
 // ---------------------------------------------------------------------------
 
+// computeBranchStatus evaluates merge-eligibility for the given branch and
+// returns the result as a BranchStatusResponse. It is best-effort: if the
+// read store is unavailable or the branch cannot be found, it returns
+// (nil, nil) so callers can omit the field without blocking the primary
+// operation. Infrastructure errors are returned for the caller to log.
+func (s *server) computeBranchStatus(ctx context.Context, repo, branch, actor string) (*model.BranchStatusResponse, error) {
+	if s.readStore == nil {
+		return nil, nil
+	}
+
+	// Load policies (nil engine → bootstrap mode → mergeable=true).
+	var engine *policy.Engine
+	var owners map[string][]string
+	if s.policyCache != nil {
+		var err error
+		engine, owners, err = s.policyCache.Load(ctx, repo, s.readStore)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Fetch branch info to populate auto_merge in the response.
+	branchInfo, err := s.readStore.GetBranch(ctx, repo, branch)
+	if err != nil {
+		return nil, err
+	}
+	if branchInfo == nil {
+		return nil, nil
+	}
+
+	if engine == nil {
+		// Bootstrap mode: no policies defined.
+		return &model.BranchStatusResponse{
+			Mergeable: true,
+			Policies:  []model.PolicyResult{},
+			AutoMerge: branchInfo.AutoMerge,
+		}, nil
+	}
+
+	input, err := s.assembleMergeInput(ctx, repo, branch, actor, owners)
+	if err != nil {
+		return nil, err
+	}
+	if input == nil {
+		return nil, nil
+	}
+
+	results, err := engine.Evaluate(ctx, *input)
+	if err != nil {
+		return nil, err
+	}
+	if results == nil {
+		results = []model.PolicyResult{}
+	}
+
+	mergeable := true
+	for _, res := range results {
+		if !res.Pass {
+			mergeable = false
+			break
+		}
+	}
+
+	return &model.BranchStatusResponse{
+		Mergeable: mergeable,
+		Policies:  results,
+		AutoMerge: branchInfo.AutoMerge,
+	}, nil
+}
+
 // handleBranchStatus implements GET /repos/:name/branch/:branch/status.
 // It evaluates merge policies without performing any write operations.
 func (s *server) handleBranchStatus(w http.ResponseWriter, r *http.Request, repo, branch string) {
@@ -2235,75 +2325,18 @@ func (s *server) handleBranchStatus(w http.ResponseWriter, r *http.Request, repo
 		return
 	}
 
-	// Load policies (nil engine → bootstrap mode → mergeable=true).
-	var engine *policy.Engine
-	var owners map[string][]string
-	if s.policyCache != nil {
-		var err error
-		engine, owners, err = s.policyCache.Load(r.Context(), repo, s.readStore)
-		if err != nil {
-			slog.Error("policy cache load error", "op", "branch_status", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "policy evaluation error")
-			return
-		}
-	}
-
-	// Fetch branch info to populate auto_merge in the response.
-	branchInfo, err := s.readStore.GetBranch(r.Context(), repo, branch)
+	resp, err := s.computeBranchStatus(r.Context(), repo, branch, actor)
 	if err != nil {
-		slog.Error("get branch error", "op", "branch_status", "repo", repo, "branch", branch, "error", err)
-		writeError(w, http.StatusInternalServerError, "query failed")
-		return
-	}
-	if branchInfo == nil {
-		writeError(w, http.StatusNotFound, "branch not found")
-		return
-	}
-
-	if engine == nil {
-		// Bootstrap mode: no policies defined.
-		writeJSON(w, http.StatusOK, model.BranchStatusResponse{
-			Mergeable: true,
-			Policies:  []model.PolicyResult{},
-			AutoMerge: branchInfo.AutoMerge,
-		})
-		return
-	}
-
-	input, err := s.assembleMergeInput(r.Context(), repo, branch, actor, owners)
-	if err != nil {
-		slog.Error("assemble merge input error", "op", "branch_status", "repo", repo, "branch", branch, "error", err)
-		writeError(w, http.StatusInternalServerError, "query failed")
-		return
-	}
-	if input == nil {
-		writeError(w, http.StatusNotFound, "branch not found")
-		return
-	}
-
-	results, err := engine.Evaluate(r.Context(), *input)
-	if err != nil {
-		slog.Error("policy evaluation error", "op", "branch_status", "repo", repo, "branch", branch, "error", err)
+		slog.Error("branch status error", "op", "branch_status", "repo", repo, "branch", branch, "error", err)
 		writeError(w, http.StatusInternalServerError, "policy evaluation error")
 		return
 	}
-	if results == nil {
-		results = []model.PolicyResult{}
+	if resp == nil {
+		writeError(w, http.StatusNotFound, "branch not found")
+		return
 	}
 
-	mergeable := true
-	for _, res := range results {
-		if !res.Pass {
-			mergeable = false
-			break
-		}
-	}
-
-	writeJSON(w, http.StatusOK, model.BranchStatusResponse{
-		Mergeable: mergeable,
-		Policies:  results,
-		AutoMerge: branchInfo.AutoMerge,
-	})
+	writeJSON(w, http.StatusOK, *resp)
 }
 
 // ---------------------------------------------------------------------------

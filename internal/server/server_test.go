@@ -3969,3 +3969,102 @@ func TestAgentContext_LinkedIssues(t *testing.T) {
 		t.Errorf("expected 1 linked issue with number 42, got: %+v", resp.LinkedIssues)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// computeBranchStatus tests
+// ---------------------------------------------------------------------------
+
+func TestComputeBranchStatus_NilReadStore(t *testing.T) {
+	s := &server{} // readStore is nil
+	resp, err := s.computeBranchStatus(context.Background(), "acme/repo", "feature/x", "actor")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp != nil {
+		t.Fatalf("expected nil when readStore is nil, got %+v", resp)
+	}
+}
+
+func TestComputeBranchStatus_Bootstrap(t *testing.T) {
+	// No policyCache → bootstrap mode → always mergeable.
+	rs := &mockReadStore{
+		getBranchFn: func(_ context.Context, _, _ string) (*store.BranchInfo, error) {
+			return &store.BranchInfo{Name: "feature/x", Status: "active", AutoMerge: true}, nil
+		},
+	}
+	s := &server{readStore: rs}
+
+	resp, err := s.computeBranchStatus(context.Background(), "acme/repo", "feature/x", "actor")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	if !resp.Mergeable {
+		t.Error("expected mergeable=true in bootstrap mode")
+	}
+	if !resp.AutoMerge {
+		t.Error("expected auto_merge=true")
+	}
+	if len(resp.Policies) != 0 {
+		t.Errorf("expected empty policies in bootstrap mode, got %v", resp.Policies)
+	}
+}
+
+func TestComputeBranchStatus_BranchNotFound(t *testing.T) {
+	rs := &mockReadStore{
+		getBranchFn: func(_ context.Context, _, _ string) (*store.BranchInfo, error) {
+			return nil, nil // branch does not exist
+		},
+	}
+	s := &server{readStore: rs}
+
+	resp, err := s.computeBranchStatus(context.Background(), "acme/repo", "missing", "actor")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp != nil {
+		t.Fatalf("expected nil when branch not found, got %+v", resp)
+	}
+}
+
+func TestComputeBranchStatus_WithPolicy(t *testing.T) {
+	engine := mustBuildEngine(t, "always_pass", `
+package docstore.always_pass
+default allow = true
+default reason = "all good"
+`)
+	rs := &mockReadStore{
+		getBranchFn: func(_ context.Context, _, _ string) (*store.BranchInfo, error) {
+			return &store.BranchInfo{Name: "feature/x", Status: "active", AutoMerge: false}, nil
+		},
+	}
+	pc := &mockPolicyCache{
+		loadFn: func(_ context.Context, _ string, _ policy.ReadStore) (*policy.Engine, map[string][]string, error) {
+			return engine, nil, nil
+		},
+	}
+	ms := &mockStore{
+		listReviewsFn:   func(_ context.Context, _, _ string, _ *int64) ([]model.Review, error) { return nil, nil },
+		listCheckRunsFn: func(_ context.Context, _, _ string, _ *int64, _ bool) ([]model.CheckRun, error) { return nil, nil },
+	}
+	s := &server{readStore: rs, policyCache: pc, commitStore: ms}
+
+	resp, err := s.computeBranchStatus(context.Background(), "acme/repo", "feature/x", "actor")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	if !resp.Mergeable {
+		t.Error("expected mergeable=true when all policies pass")
+	}
+	if resp.AutoMerge {
+		t.Error("expected auto_merge=false")
+	}
+	if len(resp.Policies) == 0 {
+		t.Error("expected at least one policy result")
+	}
+}
