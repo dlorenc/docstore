@@ -199,10 +199,10 @@ func TestWebhook_DeliveredAfterMutation(t *testing.T) {
 
 	srv, _ := newEventTestServer(t, db)
 
-	// Start the outbox dispatcher.
+	// Start the outbox dispatcher (no DSN/broker needed for webhook-only test).
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	events.StartDispatcher(ctx, db)
+	events.StartDispatcher(ctx, db, "", nil)
 
 	// Post a commit.
 	commitBody, _ := json.Marshal(model.CommitRequest{
@@ -264,7 +264,7 @@ func TestWebhook_HMACSignatureValid(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	events.StartDispatcher(ctx, db)
+	events.StartDispatcher(ctx, db, "", nil)
 
 	commitBody, _ := json.Marshal(model.CommitRequest{
 		Branch:  "main",
@@ -322,7 +322,7 @@ func TestWebhook_RetriedOnFailure(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	events.StartDispatcher(ctx, db)
+	events.StartDispatcher(ctx, db, "", nil)
 
 	commitBody, _ := json.Marshal(model.CommitRequest{
 		Branch:  "main",
