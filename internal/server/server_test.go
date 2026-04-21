@@ -1482,6 +1482,118 @@ func TestHandleMerge_RepoNotFound(t *testing.T) {
 	}
 }
 
+func TestHandleMerge_DryRun_NoConflicts(t *testing.T) {
+	ms := &mockStore{
+		mergeFn: func(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error) {
+			if !req.DryRun {
+				t.Error("expected DryRun=true in store call")
+			}
+			return &model.MergeResponse{Sequence: 10}, nil, nil
+		},
+		listReviewsFn:   func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.Review, error) { return nil, nil },
+		listCheckRunsFn: func(ctx context.Context, repo, branch string, atSeq *int64, history bool) ([]model.CheckRun, error) { return nil, nil },
+	}
+	pc := &mockPolicyCache{}
+	srv := newTestHandler(ms, &mockReadStore{}, pc)
+
+	body, _ := json.Marshal(model.MergeRequest{Branch: "feature/test", DryRun: true})
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/merge", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	var resp model.MergeResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Sequence != 10 {
+		t.Errorf("expected sequence 10, got %d", resp.Sequence)
+	}
+	// Policy cache must not be invalidated on dry-run.
+	if len(pc.invalidated) > 0 {
+		t.Errorf("policy cache should not be invalidated on dry-run, got: %v", pc.invalidated)
+	}
+}
+
+func TestHandleMerge_DryRun_Conflict(t *testing.T) {
+	ms := &mockStore{
+		mergeFn: func(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error) {
+			if !req.DryRun {
+				t.Error("expected DryRun=true in store call")
+			}
+			return nil, []db.MergeConflict{
+				{Path: "conflict.txt", MainVersionID: "v1", BranchVersionID: "v2"},
+			}, db.ErrMergeConflict
+		},
+	}
+	srv := New(ms, nil, devID, devID)
+
+	body, _ := json.Marshal(model.MergeRequest{Branch: "feature/conflict", DryRun: true})
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/merge", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	var errResp model.MergeConflictError
+	if err := json.NewDecoder(rec.Body).Decode(&errResp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(errResp.Conflicts) != 1 {
+		t.Fatalf("expected 1 conflict, got %d", len(errResp.Conflicts))
+	}
+	if errResp.Conflicts[0].Path != "conflict.txt" {
+		t.Errorf("expected conflict.txt, got %q", errResp.Conflicts[0].Path)
+	}
+}
+
+func TestHandleMerge_DryRun_PolicyReject(t *testing.T) {
+	engine := mustBuildEngine(t, "require_review", `
+package docstore.require_review
+default allow = false
+default reason = "a review is required"
+`)
+
+	mergeCalled := false
+	ms := &mockStore{
+		mergeFn: func(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error) {
+			mergeCalled = true
+			return nil, nil, nil
+		},
+		listReviewsFn:   func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.Review, error) { return nil, nil },
+		listCheckRunsFn: func(ctx context.Context, repo, branch string, atSeq *int64, history bool) ([]model.CheckRun, error) { return nil, nil },
+	}
+	pc := &mockPolicyCache{
+		loadFn: func(ctx context.Context, repo string, _ policy.ReadStore) (*policy.Engine, map[string][]string, error) {
+			return engine, nil, nil
+		},
+	}
+
+	srv := newTestHandler(ms, &mockReadStore{}, pc)
+
+	body, _ := json.Marshal(model.MergeRequest{Branch: "feature/test", DryRun: true})
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/merge", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	if mergeCalled {
+		t.Error("store.Merge should not be called when policy denies")
+	}
+	var resp model.MergePolicyError
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Policies) != 1 || resp.Policies[0].Pass {
+		t.Errorf("expected one failing policy result, got: %+v", resp.Policies)
+	}
+}
+
 func TestHandleRebase_RepoNotFound(t *testing.T) {
 	store := &mockStore{
 		getRepoFn: func(ctx context.Context, name string) (*model.Repo, error) {
