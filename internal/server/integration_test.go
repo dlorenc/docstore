@@ -3,6 +3,7 @@ package server_test
 import (
 	"database/sql"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -2546,5 +2547,93 @@ func TestIntegrationIssueUpdate(t *testing.T) {
 	}
 	if patched2.Body != "updated body" {
 		t.Errorf("partial patch: expected body unchanged 'updated body', got %q", patched2.Body)
+	}
+}
+
+func TestIntegrationRetryChecksFlow(t *testing.T) {
+	t.Parallel()
+	database := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
+	writeStore := dbpkg.NewStore(database)
+	handler := server.New(writeStore, database, "ci-bot@example.com", "ci-bot@example.com")
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	post := func(path, body string) *http.Response {
+		t.Helper()
+		resp, err := http.Post(srv.URL+path, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST %s: %v", path, err)
+		}
+		return resp
+	}
+
+	// Create a failed check run at attempt 1.
+	r := post("/repos/default/default/-/check", `{"branch":"main","check_name":"ci/build","status":"failed"}`)
+	defer r.Body.Close()
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("create check: expected 201, got %d", r.StatusCode)
+	}
+
+	// Retry all failed checks.
+	retryR := post("/repos/default/default/-/checks/retry", `{"branch":"main","sequence":0}`)
+	defer retryR.Body.Close()
+	if retryR.StatusCode != http.StatusAccepted {
+		body, _ := io.ReadAll(retryR.Body)
+		t.Fatalf("retry: expected 202, got %d: %s", retryR.StatusCode, body)
+	}
+	var retryResp struct {
+		Attempt int16 `json:"attempt"`
+	}
+	if err := json.NewDecoder(retryR.Body).Decode(&retryResp); err != nil {
+		t.Fatalf("decode retry response: %v", err)
+	}
+	if retryResp.Attempt != 2 {
+		t.Errorf("expected attempt 2, got %d", retryResp.Attempt)
+	}
+
+	// GET checks without history: should show attempt 2 (pending).
+	getResp, err := http.Get(srv.URL + "/repos/default/default/-/branch/main/checks")
+	if err != nil {
+		t.Fatalf("GET checks: %v", err)
+	}
+	defer getResp.Body.Close()
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET checks: expected 200, got %d", getResp.StatusCode)
+	}
+	var checks []struct {
+		CheckName string `json:"check_name"`
+		Status    string `json:"status"`
+		Attempt   int16  `json:"attempt"`
+	}
+	if err := json.NewDecoder(getResp.Body).Decode(&checks); err != nil {
+		t.Fatalf("decode checks: %v", err)
+	}
+	if len(checks) != 1 {
+		t.Fatalf("expected 1 check run (latest attempt only), got %d", len(checks))
+	}
+	if checks[0].Attempt != 2 {
+		t.Errorf("expected attempt 2, got %d", checks[0].Attempt)
+	}
+	if checks[0].Status != "pending" {
+		t.Errorf("expected pending, got %q", checks[0].Status)
+	}
+
+	// GET checks with history=true: should show both attempts.
+	histResp, err := http.Get(srv.URL + "/repos/default/default/-/branch/main/checks?history=true")
+	if err != nil {
+		t.Fatalf("GET checks history: %v", err)
+	}
+	defer histResp.Body.Close()
+	if histResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET checks history: expected 200, got %d", histResp.StatusCode)
+	}
+	var allChecks []struct {
+		Attempt int16 `json:"attempt"`
+	}
+	if err := json.NewDecoder(histResp.Body).Decode(&allChecks); err != nil {
+		t.Fatalf("decode checks history: %v", err)
+	}
+	if len(allChecks) != 2 {
+		t.Fatalf("expected 2 check runs with history=true, got %d", len(allChecks))
 	}
 }

@@ -151,6 +151,13 @@ func (s *server) handleReposPrefix(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
 
+	case endpoint == "checks/retry":
+		if r.Method == http.MethodPost {
+			s.handleRetryChecks(w, r)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+
 	case endpoint == "comment":
 		if r.Method == http.MethodPost {
 			s.handleCreateReviewComment(w, r)
@@ -886,7 +893,11 @@ func (s *server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cr, err := s.commitStore.CreateCheckRun(r.Context(), repo, req.Branch, req.CheckName, req.Status, reporter, req.LogURL, req.Sequence)
+	attempt := int16(1)
+	if req.Attempt != nil {
+		attempt = *req.Attempt
+	}
+	cr, err := s.commitStore.CreateCheckRun(r.Context(), repo, req.Branch, req.CheckName, req.Status, reporter, req.LogURL, req.Sequence, attempt)
 	if err != nil {
 		switch {
 		case errors.Is(err, db.ErrBranchNotFound):
@@ -971,8 +982,9 @@ func (s *server) handleGetChecks(w http.ResponseWriter, r *http.Request, repo, b
 		}
 		atSeq = &n
 	}
+	history := r.URL.Query().Get("history") == "true"
 
-	checkRuns, err := s.commitStore.ListCheckRuns(r.Context(), repo, branch, atSeq)
+	checkRuns, err := s.commitStore.ListCheckRuns(r.Context(), repo, branch, atSeq, history)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -981,6 +993,45 @@ func (s *server) handleGetChecks(w http.ResponseWriter, r *http.Request, repo, b
 		checkRuns = []model.CheckRun{}
 	}
 	writeJSON(w, http.StatusOK, checkRuns)
+}
+
+// handleRetryChecks implements POST /repos/:name/-/checks/retry
+func (s *server) handleRetryChecks(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
+
+	var req model.RetryChecksRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Branch == "" {
+		writeError(w, http.StatusBadRequest, "branch is required")
+		return
+	}
+
+	attempt, err := s.commitStore.RetryChecks(r.Context(), repo, req.Branch, req.Sequence, req.Checks)
+	if err != nil {
+		switch {
+		case errors.Is(err, db.ErrBranchNotFound):
+			writeError(w, http.StatusNotFound, "branch not found")
+		default:
+			slog.Error("internal error", "op", "retry_checks", "repo", repo, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+
+	s.emit(r.Context(), evtypes.CheckRunRetry{
+		Repo:     repo,
+		Branch:   req.Branch,
+		Sequence: req.Sequence,
+		Checks:   req.Checks,
+		Attempt:  attempt,
+	})
+	writeJSON(w, http.StatusAccepted, model.RetryChecksResponse{Attempt: attempt})
 }
 
 // handleCreateReviewComment implements POST /repos/:name/comment
@@ -2295,7 +2346,7 @@ func (s *server) AssembleAgentContext(ctx context.Context, repo, branch, actor s
 		reviews = []model.Review{}
 	}
 
-	checkRuns, err := s.commitStore.ListCheckRuns(ctx, repo, branch, &branchInfo.HeadSequence)
+	checkRuns, err := s.commitStore.ListCheckRuns(ctx, repo, branch, &branchInfo.HeadSequence, false)
 	if err != nil {
 		return nil, fmt.Errorf("list check runs: %w", err)
 	}

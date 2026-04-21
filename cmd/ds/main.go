@@ -373,6 +373,25 @@ func main() {
 		}
 		err = app.Check(branch, name, status, logURL, sequence)
 
+	case "retry":
+		branch := ""
+		var checks []string
+		for i := 1; i < len(args); i++ {
+			switch args[i] {
+			case "--branch":
+				if i+1 < len(args) {
+					branch = args[i+1]
+					i++
+				}
+			case "--check":
+				if i+1 < len(args) {
+					checks = append(checks, args[i+1])
+					i++
+				}
+			}
+		}
+		err = app.RetryChecks(branch, checks)
+
 	case "import-git":
 		if len(args) < 2 {
 			fmt.Fprintln(os.Stderr, "usage: ds import-git <path> [--mode squash|replay]")
