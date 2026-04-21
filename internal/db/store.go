@@ -1371,7 +1371,10 @@ func (s *Store) DeleteReviewComment(ctx context.Context, repo, id string) error 
 // current head_sequence is used. Returns ErrBranchNotFound if the branch
 // doesn't exist.
 // logURL is optional (may be nil) and stores a GCS URI or local file path.
-func (s *Store) CreateCheckRun(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64) (*model.CheckRun, error) {
+// attempt is the retry attempt number (1 = first run). If multiple rows exist
+// for the same (repo, branch, sequence, check_name, attempt), the status and
+// reporter are updated in place (upsert semantics).
+func (s *Store) CreateCheckRun(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64, attempt int16) (*model.CheckRun, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		slog.Error("tx begin failed", "op", "create_check_run", "error", err)
@@ -1398,18 +1401,24 @@ func (s *Store) CreateCheckRun(ctx context.Context, repo, branch, checkName stri
 		headSeq = *atSequence
 	}
 
-	id := uuid.New().String()
+	newID := uuid.New().String()
+	var id string
 	var createdAt time.Time
 	var nullLogURL sql.NullString
 	if logURL != nil {
 		nullLogURL = sql.NullString{String: *logURL, Valid: true}
 	}
 	err = tx.QueryRowContext(ctx,
-		`INSERT INTO check_runs (id, repo, branch, sequence, check_name, status, reporter, log_url)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		 RETURNING created_at`,
-		id, repo, branch, headSeq, checkName, string(status), reporter, nullLogURL,
-	).Scan(&createdAt)
+		`INSERT INTO check_runs (id, repo, branch, sequence, check_name, status, reporter, log_url, attempt)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		 ON CONFLICT (repo, branch, sequence, check_name, attempt)
+		 DO UPDATE SET
+		     status   = EXCLUDED.status,
+		     reporter = EXCLUDED.reporter,
+		     log_url  = COALESCE(EXCLUDED.log_url, check_runs.log_url)
+		 RETURNING id, created_at`,
+		newID, repo, branch, headSeq, checkName, string(status), reporter, nullLogURL, attempt,
+	).Scan(&id, &createdAt)
 	if err != nil {
 		return nil, fmt.Errorf("insert check_run: %w", err)
 	}
@@ -1427,22 +1436,130 @@ func (s *Store) CreateCheckRun(ctx context.Context, repo, branch, checkName stri
 		Reporter:  reporter,
 		LogURL:    logURL,
 		CreatedAt: createdAt,
+		Attempt:   attempt,
 	}, nil
+}
+
+// RetryChecks creates new pending check_run rows at the next attempt number for
+// the given checks on a branch. If checks is empty, all failed checks at the
+// given sequence are retried. Returns the new attempt number used for all
+// inserted rows.
+func (s *Store) RetryChecks(ctx context.Context, repo, branch string, seq int64, checks []string) (int16, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			slog.Error("tx rollback failed", "op", "retry_checks", "error", rollbackErr)
+		}
+	}()
+
+	// Lock the branch to confirm it exists.
+	var headSeq int64
+	err = tx.QueryRowContext(ctx,
+		"SELECT head_sequence FROM branches WHERE repo = $1 AND name = $2 FOR UPDATE",
+		repo, branch,
+	).Scan(&headSeq)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, ErrBranchNotFound
+		}
+		return 0, fmt.Errorf("lock branch: %w", err)
+	}
+
+	// If no checks specified, find all failed checks at this sequence.
+	if len(checks) == 0 {
+		rows, err := tx.QueryContext(ctx,
+			`SELECT DISTINCT ON (check_name) check_name
+			 FROM check_runs
+			 WHERE repo = $1 AND branch = $2 AND sequence = $3
+			 ORDER BY check_name, attempt DESC`,
+			repo, branch, seq,
+		)
+		if err != nil {
+			return 0, fmt.Errorf("query failed checks: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var name string
+			if err := rows.Scan(&name); err != nil {
+				return 0, err
+			}
+			checks = append(checks, name)
+		}
+		if err := rows.Err(); err != nil {
+			return 0, err
+		}
+	}
+
+	if len(checks) == 0 {
+		return 0, fmt.Errorf("no checks to retry")
+	}
+
+	// Compute the global max attempt across all requested checks.
+	var maxAttempt int16
+	for _, checkName := range checks {
+		var a int16
+		err := tx.QueryRowContext(ctx,
+			`SELECT COALESCE(MAX(attempt), 0) FROM check_runs
+			 WHERE repo = $1 AND branch = $2 AND sequence = $3 AND check_name = $4`,
+			repo, branch, seq, checkName,
+		).Scan(&a)
+		if err != nil {
+			return 0, fmt.Errorf("query max attempt for %s: %w", checkName, err)
+		}
+		if a > maxAttempt {
+			maxAttempt = a
+		}
+	}
+	newAttempt := maxAttempt + 1
+
+	// Insert pending rows for all checks at the new attempt.
+	for _, checkName := range checks {
+		_, err := tx.ExecContext(ctx,
+			`INSERT INTO check_runs (id, repo, branch, sequence, check_name, status, reporter, attempt)
+			 VALUES ($1, $2, $3, $4, $5, 'pending', 'system', $6)`,
+			uuid.New().String(), repo, branch, seq, checkName, newAttempt,
+		)
+		if err != nil {
+			return 0, fmt.Errorf("insert retry check_run for %s: %w", checkName, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit tx: %w", err)
+	}
+	return newAttempt, nil
 }
 
 // ListCheckRuns returns check runs for a branch in the given repo, ordered by
 // created_at DESC. If atSeq is non-nil, only check runs at that sequence are
-// returned.
-func (s *Store) ListCheckRuns(ctx context.Context, repo, branch string, atSeq *int64) ([]model.CheckRun, error) {
-	q := `SELECT id, sequence, check_name, status, reporter, log_url, created_at
-	      FROM check_runs
-	      WHERE repo = $1 AND branch = $2`
+// returned. When history is false, only the row with the highest attempt per
+// check_name is returned; when history is true, all attempt rows are returned.
+func (s *Store) ListCheckRuns(ctx context.Context, repo, branch string, atSeq *int64, history bool) ([]model.CheckRun, error) {
+	var q string
 	args := []interface{}{repo, branch}
-	if atSeq != nil {
-		q += " AND sequence = $3"
-		args = append(args, *atSeq)
+
+	if history {
+		q = `SELECT id, sequence, check_name, status, reporter, log_url, created_at, attempt
+		     FROM check_runs
+		     WHERE repo = $1 AND branch = $2`
+		if atSeq != nil {
+			q += " AND sequence = $3"
+			args = append(args, *atSeq)
+		}
+		q += " ORDER BY created_at DESC"
+	} else {
+		q = `SELECT DISTINCT ON (check_name) id, sequence, check_name, status, reporter, log_url, created_at, attempt
+		     FROM check_runs
+		     WHERE repo = $1 AND branch = $2`
+		if atSeq != nil {
+			q += " AND sequence = $3"
+			args = append(args, *atSeq)
+		}
+		q += " ORDER BY check_name, attempt DESC, created_at DESC"
 	}
-	q += " ORDER BY created_at DESC"
 
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -1456,7 +1573,7 @@ func (s *Store) ListCheckRuns(ctx context.Context, repo, branch string, atSeq *i
 		cr.Branch = branch
 		var statusStr string
 		var nullLogURL sql.NullString
-		if err := rows.Scan(&cr.ID, &cr.Sequence, &cr.CheckName, &statusStr, &cr.Reporter, &nullLogURL, &cr.CreatedAt); err != nil {
+		if err := rows.Scan(&cr.ID, &cr.Sequence, &cr.CheckName, &statusStr, &cr.Reporter, &nullLogURL, &cr.CreatedAt, &cr.Attempt); err != nil {
 			return nil, err
 		}
 		cr.Status = model.CheckRunStatus(statusStr)

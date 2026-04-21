@@ -31,8 +31,9 @@ type mockStore struct {
 	getRepoFn       func(ctx context.Context, name string) (*model.Repo, error)
 	createReviewFn  func(ctx context.Context, repo, branch, reviewer string, status model.ReviewStatus, body string) (*model.Review, error)
 	listReviewsFn   func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.Review, error)
-	createCheckRunFn func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64) (*model.CheckRun, error)
-	listCheckRunsFn  func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.CheckRun, error)
+	createCheckRunFn func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64, attempt int16) (*model.CheckRun, error)
+	listCheckRunsFn  func(ctx context.Context, repo, branch string, atSeq *int64, history bool) ([]model.CheckRun, error)
+	retryChecksFn    func(ctx context.Context, repo, branch string, seq int64, checks []string) (int16, error)
 	getRoleFn      func(ctx context.Context, repo, identity string) (*model.Role, error)
 	setRoleFn      func(ctx context.Context, repo, identity string, role model.RoleType) error
 	deleteRoleFn   func(ctx context.Context, repo, identity string) error
@@ -165,18 +166,25 @@ func (m *mockStore) ListReviews(ctx context.Context, repo, branch string, atSeq 
 	return nil, errors.New("not implemented")
 }
 
-func (m *mockStore) CreateCheckRun(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64) (*model.CheckRun, error) {
+func (m *mockStore) CreateCheckRun(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64, attempt int16) (*model.CheckRun, error) {
 	if m.createCheckRunFn != nil {
-		return m.createCheckRunFn(ctx, repo, branch, checkName, status, reporter, logURL, atSequence)
+		return m.createCheckRunFn(ctx, repo, branch, checkName, status, reporter, logURL, atSequence, attempt)
 	}
 	return nil, errors.New("not implemented")
 }
 
-func (m *mockStore) ListCheckRuns(ctx context.Context, repo, branch string, atSeq *int64) ([]model.CheckRun, error) {
+func (m *mockStore) ListCheckRuns(ctx context.Context, repo, branch string, atSeq *int64, history bool) ([]model.CheckRun, error) {
 	if m.listCheckRunsFn != nil {
-		return m.listCheckRunsFn(ctx, repo, branch, atSeq)
+		return m.listCheckRunsFn(ctx, repo, branch, atSeq, history)
 	}
 	return nil, errors.New("not implemented")
+}
+
+func (m *mockStore) RetryChecks(ctx context.Context, repo, branch string, seq int64, checks []string) (int16, error) {
+	if m.retryChecksFn != nil {
+		return m.retryChecksFn(ctx, repo, branch, seq, checks)
+	}
+	return 0, errors.New("not implemented")
 }
 
 func (m *mockStore) GetRole(ctx context.Context, repo, identity string) (*model.Role, error) {
@@ -1583,7 +1591,7 @@ func TestHandleReview_BranchNotFound(t *testing.T) {
 func TestHandleCheck_Success(t *testing.T) {
 	const identity = "ci-bot@example.com"
 	store := &mockStore{
-		createCheckRunFn: func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64) (*model.CheckRun, error) {
+		createCheckRunFn: func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64, attempt int16) (*model.CheckRun, error) {
 			if repo != "default/default" {
 				t.Errorf("expected repo default, got %q", repo)
 			}
@@ -1629,7 +1637,7 @@ func TestHandleCheck_ExplicitSequence(t *testing.T) {
 	const wantSeq int64 = 15
 	var gotSeq *int64
 	store := &mockStore{
-		createCheckRunFn: func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64) (*model.CheckRun, error) {
+		createCheckRunFn: func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64, attempt int16) (*model.CheckRun, error) {
 			gotSeq = atSequence
 			seq := int64(0)
 			if atSequence != nil {
@@ -1659,7 +1667,7 @@ func TestHandleCheck_ExplicitSequence(t *testing.T) {
 
 func TestHandleCheck_BranchNotFound(t *testing.T) {
 	store := &mockStore{
-		createCheckRunFn: func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64) (*model.CheckRun, error) {
+		createCheckRunFn: func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64, attempt int16) (*model.CheckRun, error) {
 			return nil, db.ErrBranchNotFound
 		},
 	}
@@ -1716,7 +1724,7 @@ func TestHandleGetReviews(t *testing.T) {
 
 func TestHandleGetChecks(t *testing.T) {
 	store := &mockStore{
-		listCheckRunsFn: func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.CheckRun, error) {
+		listCheckRunsFn: func(ctx context.Context, repo, branch string, atSeq *int64, history bool) ([]model.CheckRun, error) {
 			if repo != "default/default" {
 				t.Errorf("expected repo default, got %q", repo)
 			}
@@ -2227,7 +2235,7 @@ func TestHandleGetReviews_InternalError(t *testing.T) {
 func TestHandleGetChecks_WithAtParam(t *testing.T) {
 	var capturedSeq *int64
 	ms := &mockStore{
-		listCheckRunsFn: func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.CheckRun, error) {
+		listCheckRunsFn: func(ctx context.Context, repo, branch string, atSeq *int64, history bool) ([]model.CheckRun, error) {
 			capturedSeq = atSeq
 			return []model.CheckRun{}, nil
 		},
@@ -2259,7 +2267,7 @@ func TestHandleGetChecks_InvalidAt(t *testing.T) {
 
 func TestHandleGetChecks_InternalError(t *testing.T) {
 	ms := &mockStore{
-		listCheckRunsFn: func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.CheckRun, error) {
+		listCheckRunsFn: func(ctx context.Context, repo, branch string, atSeq *int64, history bool) ([]model.CheckRun, error) {
 			return nil, errors.New("db error")
 		},
 	}
@@ -2447,7 +2455,7 @@ default reason = "a review is required"
 			return nil, nil, nil
 		},
 		listReviewsFn:   func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.Review, error) { return nil, nil },
-		listCheckRunsFn: func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.CheckRun, error) { return nil, nil },
+		listCheckRunsFn: func(ctx context.Context, repo, branch string, atSeq *int64, history bool) ([]model.CheckRun, error) { return nil, nil },
 	}
 	pc := &mockPolicyCache{
 		loadFn: func(ctx context.Context, repo string, _ policy.ReadStore) (*policy.Engine, map[string][]string, error) {
@@ -2491,7 +2499,7 @@ default allow = true
 			return &model.MergeResponse{Sequence: 5}, nil, nil
 		},
 		listReviewsFn:   func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.Review, error) { return nil, nil },
-		listCheckRunsFn: func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.CheckRun, error) { return nil, nil },
+		listCheckRunsFn: func(ctx context.Context, repo, branch string, atSeq *int64, history bool) ([]model.CheckRun, error) { return nil, nil },
 	}
 	pc := &mockPolicyCache{
 		loadFn: func(ctx context.Context, repo string, _ policy.ReadStore) (*policy.Engine, map[string][]string, error) {
@@ -2557,7 +2565,7 @@ default reason = "a review is required"
 
 	ms := &mockStore{
 		listReviewsFn:   func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.Review, error) { return nil, nil },
-		listCheckRunsFn: func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.CheckRun, error) { return nil, nil },
+		listCheckRunsFn: func(ctx context.Context, repo, branch string, atSeq *int64, history bool) ([]model.CheckRun, error) { return nil, nil },
 	}
 	pc := &mockPolicyCache{
 		loadFn: func(ctx context.Context, repo string, _ policy.ReadStore) (*policy.Engine, map[string][]string, error) {
@@ -2597,7 +2605,7 @@ default allow = true
 
 	ms := &mockStore{
 		listReviewsFn:   func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.Review, error) { return nil, nil },
-		listCheckRunsFn: func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.CheckRun, error) { return nil, nil },
+		listCheckRunsFn: func(ctx context.Context, repo, branch string, atSeq *int64, history bool) ([]model.CheckRun, error) { return nil, nil },
 	}
 	pc := &mockPolicyCache{
 		loadFn: func(ctx context.Context, repo string, _ policy.ReadStore) (*policy.Engine, map[string][]string, error) {
@@ -2656,7 +2664,7 @@ allow if {
 			// No review at head sequence — the stale review (seq=3) is not returned.
 			return []model.Review{}, nil
 		},
-		listCheckRunsFn: func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.CheckRun, error) {
+		listCheckRunsFn: func(ctx context.Context, repo, branch string, atSeq *int64, history bool) ([]model.CheckRun, error) {
 			return nil, nil
 		},
 	}
@@ -2731,7 +2739,7 @@ default allow = true
 			writeDetector()
 			return nil, nil
 		},
-		createCheckRunFn: func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64) (*model.CheckRun, error) {
+		createCheckRunFn: func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64, attempt int16) (*model.CheckRun, error) {
 			writeDetector()
 			return nil, nil
 		},
@@ -2749,7 +2757,7 @@ default allow = true
 		},
 		// Read operations that may be called:
 		listReviewsFn:   func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.Review, error) { return nil, nil },
-		listCheckRunsFn: func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.CheckRun, error) { return nil, nil },
+		listCheckRunsFn: func(ctx context.Context, repo, branch string, atSeq *int64, history bool) ([]model.CheckRun, error) { return nil, nil },
 	}
 	pc := &mockPolicyCache{
 		loadFn: func(ctx context.Context, repo string, _ policy.ReadStore) (*policy.Engine, map[string][]string, error) {
@@ -3601,7 +3609,7 @@ func TestAgentContext_BranchNotFound(t *testing.T) {
 	}
 	ms := &mockStore{
 		listReviewsFn:   func(_ context.Context, _, _ string, _ *int64) ([]model.Review, error) { return nil, nil },
-		listCheckRunsFn: func(_ context.Context, _, _ string, _ *int64) ([]model.CheckRun, error) { return nil, nil },
+		listCheckRunsFn: func(_ context.Context, _, _ string, _ *int64, _ bool) ([]model.CheckRun, error) { return nil, nil },
 	}
 	srv := newTestHandler(ms, rs, nil)
 
@@ -3644,7 +3652,7 @@ func TestAgentContext_Bootstrap(t *testing.T) {
 		listReviewsFn: func(_ context.Context, _, _ string, _ *int64) ([]model.Review, error) {
 			return []model.Review{{ID: "r1", Branch: "feature/x", Reviewer: "bob", Status: model.ReviewApproved}}, nil
 		},
-		listCheckRunsFn: func(_ context.Context, _, _ string, _ *int64) ([]model.CheckRun, error) {
+		listCheckRunsFn: func(_ context.Context, _, _ string, _ *int64, _ bool) ([]model.CheckRun, error) {
 			return []model.CheckRun{{ID: "c1", CheckName: "ci", Status: model.CheckRunPassed}}, nil
 		},
 	}
@@ -3700,7 +3708,7 @@ default reason = "a review is required"
 
 	ms := &mockStore{
 		listReviewsFn:   func(_ context.Context, _, _ string, _ *int64) ([]model.Review, error) { return nil, nil },
-		listCheckRunsFn: func(_ context.Context, _, _ string, _ *int64) ([]model.CheckRun, error) { return nil, nil },
+		listCheckRunsFn: func(_ context.Context, _, _ string, _ *int64, _ bool) ([]model.CheckRun, error) { return nil, nil },
 	}
 	pc := &mockPolicyCache{
 		loadFn: func(_ context.Context, _ string, _ policy.ReadStore) (*policy.Engine, map[string][]string, error) {
@@ -3740,7 +3748,7 @@ default allow = true
 
 	ms := &mockStore{
 		listReviewsFn:   func(_ context.Context, _, _ string, _ *int64) ([]model.Review, error) { return nil, nil },
-		listCheckRunsFn: func(_ context.Context, _, _ string, _ *int64) ([]model.CheckRun, error) { return nil, nil },
+		listCheckRunsFn: func(_ context.Context, _, _ string, _ *int64, _ bool) ([]model.CheckRun, error) { return nil, nil },
 	}
 	pc := &mockPolicyCache{
 		loadFn: func(_ context.Context, _ string, _ policy.ReadStore) (*policy.Engine, map[string][]string, error) {
@@ -3774,7 +3782,7 @@ func TestAgentContext_LinkedIssues(t *testing.T) {
 	proposalID := "prop-1"
 	ms := &mockStore{
 		listReviewsFn:   func(_ context.Context, _, _ string, _ *int64) ([]model.Review, error) { return nil, nil },
-		listCheckRunsFn: func(_ context.Context, _, _ string, _ *int64) ([]model.CheckRun, error) { return nil, nil },
+		listCheckRunsFn: func(_ context.Context, _, _ string, _ *int64, _ bool) ([]model.CheckRun, error) { return nil, nil },
 		listProposalsFn: func(_ context.Context, _ string, _ *model.ProposalState, _ *string) ([]*model.Proposal, error) {
 			return []*model.Proposal{
 				{ID: proposalID, Branch: "feature/x", BaseBranch: "main", Title: "my proposal", State: model.ProposalOpen},
