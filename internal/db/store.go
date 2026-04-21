@@ -1374,7 +1374,7 @@ func (s *Store) DeleteReviewComment(ctx context.Context, repo, id string) error 
 // attempt is the retry attempt number (1 = first run). If multiple rows exist
 // for the same (repo, branch, sequence, check_name, attempt), the status and
 // reporter are updated in place (upsert semantics).
-func (s *Store) CreateCheckRun(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64, attempt int16) (*model.CheckRun, error) {
+func (s *Store) CreateCheckRun(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64, attempt int16, metadata json.RawMessage) (*model.CheckRun, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		slog.Error("tx begin failed", "op", "create_check_run", "error", err)
@@ -1409,15 +1409,16 @@ func (s *Store) CreateCheckRun(ctx context.Context, repo, branch, checkName stri
 		nullLogURL = sql.NullString{String: *logURL, Valid: true}
 	}
 	err = tx.QueryRowContext(ctx,
-		`INSERT INTO check_runs (id, repo, branch, sequence, check_name, status, reporter, log_url, attempt)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		`INSERT INTO check_runs (id, repo, branch, sequence, check_name, status, reporter, log_url, attempt, metadata)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		 ON CONFLICT (repo, branch, sequence, check_name, attempt)
 		 DO UPDATE SET
 		     status   = EXCLUDED.status,
 		     reporter = EXCLUDED.reporter,
-		     log_url  = COALESCE(EXCLUDED.log_url, check_runs.log_url)
+		     log_url  = COALESCE(EXCLUDED.log_url, check_runs.log_url),
+		     metadata = COALESCE(EXCLUDED.metadata, check_runs.metadata)
 		 RETURNING id, created_at`,
-		newID, repo, branch, headSeq, checkName, string(status), reporter, nullLogURL, attempt,
+		newID, repo, branch, headSeq, checkName, string(status), reporter, nullLogURL, attempt, []byte(metadata),
 	).Scan(&id, &createdAt)
 	if err != nil {
 		return nil, fmt.Errorf("insert check_run: %w", err)
@@ -1437,6 +1438,7 @@ func (s *Store) CreateCheckRun(ctx context.Context, repo, branch, checkName stri
 		LogURL:    logURL,
 		CreatedAt: createdAt,
 		Attempt:   attempt,
+		Metadata:  metadata,
 	}, nil
 }
 
@@ -1542,7 +1544,7 @@ func (s *Store) ListCheckRuns(ctx context.Context, repo, branch string, atSeq *i
 	args := []interface{}{repo, branch}
 
 	if history {
-		q = `SELECT id, sequence, check_name, status, reporter, log_url, created_at, attempt
+		q = `SELECT id, sequence, check_name, status, reporter, log_url, created_at, attempt, metadata
 		     FROM check_runs
 		     WHERE repo = $1 AND branch = $2`
 		if atSeq != nil {
@@ -1551,7 +1553,7 @@ func (s *Store) ListCheckRuns(ctx context.Context, repo, branch string, atSeq *i
 		}
 		q += " ORDER BY created_at DESC"
 	} else {
-		q = `SELECT DISTINCT ON (check_name) id, sequence, check_name, status, reporter, log_url, created_at, attempt
+		q = `SELECT DISTINCT ON (check_name) id, sequence, check_name, status, reporter, log_url, created_at, attempt, metadata
 		     FROM check_runs
 		     WHERE repo = $1 AND branch = $2`
 		if atSeq != nil {
@@ -1573,12 +1575,16 @@ func (s *Store) ListCheckRuns(ctx context.Context, repo, branch string, atSeq *i
 		cr.Branch = branch
 		var statusStr string
 		var nullLogURL sql.NullString
-		if err := rows.Scan(&cr.ID, &cr.Sequence, &cr.CheckName, &statusStr, &cr.Reporter, &nullLogURL, &cr.CreatedAt, &cr.Attempt); err != nil {
+		var nullMetadata []byte
+		if err := rows.Scan(&cr.ID, &cr.Sequence, &cr.CheckName, &statusStr, &cr.Reporter, &nullLogURL, &cr.CreatedAt, &cr.Attempt, &nullMetadata); err != nil {
 			return nil, err
 		}
 		cr.Status = model.CheckRunStatus(statusStr)
 		if nullLogURL.Valid {
 			cr.LogURL = &nullLogURL.String
+		}
+		if nullMetadata != nil {
+			cr.Metadata = json.RawMessage(nullMetadata)
 		}
 		checkRuns = append(checkRuns, cr)
 	}

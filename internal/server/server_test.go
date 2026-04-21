@@ -31,7 +31,7 @@ type mockStore struct {
 	getRepoFn       func(ctx context.Context, name string) (*model.Repo, error)
 	createReviewFn  func(ctx context.Context, repo, branch, reviewer string, status model.ReviewStatus, body string) (*model.Review, error)
 	listReviewsFn   func(ctx context.Context, repo, branch string, atSeq *int64) ([]model.Review, error)
-	createCheckRunFn func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64, attempt int16) (*model.CheckRun, error)
+	createCheckRunFn func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64, attempt int16, metadata json.RawMessage) (*model.CheckRun, error)
 	listCheckRunsFn  func(ctx context.Context, repo, branch string, atSeq *int64, history bool) ([]model.CheckRun, error)
 	retryChecksFn    func(ctx context.Context, repo, branch string, seq int64, checks []string) (int16, error)
 	getRoleFn      func(ctx context.Context, repo, identity string) (*model.Role, error)
@@ -166,9 +166,9 @@ func (m *mockStore) ListReviews(ctx context.Context, repo, branch string, atSeq 
 	return nil, errors.New("not implemented")
 }
 
-func (m *mockStore) CreateCheckRun(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64, attempt int16) (*model.CheckRun, error) {
+func (m *mockStore) CreateCheckRun(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64, attempt int16, metadata json.RawMessage) (*model.CheckRun, error) {
 	if m.createCheckRunFn != nil {
-		return m.createCheckRunFn(ctx, repo, branch, checkName, status, reporter, logURL, atSequence, attempt)
+		return m.createCheckRunFn(ctx, repo, branch, checkName, status, reporter, logURL, atSequence, attempt, metadata)
 	}
 	return nil, errors.New("not implemented")
 }
@@ -1591,7 +1591,7 @@ func TestHandleReview_BranchNotFound(t *testing.T) {
 func TestHandleCheck_Success(t *testing.T) {
 	const identity = "ci-bot@example.com"
 	store := &mockStore{
-		createCheckRunFn: func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64, attempt int16) (*model.CheckRun, error) {
+		createCheckRunFn: func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64, attempt int16, metadata json.RawMessage) (*model.CheckRun, error) {
 			if repo != "default/default" {
 				t.Errorf("expected repo default, got %q", repo)
 			}
@@ -1632,12 +1632,42 @@ func TestHandleCheck_Success(t *testing.T) {
 	}
 }
 
+func TestHandleCheck_WithMetadata(t *testing.T) {
+	const identity = "ci-bot@example.com"
+	wantMeta := json.RawMessage(`{"agent":"v1","processed_seq":42}`)
+	var gotMeta json.RawMessage
+	store := &mockStore{
+		createCheckRunFn: func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64, attempt int16, metadata json.RawMessage) (*model.CheckRun, error) {
+			gotMeta = metadata
+			return &model.CheckRun{ID: "check-meta", Sequence: 1}, nil
+		},
+	}
+	srv := New(store, nil, identity, identity)
+
+	b, _ := json.Marshal(model.CreateCheckRunRequest{
+		Branch:    "feature/meta",
+		CheckName: "ci/build",
+		Status:    model.CheckRunPassed,
+		Metadata:  wantMeta,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/check", bytes.NewReader(b))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	if string(gotMeta) != string(wantMeta) {
+		t.Errorf("expected metadata %s, got %s", wantMeta, gotMeta)
+	}
+}
+
 func TestHandleCheck_ExplicitSequence(t *testing.T) {
 	const identity = "ci-bot@example.com"
 	const wantSeq int64 = 15
 	var gotSeq *int64
 	store := &mockStore{
-		createCheckRunFn: func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64, attempt int16) (*model.CheckRun, error) {
+		createCheckRunFn: func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64, attempt int16, metadata json.RawMessage) (*model.CheckRun, error) {
 			gotSeq = atSequence
 			seq := int64(0)
 			if atSequence != nil {
@@ -1667,7 +1697,7 @@ func TestHandleCheck_ExplicitSequence(t *testing.T) {
 
 func TestHandleCheck_BranchNotFound(t *testing.T) {
 	store := &mockStore{
-		createCheckRunFn: func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64, attempt int16) (*model.CheckRun, error) {
+		createCheckRunFn: func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64, attempt int16, metadata json.RawMessage) (*model.CheckRun, error) {
 			return nil, db.ErrBranchNotFound
 		},
 	}
@@ -2739,7 +2769,7 @@ default allow = true
 			writeDetector()
 			return nil, nil
 		},
-		createCheckRunFn: func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64, attempt int16) (*model.CheckRun, error) {
+		createCheckRunFn: func(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64, attempt int16, metadata json.RawMessage) (*model.CheckRun, error) {
 			writeDetector()
 			return nil, nil
 		},
