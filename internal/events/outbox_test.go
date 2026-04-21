@@ -171,5 +171,44 @@ func TestOutbox_Cleanup(t *testing.T) {
 	}
 }
 
+func TestPGListener_NotifyWakesBroker(t *testing.T) {
+	t.Parallel()
+	// Get both the *sql.DB and its DSN so we can wire up pq.Listener via StartDispatcher.
+	d, dsn := testutil.TestDBAndDSNFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
+
+	b := events.NewBroker(nil) // WaitForEvent/Notify need no DB
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// StartDispatcher launches startPGListener in a goroutine. Give it a moment
+	// to open the pq.Listener connection and call LISTEN before we notify.
+	events.StartDispatcher(ctx, d, dsn, b)
+	time.Sleep(300 * time.Millisecond)
+
+	// WaitForEvent should unblock when broker.Notify() is called by the listener.
+	done := make(chan error, 1)
+	go func() {
+		waitCtx, waitCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer waitCancel()
+		done <- b.WaitForEvent(waitCtx)
+	}()
+
+	// Send a pg_notify on the "event_log" channel — simulates another instance
+	// writing an event and waking SSE clients on this instance.
+	if _, err := d.ExecContext(context.Background(), "SELECT pg_notify('event_log', '')"); err != nil {
+		t.Fatalf("pg_notify: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("WaitForEvent returned error after pg_notify: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("WaitForEvent did not unblock after pg_notify('event_log', '')")
+	}
+}
+
 // ensure pq is used
 var _ = pq.Array
