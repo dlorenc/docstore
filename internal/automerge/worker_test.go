@@ -2,9 +2,11 @@ package automerge
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	dbpkg "github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/events"
@@ -312,5 +314,74 @@ func TestTryAutoMerge_HandlesNilBranch(t *testing.T) {
 
 	if ms.mergeCalled {
 		t.Error("expected Merge not to be called when branch is nil")
+	}
+}
+
+func TestRun_CurrentSeqFailRetryExitsOnContextCancel(t *testing.T) {
+	// Use a closed *sql.DB for the broker so CurrentSeq always fails, forcing
+	// the retry loop in Run().  The context cancels quickly so the worker must
+	// exit cleanly without ever calling Merge.
+	brokenDB, err := sql.Open("postgres", sharedAdminDSN)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	brokenDB.Close() // closed pool → every query returns sql.ErrConnDone
+
+	broker := events.NewBroker(brokenDB)
+	ms := &mockStore{}
+	rs := &mockReadStore{}
+	w := New(broker, ms, rs, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	w.Run(ctx) // must return, not hang; must not proceed with sinceSeq=0
+
+	if ms.mergeCalled {
+		t.Error("Merge should not be called when CurrentSeq fails at startup")
+	}
+}
+
+func TestRun_EmptyBranchEventSkipped(t *testing.T) {
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
+
+	var getBranchCalledWithEmpty bool
+	rs := &mockReadStore{
+		getBranchFn: func(_ context.Context, _, branch string) (*store.BranchInfo, error) {
+			if branch == "" {
+				getBranchCalledWithEmpty = true
+			}
+			return nil, nil
+		},
+	}
+	ms := &mockStore{}
+	broker := events.NewBroker(d)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// After the worker starts and enters its first WaitForEvent (a few ms),
+	// inject an event whose "data" payload has no branch field, then Notify
+	// so the worker wakes and processes it.  After processing we cancel the
+	// context so Run() returns.
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		d.ExecContext(ctx, //nolint:errcheck
+			`INSERT INTO event_log (repo, type, payload) VALUES
+			 ('myrepo', 'com.docstore.check.reported',
+			  '{"type":"com.docstore.check.reported","source":"/repos/myrepo","data":{}}')`)
+		broker.Notify()
+		time.Sleep(300 * time.Millisecond)
+		cancel()
+	}()
+
+	w := New(broker, ms, rs, nil)
+	w.Run(ctx)
+
+	if getBranchCalledWithEmpty {
+		t.Error("GetBranch should not be called with empty branch name")
+	}
+	if ms.mergeCalled {
+		t.Error("Merge should not be called when event has empty branch field")
 	}
 }
