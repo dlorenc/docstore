@@ -803,6 +803,142 @@ func TestHandleListSubscriptions_NonAdmin_StoreError(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// handleEnableAutoMerge / handleDisableAutoMerge tests
+// ---------------------------------------------------------------------------
+
+func TestHandleEnableAutoMerge_Success(t *testing.T) {
+	ms := &mockStore{
+		getRepoFn: func(_ context.Context, name string) (*model.Repo, error) {
+			return &model.Repo{Name: name}, nil
+		},
+	}
+	srv := New(ms, nil, devID, devID)
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/branch/my-feature/auto-merge", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleEnableAutoMerge_MainBranch(t *testing.T) {
+	ms := &mockStore{
+		getRepoFn: func(_ context.Context, name string) (*model.Repo, error) {
+			return &model.Repo{Name: name}, nil
+		},
+	}
+	srv := New(ms, nil, devID, devID)
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/branch/main/auto-merge", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for main branch, got %d", rec.Code)
+	}
+}
+
+func TestHandleEnableAutoMerge_BranchNotFound(t *testing.T) {
+	ms := &mockStore{
+		getRepoFn: func(_ context.Context, name string) (*model.Repo, error) {
+			return &model.Repo{Name: name}, nil
+		},
+		setBranchAutoMergeFn: func(_ context.Context, _, _ string, _ bool) error {
+			return db.ErrBranchNotFound
+		},
+	}
+	srv := New(ms, nil, devID, devID)
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/branch/my-feature/auto-merge", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec.Code)
+	}
+}
+
+func TestHandleEnableAutoMerge_StoreError(t *testing.T) {
+	ms := &mockStore{
+		getRepoFn: func(_ context.Context, name string) (*model.Repo, error) {
+			return &model.Repo{Name: name}, nil
+		},
+		setBranchAutoMergeFn: func(_ context.Context, _, _ string, _ bool) error {
+			return errors.New("db error")
+		},
+	}
+	srv := New(ms, nil, devID, devID)
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/branch/my-feature/auto-merge", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", rec.Code)
+	}
+}
+
+func TestHandleDisableAutoMerge_Success(t *testing.T) {
+	ms := &mockStore{
+		getRepoFn: func(_ context.Context, name string) (*model.Repo, error) {
+			return &model.Repo{Name: name}, nil
+		},
+	}
+	srv := New(ms, nil, devID, devID)
+	req := httptest.NewRequest(http.MethodDelete, "/repos/default/default/-/branch/my-feature/auto-merge", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleDisableAutoMerge_MainBranch(t *testing.T) {
+	ms := &mockStore{
+		getRepoFn: func(_ context.Context, name string) (*model.Repo, error) {
+			return &model.Repo{Name: name}, nil
+		},
+	}
+	srv := New(ms, nil, devID, devID)
+	req := httptest.NewRequest(http.MethodDelete, "/repos/default/default/-/branch/main/auto-merge", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for main branch, got %d", rec.Code)
+	}
+}
+
+func TestHandleDisableAutoMerge_BranchNotFound(t *testing.T) {
+	ms := &mockStore{
+		getRepoFn: func(_ context.Context, name string) (*model.Repo, error) {
+			return &model.Repo{Name: name}, nil
+		},
+		setBranchAutoMergeFn: func(_ context.Context, _, _ string, _ bool) error {
+			return db.ErrBranchNotFound
+		},
+	}
+	srv := New(ms, nil, devID, devID)
+	req := httptest.NewRequest(http.MethodDelete, "/repos/default/default/-/branch/my-feature/auto-merge", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec.Code)
+	}
+}
+
+func TestHandleDisableAutoMerge_StoreError(t *testing.T) {
+	ms := &mockStore{
+		getRepoFn: func(_ context.Context, name string) (*model.Repo, error) {
+			return &model.Repo{Name: name}, nil
+		},
+		setBranchAutoMergeFn: func(_ context.Context, _, _ string, _ bool) error {
+			return errors.New("db error")
+		},
+	}
+	srv := New(ms, nil, devID, devID)
+	req := httptest.NewRequest(http.MethodDelete, "/repos/default/default/-/branch/my-feature/auto-merge", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", rec.Code)
+	}
+}
+
 // 14. Config sent as a JSON array → 400.
 func TestHandleCreateSubscription_InvalidConfigType(t *testing.T) {
 	srv := New(&mockStore{}, nil, devID, devID)

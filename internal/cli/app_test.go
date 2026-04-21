@@ -3340,3 +3340,83 @@ func TestOrgInvitesRevoke(t *testing.T) {
 		t.Errorf("unexpected output: %s", out.String())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// AutoMergeEnable / AutoMergeDisable
+// ---------------------------------------------------------------------------
+
+func TestAutoMergeEnable_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/branch/my-branch/auto-merge") {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	app, out := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "my-branch", "alice")
+
+	if err := app.AutoMergeEnable("my-branch"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out.String(), "my-branch") {
+		t.Errorf("expected branch name in output, got: %s", out.String())
+	}
+}
+
+func TestAutoMergeEnable_ServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprint(w, `{"error":"internal server error"}`)
+	}))
+	defer srv.Close()
+
+	app, _ := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "my-branch", "alice")
+
+	err := app.AutoMergeEnable("my-branch")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestAutoMergeDisable_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "DELETE" && strings.HasSuffix(r.URL.Path, "/branch/my-branch/auto-merge") {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	app, out := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "my-branch", "alice")
+
+	if err := app.AutoMergeDisable("my-branch"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out.String(), "my-branch") {
+		t.Errorf("expected branch name in output, got: %s", out.String())
+	}
+}
+
+func TestAutoMergeDisable_ServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprint(w, `{"error":"internal server error"}`)
+	}))
+	defer srv.Close()
+
+	app, _ := newTestApp(t, srv)
+	initWorkspace(t, app, srv.URL, "my-branch", "alice")
+
+	err := app.AutoMergeDisable("my-branch")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
