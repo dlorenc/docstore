@@ -416,6 +416,38 @@ func TestWebhook_RetriedOnFailure(t *testing.T) {
 	t.Fatalf("webhook was never delivered after retry; call count = %d", atomic.LoadInt64(&callCount))
 }
 
+func TestSSE_CurrentSeqFailure_Returns503(t *testing.T) {
+	t.Parallel()
+	db := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
+	seedForEvents(t, db)
+	db.Exec(`INSERT INTO roles (repo, identity, role) VALUES ('default/default', 'test@example.com', 'admin') ON CONFLICT DO NOTHING`)
+
+	// Give the broker a closed *sql.DB so CurrentSeq always fails.  The
+	// server's write/read store still uses the working db, so validateRepo
+	// passes, but streamSSE must return 503 instead of silently using seq=0.
+	brokenDB, err := sql.Open("postgres", sharedAdminDSN)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	brokenDB.Close()
+
+	st := dbpkg.NewStore(db)
+	broker := events.NewBroker(brokenDB)
+	handler := server.NewWithBroker(st, db, nil, broker, "test@example.com", "test@example.com")
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/repos/default/default/-/events")
+	if err != nil {
+		t.Fatalf("GET /events: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("expected 503, got %d", resp.StatusCode)
+	}
+}
+
 func TestSubscription_AdminOnly(t *testing.T) {
 	t.Parallel()
 	db := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
