@@ -5,16 +5,16 @@ import (
 	"testing"
 	"time"
 
+	dbpkg "github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/events"
 	evtypes "github.com/dlorenc/docstore/internal/events/types"
+	"github.com/dlorenc/docstore/internal/testutil"
 )
 
-func TestBroker_PublishAndReceive(t *testing.T) {
+func TestBroker_EmitAndPoll(t *testing.T) {
 	t.Parallel()
-	b := events.NewBroker(nil)
-
-	ch, unsub := b.Subscribe("acme/myrepo", nil)
-	defer unsub()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
+	b := events.NewBroker(d)
 
 	e := evtypes.CommitCreated{
 		Repo:     "acme/myrepo",
@@ -22,104 +22,153 @@ func TestBroker_PublishAndReceive(t *testing.T) {
 		Sequence: 1,
 		Author:   "alice@example.com",
 	}
+
+	seq, err := b.CurrentSeq(context.Background())
+	if err != nil {
+		t.Fatalf("CurrentSeq: %v", err)
+	}
+
 	b.Emit(context.Background(), e)
 
-	select {
-	case got := <-ch:
-		if got.Type() != e.Type() {
-			t.Errorf("expected type %q, got %q", e.Type(), got.Type())
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for event")
+	evs, err := b.Poll(context.Background(), "acme/myrepo", seq, nil)
+	if err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+	if len(evs) == 0 {
+		t.Fatal("expected at least one event after Emit")
+	}
+	if evs[0].Type != e.Type() {
+		t.Errorf("expected type %q, got %q", e.Type(), evs[0].Type)
+	}
+	if evs[0].Repo != "acme/myrepo" {
+		t.Errorf("expected repo %q, got %q", "acme/myrepo", evs[0].Repo)
 	}
 }
 
-func TestBroker_ClientDisconnect(t *testing.T) {
+func TestBroker_PollFilterByRepo(t *testing.T) {
 	t.Parallel()
-	b := events.NewBroker(nil)
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
+	b := events.NewBroker(d)
 
-	ch, unsub := b.Subscribe("acme/myrepo", nil)
+	seq, _ := b.CurrentSeq(context.Background())
 
-	// Unsubscribe before any events.
-	unsub()
+	b.Emit(context.Background(), evtypes.CommitCreated{Repo: "acme/repo-a", Branch: "main"})
+	b.Emit(context.Background(), evtypes.CommitCreated{Repo: "acme/repo-b", Branch: "main"})
 
-	// Emitting after unsubscribe should not panic or block.
-	b.Emit(context.Background(), evtypes.CommitCreated{
-		Repo:   "acme/myrepo",
-		Branch: "main",
-	})
-
-	// Channel should be closed.
-	select {
-	case _, ok := <-ch:
-		if ok {
-			t.Error("expected channel to be closed")
+	evs, err := b.Poll(context.Background(), "acme/repo-a", seq, nil)
+	if err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+	for _, ev := range evs {
+		if ev.Repo != "acme/repo-a" {
+			t.Errorf("expected repo acme/repo-a, got %q", ev.Repo)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out: channel not closed after unsub")
+	}
+	if len(evs) == 0 {
+		t.Fatal("expected at least one event for acme/repo-a")
 	}
 }
 
-func TestBroker_FilterByType(t *testing.T) {
+func TestBroker_PollWildcardRepo(t *testing.T) {
 	t.Parallel()
-	b := events.NewBroker(nil)
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
+	b := events.NewBroker(d)
 
-	// Subscribe to only commit.created events.
-	ch, unsub := b.Subscribe("acme/myrepo", []string{"com.docstore.commit.created"})
-	defer unsub()
+	seq, _ := b.CurrentSeq(context.Background())
+
+	b.Emit(context.Background(), evtypes.CommitCreated{Repo: "acme/repo-x", Branch: "main"})
+	b.Emit(context.Background(), evtypes.CommitCreated{Repo: "acme/repo-y", Branch: "main"})
+
+	evs, err := b.Poll(context.Background(), "*", seq, nil)
+	if err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+	if len(evs) < 2 {
+		t.Errorf("expected at least 2 events for wildcard poll, got %d", len(evs))
+	}
+}
+
+func TestBroker_PollFilterByType(t *testing.T) {
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
+	b := events.NewBroker(d)
+
+	seq, _ := b.CurrentSeq(context.Background())
 
 	// Emit a non-matching event first.
-	b.Emit(context.Background(), evtypes.BranchCreated{
-		Repo:   "acme/myrepo",
-		Branch: "feature",
-	})
-
+	b.Emit(context.Background(), evtypes.BranchCreated{Repo: "acme/myrepo", Branch: "feature"})
 	// Emit a matching event.
-	b.Emit(context.Background(), evtypes.CommitCreated{
-		Repo:     "acme/myrepo",
-		Branch:   "main",
-		Sequence: 42,
-	})
+	b.Emit(context.Background(), evtypes.CommitCreated{Repo: "acme/myrepo", Branch: "main", Sequence: 42})
 
-	select {
-	case got := <-ch:
-		if got.Type() != "com.docstore.commit.created" {
-			t.Errorf("expected commit.created, got %q", got.Type())
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for filtered event")
+	evs, err := b.Poll(context.Background(), "acme/myrepo", seq, []string{"com.docstore.commit.created"})
+	if err != nil {
+		t.Fatalf("Poll: %v", err)
 	}
-
-	// Channel should have no more events.
-	select {
-	case unexpected := <-ch:
-		t.Errorf("received unexpected event: %s", unexpected.Type())
-	default:
-		// Good: no extra events.
+	for _, ev := range evs {
+		if ev.Type != "com.docstore.commit.created" {
+			t.Errorf("expected only commit.created events, got %q", ev.Type)
+		}
+	}
+	if len(evs) == 0 {
+		t.Fatal("expected at least one commit.created event")
 	}
 }
 
-func TestBroker_MultipleSubscribers(t *testing.T) {
+func TestBroker_WaitForEvent(t *testing.T) {
+	t.Parallel()
+	b := events.NewBroker(nil) // no DB needed for in-memory signalling
+
+	done := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		done <- b.WaitForEvent(ctx)
+	}()
+
+	time.Sleep(10 * time.Millisecond)
+	b.Notify()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("expected nil error after Notify, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("WaitForEvent did not return after Notify")
+	}
+}
+
+func TestBroker_WaitForEventTimeout(t *testing.T) {
 	t.Parallel()
 	b := events.NewBroker(nil)
 
-	ch1, unsub1 := b.Subscribe("acme/myrepo", nil)
-	defer unsub1()
-	ch2, unsub2 := b.Subscribe("acme/myrepo", nil)
-	defer unsub2()
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
 
-	e := evtypes.CommitCreated{Repo: "acme/myrepo", Branch: "main"}
-	b.Emit(context.Background(), e)
+	err := b.WaitForEvent(ctx)
+	if err == nil {
+		t.Error("expected timeout error, got nil")
+	}
+}
 
-	for _, ch := range []<-chan events.Event{ch1, ch2} {
-		select {
-		case got := <-ch:
-			if got.Type() != e.Type() {
-				t.Errorf("expected %q, got %q", e.Type(), got.Type())
-			}
-		case <-time.After(time.Second):
-			t.Fatal("timed out waiting for event on subscriber")
-		}
+func TestBroker_CurrentSeq(t *testing.T) {
+	t.Parallel()
+	d := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
+	b := events.NewBroker(d)
+
+	seq0, err := b.CurrentSeq(context.Background())
+	if err != nil {
+		t.Fatalf("CurrentSeq: %v", err)
+	}
+
+	b.Emit(context.Background(), evtypes.CommitCreated{Repo: "acme/myrepo", Branch: "main"})
+
+	seq1, err := b.CurrentSeq(context.Background())
+	if err != nil {
+		t.Fatalf("CurrentSeq after Emit: %v", err)
+	}
+	if seq1 <= seq0 {
+		t.Errorf("expected seq to increase after Emit: before=%d after=%d", seq0, seq1)
 	}
 }
 
