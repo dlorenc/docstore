@@ -2162,6 +2162,13 @@ func (s *server) handleMerge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Dry-run: skip all side effects and return the computed sequence.
+	if req.DryRun {
+		slog.Info("merge dry-run", "repo", repo, "branch", req.Branch, "by", req.Author, "sequence", resp.Sequence)
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
 	// Invalidate the policy cache: the merge may have updated policies on main.
 	if s.policyCache != nil {
 		s.policyCache.Invalidate(repo)
