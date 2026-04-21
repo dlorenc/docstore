@@ -1,0 +1,39 @@
+{{define "content"}}
+{{with .Body}}
+<div class="headline"><h1>{{.Repo.Name}}</h1><span class="meta">owner {{.Repo.Owner}} · {{relTime .Repo.CreatedAt}}</span></div>
+
+<div class="filter-bar"><input type="search" data-branch-filter placeholder="filter branches by name…" autocomplete="off"></div>
+
+{{template "branchSection" (dict "Title" "Active" "Rows" .Active "Repo" .Repo.Name)}}
+{{template "branchSection" (dict "Title" "Merged" "Rows" .Merged "Repo" .Repo.Name)}}
+{{template "branchSection" (dict "Title" "Abandoned" "Rows" .Abandoned "Repo" .Repo.Name)}}
+{{end}}
+{{end}}
+
+{{define "branchSection"}}
+<h2>{{.Title}} ({{len .Rows}})</h2>
+<div class="card">
+  {{if not .Rows}}
+    <div class="empty">none</div>
+  {{else}}
+  <table class="grid">
+    <thead><tr><th>branch</th><th>status</th><th>head</th><th>base</th><th>flags</th><th></th></tr></thead>
+    <tbody>
+    {{range .Rows}}
+    <tr>
+      <td><a href="/ui/r/{{$.Repo}}/b/{{.Name}}">{{.Name}}</a></td>
+      <td><span class="badge {{statusClass .Status}}">{{.Status}}</span></td>
+      <td>{{.HeadSequence}}</td>
+      <td>{{.BaseSequence}}</td>
+      <td>
+        {{if .Draft}}<span class="badge warn">draft</span>{{end}}
+        {{if .AutoMerge}}<span class="badge ok">auto-merge</span>{{end}}
+      </td>
+      <td><a href="/ui/r/{{$.Repo}}/f/?branch={{.Name}}">files →</a></td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{end}}
+</div>
+{{end}}

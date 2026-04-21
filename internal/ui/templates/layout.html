@@ -1,0 +1,24 @@
+{{define "layout.html"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} · docstore</title>
+<script>(function(){try{var t=localStorage.getItem("ds-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+<link rel="stylesheet" href="/ui/static/styles.css">
+<script defer src="/ui/static/poll.js"></script>
+</head>
+<body>
+<nav class="top">
+  <a class="brand" href="/ui/">docstore</a>
+  <span class="crumbs">
+  {{range $i, $c := .Breadcrumbs}}{{if $i}}<span class="sep">›</span>{{end}}{{if $c.Href}}<a href="{{$c.Href}}">{{$c.Label}}</a>{{else}}{{$c.Label}}{{end}}{{end}}
+  </span>
+  <span class="spacer"></span>
+  <button class="theme-toggle" data-theme-toggle type="button" aria-label="Toggle theme" title="Toggle theme"><span data-theme-icon-dark>☾</span><span data-theme-icon-light>☀</span></button>
+</nav>
+<main>
+{{block "content" .}}{{end}}
+</main>
+</body>
+</html>{{end}}
