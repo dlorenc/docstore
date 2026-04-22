@@ -26,7 +26,9 @@ func WithTx(ctx context.Context, db *sql.DB, fn func(*sql.Tx) error) (retErr err
 	}
 	defer func() {
 		if p := recover(); p != nil {
-			_ = tx.Rollback()
+			if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+				slog.Error("tx rollback failed during panic recovery", "error", rollbackErr)
+			}
 			panic(p)
 		}
 		if retErr != nil {
