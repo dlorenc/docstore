@@ -246,88 +246,59 @@ func (s *Store) CreateRepo(ctx context.Context, req model.CreateRepoRequest) (*m
 
 	fullName := req.FullName()
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		slog.Error("tx begin failed", "op", "create_repo", "error", err)
-		return nil, fmt.Errorf("begin tx: %w", err)
-	}
-	defer func() {
-		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
-			slog.Error("tx rollback failed", "op", "create_repo", "error", rollbackErr)
-		}
-	}()
-
 	var r model.Repo
-	err = tx.QueryRowContext(ctx,
-		`INSERT INTO repos (name, owner, created_by) VALUES ($1, $2, $3)
-		 RETURNING name, owner, created_at, created_by`,
-		fullName, req.Owner, createdBy,
-	).Scan(&r.Name, &r.Owner, &r.CreatedAt, &r.CreatedBy)
-	if err != nil {
-		if isDuplicateKeyError(err) {
-			return nil, ErrRepoExists
+	if err := WithTx(ctx, s.db, func(tx *sql.Tx) error {
+		if err := tx.QueryRowContext(ctx,
+			`INSERT INTO repos (name, owner, created_by) VALUES ($1, $2, $3)
+			 RETURNING name, owner, created_at, created_by`,
+			fullName, req.Owner, createdBy,
+		).Scan(&r.Name, &r.Owner, &r.CreatedAt, &r.CreatedBy); err != nil {
+			if isDuplicateKeyError(err) {
+				return ErrRepoExists
+			}
+			if isForeignKeyViolation(err) {
+				return ErrOrgNotFound
+			}
+			return fmt.Errorf("insert repo: %w", err)
 		}
-		if isForeignKeyViolation(err) {
-			return nil, ErrOrgNotFound
+		// Seed the main branch for the new repo.
+		if _, err := tx.ExecContext(ctx,
+			"INSERT INTO branches (repo, name, head_sequence, base_sequence, status) VALUES ($1, 'main', 0, 0, 'active')",
+			fullName,
+		); err != nil {
+			return fmt.Errorf("seed main branch: %w", err)
 		}
-		return nil, fmt.Errorf("insert repo: %w", err)
+		return nil
+	}); err != nil {
+		return nil, err
 	}
-
-	// Seed the main branch for the new repo.
-	_, err = tx.ExecContext(ctx,
-		"INSERT INTO branches (repo, name, head_sequence, base_sequence, status) VALUES ($1, 'main', 0, 0, 'active')",
-		fullName,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("seed main branch: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit tx: %w", err)
-	}
-
 	return &r, nil
 }
 
 // DeleteRepo hard-deletes a repo and all its data in a single transaction.
 func (s *Store) DeleteRepo(ctx context.Context, name string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		slog.Error("tx begin failed", "op", "delete_repo", "error", err)
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	defer func() {
-		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
-			slog.Error("tx rollback failed", "op", "delete_repo", "error", rollbackErr)
+	return WithTx(ctx, s.db, func(tx *sql.Tx) error {
+		// Verify repo exists.
+		var exists bool
+		if err := tx.QueryRowContext(ctx,
+			"SELECT EXISTS(SELECT 1 FROM repos WHERE name = $1)", name,
+		).Scan(&exists); err != nil {
+			return fmt.Errorf("check repo: %w", err)
 		}
-	}()
-
-	// Verify repo exists.
-	var exists bool
-	err = tx.QueryRowContext(ctx,
-		"SELECT EXISTS(SELECT 1 FROM repos WHERE name = $1)", name,
-	).Scan(&exists)
-	if err != nil {
-		return fmt.Errorf("check repo: %w", err)
-	}
-	if !exists {
-		return ErrRepoNotFound
-	}
-
-	// Delete all dependent data in order (child tables first).
-	for _, table := range []string{"check_runs", "reviews", "file_commits", "commits", "documents", "branches", "roles"} {
-		_, err = tx.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE repo = $1", table), name)
-		if err != nil {
-			return fmt.Errorf("delete %s: %w", table, err)
+		if !exists {
+			return ErrRepoNotFound
 		}
-	}
-
-	_, err = tx.ExecContext(ctx, "DELETE FROM repos WHERE name = $1", name)
-	if err != nil {
-		return fmt.Errorf("delete repo: %w", err)
-	}
-
-	return tx.Commit()
+		// Delete all dependent data in order (child tables first).
+		for _, table := range []string{"check_runs", "reviews", "file_commits", "commits", "documents", "branches", "roles"} {
+			if _, err := tx.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE repo = $1", table), name); err != nil {
+				return fmt.Errorf("delete %s: %w", table, err)
+			}
+		}
+		if _, err := tx.ExecContext(ctx, "DELETE FROM repos WHERE name = $1", name); err != nil {
+			return fmt.Errorf("delete repo: %w", err)
+		}
+		return nil
+	})
 }
 
 // ListRepos returns all repos ordered by name.
@@ -372,201 +343,174 @@ func (s *Store) GetRepo(ctx context.Context, name string) (*model.Repo, error) {
 // a new sequence number, deduplicates document content by hash (per-repo),
 // inserts file_commits rows, and advances the branch head.
 func (s *Store) Commit(ctx context.Context, req model.CommitRequest) (*model.CommitResponse, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		slog.Error("tx begin failed", "op", "commit", "error", err)
-		return nil, fmt.Errorf("begin tx: %w", err)
-	}
-	defer func() {
-		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
-			slog.Error("tx rollback failed", "op", "commit", "error", rollbackErr)
-		}
-	}()
-
-	// Lock the branch row and read current state.
-	var headSeq int64
-	var status string
-	err = tx.QueryRowContext(ctx,
-		"SELECT head_sequence, status FROM branches WHERE repo = $1 AND name = $2 FOR UPDATE",
-		req.Repo, req.Branch,
-	).Scan(&headSeq, &status)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, ErrBranchNotFound
-		}
-		return nil, fmt.Errorf("lock branch: %w", err)
-	}
-
-	if status != "active" {
-		return nil, ErrBranchNotActive
-	}
-
-	// Allocate a globally monotonic sequence by inserting into commits.
-	// RETURNING created_at so we can include it in the hash computation.
-	var newSeq int64
-	var commitCreatedAt time.Time
-	err = tx.QueryRowContext(ctx,
-		`INSERT INTO commits (repo, branch, message, author) VALUES ($1, $2, $3, $4) RETURNING sequence, created_at`,
-		req.Repo, req.Branch, req.Message, req.Author,
-	).Scan(&newSeq, &commitCreatedAt)
-	if err != nil {
-		return nil, fmt.Errorf("insert commit: %w", err)
-	}
-
-	results := make([]model.CommitFileResult, 0, len(req.Files))
-	hashFiles := make([]hash.File, 0, len(req.Files))
-
-	for _, f := range req.Files {
-		var versionIDPtr *string
-		fileContentHash := ""
-
-		if f.Content != nil {
-			// Hash content for per-repo dedup.
-			h := sha256.Sum256(f.Content)
-			contentHash := hex.EncodeToString(h[:])
-			fileContentHash = contentHash
-
-			// Check for existing document with the same hash in this repo.
-			var existingID string
-			err = tx.QueryRowContext(ctx,
-				"SELECT version_id FROM documents WHERE repo = $1 AND content_hash = $2 LIMIT 1",
-				req.Repo, contentHash,
-			).Scan(&existingID)
-
+	var resp *model.CommitResponse
+	if err := WithTx(ctx, s.db, func(tx *sql.Tx) error {
+		// Lock the branch row and read current state.
+		var headSeq int64
+		var status string
+		if err := tx.QueryRowContext(ctx,
+			"SELECT head_sequence, status FROM branches WHERE repo = $1 AND name = $2 FOR UPDATE",
+			req.Repo, req.Branch,
+		).Scan(&headSeq, &status); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				// Insert new document.
-				existingID = uuid.New().String()
-				var contentType sql.NullString
-				if f.ContentType != "" {
-					contentType = sql.NullString{String: f.ContentType, Valid: true}
-				}
+				return ErrBranchNotFound
+			}
+			return fmt.Errorf("lock branch: %w", err)
+		}
 
-				// Decide: store inline in Postgres or in external blob store.
-				var dbContent []byte
-				var blobKey sql.NullString
-				if s.blobStore != nil && s.blobThreshold > 0 && int64(len(f.Content)) > s.blobThreshold {
-					// Upload to blob store BEFORE the DB INSERT so that if the
-					// DB operation fails the blob can be re-uploaded on retry.
-					if err := s.blobStore.Put(ctx, contentHash, bytes.NewReader(f.Content)); err != nil {
-						return nil, fmt.Errorf("upload blob: %w", err)
+		if status != "active" {
+			return ErrBranchNotActive
+		}
+
+		// Allocate a globally monotonic sequence by inserting into commits.
+		// RETURNING created_at so we can include it in the hash computation.
+		var newSeq int64
+		var commitCreatedAt time.Time
+		if err := tx.QueryRowContext(ctx,
+			`INSERT INTO commits (repo, branch, message, author) VALUES ($1, $2, $3, $4) RETURNING sequence, created_at`,
+			req.Repo, req.Branch, req.Message, req.Author,
+		).Scan(&newSeq, &commitCreatedAt); err != nil {
+			return fmt.Errorf("insert commit: %w", err)
+		}
+
+		results := make([]model.CommitFileResult, 0, len(req.Files))
+		hashFiles := make([]hash.File, 0, len(req.Files))
+
+		for _, f := range req.Files {
+			var versionIDPtr *string
+			fileContentHash := ""
+
+			if f.Content != nil {
+				// Hash content for per-repo dedup.
+				h := sha256.Sum256(f.Content)
+				contentHash := hex.EncodeToString(h[:])
+				fileContentHash = contentHash
+
+				// Check for existing document with the same hash in this repo.
+				var existingID string
+				err := tx.QueryRowContext(ctx,
+					"SELECT version_id FROM documents WHERE repo = $1 AND content_hash = $2 LIMIT 1",
+					req.Repo, contentHash,
+				).Scan(&existingID)
+
+				if errors.Is(err, sql.ErrNoRows) {
+					// Insert new document.
+					existingID = uuid.New().String()
+					var contentType sql.NullString
+					if f.ContentType != "" {
+						contentType = sql.NullString{String: f.ContentType, Valid: true}
 					}
-					blobKey = sql.NullString{String: contentHash, Valid: true}
-					// dbContent stays nil — content column will be NULL in DB.
-				} else {
-					dbContent = f.Content
+
+					// Decide: store inline in Postgres or in external blob store.
+					var dbContent []byte
+					var blobKey sql.NullString
+					if s.blobStore != nil && s.blobThreshold > 0 && int64(len(f.Content)) > s.blobThreshold {
+						// Upload to blob store BEFORE the DB INSERT so that if the
+						// DB operation fails the blob can be re-uploaded on retry.
+						if err := s.blobStore.Put(ctx, contentHash, bytes.NewReader(f.Content)); err != nil {
+							return fmt.Errorf("upload blob: %w", err)
+						}
+						blobKey = sql.NullString{String: contentHash, Valid: true}
+						// dbContent stays nil — content column will be NULL in DB.
+					} else {
+						dbContent = f.Content
+					}
+
+					if _, err := tx.ExecContext(ctx,
+						`INSERT INTO documents (repo, version_id, path, content, content_hash, content_type, blob_key, created_at, created_by)
+						 VALUES ($1, $2, $3, $4, $5, $6, $7, now(), $8)`,
+						req.Repo, existingID, f.Path, dbContent, contentHash, contentType, blobKey, req.Author,
+					); err != nil {
+						return fmt.Errorf("insert document: %w", err)
+					}
+				} else if err != nil {
+					return fmt.Errorf("check dedup: %w", err)
 				}
 
-				_, err = tx.ExecContext(ctx,
-					`INSERT INTO documents (repo, version_id, path, content, content_hash, content_type, blob_key, created_at, created_by)
-					 VALUES ($1, $2, $3, $4, $5, $6, $7, now(), $8)`,
-					req.Repo, existingID, f.Path, dbContent, contentHash, contentType, blobKey, req.Author,
-				)
-				if err != nil {
-					return nil, fmt.Errorf("insert document: %w", err)
-				}
-			} else if err != nil {
-				return nil, fmt.Errorf("check dedup: %w", err)
+				versionIDPtr = &existingID
+			}
+			// nil Content → delete: versionIDPtr stays nil, fileContentHash stays "".
+
+			commitID := uuid.New().String()
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO file_commits (repo, commit_id, sequence, path, version_id, branch)
+				 VALUES ($1, $2, $3, $4, $5, $6)`,
+				req.Repo, commitID, newSeq, f.Path, versionIDPtr, req.Branch,
+			); err != nil {
+				return fmt.Errorf("insert file_commit: %w", err)
 			}
 
-			versionIDPtr = &existingID
+			results = append(results, model.CommitFileResult{
+				Path:      f.Path,
+				VersionID: versionIDPtr,
+			})
+			hashFiles = append(hashFiles, hash.File{Path: f.Path, ContentHash: fileContentHash})
 		}
-		// nil Content → delete: versionIDPtr stays nil, fileContentHash stays "".
 
-		commitID := uuid.New().String()
-		_, err = tx.ExecContext(ctx,
-			`INSERT INTO file_commits (repo, commit_id, sequence, path, version_id, branch)
-			 VALUES ($1, $2, $3, $4, $5, $6)`,
-			req.Repo, commitID, newSeq, f.Path, versionIDPtr, req.Branch,
-		)
+		// Advance branch head.
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE branches SET head_sequence = $1 WHERE repo = $2 AND name = $3",
+			newSeq, req.Repo, req.Branch,
+		); err != nil {
+			return fmt.Errorf("update branch head: %w", err)
+		}
+
+		// Compute and store commit_hash (per-branch chain).
+		prevHash, err := fetchPrevCommitHash(ctx, tx, req.Repo, req.Branch, newSeq)
 		if err != nil {
-			return nil, fmt.Errorf("insert file_commit: %w", err)
+			return err
+		}
+		// hash.CommitHash sorts files internally; no pre-sort needed.
+		commitHash := hash.CommitHash(prevHash, newSeq, req.Repo, req.Branch, req.Author, req.Message, commitCreatedAt, hashFiles)
+		if err := updateCommitHash(ctx, tx, req.Repo, newSeq, commitHash); err != nil {
+			return fmt.Errorf("store commit hash: %w", err)
 		}
 
-		results = append(results, model.CommitFileResult{
-			Path:      f.Path,
-			VersionID: versionIDPtr,
-		})
-		hashFiles = append(hashFiles, hash.File{Path: f.Path, ContentHash: fileContentHash})
-	}
-
-	// Advance branch head.
-	_, err = tx.ExecContext(ctx,
-		"UPDATE branches SET head_sequence = $1 WHERE repo = $2 AND name = $3",
-		newSeq, req.Repo, req.Branch,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("update branch head: %w", err)
-	}
-
-	// Compute and store commit_hash (per-branch chain).
-	prevHash, err := fetchPrevCommitHash(ctx, tx, req.Repo, req.Branch, newSeq)
-	if err != nil {
+		resp = &model.CommitResponse{
+			Sequence:   newSeq,
+			Files:      results,
+			CommitHash: commitHash,
+		}
+		return nil
+	}); err != nil {
 		return nil, err
 	}
-	// hash.CommitHash sorts files internally; no pre-sort needed.
-	commitHash := hash.CommitHash(prevHash, newSeq, req.Repo, req.Branch, req.Author, req.Message, commitCreatedAt, hashFiles)
-	if err := updateCommitHash(ctx, tx, req.Repo, newSeq, commitHash); err != nil {
-		return nil, fmt.Errorf("store commit hash: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit tx: %w", err)
-	}
-
-	return &model.CommitResponse{
-		Sequence:   newSeq,
-		Files:      results,
-		CommitHash: commitHash,
-	}, nil
+	return resp, nil
 }
 
 // CreateBranch creates a new branch forked from main's current head.
 // It locks the main branch row to get a consistent base_sequence.
 func (s *Store) CreateBranch(ctx context.Context, req model.CreateBranchRequest) (*model.CreateBranchResponse, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		slog.Error("tx begin failed", "op", "create_branch", "error", err)
-		return nil, fmt.Errorf("begin tx: %w", err)
-	}
-	defer func() {
-		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
-			slog.Error("tx rollback failed", "op", "create_branch", "error", rollbackErr)
-		}
-	}()
-
-	// Read main's head to set as the base_sequence.
-	// If main doesn't exist the repo itself doesn't exist.
 	var mainHead int64
-	err = tx.QueryRowContext(ctx,
-		"SELECT head_sequence FROM branches WHERE repo = $1 AND name = 'main' FOR UPDATE",
-		req.Repo,
-	).Scan(&mainHead)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, ErrRepoNotFound
+	if err := WithTx(ctx, s.db, func(tx *sql.Tx) error {
+		// Read main's head to set as the base_sequence.
+		// If main doesn't exist the repo itself doesn't exist.
+		if err := tx.QueryRowContext(ctx,
+			"SELECT head_sequence FROM branches WHERE repo = $1 AND name = 'main' FOR UPDATE",
+			req.Repo,
+		).Scan(&mainHead); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrRepoNotFound
+			}
+			return fmt.Errorf("read main head: %w", err)
 		}
-		return nil, fmt.Errorf("read main head: %w", err)
-	}
-
-	// Insert the new branch. Unique constraint on (repo, name) prevents duplicates.
-	_, err = tx.ExecContext(ctx,
-		"INSERT INTO branches (repo, name, head_sequence, base_sequence, status, draft) VALUES ($1, $2, $3, $4, 'active', $5)",
-		req.Repo, req.Name, mainHead, mainHead, req.Draft,
-	)
-	if err != nil {
-		if isDuplicateKeyError(err) {
-			return nil, ErrBranchExists
+		// Insert the new branch. Unique constraint on (repo, name) prevents duplicates.
+		if _, err := tx.ExecContext(ctx,
+			"INSERT INTO branches (repo, name, head_sequence, base_sequence, status, draft) VALUES ($1, $2, $3, $4, 'active', $5)",
+			req.Repo, req.Name, mainHead, mainHead, req.Draft,
+		); err != nil {
+			if isDuplicateKeyError(err) {
+				return ErrBranchExists
+			}
+			if isForeignKeyViolation(err) {
+				return ErrRepoNotFound
+			}
+			return fmt.Errorf("insert branch: %w", err)
 		}
-		if isForeignKeyViolation(err) {
-			return nil, ErrRepoNotFound
-		}
-		return nil, fmt.Errorf("insert branch: %w", err)
+		return nil
+	}); err != nil {
+		return nil, err
 	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit tx: %w", err)
-	}
-
 	return &model.CreateBranchResponse{
 		Name:         req.Name,
 		BaseSequence: mainHead,
@@ -626,169 +570,159 @@ func (s *Store) SetBranchAutoMerge(ctx context.Context, repo, name string, autoM
 func (s *Store) Merge(ctx context.Context, req model.MergeRequest) (*model.MergeResponse, []MergeConflict, error) {
 	slog.Debug("merge started", "repo", req.Repo, "branch", req.Branch)
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		slog.Error("tx begin failed", "op", "merge", "error", err)
-		return nil, nil, fmt.Errorf("begin tx: %w", err)
-	}
-	defer func() {
-		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
-			slog.Error("tx rollback failed", "op", "merge", "error", rollbackErr)
+	var resp *model.MergeResponse
+	var conflicts []MergeConflict
+
+	err := WithTx(ctx, s.db, func(tx *sql.Tx) error {
+		// Lock main first, then source branch — consistent ordering prevents deadlocks.
+		var mainHead int64
+		if err := tx.QueryRowContext(ctx,
+			"SELECT head_sequence FROM branches WHERE repo = $1 AND name = 'main' FOR UPDATE",
+			req.Repo,
+		).Scan(&mainHead); err != nil {
+			return fmt.Errorf("lock main: %w", err)
 		}
-	}()
 
-	// Lock main first, then source branch — consistent ordering prevents deadlocks.
-	var mainHead int64
-	err = tx.QueryRowContext(ctx,
-		"SELECT head_sequence FROM branches WHERE repo = $1 AND name = 'main' FOR UPDATE",
-		req.Repo,
-	).Scan(&mainHead)
-	if err != nil {
-		return nil, nil, fmt.Errorf("lock main: %w", err)
-	}
-
-	// Lock the source branch.
-	var branchHead, baseSeq int64
-	var branchStatus string
-	var branchDraft bool
-	err = tx.QueryRowContext(ctx,
-		"SELECT head_sequence, base_sequence, status, draft FROM branches WHERE repo = $1 AND name = $2 FOR UPDATE",
-		req.Repo, req.Branch,
-	).Scan(&branchHead, &baseSeq, &branchStatus, &branchDraft)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil, ErrBranchNotFound
+		// Lock the source branch.
+		var branchHead, baseSeq int64
+		var branchStatus string
+		var branchDraft bool
+		if err := tx.QueryRowContext(ctx,
+			"SELECT head_sequence, base_sequence, status, draft FROM branches WHERE repo = $1 AND name = $2 FOR UPDATE",
+			req.Repo, req.Branch,
+		).Scan(&branchHead, &baseSeq, &branchStatus, &branchDraft); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrBranchNotFound
+			}
+			return fmt.Errorf("lock branch: %w", err)
 		}
-		return nil, nil, fmt.Errorf("lock branch: %w", err)
-	}
-	if branchStatus != "active" {
-		return nil, nil, ErrBranchNotActive
-	}
-	if branchDraft {
-		return nil, nil, ErrBranchDraft
-	}
-
-	// Step 1: Find the latest version of each path changed on the branch since base_sequence.
-	branchChanges, err := latestChanges(ctx, tx, req.Repo, req.Branch, baseSeq)
-	if err != nil {
-		return nil, nil, fmt.Errorf("branch changes: %w", err)
-	}
-
-	if len(branchChanges) == 0 {
-		// For dry_run, return without modifying state (defer will rollback).
-		if req.DryRun {
-			return &model.MergeResponse{Sequence: mainHead}, nil, nil
+		if branchStatus != "active" {
+			return ErrBranchNotActive
 		}
-		// Nothing to merge — mark branch as merged anyway.
-		_, err = tx.ExecContext(ctx,
+		if branchDraft {
+			return ErrBranchDraft
+		}
+
+		// Step 1: Find the latest version of each path changed on the branch since base_sequence.
+		branchChanges, err := latestChanges(ctx, tx, req.Repo, req.Branch, baseSeq)
+		if err != nil {
+			return fmt.Errorf("branch changes: %w", err)
+		}
+
+		if len(branchChanges) == 0 {
+			// For dry_run, return without modifying state (errRollback causes rollback, nil returned).
+			if req.DryRun {
+				resp = &model.MergeResponse{Sequence: mainHead}
+				return errRollback
+			}
+			// Nothing to merge — mark branch as merged anyway.
+			if _, err := tx.ExecContext(ctx,
+				"UPDATE branches SET status = 'merged' WHERE repo = $1 AND name = $2",
+				req.Repo, req.Branch,
+			); err != nil {
+				return fmt.Errorf("update branch status: %w", err)
+			}
+			slog.Info("merge complete", "repo", req.Repo, "branch", req.Branch, "sequence", mainHead, "files", 0)
+			resp = &model.MergeResponse{Sequence: mainHead}
+			return nil
+		}
+
+		// Step 2: Find the latest version of each path changed on main since base_sequence.
+		mainChanges, err := latestChanges(ctx, tx, req.Repo, "main", baseSeq)
+		if err != nil {
+			return fmt.Errorf("main changes: %w", err)
+		}
+
+		// Step 3: Conflict detection — any path in both sets is a conflict.
+		for path, branchVID := range branchChanges {
+			if mainVID, ok := mainChanges[path]; ok {
+				conflicts = append(conflicts, MergeConflict{
+					Path:            path,
+					MainVersionID:   nullStr(mainVID),
+					BranchVersionID: nullStr(branchVID),
+				})
+			}
+		}
+		if len(conflicts) > 0 {
+			return ErrMergeConflict
+		}
+
+		// Step 4: No conflicts — allocate a global sequence for the merge commit,
+		// then insert file_commits rows on main for each branch-changed path.
+		mergeMsg := fmt.Sprintf("merge branch '%s'", req.Branch)
+		var newSeq int64
+		var mergeCreatedAt time.Time
+		if err := tx.QueryRowContext(ctx,
+			`INSERT INTO commits (repo, branch, message, author) VALUES ($1, 'main', $2, $3) RETURNING sequence, created_at`,
+			req.Repo, mergeMsg, req.Author,
+		).Scan(&newSeq, &mergeCreatedAt); err != nil {
+			return fmt.Errorf("insert merge commit: %w", err)
+		}
+
+		for path, versionID := range branchChanges {
+			commitID := uuid.New().String()
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO file_commits (repo, commit_id, sequence, path, version_id, branch)
+				 VALUES ($1, $2, $3, $4, $5, 'main')`,
+				req.Repo, commitID, newSeq, path, versionID,
+			); err != nil {
+				return fmt.Errorf("insert file_commit: %w", err)
+			}
+		}
+
+		// Advance main head.
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE branches SET head_sequence = $1 WHERE repo = $2 AND name = 'main'",
+			newSeq, req.Repo,
+		); err != nil {
+			return fmt.Errorf("update main head: %w", err)
+		}
+
+		// Mark the branch as merged.
+		if _, err := tx.ExecContext(ctx,
 			"UPDATE branches SET status = 'merged' WHERE repo = $1 AND name = $2",
 			req.Repo, req.Branch,
-		)
+		); err != nil {
+			return fmt.Errorf("update branch status: %w", err)
+		}
+
+		// Compute and store commit_hash for the merge commit (per-branch: main chain).
+		prevHash, err := fetchPrevCommitHash(ctx, tx, req.Repo, "main", newSeq)
 		if err != nil {
-			return nil, nil, fmt.Errorf("update branch status: %w", err)
+			return err
 		}
-		if err := tx.Commit(); err != nil {
-			return nil, nil, fmt.Errorf("commit tx: %w", err)
+		hashFiles := make([]hash.File, 0, len(branchChanges))
+		for path, versionID := range branchChanges {
+			contentHash, err := fetchVersionContentHash(ctx, tx, versionID)
+			if err != nil {
+				return err
+			}
+			hashFiles = append(hashFiles, hash.File{Path: path, ContentHash: contentHash})
 		}
-		slog.Info("merge complete", "repo", req.Repo, "branch", req.Branch, "sequence", mainHead, "files", 0)
-		return &model.MergeResponse{Sequence: mainHead}, nil, nil
-	}
+		// hash.CommitHash sorts files internally; no pre-sort needed.
+		mergeHash := hash.CommitHash(prevHash, newSeq, req.Repo, "main", req.Author, mergeMsg, mergeCreatedAt, hashFiles)
+		if err := updateCommitHash(ctx, tx, req.Repo, newSeq, mergeHash); err != nil {
+			return fmt.Errorf("store merge commit hash: %w", err)
+		}
 
-	// Step 2: Find the latest version of each path changed on main since base_sequence.
-	mainChanges, err := latestChanges(ctx, tx, req.Repo, "main", baseSeq)
-	if err != nil {
-		return nil, nil, fmt.Errorf("main changes: %w", err)
-	}
-
-	// Step 3: Conflict detection — any path in both sets is a conflict.
-	var conflicts []MergeConflict
-	for path, branchVID := range branchChanges {
-		if mainVID, ok := mainChanges[path]; ok {
-			conflicts = append(conflicts, MergeConflict{
-				Path:            path,
-				MainVersionID:   nullStr(mainVID),
-				BranchVersionID: nullStr(branchVID),
-			})
+		// For dry_run, return computed sequence without committing (errRollback causes rollback, nil returned).
+		if req.DryRun {
+			slog.Info("merge dry-run complete", "repo", req.Repo, "branch", req.Branch, "sequence", newSeq, "files", len(branchChanges))
+			resp = &model.MergeResponse{Sequence: newSeq}
+			return errRollback
 		}
-	}
-	if len(conflicts) > 0 {
+
+		slog.Info("merge complete", "repo", req.Repo, "branch", req.Branch, "sequence", newSeq, "files", len(branchChanges))
+		resp = &model.MergeResponse{Sequence: newSeq}
+		return nil
+	})
+	if errors.Is(err, ErrMergeConflict) {
 		return nil, conflicts, ErrMergeConflict
 	}
-
-	// Step 4: No conflicts — allocate a global sequence for the merge commit,
-	// then insert file_commits rows on main for each branch-changed path.
-	mergeMsg := fmt.Sprintf("merge branch '%s'", req.Branch)
-	var newSeq int64
-	var mergeCreatedAt time.Time
-	err = tx.QueryRowContext(ctx,
-		`INSERT INTO commits (repo, branch, message, author) VALUES ($1, 'main', $2, $3) RETURNING sequence, created_at`,
-		req.Repo, mergeMsg, req.Author,
-	).Scan(&newSeq, &mergeCreatedAt)
-	if err != nil {
-		return nil, nil, fmt.Errorf("insert merge commit: %w", err)
-	}
-
-	for path, versionID := range branchChanges {
-		commitID := uuid.New().String()
-		_, err = tx.ExecContext(ctx,
-			`INSERT INTO file_commits (repo, commit_id, sequence, path, version_id, branch)
-			 VALUES ($1, $2, $3, $4, $5, 'main')`,
-			req.Repo, commitID, newSeq, path, versionID,
-		)
-		if err != nil {
-			return nil, nil, fmt.Errorf("insert file_commit: %w", err)
-		}
-	}
-
-	// Advance main head.
-	_, err = tx.ExecContext(ctx,
-		"UPDATE branches SET head_sequence = $1 WHERE repo = $2 AND name = 'main'",
-		newSeq, req.Repo,
-	)
-	if err != nil {
-		return nil, nil, fmt.Errorf("update main head: %w", err)
-	}
-
-	// Mark the branch as merged.
-	_, err = tx.ExecContext(ctx,
-		"UPDATE branches SET status = 'merged' WHERE repo = $1 AND name = $2",
-		req.Repo, req.Branch,
-	)
-	if err != nil {
-		return nil, nil, fmt.Errorf("update branch status: %w", err)
-	}
-
-	// Compute and store commit_hash for the merge commit (per-branch: main chain).
-	prevHash, err := fetchPrevCommitHash(ctx, tx, req.Repo, "main", newSeq)
 	if err != nil {
 		return nil, nil, err
 	}
-	hashFiles := make([]hash.File, 0, len(branchChanges))
-	for path, versionID := range branchChanges {
-		contentHash, err := fetchVersionContentHash(ctx, tx, versionID)
-		if err != nil {
-			return nil, nil, err
-		}
-		hashFiles = append(hashFiles, hash.File{Path: path, ContentHash: contentHash})
-	}
-	// hash.CommitHash sorts files internally; no pre-sort needed.
-	mergeHash := hash.CommitHash(prevHash, newSeq, req.Repo, "main", req.Author, mergeMsg, mergeCreatedAt, hashFiles)
-	if err := updateCommitHash(ctx, tx, req.Repo, newSeq, mergeHash); err != nil {
-		return nil, nil, fmt.Errorf("store merge commit hash: %w", err)
-	}
-
-	// For dry_run, return computed sequence without committing (defer will rollback).
-	if req.DryRun {
-		slog.Info("merge dry-run complete", "repo", req.Repo, "branch", req.Branch, "sequence", newSeq, "files", len(branchChanges))
-		return &model.MergeResponse{Sequence: newSeq}, nil, nil
-	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, nil, fmt.Errorf("commit tx: %w", err)
-	}
-
-	slog.Info("merge complete", "repo", req.Repo, "branch", req.Branch, "sequence", newSeq, "files", len(branchChanges))
-	return &model.MergeResponse{Sequence: newSeq}, nil, nil
+	return resp, nil, nil
 }
 
 // Rebase replays a branch's file_commits onto main's current head.
@@ -801,168 +735,157 @@ func (s *Store) Rebase(ctx context.Context, req model.RebaseRequest) (*model.Reb
 
 	slog.Debug("rebase started", "repo", req.Repo, "branch", req.Branch)
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		slog.Error("tx begin failed", "op", "rebase", "error", err)
-		return nil, nil, fmt.Errorf("begin tx: %w", err)
-	}
-	defer func() {
-		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
-			slog.Error("tx rollback failed", "op", "rebase", "error", rollbackErr)
-		}
-	}()
-
-	// Lock main first, then source branch — consistent ordering prevents deadlocks.
-	var mainHead int64
-	err = tx.QueryRowContext(ctx,
-		"SELECT head_sequence FROM branches WHERE repo = $1 AND name = 'main' FOR UPDATE",
-		req.Repo,
-	).Scan(&mainHead)
-	if err != nil {
-		return nil, nil, fmt.Errorf("lock main: %w", err)
-	}
-
-	// Lock the source branch.
-	var branchHead, baseSeq int64
-	var branchStatus string
-	err = tx.QueryRowContext(ctx,
-		"SELECT head_sequence, base_sequence, status FROM branches WHERE repo = $1 AND name = $2 FOR UPDATE",
-		req.Repo, req.Branch,
-	).Scan(&branchHead, &baseSeq, &branchStatus)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil, ErrBranchNotFound
-		}
-		return nil, nil, fmt.Errorf("lock branch: %w", err)
-	}
-	if branchStatus != "active" {
-		return nil, nil, ErrBranchNotActive
-	}
-
-	// Get all paths changed on branch since baseSeq.
-	branchChanges, err := latestChanges(ctx, tx, req.Repo, req.Branch, baseSeq)
-	if err != nil {
-		return nil, nil, fmt.Errorf("branch changes: %w", err)
-	}
-
-	// Empty branch — just update base_sequence and head_sequence (no-op rebase).
-	if len(branchChanges) == 0 {
-		_, err = tx.ExecContext(ctx,
-			"UPDATE branches SET base_sequence = $1, head_sequence = $2 WHERE repo = $3 AND name = $4",
-			mainHead, mainHead, req.Repo, req.Branch,
-		)
-		if err != nil {
-			return nil, nil, fmt.Errorf("update branch: %w", err)
-		}
-		if err := tx.Commit(); err != nil {
-			return nil, nil, fmt.Errorf("commit tx: %w", err)
-		}
-		slog.Info("rebase complete", "repo", req.Repo, "branch", req.Branch, "commits_replayed", 0)
-		return &model.RebaseResponse{
-			NewBaseSequence: mainHead,
-			NewHeadSequence: mainHead,
-			CommitsReplayed: 0,
-		}, nil, nil
-	}
-
-	// Get all paths changed on main since baseSeq.
-	mainChanges, err := latestChanges(ctx, tx, req.Repo, "main", baseSeq)
-	if err != nil {
-		return nil, nil, fmt.Errorf("main changes: %w", err)
-	}
-
-	// Conflict detection — any path changed on both is a conflict.
+	var resp *model.RebaseResponse
 	var conflicts []MergeConflict
-	for path, branchVID := range branchChanges {
-		if mainVID, ok := mainChanges[path]; ok {
-			conflicts = append(conflicts, MergeConflict{
-				Path:            path,
-				MainVersionID:   nullStr(mainVID),
-				BranchVersionID: nullStr(branchVID),
-			})
+
+	err := WithTx(ctx, s.db, func(tx *sql.Tx) error {
+		// Lock main first, then source branch — consistent ordering prevents deadlocks.
+		var mainHead int64
+		if err := tx.QueryRowContext(ctx,
+			"SELECT head_sequence FROM branches WHERE repo = $1 AND name = 'main' FOR UPDATE",
+			req.Repo,
+		).Scan(&mainHead); err != nil {
+			return fmt.Errorf("lock main: %w", err)
 		}
-	}
-	if len(conflicts) > 0 {
+
+		// Lock the source branch.
+		var branchHead, baseSeq int64
+		var branchStatus string
+		if err := tx.QueryRowContext(ctx,
+			"SELECT head_sequence, base_sequence, status FROM branches WHERE repo = $1 AND name = $2 FOR UPDATE",
+			req.Repo, req.Branch,
+		).Scan(&branchHead, &baseSeq, &branchStatus); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrBranchNotFound
+			}
+			return fmt.Errorf("lock branch: %w", err)
+		}
+		if branchStatus != "active" {
+			return ErrBranchNotActive
+		}
+
+		// Get all paths changed on branch since baseSeq.
+		branchChanges, err := latestChanges(ctx, tx, req.Repo, req.Branch, baseSeq)
+		if err != nil {
+			return fmt.Errorf("branch changes: %w", err)
+		}
+
+		// Empty branch — just update base_sequence and head_sequence (no-op rebase).
+		if len(branchChanges) == 0 {
+			if _, err := tx.ExecContext(ctx,
+				"UPDATE branches SET base_sequence = $1, head_sequence = $2 WHERE repo = $3 AND name = $4",
+				mainHead, mainHead, req.Repo, req.Branch,
+			); err != nil {
+				return fmt.Errorf("update branch: %w", err)
+			}
+			slog.Info("rebase complete", "repo", req.Repo, "branch", req.Branch, "commits_replayed", 0)
+			resp = &model.RebaseResponse{
+				NewBaseSequence: mainHead,
+				NewHeadSequence: mainHead,
+				CommitsReplayed: 0,
+			}
+			return nil
+		}
+
+		// Get all paths changed on main since baseSeq.
+		mainChanges, err := latestChanges(ctx, tx, req.Repo, "main", baseSeq)
+		if err != nil {
+			return fmt.Errorf("main changes: %w", err)
+		}
+
+		// Conflict detection — any path changed on both is a conflict.
+		for path, branchVID := range branchChanges {
+			if mainVID, ok := mainChanges[path]; ok {
+				conflicts = append(conflicts, MergeConflict{
+					Path:            path,
+					MainVersionID:   nullStr(mainVID),
+					BranchVersionID: nullStr(branchVID),
+				})
+			}
+		}
+		if len(conflicts) > 0 {
+			return ErrRebaseConflict
+		}
+
+		// Collect original commit groups ordered by sequence.
+		groups, err := branchCommitGroups(ctx, tx, req.Repo, req.Branch, baseSeq)
+		if err != nil {
+			return fmt.Errorf("branch commit groups: %w", err)
+		}
+
+		// Replay each group as a new global sequence on the branch.
+		author := req.Author
+		if author == "" {
+			author = "system"
+		}
+		var lastSeq int64
+		for _, g := range groups {
+			rebaseMsg := fmt.Sprintf("rebase: replay sequence %d", g.seq)
+			var newSeq int64
+			var rebaseCreatedAt time.Time
+			if err := tx.QueryRowContext(ctx,
+				`INSERT INTO commits (repo, branch, message, author) VALUES ($1, $2, $3, $4) RETURNING sequence, created_at`,
+				req.Repo, req.Branch, rebaseMsg, author,
+			).Scan(&newSeq, &rebaseCreatedAt); err != nil {
+				return fmt.Errorf("insert rebase commit: %w", err)
+			}
+
+			for _, f := range g.files {
+				commitID := uuid.New().String()
+				if _, err := tx.ExecContext(ctx,
+					`INSERT INTO file_commits (repo, commit_id, sequence, path, version_id, branch)
+					 VALUES ($1, $2, $3, $4, $5, $6)`,
+					req.Repo, commitID, newSeq, f.path, f.versionID, req.Branch,
+				); err != nil {
+					return fmt.Errorf("insert file_commit: %w", err)
+				}
+			}
+
+			// Compute and store commit_hash for this replayed commit (per-branch chain).
+			prevHash, err := fetchPrevCommitHash(ctx, tx, req.Repo, req.Branch, newSeq)
+			if err != nil {
+				return err
+			}
+			hashFiles := make([]hash.File, 0, len(g.files))
+			for _, f := range g.files {
+				contentHash, err := fetchVersionContentHash(ctx, tx, f.versionID)
+				if err != nil {
+					return err
+				}
+				hashFiles = append(hashFiles, hash.File{Path: f.path, ContentHash: contentHash})
+			}
+			// hash.CommitHash sorts files internally; no pre-sort needed.
+			rebaseHash := hash.CommitHash(prevHash, newSeq, req.Repo, req.Branch, author, rebaseMsg, rebaseCreatedAt, hashFiles)
+			if err := updateCommitHash(ctx, tx, req.Repo, newSeq, rebaseHash); err != nil {
+				return fmt.Errorf("store rebase commit hash: %w", err)
+			}
+
+			lastSeq = newSeq
+		}
+
+		// Update branch: base_sequence = mainHead, head_sequence = lastSeq.
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE branches SET base_sequence = $1, head_sequence = $2 WHERE repo = $3 AND name = $4",
+			mainHead, lastSeq, req.Repo, req.Branch,
+		); err != nil {
+			return fmt.Errorf("update branch: %w", err)
+		}
+
+		slog.Info("rebase complete", "repo", req.Repo, "branch", req.Branch, "commits_replayed", len(groups))
+		resp = &model.RebaseResponse{
+			NewBaseSequence: mainHead,
+			NewHeadSequence: lastSeq,
+			CommitsReplayed: int64(len(groups)),
+		}
+		return nil
+	})
+	if errors.Is(err, ErrRebaseConflict) {
 		return nil, conflicts, ErrRebaseConflict
 	}
-
-	// Collect original commit groups ordered by sequence.
-	groups, err := branchCommitGroups(ctx, tx, req.Repo, req.Branch, baseSeq)
 	if err != nil {
-		return nil, nil, fmt.Errorf("branch commit groups: %w", err)
+		return nil, nil, err
 	}
-
-	// Replay each group as a new global sequence on the branch.
-	author := req.Author
-	if author == "" {
-		author = "system"
-	}
-	var lastSeq int64
-	for _, g := range groups {
-		rebaseMsg := fmt.Sprintf("rebase: replay sequence %d", g.seq)
-		var newSeq int64
-		var rebaseCreatedAt time.Time
-		err = tx.QueryRowContext(ctx,
-			`INSERT INTO commits (repo, branch, message, author) VALUES ($1, $2, $3, $4) RETURNING sequence, created_at`,
-			req.Repo, req.Branch, rebaseMsg, author,
-		).Scan(&newSeq, &rebaseCreatedAt)
-		if err != nil {
-			return nil, nil, fmt.Errorf("insert rebase commit: %w", err)
-		}
-
-		for _, f := range g.files {
-			commitID := uuid.New().String()
-			_, err = tx.ExecContext(ctx,
-				`INSERT INTO file_commits (repo, commit_id, sequence, path, version_id, branch)
-				 VALUES ($1, $2, $3, $4, $5, $6)`,
-				req.Repo, commitID, newSeq, f.path, f.versionID, req.Branch,
-			)
-			if err != nil {
-				return nil, nil, fmt.Errorf("insert file_commit: %w", err)
-			}
-		}
-
-		// Compute and store commit_hash for this replayed commit (per-branch chain).
-		prevHash, err := fetchPrevCommitHash(ctx, tx, req.Repo, req.Branch, newSeq)
-		if err != nil {
-			return nil, nil, err
-		}
-		hashFiles := make([]hash.File, 0, len(g.files))
-		for _, f := range g.files {
-			contentHash, err := fetchVersionContentHash(ctx, tx, f.versionID)
-			if err != nil {
-				return nil, nil, err
-			}
-			hashFiles = append(hashFiles, hash.File{Path: f.path, ContentHash: contentHash})
-		}
-		// hash.CommitHash sorts files internally; no pre-sort needed.
-		rebaseHash := hash.CommitHash(prevHash, newSeq, req.Repo, req.Branch, author, rebaseMsg, rebaseCreatedAt, hashFiles)
-		if err := updateCommitHash(ctx, tx, req.Repo, newSeq, rebaseHash); err != nil {
-			return nil, nil, fmt.Errorf("store rebase commit hash: %w", err)
-		}
-
-		lastSeq = newSeq
-	}
-
-	// Update branch: base_sequence = mainHead, head_sequence = lastSeq.
-	_, err = tx.ExecContext(ctx,
-		"UPDATE branches SET base_sequence = $1, head_sequence = $2 WHERE repo = $3 AND name = $4",
-		mainHead, lastSeq, req.Repo, req.Branch,
-	)
-	if err != nil {
-		return nil, nil, fmt.Errorf("update branch: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, nil, fmt.Errorf("commit tx: %w", err)
-	}
-
-	slog.Info("rebase complete", "repo", req.Repo, "branch", req.Branch, "commits_replayed", len(groups))
-	return &model.RebaseResponse{
-		NewBaseSequence: mainHead,
-		NewHeadSequence: lastSeq,
-		CommitsReplayed: int64(len(groups)),
-	}, nil, nil
+	return resp, nil, nil
 }
 
 // branchCommitGroups returns the file_commits on a branch since baseSeq,
@@ -1053,42 +976,28 @@ func (s *Store) DeleteBranch(ctx context.Context, repo, name string) error {
 		return ErrBranchNotActive
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		slog.Error("tx begin failed", "op", "delete_branch", "error", err)
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	defer func() {
-		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
-			slog.Error("tx rollback failed", "op", "delete_branch", "error", rollbackErr)
+	return WithTx(ctx, s.db, func(tx *sql.Tx) error {
+		var status string
+		if err := tx.QueryRowContext(ctx,
+			"SELECT status FROM branches WHERE repo = $1 AND name = $2 FOR UPDATE",
+			repo, name,
+		).Scan(&status); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrBranchNotFound
+			}
+			return fmt.Errorf("lock branch: %w", err)
 		}
-	}()
-
-	var status string
-	err = tx.QueryRowContext(ctx,
-		"SELECT status FROM branches WHERE repo = $1 AND name = $2 FOR UPDATE",
-		repo, name,
-	).Scan(&status)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrBranchNotFound
+		if status != "active" {
+			return ErrBranchNotActive
 		}
-		return fmt.Errorf("lock branch: %w", err)
-	}
-
-	if status != "active" {
-		return ErrBranchNotActive
-	}
-
-	_, err = tx.ExecContext(ctx,
-		"UPDATE branches SET status = 'abandoned' WHERE repo = $1 AND name = $2",
-		repo, name,
-	)
-	if err != nil {
-		return fmt.Errorf("update branch status: %w", err)
-	}
-
-	return tx.Commit()
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE branches SET status = 'abandoned' WHERE repo = $1 AND name = $2",
+			repo, name,
+		); err != nil {
+			return fmt.Errorf("update branch status: %w", err)
+		}
+		return nil
+	})
 }
 
 // CreateReview records a review for a branch at its current head_sequence.
@@ -1096,74 +1005,63 @@ func (s *Store) DeleteBranch(ctx context.Context, repo, name string) error {
 // Returns ErrSelfApproval if the reviewer authored any commits on the branch and
 // is attempting to approve (status == ReviewApproved).
 func (s *Store) CreateReview(ctx context.Context, repo, branch, reviewer string, status model.ReviewStatus, body string) (*model.Review, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		slog.Error("tx begin failed", "op", "create_review", "error", err)
-		return nil, fmt.Errorf("begin tx: %w", err)
-	}
-	defer func() {
-		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
-			slog.Error("tx rollback failed", "op", "create_review", "error", rollbackErr)
-		}
-	}()
-
-	var headSeq, baseSeq int64
-	err = tx.QueryRowContext(ctx,
-		"SELECT head_sequence, base_sequence FROM branches WHERE repo = $1 AND name = $2 FOR UPDATE",
-		repo, branch,
-	).Scan(&headSeq, &baseSeq)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, ErrBranchNotFound
-		}
-		return nil, fmt.Errorf("lock branch: %w", err)
-	}
-
-	// Self-approval: reviewer cannot approve if they authored any branch commits.
-	if status == model.ReviewApproved {
-		var count int
-		err = tx.QueryRowContext(ctx,
-			"SELECT count(*) FROM commits WHERE repo = $1 AND branch = $2 AND sequence > $3 AND author = $4",
-			repo, branch, baseSeq, reviewer,
-		).Scan(&count)
-		if err != nil {
-			return nil, fmt.Errorf("check self-approval: %w", err)
-		}
-		if count > 0 {
-			return nil, ErrSelfApproval
-		}
-	}
-
 	id := uuid.New().String()
-	var createdAt time.Time
-	var nullBody sql.NullString
-	if body != "" {
-		nullBody = sql.NullString{String: body, Valid: true}
-	}
-	err = tx.QueryRowContext(ctx,
-		`INSERT INTO reviews (id, repo, branch, reviewer, sequence, status, body)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)
-		 RETURNING created_at`,
-		id, repo, branch, reviewer, headSeq, string(status), nullBody,
-	).Scan(&createdAt)
-	if err != nil {
-		return nil, fmt.Errorf("insert review: %w", err)
-	}
+	var rev *model.Review
+	if err := WithTx(ctx, s.db, func(tx *sql.Tx) error {
+		var headSeq, baseSeq int64
+		if err := tx.QueryRowContext(ctx,
+			"SELECT head_sequence, base_sequence FROM branches WHERE repo = $1 AND name = $2 FOR UPDATE",
+			repo, branch,
+		).Scan(&headSeq, &baseSeq); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrBranchNotFound
+			}
+			return fmt.Errorf("lock branch: %w", err)
+		}
 
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit tx: %w", err)
-	}
+		// Self-approval: reviewer cannot approve if they authored any branch commits.
+		if status == model.ReviewApproved {
+			var count int
+			if err := tx.QueryRowContext(ctx,
+				"SELECT count(*) FROM commits WHERE repo = $1 AND branch = $2 AND sequence > $3 AND author = $4",
+				repo, branch, baseSeq, reviewer,
+			).Scan(&count); err != nil {
+				return fmt.Errorf("check self-approval: %w", err)
+			}
+			if count > 0 {
+				return ErrSelfApproval
+			}
+		}
 
-	return &model.Review{
-		ID:        id,
-		Repo:      repo,
-		Branch:    branch,
-		Reviewer:  reviewer,
-		Sequence:  headSeq,
-		Status:    status,
-		Body:      body,
-		CreatedAt: createdAt,
-	}, nil
+		var createdAt time.Time
+		var nullBody sql.NullString
+		if body != "" {
+			nullBody = sql.NullString{String: body, Valid: true}
+		}
+		if err := tx.QueryRowContext(ctx,
+			`INSERT INTO reviews (id, repo, branch, reviewer, sequence, status, body)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7)
+			 RETURNING created_at`,
+			id, repo, branch, reviewer, headSeq, string(status), nullBody,
+		).Scan(&createdAt); err != nil {
+			return fmt.Errorf("insert review: %w", err)
+		}
+
+		rev = &model.Review{
+			ID:        id,
+			Repo:      repo,
+			Branch:    branch,
+			Reviewer:  reviewer,
+			Sequence:  headSeq,
+			Status:    status,
+			Body:      body,
+			CreatedAt: createdAt,
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return rev, nil
 }
 
 // ListReviews returns reviews for a branch in the given repo, ordered by
@@ -1205,62 +1103,51 @@ func (s *Store) ListReviews(ctx context.Context, repo, branch string, atSeq *int
 // head_sequence. Returns ErrBranchNotFound if the branch doesn't exist.
 // reviewID is optional and may associate the comment with a formal review.
 func (s *Store) CreateReviewComment(ctx context.Context, repo, branch, path, versionID, body, author string, reviewID *string) (*model.ReviewComment, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		slog.Error("tx begin failed", "op", "create_review_comment", "error", err)
-		return nil, fmt.Errorf("begin tx: %w", err)
-	}
-	defer func() {
-		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
-			slog.Error("tx rollback failed", "op", "create_review_comment", "error", rollbackErr)
+	var rc *model.ReviewComment
+	if err := WithTx(ctx, s.db, func(tx *sql.Tx) error {
+		var headSeq int64
+		if err := tx.QueryRowContext(ctx,
+			"SELECT head_sequence FROM branches WHERE repo = $1 AND name = $2 FOR UPDATE",
+			repo, branch,
+		).Scan(&headSeq); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrBranchNotFound
+			}
+			return fmt.Errorf("lock branch: %w", err)
 		}
-	}()
 
-	var headSeq int64
-	err = tx.QueryRowContext(ctx,
-		"SELECT head_sequence FROM branches WHERE repo = $1 AND name = $2 FOR UPDATE",
-		repo, branch,
-	).Scan(&headSeq)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, ErrBranchNotFound
+		var nullReviewID sql.NullString
+		if reviewID != nil && *reviewID != "" {
+			nullReviewID = sql.NullString{String: *reviewID, Valid: true}
 		}
-		return nil, fmt.Errorf("lock branch: %w", err)
-	}
 
-	var nullReviewID sql.NullString
-	if reviewID != nil && *reviewID != "" {
-		nullReviewID = sql.NullString{String: *reviewID, Valid: true}
-	}
+		var id string
+		var createdAt time.Time
+		if err := tx.QueryRowContext(ctx,
+			`INSERT INTO review_comments (review_id, repo, branch, path, version_id, body, author, sequence)
+			 VALUES ($1, $2, $3, $4, $5::uuid, $6, $7, $8)
+			 RETURNING id::text, created_at`,
+			nullReviewID, repo, branch, path, versionID, body, author, headSeq,
+		).Scan(&id, &createdAt); err != nil {
+			return fmt.Errorf("insert review_comment: %w", err)
+		}
 
-	var id string
-	var createdAt time.Time
-	err = tx.QueryRowContext(ctx,
-		`INSERT INTO review_comments (review_id, repo, branch, path, version_id, body, author, sequence)
-		 VALUES ($1, $2, $3, $4, $5::uuid, $6, $7, $8)
-		 RETURNING id::text, created_at`,
-		nullReviewID, repo, branch, path, versionID, body, author, headSeq,
-	).Scan(&id, &createdAt)
-	if err != nil {
-		return nil, fmt.Errorf("insert review_comment: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit tx: %w", err)
-	}
-
-	rc := &model.ReviewComment{
-		ID:        id,
-		Branch:    branch,
-		Path:      path,
-		VersionID: versionID,
-		Body:      body,
-		Author:    author,
-		Sequence:  headSeq,
-		CreatedAt: createdAt,
-	}
-	if reviewID != nil {
-		rc.ReviewID = reviewID
+		rc = &model.ReviewComment{
+			ID:        id,
+			Branch:    branch,
+			Path:      path,
+			VersionID: versionID,
+			Body:      body,
+			Author:    author,
+			Sequence:  headSeq,
+			CreatedAt: createdAt,
+		}
+		if reviewID != nil {
+			rc.ReviewID = reviewID
+		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 	return rc, nil
 }
@@ -1354,72 +1241,62 @@ func (s *Store) DeleteReviewComment(ctx context.Context, repo, id string) error 
 // for the same (repo, branch, sequence, check_name, attempt), the status and
 // reporter are updated in place (upsert semantics).
 func (s *Store) CreateCheckRun(ctx context.Context, repo, branch, checkName string, status model.CheckRunStatus, reporter string, logURL *string, atSequence *int64, attempt int16, metadata json.RawMessage) (*model.CheckRun, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		slog.Error("tx begin failed", "op", "create_check_run", "error", err)
-		return nil, fmt.Errorf("begin tx: %w", err)
-	}
-	defer func() {
-		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
-			slog.Error("tx rollback failed", "op", "create_check_run", "error", rollbackErr)
-		}
-	}()
-
-	var headSeq int64
-	err = tx.QueryRowContext(ctx,
-		"SELECT head_sequence FROM branches WHERE repo = $1 AND name = $2 FOR UPDATE",
-		repo, branch,
-	).Scan(&headSeq)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, ErrBranchNotFound
-		}
-		return nil, fmt.Errorf("lock branch: %w", err)
-	}
-	if atSequence != nil {
-		headSeq = *atSequence
-	}
-
 	newID := uuid.New().String()
-	var id string
-	var createdAt time.Time
-	var nullLogURL sql.NullString
-	if logURL != nil {
-		nullLogURL = sql.NullString{String: *logURL, Valid: true}
-	}
-	err = tx.QueryRowContext(ctx,
-		`INSERT INTO check_runs (id, repo, branch, sequence, check_name, status, reporter, log_url, attempt, metadata)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-		 ON CONFLICT (repo, branch, sequence, check_name, attempt)
-		 DO UPDATE SET
-		     status   = EXCLUDED.status,
-		     reporter = EXCLUDED.reporter,
-		     log_url  = COALESCE(EXCLUDED.log_url, check_runs.log_url),
-		     metadata = COALESCE(EXCLUDED.metadata, check_runs.metadata)
-		 RETURNING id, created_at`,
-		newID, repo, branch, headSeq, checkName, string(status), reporter, nullLogURL, attempt, []byte(metadata),
-	).Scan(&id, &createdAt)
-	if err != nil {
-		return nil, fmt.Errorf("insert check_run: %w", err)
-	}
+	var cr *model.CheckRun
+	if err := WithTx(ctx, s.db, func(tx *sql.Tx) error {
+		var headSeq int64
+		if err := tx.QueryRowContext(ctx,
+			"SELECT head_sequence FROM branches WHERE repo = $1 AND name = $2 FOR UPDATE",
+			repo, branch,
+		).Scan(&headSeq); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrBranchNotFound
+			}
+			return fmt.Errorf("lock branch: %w", err)
+		}
+		if atSequence != nil {
+			headSeq = *atSequence
+		}
 
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit tx: %w", err)
-	}
+		var id string
+		var createdAt time.Time
+		var nullLogURL sql.NullString
+		if logURL != nil {
+			nullLogURL = sql.NullString{String: *logURL, Valid: true}
+		}
+		if err := tx.QueryRowContext(ctx,
+			`INSERT INTO check_runs (id, repo, branch, sequence, check_name, status, reporter, log_url, attempt, metadata)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			 ON CONFLICT (repo, branch, sequence, check_name, attempt)
+			 DO UPDATE SET
+			     status   = EXCLUDED.status,
+			     reporter = EXCLUDED.reporter,
+			     log_url  = COALESCE(EXCLUDED.log_url, check_runs.log_url),
+			     metadata = COALESCE(EXCLUDED.metadata, check_runs.metadata)
+			 RETURNING id, created_at`,
+			newID, repo, branch, headSeq, checkName, string(status), reporter, nullLogURL, attempt, []byte(metadata),
+		).Scan(&id, &createdAt); err != nil {
+			return fmt.Errorf("insert check_run: %w", err)
+		}
 
-	return &model.CheckRun{
-		ID:        id,
-		Repo:      repo,
-		Branch:    branch,
-		Sequence:  headSeq,
-		CheckName: checkName,
-		Status:    status,
-		Reporter:  reporter,
-		LogURL:    logURL,
-		CreatedAt: createdAt,
-		Attempt:   attempt,
-		Metadata:  metadata,
-	}, nil
+		cr = &model.CheckRun{
+			ID:        id,
+			Repo:      repo,
+			Branch:    branch,
+			Sequence:  headSeq,
+			CheckName: checkName,
+			Status:    status,
+			Reporter:  reporter,
+			LogURL:    logURL,
+			CreatedAt: createdAt,
+			Attempt:   attempt,
+			Metadata:  metadata,
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return cr, nil
 }
 
 // RetryChecks creates new pending check_run rows at the next attempt number for
@@ -1427,90 +1304,79 @@ func (s *Store) CreateCheckRun(ctx context.Context, repo, branch, checkName stri
 // given sequence are retried. Returns the new attempt number used for all
 // inserted rows.
 func (s *Store) RetryChecks(ctx context.Context, repo, branch string, seq int64, checks []string) (int16, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, fmt.Errorf("begin tx: %w", err)
-	}
-	defer func() {
-		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
-			slog.Error("tx rollback failed", "op", "retry_checks", "error", rollbackErr)
-		}
-	}()
-
-	// Lock the branch to confirm it exists.
-	var headSeq int64
-	err = tx.QueryRowContext(ctx,
-		"SELECT head_sequence FROM branches WHERE repo = $1 AND name = $2 FOR UPDATE",
-		repo, branch,
-	).Scan(&headSeq)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return 0, ErrBranchNotFound
-		}
-		return 0, fmt.Errorf("lock branch: %w", err)
-	}
-
-	// If no checks specified, find all failed checks at this sequence.
-	if len(checks) == 0 {
-		rows, err := tx.QueryContext(ctx,
-			`SELECT DISTINCT ON (check_name) check_name
-			 FROM check_runs
-			 WHERE repo = $1 AND branch = $2 AND sequence = $3
-			 ORDER BY check_name, attempt DESC`,
-			repo, branch, seq,
-		)
-		if err != nil {
-			return 0, fmt.Errorf("query failed checks: %w", err)
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var name string
-			if err := rows.Scan(&name); err != nil {
-				return 0, err
+	var newAttempt int16
+	if err := WithTx(ctx, s.db, func(tx *sql.Tx) error {
+		// Lock the branch to confirm it exists.
+		var headSeq int64
+		if err := tx.QueryRowContext(ctx,
+			"SELECT head_sequence FROM branches WHERE repo = $1 AND name = $2 FOR UPDATE",
+			repo, branch,
+		).Scan(&headSeq); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrBranchNotFound
 			}
-			checks = append(checks, name)
+			return fmt.Errorf("lock branch: %w", err)
 		}
-		if err := rows.Err(); err != nil {
-			return 0, err
-		}
-	}
 
-	if len(checks) == 0 {
-		return 0, fmt.Errorf("no checks to retry")
-	}
-
-	// Compute the global max attempt across all requested checks.
-	var maxAttempt int16
-	for _, checkName := range checks {
-		var a int16
-		err := tx.QueryRowContext(ctx,
-			`SELECT COALESCE(MAX(attempt), 0) FROM check_runs
-			 WHERE repo = $1 AND branch = $2 AND sequence = $3 AND check_name = $4`,
-			repo, branch, seq, checkName,
-		).Scan(&a)
-		if err != nil {
-			return 0, fmt.Errorf("query max attempt for %s: %w", checkName, err)
+		// If no checks specified, find all failed checks at this sequence.
+		if len(checks) == 0 {
+			rows, err := tx.QueryContext(ctx,
+				`SELECT DISTINCT ON (check_name) check_name
+				 FROM check_runs
+				 WHERE repo = $1 AND branch = $2 AND sequence = $3
+				 ORDER BY check_name, attempt DESC`,
+				repo, branch, seq,
+			)
+			if err != nil {
+				return fmt.Errorf("query failed checks: %w", err)
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var name string
+				if err := rows.Scan(&name); err != nil {
+					return err
+				}
+				checks = append(checks, name)
+			}
+			if err := rows.Err(); err != nil {
+				return err
+			}
 		}
-		if a > maxAttempt {
-			maxAttempt = a
-		}
-	}
-	newAttempt := maxAttempt + 1
 
-	// Insert pending rows for all checks at the new attempt.
-	for _, checkName := range checks {
-		_, err := tx.ExecContext(ctx,
-			`INSERT INTO check_runs (id, repo, branch, sequence, check_name, status, reporter, attempt)
-			 VALUES ($1, $2, $3, $4, $5, 'pending', 'system', $6)`,
-			uuid.New().String(), repo, branch, seq, checkName, newAttempt,
-		)
-		if err != nil {
-			return 0, fmt.Errorf("insert retry check_run for %s: %w", checkName, err)
+		if len(checks) == 0 {
+			return fmt.Errorf("no checks to retry")
 		}
-	}
 
-	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("commit tx: %w", err)
+		// Compute the global max attempt across all requested checks.
+		var maxAttempt int16
+		for _, checkName := range checks {
+			var a int16
+			if err := tx.QueryRowContext(ctx,
+				`SELECT COALESCE(MAX(attempt), 0) FROM check_runs
+				 WHERE repo = $1 AND branch = $2 AND sequence = $3 AND check_name = $4`,
+				repo, branch, seq, checkName,
+			).Scan(&a); err != nil {
+				return fmt.Errorf("query max attempt for %s: %w", checkName, err)
+			}
+			if a > maxAttempt {
+				maxAttempt = a
+			}
+		}
+		newAttempt = maxAttempt + 1
+
+		// Insert pending rows for all checks at the new attempt.
+		for _, checkName := range checks {
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO check_runs (id, repo, branch, sequence, check_name, status, reporter, attempt)
+				 VALUES ($1, $2, $3, $4, $5, 'pending', 'system', $6)`,
+				uuid.New().String(), repo, branch, seq, checkName, newAttempt,
+			); err != nil {
+				return fmt.Errorf("insert retry check_run for %s: %w", checkName, err)
+			}
+		}
+		return nil
+	}); err != nil {
+		return 0, err
 	}
 	return newAttempt, nil
 }
@@ -1700,181 +1566,174 @@ type PurgeResult struct {
 func (s *Store) Purge(ctx context.Context, req PurgeRequest) (*PurgeResult, error) {
 	slog.Debug("purge started", "repo", req.Repo, "older_than", req.OlderThan, "dry_run", req.DryRun)
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		slog.Error("tx begin failed", "op", "purge", "error", err)
-		return nil, fmt.Errorf("begin tx: %w", err)
-	}
-	defer func() {
-		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
-			slog.Error("tx rollback failed", "op", "purge", "error", rollbackErr)
+	var purgeResult *PurgeResult
+	if err := WithTx(ctx, s.db, func(tx *sql.Tx) error {
+		// Verify repo exists.
+		var exists bool
+		if err := tx.QueryRowContext(ctx,
+			"SELECT EXISTS(SELECT 1 FROM repos WHERE name = $1)", req.Repo,
+		).Scan(&exists); err != nil {
+			return fmt.Errorf("check repo: %w", err)
 		}
-	}()
-
-	// Verify repo exists.
-	var exists bool
-	if err := tx.QueryRowContext(ctx,
-		"SELECT EXISTS(SELECT 1 FROM repos WHERE name = $1)", req.Repo,
-	).Scan(&exists); err != nil {
-		return nil, fmt.Errorf("check repo: %w", err)
-	}
-	if !exists {
-		return nil, ErrRepoNotFound
-	}
-
-	threshold := time.Now().Add(-req.OlderThan)
-
-	// Find eligible branches: merged or abandoned, last activity older than threshold, not main.
-	rows, err := tx.QueryContext(ctx, `
-		SELECT b.name
-		FROM branches b
-		LEFT JOIN commits c ON c.repo = b.repo AND c.sequence = b.head_sequence
-		WHERE b.repo = $1
-		  AND b.status IN ('merged', 'abandoned')
-		  AND b.name != 'main'
-		  AND COALESCE(c.created_at, b.created_at) < $2
-	`, req.Repo, threshold)
-	if err != nil {
-		return nil, fmt.Errorf("find eligible branches: %w", err)
-	}
-	var branches []string
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("scan branch: %w", err)
+		if !exists {
+			return ErrRepoNotFound
 		}
-		branches = append(branches, name)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate branches: %w", err)
-	}
 
-	// Nothing to purge — return early (defer will rollback the empty transaction).
-	if len(branches) == 0 {
-		return &PurgeResult{}, nil
-	}
+		threshold := time.Now().Add(-req.OlderThan)
 
-	var result PurgeResult
-	result.BranchesPurged = int64(len(branches))
-
-	// 1. Delete file_commits for the eligible branches.
-	res, err := tx.ExecContext(ctx,
-		`DELETE FROM file_commits WHERE repo = $1 AND branch = ANY($2)`,
-		req.Repo, pq.Array(branches),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("delete file_commits: %w", err)
-	}
-	result.FileCommitsDeleted, _ = res.RowsAffected()
-
-	// 2. Delete commits for those branches not referenced by any remaining file_commits.
-	res, err = tx.ExecContext(ctx,
-		`DELETE FROM commits
-		 WHERE repo = $1 AND branch = ANY($2)
-		   AND sequence NOT IN (
-		       SELECT DISTINCT sequence FROM file_commits WHERE repo = $1
-		   )`,
-		req.Repo, pq.Array(branches),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("delete commits: %w", err)
-	}
-	result.CommitsDeleted, _ = res.RowsAffected()
-
-	// 3. Delete reviews for the eligible branches.
-	res, err = tx.ExecContext(ctx,
-		`DELETE FROM reviews WHERE repo = $1 AND branch = ANY($2)`,
-		req.Repo, pq.Array(branches),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("delete reviews: %w", err)
-	}
-	result.ReviewsDeleted, _ = res.RowsAffected()
-
-	// 4. Delete check_runs for the eligible branches.
-	res, err = tx.ExecContext(ctx,
-		`DELETE FROM check_runs WHERE repo = $1 AND branch = ANY($2)`,
-		req.Repo, pq.Array(branches),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("delete check_runs: %w", err)
-	}
-	result.CheckRunsDeleted, _ = res.RowsAffected()
-
-	// 5. Collect blob_keys for orphaned documents before deleting them,
-	// then remove the blobs from the external store, then delete the DB rows.
-	orphanQuery := `
-		SELECT blob_key FROM documents
-		WHERE repo = $1
-		  AND blob_key IS NOT NULL
-		  AND version_id NOT IN (
-		      SELECT DISTINCT version_id FROM file_commits
-		      WHERE repo = $1 AND version_id IS NOT NULL
-		  )`
-	if s.blobStore != nil {
-		blobRows, berr := tx.QueryContext(ctx, orphanQuery, req.Repo)
-		if berr != nil {
-			return nil, fmt.Errorf("collect blob keys: %w", berr)
+		// Find eligible branches: merged or abandoned, last activity older than threshold, not main.
+		rows, err := tx.QueryContext(ctx, `
+			SELECT b.name
+			FROM branches b
+			LEFT JOIN commits c ON c.repo = b.repo AND c.sequence = b.head_sequence
+			WHERE b.repo = $1
+			  AND b.status IN ('merged', 'abandoned')
+			  AND b.name != 'main'
+			  AND COALESCE(c.created_at, b.created_at) < $2
+		`, req.Repo, threshold)
+		if err != nil {
+			return fmt.Errorf("find eligible branches: %w", err)
 		}
-		var blobKeys []string
-		for blobRows.Next() {
-			var key string
-			if berr := blobRows.Scan(&key); berr != nil {
-				blobRows.Close()
-				return nil, fmt.Errorf("scan blob key: %w", berr)
+		var branches []string
+		for rows.Next() {
+			var name string
+			if err := rows.Scan(&name); err != nil {
+				rows.Close()
+				return fmt.Errorf("scan branch: %w", err)
 			}
-			blobKeys = append(blobKeys, key)
+			branches = append(branches, name)
 		}
-		blobRows.Close()
-		if berr := blobRows.Err(); berr != nil {
-			return nil, fmt.Errorf("iterate blob keys: %w", berr)
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("iterate branches: %w", err)
 		}
 
-		if !req.DryRun {
-			for _, key := range blobKeys {
-				if berr := s.blobStore.Delete(ctx, key); berr != nil {
-					return nil, fmt.Errorf("delete blob %s: %w", key, berr)
+		// Nothing to purge — return early (errRollback causes rollback, nil returned).
+		if len(branches) == 0 {
+			purgeResult = &PurgeResult{}
+			return errRollback
+		}
+
+		var result PurgeResult
+		result.BranchesPurged = int64(len(branches))
+
+		// 1. Delete file_commits for the eligible branches.
+		res, err := tx.ExecContext(ctx,
+			`DELETE FROM file_commits WHERE repo = $1 AND branch = ANY($2)`,
+			req.Repo, pq.Array(branches),
+		)
+		if err != nil {
+			return fmt.Errorf("delete file_commits: %w", err)
+		}
+		result.FileCommitsDeleted, _ = res.RowsAffected()
+
+		// 2. Delete commits for those branches not referenced by any remaining file_commits.
+		res, err = tx.ExecContext(ctx,
+			`DELETE FROM commits
+			 WHERE repo = $1 AND branch = ANY($2)
+			   AND sequence NOT IN (
+			       SELECT DISTINCT sequence FROM file_commits WHERE repo = $1
+			   )`,
+			req.Repo, pq.Array(branches),
+		)
+		if err != nil {
+			return fmt.Errorf("delete commits: %w", err)
+		}
+		result.CommitsDeleted, _ = res.RowsAffected()
+
+		// 3. Delete reviews for the eligible branches.
+		res, err = tx.ExecContext(ctx,
+			`DELETE FROM reviews WHERE repo = $1 AND branch = ANY($2)`,
+			req.Repo, pq.Array(branches),
+		)
+		if err != nil {
+			return fmt.Errorf("delete reviews: %w", err)
+		}
+		result.ReviewsDeleted, _ = res.RowsAffected()
+
+		// 4. Delete check_runs for the eligible branches.
+		res, err = tx.ExecContext(ctx,
+			`DELETE FROM check_runs WHERE repo = $1 AND branch = ANY($2)`,
+			req.Repo, pq.Array(branches),
+		)
+		if err != nil {
+			return fmt.Errorf("delete check_runs: %w", err)
+		}
+		result.CheckRunsDeleted, _ = res.RowsAffected()
+
+		// 5. Collect blob_keys for orphaned documents before deleting them,
+		// then remove the blobs from the external store, then delete the DB rows.
+		orphanQuery := `
+			SELECT blob_key FROM documents
+			WHERE repo = $1
+			  AND blob_key IS NOT NULL
+			  AND version_id NOT IN (
+			      SELECT DISTINCT version_id FROM file_commits
+			      WHERE repo = $1 AND version_id IS NOT NULL
+			  )`
+		if s.blobStore != nil {
+			blobRows, berr := tx.QueryContext(ctx, orphanQuery, req.Repo)
+			if berr != nil {
+				return fmt.Errorf("collect blob keys: %w", berr)
+			}
+			var blobKeys []string
+			for blobRows.Next() {
+				var key string
+				if berr := blobRows.Scan(&key); berr != nil {
+					blobRows.Close()
+					return fmt.Errorf("scan blob key: %w", berr)
+				}
+				blobKeys = append(blobKeys, key)
+			}
+			blobRows.Close()
+			if berr := blobRows.Err(); berr != nil {
+				return fmt.Errorf("iterate blob keys: %w", berr)
+			}
+
+			if !req.DryRun {
+				for _, key := range blobKeys {
+					if berr := s.blobStore.Delete(ctx, key); berr != nil {
+						return fmt.Errorf("delete blob %s: %w", key, berr)
+					}
 				}
 			}
 		}
-	}
 
-	res, err = tx.ExecContext(ctx,
-		`DELETE FROM documents
-		 WHERE repo = $1
-		   AND version_id NOT IN (
-		       SELECT DISTINCT version_id FROM file_commits
-		       WHERE repo = $1 AND version_id IS NOT NULL
-		   )`,
-		req.Repo,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("delete documents: %w", err)
-	}
-	result.DocumentsDeleted, _ = res.RowsAffected()
+		res, err = tx.ExecContext(ctx,
+			`DELETE FROM documents
+			 WHERE repo = $1
+			   AND version_id NOT IN (
+			       SELECT DISTINCT version_id FROM file_commits
+			       WHERE repo = $1 AND version_id IS NOT NULL
+			   )`,
+			req.Repo,
+		)
+		if err != nil {
+			return fmt.Errorf("delete documents: %w", err)
+		}
+		result.DocumentsDeleted, _ = res.RowsAffected()
 
-	// 6. Delete the branch rows themselves.
-	_, err = tx.ExecContext(ctx,
-		`DELETE FROM branches WHERE repo = $1 AND name = ANY($2)`,
-		req.Repo, pq.Array(branches),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("delete branches: %w", err)
-	}
+		// 6. Delete the branch rows themselves.
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM branches WHERE repo = $1 AND name = ANY($2)`,
+			req.Repo, pq.Array(branches),
+		); err != nil {
+			return fmt.Errorf("delete branches: %w", err)
+		}
 
-	// For dry_run, return counts without committing (defer will rollback).
-	if req.DryRun {
-		return &result, nil
-	}
+		// For dry_run, return counts without committing (errRollback causes rollback, nil returned).
+		if req.DryRun {
+			purgeResult = &result
+			return errRollback
+		}
 
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit tx: %w", err)
+		slog.Info("purge complete", "repo", req.Repo, "branches_purged", result.BranchesPurged, "docs_deleted", result.DocumentsDeleted)
+		purgeResult = &result
+		return nil
+	}); err != nil {
+		return nil, err
 	}
-
-	slog.Info("purge complete", "repo", req.Repo, "branches_purged", result.BranchesPurged, "docs_deleted", result.DocumentsDeleted)
-	return &result, nil
+	return purgeResult, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -2013,67 +1872,52 @@ func (s *Store) ListInvites(ctx context.Context, org string) ([]model.OrgInvite,
 // sets accepted_at, and upserts the identity into org_members — all in one transaction.
 func (s *Store) AcceptInvite(ctx context.Context, org, token, identity string) error {
 	slog.Debug("accept invite started", "org", org)
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		slog.Error("tx begin failed", "op", "accept_invite", "error", err)
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	defer func() {
-		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
-			slog.Error("tx rollback failed", "op", "accept_invite", "error", rollbackErr)
+	return WithTx(ctx, s.db, func(tx *sql.Tx) error {
+		var invID, email, roleStr string
+		var expiresAt time.Time
+		var acceptedAt sql.NullTime
+		if err := tx.QueryRowContext(ctx,
+			`SELECT id, email, role, expires_at, accepted_at
+			 FROM org_invites WHERE org = $1 AND token = $2 FOR UPDATE`,
+			org, token,
+		).Scan(&invID, &email, &roleStr, &expiresAt, &acceptedAt); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrInviteNotFound
+			}
+			return fmt.Errorf("fetch invite: %w", err)
 		}
-	}()
 
-	var invID, email, roleStr string
-	var expiresAt time.Time
-	var acceptedAt sql.NullTime
-	err = tx.QueryRowContext(ctx,
-		`SELECT id, email, role, expires_at, accepted_at
-		 FROM org_invites WHERE org = $1 AND token = $2 FOR UPDATE`,
-		org, token,
-	).Scan(&invID, &email, &roleStr, &expiresAt, &acceptedAt)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrInviteNotFound
+		if acceptedAt.Valid {
+			return ErrInviteAlreadyAccepted
 		}
-		return fmt.Errorf("fetch invite: %w", err)
-	}
+		if time.Now().After(expiresAt) {
+			return ErrInviteExpired
+		}
+		if email != identity {
+			return ErrEmailMismatch
+		}
 
-	if acceptedAt.Valid {
-		return ErrInviteAlreadyAccepted
-	}
-	if time.Now().After(expiresAt) {
-		return ErrInviteExpired
-	}
-	if email != identity {
-		return ErrEmailMismatch
-	}
+		// Mark accepted.
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE org_invites SET accepted_at = now() WHERE id = $1",
+			invID,
+		); err != nil {
+			return fmt.Errorf("update invite: %w", err)
+		}
 
-	// Mark accepted.
-	_, err = tx.ExecContext(ctx,
-		"UPDATE org_invites SET accepted_at = now() WHERE id = $1",
-		invID,
-	)
-	if err != nil {
-		return fmt.Errorf("update invite: %w", err)
-	}
+		// Upsert into org_members.
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO org_members (org, identity, role, invited_by)
+			 SELECT org, $1, role, invited_by FROM org_invites WHERE id = $2
+			 ON CONFLICT (org, identity) DO UPDATE SET role = EXCLUDED.role, invited_by = EXCLUDED.invited_by`,
+			identity, invID,
+		); err != nil {
+			return fmt.Errorf("add member: %w", err)
+		}
 
-	// Upsert into org_members.
-	_, err = tx.ExecContext(ctx,
-		`INSERT INTO org_members (org, identity, role, invited_by)
-		 SELECT org, $1, role, invited_by FROM org_invites WHERE id = $2
-		 ON CONFLICT (org, identity) DO UPDATE SET role = EXCLUDED.role, invited_by = EXCLUDED.invited_by`,
-		identity, invID,
-	)
-	if err != nil {
-		return fmt.Errorf("add member: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	slog.Info("invite accepted", "org", org, "identity", identity)
-	return nil
+		slog.Info("invite accepted", "org", org, "identity", identity)
+		return nil
+	})
 }
 
 // RevokeInvite deletes a pending invite by ID. Returns ErrInviteNotFound if not found.
