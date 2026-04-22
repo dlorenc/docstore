@@ -295,26 +295,26 @@ func (s *server) handleCommit(w http.ResponseWriter, r *http.Request) {
 
 	var req model.CommitRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	req.Repo = repo
 
 	if req.Branch == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "branch is required"})
+		writeError(w, http.StatusBadRequest, "branch is required")
 		return
 	}
 	if len(req.Files) == 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "at least one file is required"})
+		writeError(w, http.StatusBadRequest, "at least one file is required")
 		return
 	}
 	if req.Message == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "message is required"})
+		writeError(w, http.StatusBadRequest, "message is required")
 		return
 	}
 	for _, f := range req.Files {
 		if f.Path == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "file path is required"})
+			writeError(w, http.StatusBadRequest, "file path is required")
 			return
 		}
 	}
@@ -326,12 +326,12 @@ func (s *server) handleCommit(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, db.ErrBranchNotFound):
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "branch not found"})
+			writeAPIError(w, ErrCodeBranchNotFound, http.StatusNotFound, "branch not found")
 		case errors.Is(err, db.ErrBranchNotActive):
-			writeJSON(w, http.StatusConflict, map[string]string{"error": "branch is not active"})
+			writeAPIError(w, ErrCodeBranchNotActive, http.StatusConflict, "branch is not active")
 		default:
 			slog.Error("internal error", "op", "commit", "repo", repo, "error", err)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal server error"})
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -400,7 +400,7 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func notImplemented(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "not implemented"})
+	writeError(w, http.StatusNotImplemented, "not implemented")
 }
 
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
