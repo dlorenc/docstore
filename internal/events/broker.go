@@ -83,6 +83,10 @@ func (b *Broker) CurrentSeq(ctx context.Context) (int64, error) {
 // If repo is "*", events from all repos are returned.
 // If types is empty, all event types are returned.
 // Results are ordered by seq ASC, capped at 200 rows per call.
+//
+// Poll does not apply any internal back-off. Callers are responsible for
+// sleeping between calls (e.g. after an error or when the result is empty)
+// to avoid tight polling loops.
 func (b *Broker) Poll(ctx context.Context, repo string, sinceSeq int64, types []string) ([]LoggedEvent, error) {
 	if b.db == nil {
 		return nil, nil
