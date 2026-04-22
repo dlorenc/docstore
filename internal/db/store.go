@@ -10,50 +10,17 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"sort"
-	"strconv"
 	"time"
 
 	"github.com/dlorenc/docstore/internal/blob"
+	"github.com/dlorenc/docstore/internal/hash"
 	"github.com/dlorenc/docstore/internal/model"
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 )
 
-// genesisHash is the all-zeros hash used as the previous hash for the first commit.
-const genesisHash = "0000000000000000000000000000000000000000000000000000000000000000"
-
-// chainFile holds a path and content_hash for commit hash computation.
-type chainFile struct {
-	path        string
-	contentHash string
-}
-
-// computeCommitHash computes the SHA256 chain hash for a commit.
-// prevHash is the hex-encoded hash of the previous commit (or genesisHash for the first commit).
-// files are sorted by path internally, so caller order does not matter.
-func computeCommitHash(prevHash string, seq int64, repo, branch, author, message string, createdAt time.Time, files []chainFile) string {
-	// Sort a copy so the hash is always canonical regardless of input order.
-	sorted := make([]chainFile, len(files))
-	copy(sorted, files)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].path < sorted[j].path })
-
-	h := sha256.New()
-	h.Write([]byte(prevHash + "\n"))
-	h.Write([]byte(strconv.FormatInt(seq, 10) + "\n"))
-	h.Write([]byte(repo + "\n"))
-	h.Write([]byte(branch + "\n"))
-	h.Write([]byte(author + "\n"))
-	h.Write([]byte(message + "\n"))
-	h.Write([]byte(createdAt.UTC().Format(time.RFC3339Nano) + "\n"))
-	for _, f := range sorted {
-		h.Write([]byte(f.path + ":" + f.contentHash + "\n"))
-	}
-	return hex.EncodeToString(h.Sum(nil))
-}
-
 // fetchPrevCommitHash fetches the commit_hash of the most recent commit before seq
-// on the same branch. Returns genesisHash if no previous commit exists on this branch
+// on the same branch. Returns hash.GenesisHash if no previous commit exists on this branch
 // or if the previous commit has a NULL commit_hash (pre-feature commit).
 // Using per-branch lookup ensures same-branch commits form a coherent linear chain;
 // different branches have independent chains and are not subject to cross-branch races.
@@ -66,13 +33,13 @@ func fetchPrevCommitHash(ctx context.Context, tx *sql.Tx, repo, branch string, s
 		repo, branch, seq,
 	).Scan(&prevNull)
 	if errors.Is(err, sql.ErrNoRows) {
-		return genesisHash, nil
+		return hash.GenesisHash, nil
 	}
 	if err != nil {
 		return "", fmt.Errorf("fetch prev commit hash: %w", err)
 	}
 	if !prevNull.Valid || prevNull.String == "" {
-		return genesisHash, nil
+		return hash.GenesisHash, nil
 	}
 	return prevNull.String, nil
 }
@@ -447,7 +414,7 @@ func (s *Store) Commit(ctx context.Context, req model.CommitRequest) (*model.Com
 	}
 
 	results := make([]model.CommitFileResult, 0, len(req.Files))
-	hashFiles := make([]chainFile, 0, len(req.Files))
+	hashFiles := make([]hash.File, 0, len(req.Files))
 
 	for _, f := range req.Files {
 		var versionIDPtr *string
@@ -519,7 +486,7 @@ func (s *Store) Commit(ctx context.Context, req model.CommitRequest) (*model.Com
 			Path:      f.Path,
 			VersionID: versionIDPtr,
 		})
-		hashFiles = append(hashFiles, chainFile{path: f.Path, contentHash: fileContentHash})
+		hashFiles = append(hashFiles, hash.File{Path: f.Path, ContentHash: fileContentHash})
 	}
 
 	// Advance branch head.
@@ -536,8 +503,8 @@ func (s *Store) Commit(ctx context.Context, req model.CommitRequest) (*model.Com
 	if err != nil {
 		return nil, err
 	}
-	// computeCommitHash sorts files internally; no pre-sort needed.
-	commitHash := computeCommitHash(prevHash, newSeq, req.Repo, req.Branch, req.Author, req.Message, commitCreatedAt, hashFiles)
+	// hash.CommitHash sorts files internally; no pre-sort needed.
+	commitHash := hash.CommitHash(prevHash, newSeq, req.Repo, req.Branch, req.Author, req.Message, commitCreatedAt, hashFiles)
 	if err := updateCommitHash(ctx, tx, req.Repo, newSeq, commitHash); err != nil {
 		return nil, fmt.Errorf("store commit hash: %w", err)
 	}
@@ -796,16 +763,16 @@ func (s *Store) Merge(ctx context.Context, req model.MergeRequest) (*model.Merge
 	if err != nil {
 		return nil, nil, err
 	}
-	hashFiles := make([]chainFile, 0, len(branchChanges))
+	hashFiles := make([]hash.File, 0, len(branchChanges))
 	for path, versionID := range branchChanges {
 		contentHash, err := fetchVersionContentHash(ctx, tx, versionID)
 		if err != nil {
 			return nil, nil, err
 		}
-		hashFiles = append(hashFiles, chainFile{path: path, contentHash: contentHash})
+		hashFiles = append(hashFiles, hash.File{Path: path, ContentHash: contentHash})
 	}
-	// computeCommitHash sorts files internally; no pre-sort needed.
-	mergeHash := computeCommitHash(prevHash, newSeq, req.Repo, "main", req.Author, mergeMsg, mergeCreatedAt, hashFiles)
+	// hash.CommitHash sorts files internally; no pre-sort needed.
+	mergeHash := hash.CommitHash(prevHash, newSeq, req.Repo, "main", req.Author, mergeMsg, mergeCreatedAt, hashFiles)
 	if err := updateCommitHash(ctx, tx, req.Repo, newSeq, mergeHash); err != nil {
 		return nil, nil, fmt.Errorf("store merge commit hash: %w", err)
 	}
@@ -960,16 +927,16 @@ func (s *Store) Rebase(ctx context.Context, req model.RebaseRequest) (*model.Reb
 		if err != nil {
 			return nil, nil, err
 		}
-		hashFiles := make([]chainFile, 0, len(g.files))
+		hashFiles := make([]hash.File, 0, len(g.files))
 		for _, f := range g.files {
 			contentHash, err := fetchVersionContentHash(ctx, tx, f.versionID)
 			if err != nil {
 				return nil, nil, err
 			}
-			hashFiles = append(hashFiles, chainFile{path: f.path, contentHash: contentHash})
+			hashFiles = append(hashFiles, hash.File{Path: f.path, ContentHash: contentHash})
 		}
-		// computeCommitHash sorts files internally; no pre-sort needed.
-		rebaseHash := computeCommitHash(prevHash, newSeq, req.Repo, req.Branch, author, rebaseMsg, rebaseCreatedAt, hashFiles)
+		// hash.CommitHash sorts files internally; no pre-sort needed.
+		rebaseHash := hash.CommitHash(prevHash, newSeq, req.Repo, req.Branch, author, rebaseMsg, rebaseCreatedAt, hashFiles)
 		if err := updateCommitHash(ctx, tx, req.Repo, newSeq, rebaseHash); err != nil {
 			return nil, nil, fmt.Errorf("store rebase commit hash: %w", err)
 		}
