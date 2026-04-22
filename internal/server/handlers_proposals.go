@@ -709,6 +709,10 @@ func checkProposalIfMatch(w http.ResponseWriter, r *http.Request, p *model.Propo
 	if ifMatch == "" {
 		return true
 	}
+	if ifMatch == "*" {
+		// RFC 7232 §3.2: "If-Match: *" means proceed if the resource exists.
+		return true
+	}
 	etag := computeETag(p.ID, fmt.Sprintf("%d", p.UpdatedAt.UnixNano()))
 	if etag != ifMatch {
 		writeAPIError(w, ErrCodePreconditionFailed, http.StatusPreconditionFailed, "ETag mismatch")
