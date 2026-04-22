@@ -281,7 +281,7 @@ func (s *server) handleRebase(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, db.ErrBranchNotFound):
 			writeAPIError(w, ErrCodeBranchNotFound, http.StatusNotFound, "branch not found")
 		case errors.Is(err, db.ErrBranchNotActive):
-			writeAPIError(w, ErrCodeBranchNotActive, http.StatusBadRequest, "branch is not active")
+			writeAPIError(w, ErrCodeBranchNotActive, http.StatusConflict, "branch is not active")
 		default:
 			slog.Error("internal error", "op", "rebase", "repo", repo, "branch", req.Branch, "error", err)
 			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
