@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dlorenc/docstore/internal/hash"
 	"github.com/dlorenc/docstore/internal/model"
 )
 
@@ -2647,21 +2648,21 @@ func TestImportGitDefaultMode(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // buildChainHash replicates the server-side hash formula for tests.
-func buildChainHash(prevHash string, seq int64, repo, branch, author, message string, createdAt time.Time, files []chainFile) string {
-	return computeChainHash(prevHash, seq, repo, branch, author, message, createdAt, files)
+func buildChainHash(prevHash string, seq int64, repo, branch, author, message string, createdAt time.Time, files []hash.File) string {
+	return hash.CommitHash(prevHash, seq, repo, branch, author, message, createdAt, files)
 }
 
 // newChainEntry builds a minimal chainEntry with a correct commit_hash for testing.
 func newChainEntry(prevHash string, seq int64, repo, branch, author, msg string, ts time.Time) chainEntry {
-	hash := buildChainHash(prevHash, seq, repo, branch, author, msg, ts, nil)
+	commitHash := buildChainHash(prevHash, seq, repo, branch, author, msg, ts, nil)
 	return chainEntry{
 		Sequence:   seq,
 		Branch:     branch,
 		Author:     author,
 		Message:    msg,
 		CreatedAt:  ts,
-		CommitHash: &hash,
-		Files:      []chainFile{},
+		CommitHash: &commitHash,
+		Files:      []hash.File{},
 	}
 }
 
@@ -2687,7 +2688,7 @@ func newPullServer(t *testing.T, branch string, headSeq int64, chainEntries []ch
 // TestPull_TOFU verifies that the first pull (no stored CommitHash) stores the tip hash.
 func TestPull_TOFU(t *testing.T) {
 	ts := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	e1 := newChainEntry(genesisHash, 1, "default/default", "main", "alice", "first", ts)
+	e1 := newChainEntry(hash.GenesisHash, 1, "default/default", "main", "alice", "first", ts)
 
 	srv := newPullServer(t, "main", 1, []chainEntry{e1})
 	defer srv.Close()
@@ -2714,7 +2715,7 @@ func TestPull_TOFU(t *testing.T) {
 // TestPull_VerificationSuccess verifies that a subsequent pull with a valid chain passes.
 func TestPull_VerificationSuccess(t *testing.T) {
 	ts := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	e1 := newChainEntry(genesisHash, 1, "default/default", "main", "alice", "first", ts)
+	e1 := newChainEntry(hash.GenesisHash, 1, "default/default", "main", "alice", "first", ts)
 	ts2 := ts.Add(time.Second)
 	e2 := newChainEntry(*e1.CommitHash, 2, "default/default", "main", "alice", "second", ts2)
 
@@ -2743,7 +2744,7 @@ func TestPull_VerificationSuccess(t *testing.T) {
 // TestPull_VerificationFailure verifies that a wrong hash causes an error.
 func TestPull_VerificationFailure(t *testing.T) {
 	ts := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	e1 := newChainEntry(genesisHash, 1, "default/default", "main", "alice", "first", ts)
+	e1 := newChainEntry(hash.GenesisHash, 1, "default/default", "main", "alice", "first", ts)
 	ts2 := ts.Add(time.Second)
 	// Build a second entry with a wrong hash.
 	badHash := "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
@@ -2754,7 +2755,7 @@ func TestPull_VerificationFailure(t *testing.T) {
 		Message:    "second",
 		CreatedAt:  ts2,
 		CommitHash: &badHash,
-		Files:      []chainFile{},
+		Files:      []hash.File{},
 	}
 
 	srv := newPullServer(t, "main", 2, []chainEntry{e1, e2Wrong})
@@ -2780,7 +2781,7 @@ func TestPull_VerificationFailure(t *testing.T) {
 // TestVerify_HappyPath verifies ds verify prints OK for a valid chain.
 func TestVerify_HappyPath(t *testing.T) {
 	ts := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	e1 := newChainEntry(genesisHash, 1, "default/default", "main", "alice", "first", ts)
+	e1 := newChainEntry(hash.GenesisHash, 1, "default/default", "main", "alice", "first", ts)
 	ts2 := ts.Add(time.Second)
 	e2 := newChainEntry(*e1.CommitHash, 2, "default/default", "main", "alice", "second", ts2)
 
@@ -2821,7 +2822,7 @@ func TestVerify_HappyPath(t *testing.T) {
 // what the client has stored in state (FIX-7).
 func TestPull_AnchorTampered(t *testing.T) {
 	ts := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	e1 := newChainEntry(genesisHash, 1, "default/default", "main", "alice", "first", ts)
+	e1 := newChainEntry(hash.GenesisHash, 1, "default/default", "main", "alice", "first", ts)
 
 	// Server returns a tampered hash for the anchor sequence.
 	tamperedHash := "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
@@ -2832,7 +2833,7 @@ func TestPull_AnchorTampered(t *testing.T) {
 		Message:    "first",
 		CreatedAt:  ts,
 		CommitHash: &tamperedHash,
-		Files:      []chainFile{},
+		Files:      []hash.File{},
 	}
 
 	srv := newPullServer(t, "main", 2, []chainEntry{e1Tampered})
@@ -2869,7 +2870,7 @@ func TestPull_TOFU_NullHash(t *testing.T) {
 		Message:    "legacy commit",
 		CreatedAt:  time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
 		CommitHash: nil,
-		Files:      []chainFile{},
+		Files:      []hash.File{},
 	}
 
 	srv := newPullServer(t, "main", 1, []chainEntry{nullEntry})
@@ -3088,7 +3089,7 @@ func TestPurge_DryRun(t *testing.T) {
 // but skips chain verification even when the chain would fail.
 func TestPull_SkipVerify(t *testing.T) {
 	ts := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	e1 := newChainEntry(genesisHash, 1, "default/default", "main", "alice", "first", ts)
+	e1 := newChainEntry(hash.GenesisHash, 1, "default/default", "main", "alice", "first", ts)
 
 	// Build a second entry with a deliberately wrong hash.
 	badHash := "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
@@ -3099,7 +3100,7 @@ func TestPull_SkipVerify(t *testing.T) {
 		Message:    "second",
 		CreatedAt:  ts.Add(time.Second),
 		CommitHash: &badHash,
-		Files:      []chainFile{},
+		Files:      []hash.File{},
 	}
 
 	// The server has a bad chain that would normally cause a verification error.
