@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -445,6 +446,8 @@ func (s *server) handleGetProposal(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	etag := computeETag(p.ID, fmt.Sprintf("%d", p.UpdatedAt.UnixNano()))
+	w.Header().Set("ETag", etag)
 	writeJSON(w, http.StatusOK, p)
 }
 
@@ -473,6 +476,10 @@ func (s *server) handleUpdateProposal(w http.ResponseWriter, r *http.Request) {
 
 	if existing.Author != identity && role != model.RoleMaintainer && role != model.RoleAdmin {
 		writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, "forbidden: must be proposal author or maintainer")
+		return
+	}
+
+	if !checkProposalIfMatch(w, r, existing) {
 		return
 	}
 
@@ -523,6 +530,10 @@ func (s *server) handleCloseProposal(w http.ResponseWriter, r *http.Request) {
 
 	if existing.Author != identity && role != model.RoleMaintainer && role != model.RoleAdmin {
 		writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, "forbidden: must be proposal author or maintainer")
+		return
+	}
+
+	if !checkProposalIfMatch(w, r, existing) {
 		return
 	}
 
@@ -687,4 +698,21 @@ func (s *server) upsertProposalMentionRefs(ctx context.Context, repo, proposalID
 			slog.Warn("upsert proposal mention ref", "repo", repo, "issue", num, "proposal", proposalID, "error", err)
 		}
 	}
+}
+
+// checkProposalIfMatch validates the If-Match header against the proposal's ETag.
+// Returns true if the check passes (header absent or ETag matches); writes the
+// appropriate error and returns false otherwise. The proposal must already be
+// fetched by the caller.
+func checkProposalIfMatch(w http.ResponseWriter, r *http.Request, p *model.Proposal) bool {
+	ifMatch := r.Header.Get("If-Match")
+	if ifMatch == "" {
+		return true
+	}
+	etag := computeETag(p.ID, fmt.Sprintf("%d", p.UpdatedAt.UnixNano()))
+	if etag != ifMatch {
+		writeAPIError(w, ErrCodePreconditionFailed, http.StatusPreconditionFailed, "ETag mismatch")
+		return false
+	}
+	return true
 }
