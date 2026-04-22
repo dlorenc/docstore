@@ -101,6 +101,10 @@ func (s *server) handleUpdateBranch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !s.checkBranchIfMatch(w, r, repo, bname) {
+		return
+	}
+
 	var req model.UpdateBranchRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -137,6 +141,10 @@ func (s *server) handleEnableAutoMerge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !s.checkBranchIfMatch(w, r, repo, bname) {
+		return
+	}
+
 	if err := s.commitStore.SetBranchAutoMerge(r.Context(), repo, bname, true); err != nil {
 		switch {
 		case errors.Is(err, db.ErrBranchNotFound):
@@ -165,6 +173,10 @@ func (s *server) handleDisableAutoMerge(w http.ResponseWriter, r *http.Request) 
 	}
 	if bname == "main" {
 		writeError(w, http.StatusBadRequest, "cannot disable auto-merge on branch 'main'")
+		return
+	}
+
+	if !s.checkBranchIfMatch(w, r, repo, bname) {
 		return
 	}
 
@@ -234,8 +246,64 @@ func (s *server) handleBranchGet(w http.ResponseWriter, r *http.Request) {
 		branch := strings.TrimSuffix(branchPath, "/comments")
 		s.handleListReviewComments(w, r, repo, branch)
 	default:
-		writeError(w, http.StatusNotFound, "not found")
+		s.handleGetBranch(w, r, repo, branchPath)
 	}
+}
+
+// handleGetBranch implements GET /repos/:name/branch/:branch (bare branch fetch).
+// It returns the branch metadata and sets an ETag header derived from the branch's
+// head_sequence so clients can use conditional writes (If-Match).
+func (s *server) handleGetBranch(w http.ResponseWriter, r *http.Request, repo, branch string) {
+	if s.readStore == nil {
+		writeAPIError(w, ErrCodeServiceUnavailable, http.StatusServiceUnavailable, "read store not available")
+		return
+	}
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
+	bi, err := s.readStore.GetBranch(r.Context(), repo, branch)
+	if err != nil {
+		slog.Error("internal error", "op", "get_branch", "repo", repo, "branch", branch, "error", err)
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if bi == nil {
+		writeAPIError(w, ErrCodeBranchNotFound, http.StatusNotFound, "branch not found")
+		return
+	}
+	etag := computeETag(repo, branch, fmt.Sprintf("%d", bi.HeadSequence))
+	w.Header().Set("ETag", etag)
+	writeJSON(w, http.StatusOK, bi)
+}
+
+// checkBranchIfMatch validates the If-Match header for a branch conditional write.
+// Returns true if the check passes (header absent or ETag matches); writes the
+// appropriate error and returns false otherwise.
+func (s *server) checkBranchIfMatch(w http.ResponseWriter, r *http.Request, repo, branch string) bool {
+	ifMatch := r.Header.Get("If-Match")
+	if ifMatch == "" {
+		return true
+	}
+	if s.readStore == nil {
+		writeAPIError(w, ErrCodeServiceUnavailable, http.StatusServiceUnavailable, "read store not available")
+		return false
+	}
+	bi, err := s.readStore.GetBranch(r.Context(), repo, branch)
+	if err != nil {
+		slog.Error("internal error", "op", "if_match_branch", "repo", repo, "branch", branch, "error", err)
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
+		return false
+	}
+	if bi == nil {
+		writeAPIError(w, ErrCodeBranchNotFound, http.StatusNotFound, "branch not found")
+		return false
+	}
+	etag := computeETag(repo, branch, fmt.Sprintf("%d", bi.HeadSequence))
+	if etag != ifMatch {
+		writeAPIError(w, ErrCodePreconditionFailed, http.StatusPreconditionFailed, "ETag mismatch")
+		return false
+	}
+	return true
 }
 
 // handleRebase implements POST /repos/:name/rebase
