@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/dlorenc/docstore/internal/hash"
 	"github.com/dlorenc/docstore/internal/model"
 	"github.com/dlorenc/docstore/internal/store"
 	"github.com/dlorenc/docstore/internal/testutil"
@@ -40,17 +41,17 @@ func BenchmarkChainWalk_100Commits(b *testing.B) {
 			b.Fatalf("GetChain: %v", err)
 		}
 
-		prevHash := genesisHash
+		prevHash := hash.GenesisHash
 		for _, e := range entries {
 			if e.CommitHash == nil {
-				prevHash = genesisHash
+				prevHash = hash.GenesisHash
 				continue
 			}
-			files := make([]chainFile, len(e.Files))
+			files := make([]hash.File, len(e.Files))
 			for j, f := range e.Files {
-				files[j] = chainFile{path: f.Path, contentHash: f.ContentHash}
+				files[j] = hash.File{Path: f.Path, ContentHash: f.ContentHash}
 			}
-			got := computeCommitHash(prevHash, e.Sequence, "default/default", e.Branch, e.Author, e.Message, e.CreatedAt, files)
+			got := hash.CommitHash(prevHash, e.Sequence, "default/default", e.Branch, e.Author, e.Message, e.CreatedAt, files)
 			if got != *e.CommitHash {
 				b.Fatalf("chain integrity error at sequence %d: got %s want %s", e.Sequence, got, *e.CommitHash)
 			}
