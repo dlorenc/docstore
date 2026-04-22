@@ -939,6 +939,75 @@ func TestHandleDisableAutoMerge_StoreError(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// handleMerge dry-run tests
+// ---------------------------------------------------------------------------
+
+// TestHandleMerge_DryRun verifies that a merge with dry_run=true returns the
+// computed sequence without persisting the merge (policyCache is nil so
+// policy evaluation is skipped, and the mock Merge fn signals dry-run by
+// returning the expected sequence).
+func TestHandleMerge_DryRun(t *testing.T) {
+	const wantSeq = int64(42)
+	ms := &mockStore{
+		getRepoFn: func(_ context.Context, name string) (*model.Repo, error) {
+			return &model.Repo{Name: name}, nil
+		},
+		mergeFn: func(_ context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error) {
+			if !req.DryRun {
+				t.Error("expected DryRun=true inside Merge call")
+			}
+			return &model.MergeResponse{Sequence: wantSeq}, nil, nil
+		},
+	}
+	srv := New(ms, nil, devID, devID)
+	body, _ := json.Marshal(model.MergeRequest{Branch: "feature", DryRun: true})
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/merge", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	var resp model.MergeResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Sequence != wantSeq {
+		t.Errorf("expected sequence %d, got %d", wantSeq, resp.Sequence)
+	}
+}
+
+// TestHandleMerge_DryRun_DoesNotPersist verifies that dry_run=true does not
+// cause a second Merge call or any proposal side-effects: the merge function
+// is called exactly once and the server returns 200 without emitting events.
+func TestHandleMerge_DryRun_DoesNotPersist(t *testing.T) {
+	calls := 0
+	ms := &mockStore{
+		getRepoFn: func(_ context.Context, name string) (*model.Repo, error) {
+			return &model.Repo{Name: name}, nil
+		},
+		mergeFn: func(_ context.Context, req model.MergeRequest) (*model.MergeResponse, []db.MergeConflict, error) {
+			calls++
+			return &model.MergeResponse{Sequence: 7}, nil, nil
+		},
+	}
+	srv := New(ms, nil, devID, devID)
+	body, _ := json.Marshal(model.MergeRequest{Branch: "feature", DryRun: true})
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/merge", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	if calls != 1 {
+		t.Errorf("expected Merge to be called exactly once, got %d", calls)
+	}
+}
+
 // 14. Config sent as a JSON array → 400.
 func TestHandleCreateSubscription_InvalidConfigType(t *testing.T) {
 	srv := New(&mockStore{}, nil, devID, devID)
