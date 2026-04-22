@@ -1,6 +1,10 @@
 package server
 
-import "net/http"
+import (
+	"crypto/sha256"
+	"fmt"
+	"net/http"
+)
 
 // ErrorCode is a machine-readable code included in every API error response.
 // Clients can switch on Code to handle specific error types programmatically
@@ -33,6 +37,9 @@ const (
 	// Auth errors
 	ErrCodeUnauthorized ErrorCode = "UNAUTHORIZED"
 	ErrCodeForbidden    ErrorCode = "FORBIDDEN"
+
+	// Precondition errors (HTTP 412)
+	ErrCodePreconditionFailed ErrorCode = "PRECONDITION_FAILED"
 
 	// Client errors
 	ErrCodeBadRequest       ErrorCode = "BAD_REQUEST"
@@ -86,9 +93,25 @@ func statusToCode(status int) ErrorCode {
 		return ErrCodeGone
 	case http.StatusNotImplemented:
 		return ErrCodeNotImplemented
+	case http.StatusPreconditionFailed:
+		return ErrCodePreconditionFailed
 	case http.StatusServiceUnavailable:
 		return ErrCodeServiceUnavailable
 	default:
 		return ErrCodeInternalError
 	}
+}
+
+// computeETag returns a quoted ETag string by SHA-256-hashing the given parts
+// joined with colons. The result is hex-encoded and wrapped in double quotes
+// per the HTTP ETag format (RFC 9110).
+func computeETag(parts ...string) string {
+	h := sha256.New()
+	for i, p := range parts {
+		if i > 0 {
+			h.Write([]byte(":"))
+		}
+		h.Write([]byte(p))
+	}
+	return fmt.Sprintf(`"%x"`, h.Sum(nil))
 }
