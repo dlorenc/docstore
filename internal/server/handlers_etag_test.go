@@ -394,3 +394,133 @@ func TestErrCodePreconditionFailed_MapsTo412(t *testing.T) {
 		t.Errorf("statusToCode(412) = %q; want %q", code, ErrCodePreconditionFailed)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// If-Match: * wildcard tests (RFC 7232 §3.2)
+// ---------------------------------------------------------------------------
+
+func TestUpdateBranch_WithWildcardIfMatch_Succeeds(t *testing.T) {
+	ms := &mockStore{
+		updateBranchDraftFn: func(_ context.Context, _, _ string, _ bool) error {
+			return nil
+		},
+	}
+	rs := &mockReadStore{
+		getBranchFn: func(_ context.Context, _, _ string) (*store.BranchInfo, error) {
+			return &store.BranchInfo{Name: "feat", HeadSequence: 5}, nil
+		},
+	}
+	srv := NewWithReadStore(ms, rs, devID, devID)
+
+	body, _ := json.Marshal(model.UpdateBranchRequest{Draft: true})
+	req := httptest.NewRequest(http.MethodPatch, "/repos/default/default/-/branch/feat", bytes.NewReader(body))
+	req.Header.Set("If-Match", "*")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for If-Match: *, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUpdateProposal_WithWildcardIfMatch_Succeeds(t *testing.T) {
+	ts := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
+	p := makeTestProposal("prop-wc", ts)
+	newTitle := "Wildcard update"
+	ms := &mockStore{
+		getProposalFn: func(_ context.Context, _, _ string) (*model.Proposal, error) {
+			return p, nil
+		},
+		updateProposalFn: func(_ context.Context, _, _ string, _, _ *string) (*model.Proposal, error) {
+			updated := *p
+			updated.Title = newTitle
+			return &updated, nil
+		},
+	}
+	srv := NewWithReadStore(ms, &mockReadStore{}, devID, devID)
+
+	body, _ := json.Marshal(model.UpdateProposalRequest{Title: &newTitle})
+	req := httptest.NewRequest(http.MethodPatch, "/repos/default/default/-/proposals/prop-wc", bytes.NewReader(body))
+	req.Header.Set("If-Match", "*")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for If-Match: *, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleDeleteBranch If-Match tests
+// ---------------------------------------------------------------------------
+
+func TestDeleteBranch_WithNoIfMatch_Proceeds(t *testing.T) {
+	ms := &mockStore{
+		deleteBranchFn: func(_ context.Context, _, _ string) error {
+			return nil
+		},
+	}
+	srv := NewWithReadStore(ms, &mockReadStore{}, devID, devID)
+
+	req := httptest.NewRequest(http.MethodDelete, "/repos/default/default/-/branch/feat", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDeleteBranch_WithCorrectIfMatch_Succeeds(t *testing.T) {
+	const repo, branch = "default/default", "feat"
+	bi := &store.BranchInfo{Name: branch, HeadSequence: 4}
+	ms := &mockStore{
+		deleteBranchFn: func(_ context.Context, _, _ string) error {
+			return nil
+		},
+	}
+	rs := &mockReadStore{
+		getBranchFn: func(_ context.Context, _, _ string) (*store.BranchInfo, error) {
+			return bi, nil
+		},
+	}
+	srv := NewWithReadStore(ms, rs, devID, devID)
+
+	etag := computeETag(repo, branch, "4")
+	req := httptest.NewRequest(http.MethodDelete, "/repos/"+repo+"/-/branch/"+branch, nil)
+	req.Header.Set("If-Match", etag)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDeleteBranch_WithStaleIfMatch_Returns412(t *testing.T) {
+	const repo, branch = "default/default", "feat"
+	bi := &store.BranchInfo{Name: branch, HeadSequence: 8}
+	rs := &mockReadStore{
+		getBranchFn: func(_ context.Context, _, _ string) (*store.BranchInfo, error) {
+			return bi, nil
+		},
+	}
+	srv := NewWithReadStore(&mockStore{}, rs, devID, devID)
+
+	staleETag := computeETag(repo, branch, "2") // sequence 2 != actual 8
+	req := httptest.NewRequest(http.MethodDelete, "/repos/"+repo+"/-/branch/"+branch, nil)
+	req.Header.Set("If-Match", staleETag)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("expected 412, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	var resp APIError
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Code != ErrCodePreconditionFailed {
+		t.Errorf("code = %q; want %q", resp.Code, ErrCodePreconditionFailed)
+	}
+}

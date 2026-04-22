@@ -201,8 +201,16 @@ func (s *server) handleDisableAutoMerge(w http.ResponseWriter, r *http.Request) 
 func (s *server) handleDeleteBranch(w http.ResponseWriter, r *http.Request) {
 	repo := r.PathValue("name")
 	bname := r.PathValue("bname")
+
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
 	if bname == "main" {
 		writeError(w, http.StatusBadRequest, "cannot delete branch 'main'")
+		return
+	}
+
+	if !s.checkBranchIfMatch(w, r, repo, bname) {
 		return
 	}
 
@@ -297,6 +305,10 @@ func (s *server) checkBranchIfMatch(w http.ResponseWriter, r *http.Request, repo
 	if bi == nil {
 		writeAPIError(w, ErrCodeBranchNotFound, http.StatusNotFound, "branch not found")
 		return false
+	}
+	if ifMatch == "*" {
+		// RFC 7232 §3.2: "If-Match: *" means proceed if the resource exists.
+		return true
 	}
 	etag := computeETag(repo, branch, fmt.Sprintf("%d", bi.HeadSequence))
 	if etag != ifMatch {
