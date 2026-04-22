@@ -447,9 +447,10 @@ func (s *server) handleCreateOrg(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, db.ErrOrgExists):
-			writeError(w, http.StatusConflict, "org already exists")
+			writeAPIError(w, ErrCodeOrgExists, http.StatusConflict, "org already exists")
 		default:
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			slog.Error("internal error", "op", "create_org", "org", req.Name, "error", err)
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -461,7 +462,8 @@ func (s *server) handleCreateOrg(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleListOrgs(w http.ResponseWriter, r *http.Request) {
 	orgs, err := s.commitStore.ListOrgs(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		slog.Error("internal error", "op", "list_orgs", "error", err)
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
 		return
 	}
 	if orgs == nil {
@@ -477,9 +479,10 @@ func (s *server) handleGetOrg(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, db.ErrOrgNotFound):
-			writeError(w, http.StatusNotFound, "org not found")
+			writeAPIError(w, ErrCodeOrgNotFound, http.StatusNotFound, "org not found")
 		default:
-			writeError(w, http.StatusInternalServerError, "query failed")
+			slog.Error("internal error", "op", "get_org", "org", name, "error", err)
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
 		}
 		return
 	}
@@ -493,11 +496,12 @@ func (s *server) handleDeleteOrg(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, db.ErrOrgNotFound):
-			writeError(w, http.StatusNotFound, "org not found")
+			writeAPIError(w, ErrCodeOrgNotFound, http.StatusNotFound, "org not found")
 		case errors.Is(err, db.ErrOrgHasRepos):
-			writeError(w, http.StatusConflict, "org has repos; delete them first")
+			writeAPIError(w, ErrCodeConflict, http.StatusConflict, "org has repos; delete them first")
 		default:
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			slog.Error("internal error", "op", "delete_org", "org", name, "error", err)
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -510,15 +514,17 @@ func (s *server) handleListOrgRepos(w http.ResponseWriter, r *http.Request) {
 	owner := r.PathValue("org")
 	if _, err := s.commitStore.GetOrg(r.Context(), owner); err != nil {
 		if errors.Is(err, db.ErrOrgNotFound) {
-			writeError(w, http.StatusNotFound, "org not found")
+			writeAPIError(w, ErrCodeOrgNotFound, http.StatusNotFound, "org not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "query failed")
+		slog.Error("internal error", "op", "list_org_repos", "org", owner, "error", err)
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
 		return
 	}
 	repos, err := s.commitStore.ListOrgRepos(r.Context(), owner)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		slog.Error("internal error", "op", "list_org_repos", "org", owner, "error", err)
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
 		return
 	}
 	if repos == nil {
@@ -538,14 +544,15 @@ func (s *server) requireOrgOwner(w http.ResponseWriter, r *http.Request, org str
 	m, err := s.commitStore.GetOrgMember(r.Context(), org, identity)
 	if err != nil {
 		if errors.Is(err, db.ErrOrgMemberNotFound) {
-			writeError(w, http.StatusForbidden, "forbidden: not an org member")
+			writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, "forbidden: not an org member")
 			return false
 		}
-		writeError(w, http.StatusInternalServerError, "query failed")
+		slog.Error("internal error", "op", "require_org_owner", "org", org, "error", err)
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
 		return false
 	}
 	if m.Role != model.OrgRoleOwner {
-		writeError(w, http.StatusForbidden, "forbidden: org owner required")
+		writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, "forbidden: org owner required")
 		return false
 	}
 	return true
@@ -558,10 +565,11 @@ func (s *server) requireOrgMember(w http.ResponseWriter, r *http.Request, org st
 	_, err := s.commitStore.GetOrgMember(r.Context(), org, identity)
 	if err != nil {
 		if errors.Is(err, db.ErrOrgMemberNotFound) {
-			writeError(w, http.StatusForbidden, "forbidden: not an org member")
+			writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, "forbidden: not an org member")
 			return false
 		}
-		writeError(w, http.StatusInternalServerError, "query failed")
+		slog.Error("internal error", "op", "require_org_member", "org", org, "error", err)
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
 		return false
 	}
 	return true
@@ -572,10 +580,11 @@ func (s *server) handleListOrgMembers(w http.ResponseWriter, r *http.Request) {
 	org := r.PathValue("org")
 	if _, err := s.commitStore.GetOrg(r.Context(), org); err != nil {
 		if errors.Is(err, db.ErrOrgNotFound) {
-			writeError(w, http.StatusNotFound, "org not found")
+			writeAPIError(w, ErrCodeOrgNotFound, http.StatusNotFound, "org not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "query failed")
+		slog.Error("internal error", "op", "list_org_members", "org", org, "error", err)
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
 		return
 	}
 	if !s.requireOrgMember(w, r, org) {
@@ -583,7 +592,8 @@ func (s *server) handleListOrgMembers(w http.ResponseWriter, r *http.Request) {
 	}
 	members, err := s.commitStore.ListOrgMembers(r.Context(), org)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		slog.Error("internal error", "op", "list_org_members", "org", org, "error", err)
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
 		return
 	}
 	if members == nil {
@@ -599,10 +609,11 @@ func (s *server) handleAddOrgMember(w http.ResponseWriter, r *http.Request) {
 
 	if _, err := s.commitStore.GetOrg(r.Context(), org); err != nil {
 		if errors.Is(err, db.ErrOrgNotFound) {
-			writeError(w, http.StatusNotFound, "org not found")
+			writeAPIError(w, ErrCodeOrgNotFound, http.StatusNotFound, "org not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "query failed")
+		slog.Error("internal error", "op", "add_org_member", "org", org, "error", err)
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
 		return
 	}
 	if !s.requireOrgOwner(w, r, org) {
@@ -640,10 +651,11 @@ func (s *server) handleRemoveOrgMember(w http.ResponseWriter, r *http.Request) {
 
 	if _, err := s.commitStore.GetOrg(r.Context(), org); err != nil {
 		if errors.Is(err, db.ErrOrgNotFound) {
-			writeError(w, http.StatusNotFound, "org not found")
+			writeAPIError(w, ErrCodeOrgNotFound, http.StatusNotFound, "org not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "query failed")
+		slog.Error("internal error", "op", "remove_org_member", "org", org, "error", err)
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
 		return
 	}
 	if !s.requireOrgOwner(w, r, org) {
@@ -653,10 +665,10 @@ func (s *server) handleRemoveOrgMember(w http.ResponseWriter, r *http.Request) {
 	if err := s.commitStore.RemoveOrgMember(r.Context(), org, identity); err != nil {
 		switch {
 		case errors.Is(err, db.ErrOrgMemberNotFound):
-			writeError(w, http.StatusNotFound, "member not found")
+			writeAPIError(w, ErrCodeNotFound, http.StatusNotFound, "member not found")
 		default:
 			slog.Error("internal error", "op", "remove_org_member", "org", org, "identity", identity, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -686,10 +698,11 @@ func (s *server) handleCreateInvite(w http.ResponseWriter, r *http.Request) {
 
 	if _, err := s.commitStore.GetOrg(r.Context(), org); err != nil {
 		if errors.Is(err, db.ErrOrgNotFound) {
-			writeError(w, http.StatusNotFound, "org not found")
+			writeAPIError(w, ErrCodeOrgNotFound, http.StatusNotFound, "org not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "query failed")
+		slog.Error("internal error", "op", "create_invite", "org", org, "error", err)
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
 		return
 	}
 	if !s.requireOrgOwner(w, r, org) {
@@ -726,7 +739,7 @@ func (s *server) handleCreateInvite(w http.ResponseWriter, r *http.Request) {
 	inv, err := s.commitStore.CreateInvite(r.Context(), org, req.Email, req.Role, invitedBy, token, expiresAt)
 	if err != nil {
 		slog.Error("internal error", "op", "create_invite", "org", org, "error", err)
-		writeError(w, http.StatusInternalServerError, "internal server error")
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
@@ -741,10 +754,11 @@ func (s *server) handleListInvites(w http.ResponseWriter, r *http.Request) {
 
 	if _, err := s.commitStore.GetOrg(r.Context(), org); err != nil {
 		if errors.Is(err, db.ErrOrgNotFound) {
-			writeError(w, http.StatusNotFound, "org not found")
+			writeAPIError(w, ErrCodeOrgNotFound, http.StatusNotFound, "org not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "query failed")
+		slog.Error("internal error", "op", "list_invites", "org", org, "error", err)
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
 		return
 	}
 	if !s.requireOrgOwner(w, r, org) {
@@ -753,7 +767,8 @@ func (s *server) handleListInvites(w http.ResponseWriter, r *http.Request) {
 
 	invites, err := s.commitStore.ListInvites(r.Context(), org)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		slog.Error("internal error", "op", "list_invites", "org", org, "error", err)
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
 		return
 	}
 	if invites == nil {
@@ -772,16 +787,16 @@ func (s *server) handleAcceptInvite(w http.ResponseWriter, r *http.Request) {
 	if err := s.commitStore.AcceptInvite(r.Context(), org, token, identity); err != nil {
 		switch {
 		case errors.Is(err, db.ErrInviteNotFound):
-			writeError(w, http.StatusNotFound, "invite not found")
+			writeAPIError(w, ErrCodeInviteNotFound, http.StatusNotFound, "invite not found")
 		case errors.Is(err, db.ErrInviteExpired):
-			writeError(w, http.StatusGone, "invite expired")
+			writeAPIError(w, ErrCodeGone, http.StatusGone, "invite expired")
 		case errors.Is(err, db.ErrInviteAlreadyAccepted):
-			writeError(w, http.StatusConflict, "invite already accepted")
+			writeAPIError(w, ErrCodeConflict, http.StatusConflict, "invite already accepted")
 		case errors.Is(err, db.ErrEmailMismatch):
-			writeError(w, http.StatusForbidden, "identity does not match invite email")
+			writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, "identity does not match invite email")
 		default:
 			slog.Error("internal error", "op", "accept_invite", "org", org, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -797,10 +812,11 @@ func (s *server) handleRevokeInvite(w http.ResponseWriter, r *http.Request) {
 
 	if _, err := s.commitStore.GetOrg(r.Context(), org); err != nil {
 		if errors.Is(err, db.ErrOrgNotFound) {
-			writeError(w, http.StatusNotFound, "org not found")
+			writeAPIError(w, ErrCodeOrgNotFound, http.StatusNotFound, "org not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "query failed")
+		slog.Error("internal error", "op", "revoke_invite", "org", org, "error", err)
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
 		return
 	}
 	if !s.requireOrgOwner(w, r, org) {
@@ -810,10 +826,10 @@ func (s *server) handleRevokeInvite(w http.ResponseWriter, r *http.Request) {
 	if err := s.commitStore.RevokeInvite(r.Context(), org, inviteID); err != nil {
 		switch {
 		case errors.Is(err, db.ErrInviteNotFound):
-			writeError(w, http.StatusNotFound, "invite not found")
+			writeAPIError(w, ErrCodeInviteNotFound, http.StatusNotFound, "invite not found")
 		default:
 			slog.Error("internal error", "op", "revoke_invite", "org", org, "invite_id", inviteID, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -845,12 +861,12 @@ func (s *server) handleReview(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, db.ErrBranchNotFound):
-			writeError(w, http.StatusNotFound, "branch not found")
+			writeAPIError(w, ErrCodeBranchNotFound, http.StatusNotFound, "branch not found")
 		case errors.Is(err, db.ErrSelfApproval):
-			writeError(w, http.StatusForbidden, "reviewer cannot approve their own commits")
+			writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, "reviewer cannot approve their own commits")
 		default:
 			slog.Error("internal error", "op", "review", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -905,10 +921,10 @@ func (s *server) handleCheck(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, db.ErrBranchNotFound):
-			writeError(w, http.StatusNotFound, "branch not found")
+			writeAPIError(w, ErrCodeBranchNotFound, http.StatusNotFound, "branch not found")
 		default:
 			slog.Error("internal error", "op", "check", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -971,7 +987,8 @@ func (s *server) handleGetReviews(w http.ResponseWriter, r *http.Request, repo, 
 
 	reviews, err := s.commitStore.ListReviews(r.Context(), repo, branch, atSeq)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		slog.Error("internal error", "op", "list_reviews", "repo", repo, "branch", branch, "error", err)
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
 		return
 	}
 	if reviews == nil {
@@ -995,7 +1012,8 @@ func (s *server) handleGetChecks(w http.ResponseWriter, r *http.Request, repo, b
 
 	checkRuns, err := s.commitStore.ListCheckRuns(r.Context(), repo, branch, atSeq, history)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		slog.Error("internal error", "op", "list_checks", "repo", repo, "branch", branch, "error", err)
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
 		return
 	}
 	if checkRuns == nil {
@@ -1025,10 +1043,10 @@ func (s *server) handleRetryChecks(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, db.ErrBranchNotFound):
-			writeError(w, http.StatusNotFound, "branch not found")
+			writeAPIError(w, ErrCodeBranchNotFound, http.StatusNotFound, "branch not found")
 		default:
 			slog.Error("internal error", "op", "retry_checks", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -1077,10 +1095,10 @@ func (s *server) handleCreateReviewComment(w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		switch {
 		case errors.Is(err, db.ErrBranchNotFound):
-			writeError(w, http.StatusNotFound, "branch not found")
+			writeAPIError(w, ErrCodeBranchNotFound, http.StatusNotFound, "branch not found")
 		default:
 			slog.Error("internal error", "op", "create_review_comment", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -1101,7 +1119,8 @@ func (s *server) handleListReviewComments(w http.ResponseWriter, r *http.Request
 
 	comments, err := s.commitStore.ListReviewComments(r.Context(), repo, branch, path)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		slog.Error("internal error", "op", "list_review_comments", "repo", repo, "branch", branch, "error", err)
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
 		return
 	}
 	if comments == nil {
@@ -1124,23 +1143,23 @@ func (s *server) handleDeleteReviewComment(w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		switch {
 		case errors.Is(err, db.ErrCommentNotFound):
-			writeError(w, http.StatusNotFound, "comment not found")
+			writeAPIError(w, ErrCodeCommentNotFound, http.StatusNotFound, "comment not found")
 		default:
 			slog.Error("internal error", "op", "get_review_comment", "repo", repo, "comment", commentID, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
 
 	// Only the comment author or a maintainer+ may delete a comment.
 	if comment.Author != identity && role != model.RoleMaintainer && role != model.RoleAdmin {
-		writeError(w, http.StatusForbidden, "forbidden: must be comment author or maintainer")
+		writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, "forbidden: must be comment author or maintainer")
 		return
 	}
 
 	if err := s.commitStore.DeleteReviewComment(r.Context(), repo, commentID); err != nil {
 		slog.Error("internal error", "op", "delete_review_comment", "repo", repo, "comment", commentID, "error", err)
-		writeError(w, http.StatusInternalServerError, "internal server error")
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
@@ -1190,10 +1209,10 @@ func (s *server) handlePurge(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, db.ErrRepoNotFound):
-			writeError(w, http.StatusNotFound, "repo not found")
+			writeAPIError(w, ErrCodeRepoNotFound, http.StatusNotFound, "repo not found")
 		default:
 			slog.Error("internal error", "op", "purge", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -1210,7 +1229,7 @@ func (s *server) handlePurge(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
+	writeAPIError(w, statusToCode(status), status, msg)
 }
 
 // validateRepo checks that the named repo exists. It writes a 404 and returns
@@ -1221,9 +1240,10 @@ func (s *server) validateRepo(w http.ResponseWriter, r *http.Request, repo strin
 	_, err := s.commitStore.GetRepo(r.Context(), repo)
 	if err != nil {
 		if errors.Is(err, db.ErrRepoNotFound) {
-			writeError(w, http.StatusNotFound, "repo not found")
+			writeAPIError(w, ErrCodeRepoNotFound, http.StatusNotFound, "repo not found")
 		} else {
-			writeError(w, http.StatusInternalServerError, "query failed")
+			slog.Error("internal error", "op", "validate_repo", "repo", repo, "error", err)
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
 		}
 		return false
 	}
@@ -1258,12 +1278,12 @@ func (s *server) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, db.ErrRepoExists):
-			writeError(w, http.StatusConflict, "repo already exists")
+			writeAPIError(w, ErrCodeRepoExists, http.StatusConflict, "repo already exists")
 		case errors.Is(err, db.ErrOrgNotFound):
-			writeError(w, http.StatusNotFound, "org not found")
+			writeAPIError(w, ErrCodeOrgNotFound, http.StatusNotFound, "org not found")
 		default:
 			slog.Error("internal error", "op", "create_repo", "repo", req.Name, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -1278,7 +1298,8 @@ func (s *server) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleListRepos(w http.ResponseWriter, r *http.Request) {
 	repos, err := s.commitStore.ListRepos(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		slog.Error("internal error", "op", "list_repos", "error", err)
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
 		return
 	}
 	if repos == nil {
@@ -1294,9 +1315,10 @@ func (s *server) handleGetRepo(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, db.ErrRepoNotFound):
-			writeError(w, http.StatusNotFound, "repo not found")
+			writeAPIError(w, ErrCodeRepoNotFound, http.StatusNotFound, "repo not found")
 		default:
-			writeError(w, http.StatusInternalServerError, "query failed")
+			slog.Error("internal error", "op", "get_repo", "repo", name, "error", err)
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
 		}
 		return
 	}
@@ -1310,10 +1332,10 @@ func (s *server) handleDeleteRepo(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, db.ErrRepoNotFound):
-			writeError(w, http.StatusNotFound, "repo not found")
+			writeAPIError(w, ErrCodeRepoNotFound, http.StatusNotFound, "repo not found")
 		default:
 			slog.Error("internal error", "op", "delete_repo", "repo", name, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -1365,7 +1387,8 @@ func (s *server) handleTree(w http.ResponseWriter, r *http.Request) {
 
 	entries, err := s.readStore.MaterializeTree(r.Context(), repo, branch, atSequence, limit, afterPath)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		slog.Error("internal error", "op", "tree", "repo", repo, "branch", branch, "error", err)
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
 		return
 	}
 	if entries == nil {
@@ -1420,11 +1443,12 @@ func (s *server) handleFileContent(w http.ResponseWriter, r *http.Request, repo,
 
 	fc, err := s.readStore.GetFile(r.Context(), repo, branch, path, atSequence)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		slog.Error("internal error", "op", "file_content", "repo", repo, "branch", branch, "path", path, "error", err)
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
 		return
 	}
 	if fc == nil {
-		writeError(w, http.StatusNotFound, "file not found")
+		writeAPIError(w, ErrCodeNotFound, http.StatusNotFound, "file not found")
 		return
 	}
 
@@ -1459,7 +1483,8 @@ func (s *server) handleFileHistory(w http.ResponseWriter, r *http.Request, repo,
 
 	entries, err := s.readStore.GetFileHistory(r.Context(), repo, branch, path, limit, afterSeq)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		slog.Error("internal error", "op", "file_history", "repo", repo, "branch", branch, "path", path, "error", err)
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
 		return
 	}
 	if entries == nil {
@@ -1480,11 +1505,12 @@ func (s *server) handleGetCommit(w http.ResponseWriter, r *http.Request) {
 
 	detail, err := s.readStore.GetCommit(r.Context(), repo, seq)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		slog.Error("internal error", "op", "get_commit", "repo", repo, "seq", seq, "error", err)
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
 		return
 	}
 	if detail == nil {
-		writeError(w, http.StatusNotFound, "commit not found")
+		writeAPIError(w, ErrCodeNotFound, http.StatusNotFound, "commit not found")
 		return
 	}
 
@@ -1503,7 +1529,8 @@ func (s *server) handleBranches(w http.ResponseWriter, r *http.Request) {
 
 	branches, err := s.readStore.ListBranches(r.Context(), repo, statusFilter, includeDraft, onlyDraft)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		slog.Error("internal error", "op", "list_branches", "repo", repo, "error", err)
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
 		return
 	}
 	if branches == nil {
@@ -1526,11 +1553,12 @@ func (s *server) handleDiff(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.readStore.GetDiff(r.Context(), repo, branch)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		slog.Error("internal error", "op", "diff", "repo", repo, "branch", branch, "error", err)
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
 		return
 	}
 	if result == nil {
-		writeError(w, http.StatusNotFound, "branch not found")
+		writeAPIError(w, ErrCodeBranchNotFound, http.StatusNotFound, "branch not found")
 		return
 	}
 
@@ -1580,12 +1608,12 @@ func (s *server) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, db.ErrBranchExists):
-			writeError(w, http.StatusConflict, "branch already exists")
+			writeAPIError(w, ErrCodeBranchExists, http.StatusConflict, "branch already exists")
 		case errors.Is(err, db.ErrRepoNotFound):
-			writeError(w, http.StatusNotFound, "repo not found")
+			writeAPIError(w, ErrCodeRepoNotFound, http.StatusNotFound, "repo not found")
 		default:
 			slog.Error("internal error", "op", "create_branch", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -1623,10 +1651,10 @@ func (s *server) handleUpdateBranch(w http.ResponseWriter, r *http.Request) {
 	if err := s.commitStore.UpdateBranchDraft(r.Context(), repo, bname, req.Draft); err != nil {
 		switch {
 		case errors.Is(err, db.ErrBranchNotFound):
-			writeError(w, http.StatusNotFound, "branch not found")
+			writeAPIError(w, ErrCodeBranchNotFound, http.StatusNotFound, "branch not found")
 		default:
 			slog.Error("internal error", "op", "update_branch", "repo", repo, "branch", bname, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -1653,10 +1681,10 @@ func (s *server) handleEnableAutoMerge(w http.ResponseWriter, r *http.Request) {
 	if err := s.commitStore.SetBranchAutoMerge(r.Context(), repo, bname, true); err != nil {
 		switch {
 		case errors.Is(err, db.ErrBranchNotFound):
-			writeError(w, http.StatusNotFound, "branch not found")
+			writeAPIError(w, ErrCodeBranchNotFound, http.StatusNotFound, "branch not found")
 		default:
 			slog.Error("internal error", "op", "enable_auto_merge", "repo", repo, "branch", bname, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -1684,10 +1712,10 @@ func (s *server) handleDisableAutoMerge(w http.ResponseWriter, r *http.Request) 
 	if err := s.commitStore.SetBranchAutoMerge(r.Context(), repo, bname, false); err != nil {
 		switch {
 		case errors.Is(err, db.ErrBranchNotFound):
-			writeError(w, http.StatusNotFound, "branch not found")
+			writeAPIError(w, ErrCodeBranchNotFound, http.StatusNotFound, "branch not found")
 		default:
 			slog.Error("internal error", "op", "disable_auto_merge", "repo", repo, "branch", bname, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -1711,12 +1739,12 @@ func (s *server) handleDeleteBranch(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, db.ErrBranchNotFound):
-			writeError(w, http.StatusNotFound, "branch not found")
+			writeAPIError(w, ErrCodeBranchNotFound, http.StatusNotFound, "branch not found")
 		case errors.Is(err, db.ErrBranchNotActive):
-			writeError(w, http.StatusConflict, "branch is already merged or abandoned")
+			writeAPIError(w, ErrCodeBranchNotActive, http.StatusConflict, "branch is already merged or abandoned")
 		default:
 			slog.Error("internal error", "op", "delete_branch", "repo", repo, "branch", bname, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -1732,7 +1760,8 @@ func (s *server) handleListRoles(w http.ResponseWriter, r *http.Request) {
 	repo := r.PathValue("name")
 	roles, err := s.commitStore.ListRoles(r.Context(), repo)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		slog.Error("internal error", "op", "list_roles", "repo", repo, "error", err)
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
 		return
 	}
 	if roles == nil {
@@ -1767,7 +1796,7 @@ func (s *server) handleSetRole(w http.ResponseWriter, r *http.Request) {
 
 	if err := s.commitStore.SetRole(r.Context(), repo, identity, req.Role); err != nil {
 		slog.Error("internal error", "op", "set_role", "repo", repo, "identity", identity, "error", err)
-		writeError(w, http.StatusInternalServerError, "internal server error")
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
@@ -1795,10 +1824,10 @@ func (s *server) handleDeleteRole(w http.ResponseWriter, r *http.Request) {
 	if err := s.commitStore.DeleteRole(r.Context(), repo, identity); err != nil {
 		switch {
 		case errors.Is(err, db.ErrRoleNotFound):
-			writeError(w, http.StatusNotFound, "role not found")
+			writeAPIError(w, ErrCodeRoleNotFound, http.StatusNotFound, "role not found")
 		default:
 			slog.Error("internal error", "op", "delete_role", "repo", repo, "identity", identity, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -1855,12 +1884,12 @@ func (s *server) handleRebase(w http.ResponseWriter, r *http.Request) {
 			}
 			writeJSON(w, http.StatusConflict, model.RebaseConflictError{Conflicts: apiConflicts})
 		case errors.Is(err, db.ErrBranchNotFound):
-			writeError(w, http.StatusNotFound, "branch not found")
+			writeAPIError(w, ErrCodeBranchNotFound, http.StatusNotFound, "branch not found")
 		case errors.Is(err, db.ErrBranchNotActive):
-			writeError(w, http.StatusBadRequest, "branch is not active")
+			writeAPIError(w, ErrCodeBranchNotActive, http.StatusBadRequest, "branch is not active")
 		default:
 			slog.Error("internal error", "op", "rebase", "repo", repo, "branch", req.Branch, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -1917,12 +1946,12 @@ func (s *server) handleCreateProposal(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, db.ErrProposalExists):
-			writeError(w, http.StatusConflict, "branch already has an open proposal")
+			writeAPIError(w, ErrCodeProposalExists, http.StatusConflict, "branch already has an open proposal")
 		case errors.Is(err, db.ErrBranchNotFound):
-			writeError(w, http.StatusNotFound, "branch not found")
+			writeAPIError(w, ErrCodeBranchNotFound, http.StatusNotFound, "branch not found")
 		default:
 			slog.Error("internal error", "op", "create_proposal", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -1973,7 +2002,7 @@ func (s *server) handleListProposals(w http.ResponseWriter, r *http.Request) {
 	proposals, err := s.commitStore.ListProposals(r.Context(), repo, state, branch)
 	if err != nil {
 		slog.Error("internal error", "op", "list_proposals", "repo", repo, "error", err)
-		writeError(w, http.StatusInternalServerError, "internal server error")
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	if proposals == nil {
@@ -1993,10 +2022,10 @@ func (s *server) handleGetProposal(w http.ResponseWriter, r *http.Request) {
 	p, err := s.commitStore.GetProposal(r.Context(), repo, proposalID)
 	if err != nil {
 		if errors.Is(err, db.ErrProposalNotFound) {
-			writeError(w, http.StatusNotFound, "proposal not found")
+			writeAPIError(w, ErrCodeProposalNotFound, http.StatusNotFound, "proposal not found")
 		} else {
 			slog.Error("internal error", "op", "get_proposal", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -2018,16 +2047,16 @@ func (s *server) handleUpdateProposal(w http.ResponseWriter, r *http.Request) {
 	existing, err := s.commitStore.GetProposal(r.Context(), repo, proposalID)
 	if err != nil {
 		if errors.Is(err, db.ErrProposalNotFound) {
-			writeError(w, http.StatusNotFound, "proposal not found")
+			writeAPIError(w, ErrCodeProposalNotFound, http.StatusNotFound, "proposal not found")
 		} else {
 			slog.Error("internal error", "op", "update_proposal", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
 
 	if existing.Author != identity && role != model.RoleMaintainer && role != model.RoleAdmin {
-		writeError(w, http.StatusForbidden, "forbidden: must be proposal author or maintainer")
+		writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, "forbidden: must be proposal author or maintainer")
 		return
 	}
 
@@ -2040,10 +2069,10 @@ func (s *server) handleUpdateProposal(w http.ResponseWriter, r *http.Request) {
 	p, err := s.commitStore.UpdateProposal(r.Context(), repo, proposalID, req.Title, req.Description)
 	if err != nil {
 		if errors.Is(err, db.ErrProposalNotFound) {
-			writeError(w, http.StatusNotFound, "proposal not found")
+			writeAPIError(w, ErrCodeProposalNotFound, http.StatusNotFound, "proposal not found")
 		} else {
 			slog.Error("internal error", "op", "update_proposal", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -2068,25 +2097,25 @@ func (s *server) handleCloseProposal(w http.ResponseWriter, r *http.Request) {
 	existing, err := s.commitStore.GetProposal(r.Context(), repo, proposalID)
 	if err != nil {
 		if errors.Is(err, db.ErrProposalNotFound) {
-			writeError(w, http.StatusNotFound, "proposal not found")
+			writeAPIError(w, ErrCodeProposalNotFound, http.StatusNotFound, "proposal not found")
 		} else {
 			slog.Error("internal error", "op", "close_proposal", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
 
 	if existing.Author != identity && role != model.RoleMaintainer && role != model.RoleAdmin {
-		writeError(w, http.StatusForbidden, "forbidden: must be proposal author or maintainer")
+		writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, "forbidden: must be proposal author or maintainer")
 		return
 	}
 
 	if err := s.commitStore.CloseProposal(r.Context(), repo, proposalID); err != nil {
 		if errors.Is(err, db.ErrProposalNotFound) {
-			writeError(w, http.StatusNotFound, "proposal not found")
+			writeAPIError(w, ErrCodeProposalNotFound, http.StatusNotFound, "proposal not found")
 		} else {
 			slog.Error("internal error", "op", "close_proposal", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -2129,7 +2158,7 @@ func (s *server) handleMerge(w http.ResponseWriter, r *http.Request) {
 	// Policy evaluation: runs before any database transaction.
 	if denied, err := s.evaluateMergePolicy(r.Context(), repo, req.Branch, req.Author); err != nil {
 		slog.Error("policy evaluation error", "op", "merge", "repo", repo, "branch", req.Branch, "error", err)
-		writeError(w, http.StatusInternalServerError, "policy evaluation error")
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "policy evaluation error")
 		return
 	} else if denied != nil {
 		slog.Warn("merge denied by policy", "repo", repo, "branch", req.Branch, "actor", req.Author)
@@ -2164,14 +2193,14 @@ func (s *server) handleMerge(w http.ResponseWriter, r *http.Request) {
 			}
 			writeJSON(w, http.StatusConflict, model.MergeConflictError{Conflicts: apiConflicts})
 		case errors.Is(err, db.ErrBranchNotFound):
-			writeError(w, http.StatusNotFound, "branch not found")
+			writeAPIError(w, ErrCodeBranchNotFound, http.StatusNotFound, "branch not found")
 		case errors.Is(err, db.ErrBranchNotActive):
-			writeError(w, http.StatusConflict, "branch is not active")
+			writeAPIError(w, ErrCodeBranchNotActive, http.StatusConflict, "branch is not active")
 		case errors.Is(err, db.ErrBranchDraft):
-			writeError(w, http.StatusConflict, "branch is in draft state")
+			writeAPIError(w, ErrCodeBranchDraft, http.StatusConflict, "branch is in draft state")
 		default:
 			slog.Error("internal error", "op", "merge", "repo", repo, "branch", req.Branch, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -2328,11 +2357,11 @@ func (s *server) handleBranchStatus(w http.ResponseWriter, r *http.Request, repo
 	resp, err := s.computeBranchStatus(r.Context(), repo, branch, actor)
 	if err != nil {
 		slog.Error("branch status error", "op", "branch_status", "repo", repo, "branch", branch, "error", err)
-		writeError(w, http.StatusInternalServerError, "policy evaluation error")
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "policy evaluation error")
 		return
 	}
 	if resp == nil {
-		writeError(w, http.StatusNotFound, "branch not found")
+		writeAPIError(w, ErrCodeBranchNotFound, http.StatusNotFound, "branch not found")
 		return
 	}
 
@@ -2576,12 +2605,12 @@ func (s *server) handleAgentContext(w http.ResponseWriter, r *http.Request, repo
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrAgentContextBranchNotFound):
-			writeError(w, http.StatusNotFound, "branch not found")
+			writeAPIError(w, ErrCodeBranchNotFound, http.StatusNotFound, "branch not found")
 		case errors.Is(err, ErrAgentContextReadStoreUnavailable):
-			writeError(w, http.StatusServiceUnavailable, "read store not available")
+			writeAPIError(w, ErrCodeServiceUnavailable, http.StatusServiceUnavailable, "read store not available")
 		default:
 			slog.Error("internal error", "op", "agent_context", "repo", repo, "branch", branch, "error", err)
-			writeError(w, http.StatusInternalServerError, "query failed")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
 		}
 		return
 	}
@@ -2618,7 +2647,7 @@ func (s *server) handleCreateRelease(w http.ResponseWriter, r *http.Request) {
 		exists, err := s.commitStore.CommitSequenceExists(r.Context(), repo, sequence)
 		if err != nil {
 			slog.Error("internal error", "op", "create_release_seq_check", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 			return
 		}
 		if !exists {
@@ -2627,13 +2656,13 @@ func (s *server) handleCreateRelease(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		if s.readStore == nil {
-			writeError(w, http.StatusServiceUnavailable, "read store not available")
+			writeAPIError(w, ErrCodeServiceUnavailable, http.StatusServiceUnavailable, "read store not available")
 			return
 		}
 		branchInfo, err := s.readStore.GetBranch(r.Context(), repo, "main")
 		if err != nil || branchInfo == nil {
 			slog.Error("internal error", "op", "create_release_head", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "could not resolve main head sequence")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "could not resolve main head sequence")
 			return
 		}
 		sequence = branchInfo.HeadSequence
@@ -2644,10 +2673,10 @@ func (s *server) handleCreateRelease(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, db.ErrReleaseExists):
-			writeError(w, http.StatusConflict, "release already exists")
+			writeAPIError(w, ErrCodeConflict, http.StatusConflict, "release already exists")
 		default:
 			slog.Error("internal error", "op", "create_release", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -2681,7 +2710,7 @@ func (s *server) handleListReleases(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		slog.Error("internal error", "op", "list_releases", "repo", repo, "error", err)
-		writeError(w, http.StatusInternalServerError, "query failed")
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
 		return
 	}
 	if releases == nil {
@@ -2702,10 +2731,10 @@ func (s *server) handleGetRelease(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, db.ErrReleaseNotFound):
-			writeError(w, http.StatusNotFound, "release not found")
+			writeAPIError(w, ErrCodeReleaseNotFound, http.StatusNotFound, "release not found")
 		default:
 			slog.Error("internal error", "op", "get_release", "repo", repo, "release", releaseName, "error", err)
-			writeError(w, http.StatusInternalServerError, "query failed")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
 		}
 		return
 	}
@@ -2723,10 +2752,10 @@ func (s *server) handleDeleteRelease(w http.ResponseWriter, r *http.Request) {
 	if err := s.commitStore.DeleteRelease(r.Context(), repo, releaseName); err != nil {
 		switch {
 		case errors.Is(err, db.ErrReleaseNotFound):
-			writeError(w, http.StatusNotFound, "release not found")
+			writeAPIError(w, ErrCodeReleaseNotFound, http.StatusNotFound, "release not found")
 		default:
 			slog.Error("internal error", "op", "delete_release", "repo", repo, "release", releaseName, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -2766,11 +2795,12 @@ func (s *server) handleArchive(w http.ResponseWriter, r *http.Request) {
 	// Verify the branch exists before we start streaming.
 	bi, err := s.readStore.GetBranch(r.Context(), repo, branch)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		slog.Error("internal error", "op", "archive", "repo", repo, "branch", branch, "error", err)
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
 		return
 	}
 	if bi == nil {
-		writeError(w, http.StatusNotFound, "branch not found")
+		writeAPIError(w, ErrCodeBranchNotFound, http.StatusNotFound, "branch not found")
 		return
 	}
 
@@ -2846,7 +2876,8 @@ func (s *server) handleChain(w http.ResponseWriter, r *http.Request) {
 
 	entries, err := s.readStore.GetChain(r.Context(), repo, from, to)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		slog.Error("internal error", "op", "chain", "repo", repo, "error", err)
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
 		return
 	}
 	if entries == nil {
@@ -2919,7 +2950,7 @@ func (s *server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 	sub, err := s.commitStore.CreateSubscription(r.Context(), req)
 	if err != nil {
 		slog.Error("internal error", "op", "create_subscription", "error", err)
-		writeError(w, http.StatusInternalServerError, "internal server error")
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
@@ -2943,7 +2974,7 @@ func (s *server) handleListSubscriptions(w http.ResponseWriter, r *http.Request)
 	}
 	if err != nil {
 		slog.Error("internal error", "op", "list_subscriptions", "error", err)
-		writeError(w, http.StatusInternalServerError, "internal server error")
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	if subs == nil {
@@ -2965,15 +2996,15 @@ func (s *server) handleDeleteSubscription(w http.ResponseWriter, r *http.Request
 		if err != nil {
 			switch {
 			case errors.Is(err, db.ErrSubscriptionNotFound):
-				writeError(w, http.StatusNotFound, "subscription not found")
+				writeAPIError(w, ErrCodeSubscriptionNotFound, http.StatusNotFound, "subscription not found")
 			default:
 				slog.Error("internal error", "op", "get_subscription", "id", id, "error", err)
-				writeError(w, http.StatusInternalServerError, "internal server error")
+				writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 			}
 			return
 		}
 		if sub.CreatedBy != identity {
-			writeError(w, http.StatusForbidden, "forbidden: not subscription creator")
+			writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, "forbidden: not subscription creator")
 			return
 		}
 	}
@@ -2981,10 +3012,10 @@ func (s *server) handleDeleteSubscription(w http.ResponseWriter, r *http.Request
 	if err := s.commitStore.DeleteSubscription(r.Context(), id); err != nil {
 		switch {
 		case errors.Is(err, db.ErrSubscriptionNotFound):
-			writeError(w, http.StatusNotFound, "subscription not found")
+			writeAPIError(w, ErrCodeSubscriptionNotFound, http.StatusNotFound, "subscription not found")
 		default:
 			slog.Error("internal error", "op", "delete_subscription", "id", id, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -3006,15 +3037,15 @@ func (s *server) handleResumeSubscription(w http.ResponseWriter, r *http.Request
 		if err != nil {
 			switch {
 			case errors.Is(err, db.ErrSubscriptionNotFound):
-				writeError(w, http.StatusNotFound, "subscription not found")
+				writeAPIError(w, ErrCodeSubscriptionNotFound, http.StatusNotFound, "subscription not found")
 			default:
 				slog.Error("internal error", "op", "get_subscription", "id", id, "error", err)
-				writeError(w, http.StatusInternalServerError, "internal server error")
+				writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 			}
 			return
 		}
 		if sub.CreatedBy != identity {
-			writeError(w, http.StatusForbidden, "forbidden: not subscription creator")
+			writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, "forbidden: not subscription creator")
 			return
 		}
 	}
@@ -3022,10 +3053,10 @@ func (s *server) handleResumeSubscription(w http.ResponseWriter, r *http.Request
 	if err := s.commitStore.ResumeSubscription(r.Context(), id); err != nil {
 		switch {
 		case errors.Is(err, db.ErrSubscriptionNotFound):
-			writeError(w, http.StatusNotFound, "subscription not found")
+			writeAPIError(w, ErrCodeSubscriptionNotFound, http.StatusNotFound, "subscription not found")
 		default:
 			slog.Error("internal error", "op", "resume_subscription", "id", id, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -3069,13 +3100,13 @@ func (s *server) handleSSEGlobalEvents(w http.ResponseWriter, r *http.Request) {
 // enabling reconnect without missing events.
 func (s *server) streamSSE(w http.ResponseWriter, r *http.Request, repo string) {
 	if s.broker == nil {
-		writeError(w, http.StatusServiceUnavailable, "event streaming not available")
+		writeAPIError(w, ErrCodeServiceUnavailable, http.StatusServiceUnavailable, "event streaming not available")
 		return
 	}
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		writeError(w, http.StatusInternalServerError, "streaming not supported")
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "streaming not supported")
 		return
 	}
 
@@ -3102,7 +3133,7 @@ func (s *server) streamSSE(w http.ResponseWriter, r *http.Request, repo string) 
 		seq, err := s.broker.CurrentSeq(ctx)
 		if err != nil {
 			slog.Error("SSE: CurrentSeq failed", "error", err)
-			writeError(w, http.StatusServiceUnavailable, "event streaming temporarily unavailable")
+			writeAPIError(w, ErrCodeServiceUnavailable, http.StatusServiceUnavailable, "event streaming temporarily unavailable")
 			return
 		}
 		sinceSeq = seq
@@ -3247,7 +3278,7 @@ func (s *server) handleListIssues(w http.ResponseWriter, r *http.Request) {
 	issues, err := s.commitStore.ListIssues(r.Context(), repo, stateFilter, authorFilter)
 	if err != nil {
 		slog.Error("internal error", "op", "list_issues", "repo", repo, "error", err)
-		writeError(w, http.StatusInternalServerError, "internal server error")
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	writeJSON(w, http.StatusOK, model.ListIssuesResponse{Issues: issues})
@@ -3274,7 +3305,7 @@ func (s *server) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
 	iss, err := s.commitStore.CreateIssue(r.Context(), repo, req.Title, req.Body, author, req.Labels)
 	if err != nil {
 		slog.Error("internal error", "op", "create_issue", "repo", repo, "error", err)
-		writeError(w, http.StatusInternalServerError, "internal server error")
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
@@ -3299,10 +3330,10 @@ func (s *server) handleGetIssue(w http.ResponseWriter, r *http.Request) {
 	iss, err := s.commitStore.GetIssue(r.Context(), repo, number)
 	if err != nil {
 		if errors.Is(err, db.ErrIssueNotFound) {
-			writeError(w, http.StatusNotFound, "issue not found")
+			writeAPIError(w, ErrCodeIssueNotFound, http.StatusNotFound, "issue not found")
 		} else {
 			slog.Error("internal error", "op", "get_issue", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -3327,16 +3358,16 @@ func (s *server) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
 	existing, err := s.commitStore.GetIssue(r.Context(), repo, number)
 	if err != nil {
 		if errors.Is(err, db.ErrIssueNotFound) {
-			writeError(w, http.StatusNotFound, "issue not found")
+			writeAPIError(w, ErrCodeIssueNotFound, http.StatusNotFound, "issue not found")
 		} else {
 			slog.Error("internal error", "op", "update_issue", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
 
 	if existing.Author != identity && role != model.RoleMaintainer && role != model.RoleAdmin {
-		writeError(w, http.StatusForbidden, "forbidden: must be issue author or maintainer")
+		writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, "forbidden: must be issue author or maintainer")
 		return
 	}
 
@@ -3353,10 +3384,10 @@ func (s *server) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
 	iss, err := s.commitStore.UpdateIssue(r.Context(), repo, number, req.Title, req.Body, labelsPtr)
 	if err != nil {
 		if errors.Is(err, db.ErrIssueNotFound) {
-			writeError(w, http.StatusNotFound, "issue not found")
+			writeAPIError(w, ErrCodeIssueNotFound, http.StatusNotFound, "issue not found")
 		} else {
 			slog.Error("internal error", "op", "update_issue", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -3386,21 +3417,21 @@ func (s *server) handleCloseIssue(w http.ResponseWriter, r *http.Request) {
 	existing, err := s.commitStore.GetIssue(r.Context(), repo, number)
 	if err != nil {
 		if errors.Is(err, db.ErrIssueNotFound) {
-			writeError(w, http.StatusNotFound, "issue not found")
+			writeAPIError(w, ErrCodeIssueNotFound, http.StatusNotFound, "issue not found")
 		} else {
 			slog.Error("internal error", "op", "close_issue", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
 
 	if existing.Author != identity && role != model.RoleMaintainer && role != model.RoleAdmin {
-		writeError(w, http.StatusForbidden, "forbidden: must be issue author or maintainer")
+		writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, "forbidden: must be issue author or maintainer")
 		return
 	}
 
 	if existing.State == model.IssueStateClosed {
-		writeError(w, http.StatusConflict, "issue is already closed")
+		writeAPIError(w, ErrCodeConflict, http.StatusConflict, "issue is already closed")
 		return
 	}
 
@@ -3425,10 +3456,10 @@ func (s *server) handleCloseIssue(w http.ResponseWriter, r *http.Request) {
 	iss, err := s.commitStore.CloseIssue(r.Context(), repo, number, reason, identity)
 	if err != nil {
 		if errors.Is(err, db.ErrIssueNotFound) {
-			writeError(w, http.StatusNotFound, "issue not found")
+			writeAPIError(w, ErrCodeIssueNotFound, http.StatusNotFound, "issue not found")
 		} else {
 			slog.Error("internal error", "op", "close_issue", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -3456,31 +3487,31 @@ func (s *server) handleReopenIssue(w http.ResponseWriter, r *http.Request) {
 	existing, err := s.commitStore.GetIssue(r.Context(), repo, number)
 	if err != nil {
 		if errors.Is(err, db.ErrIssueNotFound) {
-			writeError(w, http.StatusNotFound, "issue not found")
+			writeAPIError(w, ErrCodeIssueNotFound, http.StatusNotFound, "issue not found")
 		} else {
 			slog.Error("internal error", "op", "reopen_issue", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
 
 	if existing.Author != identity && role != model.RoleMaintainer && role != model.RoleAdmin {
-		writeError(w, http.StatusForbidden, "forbidden: must be issue author or maintainer")
+		writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, "forbidden: must be issue author or maintainer")
 		return
 	}
 
 	if existing.State == model.IssueStateOpen {
-		writeError(w, http.StatusConflict, "issue is already open")
+		writeAPIError(w, ErrCodeConflict, http.StatusConflict, "issue is already open")
 		return
 	}
 
 	iss, err := s.commitStore.ReopenIssue(r.Context(), repo, number)
 	if err != nil {
 		if errors.Is(err, db.ErrIssueNotFound) {
-			writeError(w, http.StatusNotFound, "issue not found")
+			writeAPIError(w, ErrCodeIssueNotFound, http.StatusNotFound, "issue not found")
 		} else {
 			slog.Error("internal error", "op", "reopen_issue", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -3505,7 +3536,7 @@ func (s *server) handleListIssueComments(w http.ResponseWriter, r *http.Request)
 	comments, err := s.commitStore.ListIssueComments(r.Context(), repo, number)
 	if err != nil {
 		slog.Error("internal error", "op", "list_issue_comments", "repo", repo, "error", err)
-		writeError(w, http.StatusInternalServerError, "internal server error")
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	writeJSON(w, http.StatusOK, model.ListIssueCommentsResponse{Comments: comments})
@@ -3537,10 +3568,10 @@ func (s *server) handleCreateIssueComment(w http.ResponseWriter, r *http.Request
 	c, err := s.commitStore.CreateIssueComment(r.Context(), repo, number, req.Body, author)
 	if err != nil {
 		if errors.Is(err, db.ErrIssueNotFound) {
-			writeError(w, http.StatusNotFound, "issue not found")
+			writeAPIError(w, ErrCodeIssueNotFound, http.StatusNotFound, "issue not found")
 		} else {
 			slog.Error("internal error", "op", "create_issue_comment", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -3570,10 +3601,10 @@ func (s *server) handleUpdateIssueComment(w http.ResponseWriter, r *http.Request
 	existing, err := s.commitStore.GetIssueComment(r.Context(), repo, commentID)
 	if err != nil {
 		if errors.Is(err, db.ErrIssueCommentNotFound) {
-			writeError(w, http.StatusNotFound, "comment not found")
+			writeAPIError(w, ErrCodeCommentNotFound, http.StatusNotFound, "comment not found")
 		} else {
 			slog.Error("internal error", "op", "update_issue_comment", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -3581,20 +3612,20 @@ func (s *server) handleUpdateIssueComment(w http.ResponseWriter, r *http.Request
 	issue, err := s.commitStore.GetIssue(r.Context(), repo, number)
 	if err != nil {
 		if errors.Is(err, db.ErrIssueNotFound) {
-			writeError(w, http.StatusNotFound, "comment not found")
+			writeAPIError(w, ErrCodeCommentNotFound, http.StatusNotFound, "comment not found")
 		} else {
 			slog.Error("internal error", "op", "update_issue_comment", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
 	if existing.IssueID != issue.ID {
-		writeError(w, http.StatusNotFound, "comment not found")
+		writeAPIError(w, ErrCodeCommentNotFound, http.StatusNotFound, "comment not found")
 		return
 	}
 
 	if existing.Author != identity && role != model.RoleMaintainer && role != model.RoleAdmin {
-		writeError(w, http.StatusForbidden, "forbidden: must be comment author or maintainer")
+		writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, "forbidden: must be comment author or maintainer")
 		return
 	}
 
@@ -3611,10 +3642,10 @@ func (s *server) handleUpdateIssueComment(w http.ResponseWriter, r *http.Request
 	c, err := s.commitStore.UpdateIssueComment(r.Context(), repo, commentID, req.Body)
 	if err != nil {
 		if errors.Is(err, db.ErrIssueCommentNotFound) {
-			writeError(w, http.StatusNotFound, "comment not found")
+			writeAPIError(w, ErrCodeCommentNotFound, http.StatusNotFound, "comment not found")
 		} else {
 			slog.Error("internal error", "op", "update_issue_comment", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -3643,10 +3674,10 @@ func (s *server) handleDeleteIssueComment(w http.ResponseWriter, r *http.Request
 	existing, err := s.commitStore.GetIssueComment(r.Context(), repo, commentID)
 	if err != nil {
 		if errors.Is(err, db.ErrIssueCommentNotFound) {
-			writeError(w, http.StatusNotFound, "comment not found")
+			writeAPIError(w, ErrCodeCommentNotFound, http.StatusNotFound, "comment not found")
 		} else {
 			slog.Error("internal error", "op", "delete_issue_comment", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -3654,29 +3685,29 @@ func (s *server) handleDeleteIssueComment(w http.ResponseWriter, r *http.Request
 	issue, err := s.commitStore.GetIssue(r.Context(), repo, number)
 	if err != nil {
 		if errors.Is(err, db.ErrIssueNotFound) {
-			writeError(w, http.StatusNotFound, "comment not found")
+			writeAPIError(w, ErrCodeCommentNotFound, http.StatusNotFound, "comment not found")
 		} else {
 			slog.Error("internal error", "op", "delete_issue_comment", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
 	if existing.IssueID != issue.ID {
-		writeError(w, http.StatusNotFound, "comment not found")
+		writeAPIError(w, ErrCodeCommentNotFound, http.StatusNotFound, "comment not found")
 		return
 	}
 
 	if existing.Author != identity && role != model.RoleMaintainer && role != model.RoleAdmin {
-		writeError(w, http.StatusForbidden, "forbidden: must be comment author or maintainer")
+		writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, "forbidden: must be comment author or maintainer")
 		return
 	}
 
 	if err := s.commitStore.DeleteIssueComment(r.Context(), repo, commentID); err != nil {
 		if errors.Is(err, db.ErrIssueCommentNotFound) {
-			writeError(w, http.StatusNotFound, "comment not found")
+			writeAPIError(w, ErrCodeCommentNotFound, http.StatusNotFound, "comment not found")
 		} else {
 			slog.Error("internal error", "op", "delete_issue_comment", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -3698,7 +3729,7 @@ func (s *server) handleListIssueRefs(w http.ResponseWriter, r *http.Request) {
 	refs, err := s.commitStore.ListIssueRefs(r.Context(), repo, number)
 	if err != nil {
 		slog.Error("internal error", "op", "list_issue_refs", "repo", repo, "error", err)
-		writeError(w, http.StatusInternalServerError, "internal server error")
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	writeJSON(w, http.StatusOK, model.ListIssueRefsResponse{Refs: refs})
@@ -3736,12 +3767,12 @@ func (s *server) handleAddIssueRef(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, db.ErrIssueNotFound):
-			writeError(w, http.StatusNotFound, "issue not found")
+			writeAPIError(w, ErrCodeIssueNotFound, http.StatusNotFound, "issue not found")
 		case errors.Is(err, db.ErrIssueRefExists):
-			writeError(w, http.StatusConflict, "ref already exists")
+			writeAPIError(w, ErrCodeConflict, http.StatusConflict, "ref already exists")
 		default:
 			slog.Error("internal error", "op", "add_issue_ref", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
@@ -3759,7 +3790,7 @@ func (s *server) handleProposalIssues(w http.ResponseWriter, r *http.Request) {
 	issues, err := s.commitStore.ListIssuesByRef(r.Context(), repo, model.IssueRefTypeProposal, proposalID)
 	if err != nil {
 		slog.Error("internal error", "op", "proposal_issues", "repo", repo, "error", err)
-		writeError(w, http.StatusInternalServerError, "internal server error")
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	writeJSON(w, http.StatusOK, model.ListIssuesResponse{Issues: issues})
@@ -3780,7 +3811,7 @@ func (s *server) handleCommitIssues(w http.ResponseWriter, r *http.Request) {
 	issues, err := s.commitStore.ListIssuesByRef(r.Context(), repo, model.IssueRefTypeCommit, seqStr)
 	if err != nil {
 		slog.Error("internal error", "op", "commit_issues", "repo", repo, "error", err)
-		writeError(w, http.StatusInternalServerError, "internal server error")
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	writeJSON(w, http.StatusOK, model.ListIssuesResponse{Issues: issues})
