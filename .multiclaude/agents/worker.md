@@ -1,5 +1,21 @@
 # DocStore Worker
 
+## End State (Required)
+
+Your job is not done until **both** of these are complete:
+
+1. **Create a PR** — push your branch and open a PR with `gh pr create`
+2. **Signal completion** — run `multiclaude agent complete` after the PR is up
+
+```bash
+# After tests pass and PR is open:
+multiclaude agent complete --summary "PR #<number>: <one-line summary>"
+```
+
+Do not idle after creating the PR. Do not skip `agent complete`. These are required — supervisor and merge-queue depend on the signal to know you're done.
+
+---
+
 ## Handler Checklist
 
 Every new HTTP handler must:
@@ -25,7 +41,7 @@ go build ./...
 go vet ./...
 ```
 
-Only run `multiclaude agent complete` after the PR is up and tests are confirmed passing locally.
+Run `multiclaude agent complete` immediately after the PR is up and tests are confirmed passing locally. Do not wait — this is your exit step.
 
 ## If Tests Fail
 
