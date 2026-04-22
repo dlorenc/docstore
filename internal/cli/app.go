@@ -22,6 +22,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/dlorenc/docstore/internal/hash"
 	"github.com/dlorenc/docstore/internal/model"
 	"github.com/dlorenc/docstore/internal/tui"
 )
@@ -63,36 +64,7 @@ type chainEntry struct {
 	Message    string      `json:"message"`
 	CreatedAt  time.Time   `json:"created_at"`
 	CommitHash *string     `json:"commit_hash"`
-	Files      []chainFile `json:"files"`
-}
-
-// chainFile is one file in a chainEntry.
-type chainFile struct {
-	Path        string `json:"path"`
-	ContentHash string `json:"content_hash"`
-}
-
-// genesisHash is the all-zeros hash used as the previous-hash for the first chain entry.
-const genesisHash = "0000000000000000000000000000000000000000000000000000000000000000"
-
-// computeChainHash recomputes the SHA256 chain hash for a commit entry.
-// This must exactly match the server-side formula in internal/db/store.go.
-func computeChainHash(prevHash string, seq int64, repo, branch, author, message string, createdAt time.Time, files []chainFile) string {
-	h := sha256.New()
-	h.Write([]byte(prevHash + "\n"))
-	h.Write([]byte(fmt.Sprintf("%d\n", seq)))
-	h.Write([]byte(repo + "\n"))
-	h.Write([]byte(branch + "\n"))
-	h.Write([]byte(author + "\n"))
-	h.Write([]byte(message + "\n"))
-	h.Write([]byte(createdAt.UTC().Format(time.RFC3339Nano) + "\n"))
-	sorted := make([]chainFile, len(files))
-	copy(sorted, files)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Path < sorted[j].Path })
-	for _, f := range sorted {
-		h.Write([]byte(f.Path + ":" + f.ContentHash + "\n"))
-	}
-	return hex.EncodeToString(h.Sum(nil))
+	Files      []hash.File `json:"files"`
 }
 
 // fetchChain calls GET /-/chain?from=N&to=M and returns the decoded entries.
@@ -764,7 +736,7 @@ func (a *App) Pull(skipVerify bool) error {
 	// Only process entries on the current branch (per-branch chain semantics).
 	prevHash := oldState.CommitHash
 	if anchor.CommitHash == nil {
-		prevHash = genesisHash
+		prevHash = hash.GenesisHash
 	}
 	skippedBoundary := false
 	for _, e := range entries[1:] {
@@ -777,10 +749,10 @@ func (a *App) Pull(skipVerify bool) error {
 				fmt.Fprintf(a.Out, "note: skipping pre-feature commit at sequence %d (no commit_hash)\n", e.Sequence)
 				skippedBoundary = true
 			}
-			prevHash = genesisHash
+			prevHash = hash.GenesisHash
 			continue
 		}
-		computed := computeChainHash(prevHash, e.Sequence, cfg.Repo, e.Branch, e.Author, e.Message, e.CreatedAt, e.Files)
+		computed := hash.CommitHash(prevHash, e.Sequence, cfg.Repo, e.Branch, e.Author, e.Message, e.CreatedAt, e.Files)
 		if computed != *e.CommitHash {
 			return fmt.Errorf("chain integrity error at sequence %d: expected %s got %s", e.Sequence, computed, *e.CommitHash)
 		}
@@ -821,7 +793,7 @@ func (a *App) Verify() error {
 		return nil
 	}
 
-	prevHash := genesisHash
+	prevHash := hash.GenesisHash
 	foundFirst := false
 	var verifyErr error
 	for _, e := range entries {
@@ -832,7 +804,7 @@ func (a *App) Verify() error {
 		if e.CommitHash == nil {
 			fmt.Fprintf(a.Out, "seq %-4d  SKIP  (no commit_hash)  %s\n", e.Sequence, e.Message)
 			// Reset prevHash so the next hashed commit starts a new chain segment.
-			prevHash = genesisHash
+			prevHash = hash.GenesisHash
 			continue
 		}
 		if !foundFirst {
@@ -842,7 +814,7 @@ func (a *App) Verify() error {
 			fmt.Fprintf(a.Out, "seq %-4d  OK    %.16s  %s\n", e.Sequence, *e.CommitHash, e.Message)
 			continue
 		}
-		computed := computeChainHash(prevHash, e.Sequence, cfg.Repo, e.Branch, e.Author, e.Message, e.CreatedAt, e.Files)
+		computed := hash.CommitHash(prevHash, e.Sequence, cfg.Repo, e.Branch, e.Author, e.Message, e.CreatedAt, e.Files)
 		if computed == *e.CommitHash {
 			prevHash = *e.CommitHash
 			fmt.Fprintf(a.Out, "seq %-4d  OK    %.16s  %s\n", e.Sequence, *e.CommitHash, e.Message)
