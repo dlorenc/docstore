@@ -175,13 +175,13 @@ func RBACMiddleware(roles RoleStore, bootstrapAdmin string) func(http.Handler) h
 			role, err := roles.GetRole(r.Context(), repo, identity)
 			if err != nil {
 				slog.Warn("access denied", "identity", identity, "repo", repo, "reason", "no_role", "path", r.URL.Path)
-				writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+				writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, "forbidden")
 				return
 			}
 
 			if !roleAllows(role.Role, r.Method, subPath, r) {
 				slog.Warn("access denied", "identity", identity, "repo", repo, "role", role.Role, "method", r.Method, "sub_path", subPath, "path", r.URL.Path)
-				writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+				writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, "forbidden")
 				return
 			}
 
@@ -367,13 +367,13 @@ func newMiddleware(devIdentity string, fetchKey func(kid string) (*rsa.PublicKey
 			token := r.Header.Get("X-Goog-IAP-JWT-Assertion")
 			if token == "" {
 				slog.Warn("auth failed", "reason", "missing_token", "path", r.URL.Path)
-				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
+				writeAPIError(w, ErrCodeUnauthorized, http.StatusUnauthorized, "unauthenticated")
 				return
 			}
 			email, err := validateIAPJWT(token, fetchKey)
 			if err != nil {
 				slog.Warn("auth failed", "reason", "invalid_jwt", "path", r.URL.Path, "error", err)
-				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
+				writeAPIError(w, ErrCodeUnauthorized, http.StatusUnauthorized, "unauthenticated")
 				return
 			}
 			if rl := requestLogFromContext(r.Context()); rl != nil {
