@@ -76,6 +76,9 @@ type mockStore struct {
 	resumeSubscriptionFn             func(ctx context.Context, id string) error
 
 	listProposalsFn   func(ctx context.Context, repo string, state *model.ProposalState, branch *string) ([]*model.Proposal, error)
+	getProposalFn     func(ctx context.Context, repo, proposalID string) (*model.Proposal, error)
+	updateProposalFn  func(ctx context.Context, repo, proposalID string, title, description *string) (*model.Proposal, error)
+	closeProposalFn   func(ctx context.Context, repo, proposalID string) error
 	listIssuesByRefFn func(ctx context.Context, repo string, refType model.IssueRefType, refID string) ([]model.Issue, error)
 }
 
@@ -405,7 +408,10 @@ func (m *mockStore) CreateProposal(_ context.Context, _, _, _, _, _, _ string) (
 	return nil, errors.New("not implemented")
 }
 
-func (m *mockStore) GetProposal(_ context.Context, _, _ string) (*model.Proposal, error) {
+func (m *mockStore) GetProposal(ctx context.Context, repo, proposalID string) (*model.Proposal, error) {
+	if m.getProposalFn != nil {
+		return m.getProposalFn(ctx, repo, proposalID)
+	}
 	return nil, db.ErrProposalNotFound
 }
 
@@ -416,11 +422,17 @@ func (m *mockStore) ListProposals(ctx context.Context, repo string, state *model
 	return []*model.Proposal{}, nil
 }
 
-func (m *mockStore) UpdateProposal(_ context.Context, _, _ string, _, _ *string) (*model.Proposal, error) {
+func (m *mockStore) UpdateProposal(ctx context.Context, repo, proposalID string, title, description *string) (*model.Proposal, error) {
+	if m.updateProposalFn != nil {
+		return m.updateProposalFn(ctx, repo, proposalID, title, description)
+	}
 	return nil, db.ErrProposalNotFound
 }
 
-func (m *mockStore) CloseProposal(_ context.Context, _, _ string) error {
+func (m *mockStore) CloseProposal(ctx context.Context, repo, proposalID string) error {
+	if m.closeProposalFn != nil {
+		return m.closeProposalFn(ctx, repo, proposalID)
+	}
 	return db.ErrProposalNotFound
 }
 
