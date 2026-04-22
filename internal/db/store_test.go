@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dlorenc/docstore/internal/hash"
 	"github.com/dlorenc/docstore/internal/model"
 	"github.com/dlorenc/docstore/internal/testutil"
 )
@@ -3190,7 +3191,7 @@ func TestIsForeignKeyViolation_FromDB(t *testing.T) {
 // expectedCommitHash is a regression sentinel: the known SHA256 for the fixed
 // test inputs used in TestComputeCommitHash. If the hash formula changes, this
 // constant must be updated deliberately (it catches accidental formula drift).
-// Inputs: prevHash=genesisHash, seq=1, repo="myorg/repo", branch="main",
+// Inputs: prevHash=hash.GenesisHash, seq=1, repo="myorg/repo", branch="main",
 // author="alice", message="first commit", ts=2024-01-01T00:00:00Z,
 // files=[{a.txt:aaa},{b.txt:bbb}] (sorted alphabetically by path).
 const expectedCommitHash = "54662b84dcaca30b108d9b779bec9ad8727f35db9e6742401aaa5d09a5a5b987"
@@ -3199,12 +3200,12 @@ const expectedCommitHash = "54662b84dcaca30b108d9b779bec9ad8727f35db9e6742401aaa
 func TestComputeCommitHash(t *testing.T) {
 	t.Parallel()
 	ts := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	files := []chainFile{
-		{path: "b.txt", contentHash: "bbb"},
-		{path: "a.txt", contentHash: "aaa"},
+	files := []hash.File{
+		{Path: "b.txt", ContentHash: "bbb"},
+		{Path: "a.txt", ContentHash: "aaa"},
 	}
 	// Files are sorted inside computeCommitHash, so order of input shouldn't matter.
-	got := computeCommitHash(genesisHash, 1, "myorg/repo", "main", "alice", "first commit", ts, files)
+	got := hash.CommitHash(hash.GenesisHash, 1, "myorg/repo", "main", "alice", "first commit", ts, files)
 	if len(got) != 64 {
 		t.Fatalf("expected 64-char hex string, got %q (len=%d)", got, len(got))
 	}
@@ -3215,7 +3216,7 @@ func TestComputeCommitHash(t *testing.T) {
 	}
 
 	// Recomputing with the same inputs must produce the same hash.
-	got2 := computeCommitHash(genesisHash, 1, "myorg/repo", "main", "alice", "first commit", ts, files)
+	got2 := hash.CommitHash(hash.GenesisHash, 1, "myorg/repo", "main", "alice", "first commit", ts, files)
 	if got != got2 {
 		t.Errorf("hash not deterministic: got %q vs %q", got, got2)
 	}
@@ -3226,19 +3227,19 @@ func TestComputeCommitHash(t *testing.T) {
 		fn   func() string
 	}{
 		{"author", func() string {
-			return computeCommitHash(genesisHash, 1, "myorg/repo", "main", "bob", "first commit", ts, files)
+			return hash.CommitHash(hash.GenesisHash, 1, "myorg/repo", "main", "bob", "first commit", ts, files)
 		}},
 		{"message", func() string {
-			return computeCommitHash(genesisHash, 1, "myorg/repo", "main", "alice", "other msg", ts, files)
+			return hash.CommitHash(hash.GenesisHash, 1, "myorg/repo", "main", "alice", "other msg", ts, files)
 		}},
 		{"sequence", func() string {
-			return computeCommitHash(genesisHash, 2, "myorg/repo", "main", "alice", "first commit", ts, files)
+			return hash.CommitHash(hash.GenesisHash, 2, "myorg/repo", "main", "alice", "first commit", ts, files)
 		}},
 		{"repo", func() string {
-			return computeCommitHash(genesisHash, 1, "other/repo", "main", "alice", "first commit", ts, files)
+			return hash.CommitHash(hash.GenesisHash, 1, "other/repo", "main", "alice", "first commit", ts, files)
 		}},
 		{"prevHash", func() string {
-			return computeCommitHash("aaaa"+genesisHash[4:], 1, "myorg/repo", "main", "alice", "first commit", ts, files)
+			return hash.CommitHash("aaaa"+hash.GenesisHash[4:], 1, "myorg/repo", "main", "alice", "first commit", ts, files)
 		}},
 	} {
 		if diff := tc.fn(); diff == got {
@@ -3249,7 +3250,7 @@ func TestComputeCommitHash(t *testing.T) {
 	// Verify expected value by building the same hash inline.
 	// computeCommitHash sorts files internally, so feed them sorted.
 	h := sha256.New()
-	h.Write([]byte(genesisHash + "\n"))
+	h.Write([]byte(hash.GenesisHash + "\n"))
 	h.Write([]byte("1\n"))
 	h.Write([]byte("myorg/repo\n"))
 	h.Write([]byte("main\n"))
@@ -3363,15 +3364,15 @@ func TestCommit_ChainLinks(t *testing.T) {
 	).Scan(&contentHash2); err != nil {
 		t.Fatalf("query content hash for b.txt: %v", err)
 	}
-	hashFiles2 := []chainFile{{path: "b.txt", contentHash: contentHash2.String}}
-	recomputed2 := computeCommitHash(hash1.String, resp2.Sequence, "default/default", "main", author2, message2, createdAt2, hashFiles2)
+	hashFiles2 := []hash.File{{Path: "b.txt", ContentHash: contentHash2.String}}
+	recomputed2 := hash.CommitHash(hash1.String, resp2.Sequence, "default/default", "main", author2, message2, createdAt2, hashFiles2)
 	if recomputed2 != hash2.String {
 		t.Errorf("chain linkage broken: recomputed hash2=%s, stored hash2=%s", recomputed2, hash2.String)
 	}
 }
 
 // TestCommit_PerBranchChain verifies that commits on different branches each
-// start their own chain from genesisHash, independently of each other.
+// start their own chain from hash.GenesisHash, independently of each other.
 func TestCommit_PerBranchChain(t *testing.T) {
 	t.Parallel()
 	d := testutil.TestDBFromShared(t, sharedAdminDSN, RunMigrations)
@@ -3418,7 +3419,7 @@ func TestCommit_PerBranchChain(t *testing.T) {
 	}
 
 	// Both commits should be the first on their respective branches, so both
-	// prevHash values should be genesisHash. Retrieve metadata to recompute.
+	// prevHash values should be hash.GenesisHash. Retrieve metadata to recompute.
 	type commitMeta struct {
 		author, message string
 		createdAt       time.Time
@@ -3449,18 +3450,18 @@ func TestCommit_PerBranchChain(t *testing.T) {
 	mainMeta := getMeta(mainResp.Sequence)
 	featureMeta := getMeta(featureResp.Sequence)
 
-	// Main commit: prevHash must be genesisHash (first on main).
-	expectedMain := computeCommitHash(genesisHash, mainResp.Sequence, "default/default", "main",
+	// Main commit: prevHash must be hash.GenesisHash (first on main).
+	expectedMain := hash.CommitHash(hash.GenesisHash, mainResp.Sequence, "default/default", "main",
 		mainMeta.author, mainMeta.message, mainMeta.createdAt,
-		[]chainFile{{path: "base.txt", contentHash: getContentHash(mainResp.Sequence, "base.txt")}})
+		[]hash.File{{Path: "base.txt", ContentHash: getContentHash(mainResp.Sequence, "base.txt")}})
 	if expectedMain != mainHash.String {
 		t.Errorf("main chain: expected %s, got %s", expectedMain, mainHash.String)
 	}
 
-	// Feature commit: prevHash must be genesisHash (first on feature/x, independent of main).
-	expectedFeature := computeCommitHash(genesisHash, featureResp.Sequence, "default/default", "feature/x",
+	// Feature commit: prevHash must be hash.GenesisHash (first on feature/x, independent of main).
+	expectedFeature := hash.CommitHash(hash.GenesisHash, featureResp.Sequence, "default/default", "feature/x",
 		featureMeta.author, featureMeta.message, featureMeta.createdAt,
-		[]chainFile{{path: "feat.txt", contentHash: getContentHash(featureResp.Sequence, "feat.txt")}})
+		[]hash.File{{Path: "feat.txt", ContentHash: getContentHash(featureResp.Sequence, "feat.txt")}})
 	if expectedFeature != featureHash.String {
 		t.Errorf("feature chain: expected %s, got %s", expectedFeature, featureHash.String)
 	}
