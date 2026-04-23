@@ -273,8 +273,7 @@ func TestUpdateProposal_WithStaleIfMatch_Returns412(t *testing.T) {
 	srv := NewWithReadStore(ms, &mockReadStore{}, devID, devID)
 
 	staleETag := computeETag(p.ID, "0") // wrong timestamp
-	newTitle := "Updated"
-	body, _ := json.Marshal(model.UpdateProposalRequest{Title: &newTitle})
+	body, _ := json.Marshal(model.UpdateProposalRequest{Title: new("Updated")})
 	req := httptest.NewRequest(http.MethodPatch, "/repos/default/default/-/proposals/prop-3", bytes.NewReader(body))
 	req.Header.Set("If-Match", staleETag)
 	rec := httptest.NewRecorder()

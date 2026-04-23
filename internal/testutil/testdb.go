@@ -20,7 +20,7 @@ import (
 // testDBSeq is a monotonically increasing counter used to generate unique
 // database names within a single test binary, preventing collisions when
 // tests run in parallel.
-var testDBSeq int64
+var testDBSeq atomic.Int64
 
 // StartSharedPostgres starts a single PostgreSQL container for use across a
 // test package. Call it from TestMain before m.Run() and store the returned
@@ -107,7 +107,7 @@ func testDBAndDSN(t testing.TB, dsn string, migrate func(*sql.DB) error) (*sql.D
 
 	// Create a unique database for this test. The atomic counter prevents
 	// collisions when many parallel tests call this simultaneously.
-	dbName := fmt.Sprintf("docstore_test_%d_%d", time.Now().UnixNano(), atomic.AddInt64(&testDBSeq, 1))
+	dbName := fmt.Sprintf("docstore_test_%d_%d", time.Now().UnixNano(), testDBSeq.Add(1))
 	if _, err := admin.Exec("CREATE DATABASE " + dbName); err != nil {
 		t.Fatalf("create test database %s: %v", dbName, err)
 	}
