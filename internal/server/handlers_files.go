@@ -79,8 +79,7 @@ func (s *server) handleFile(w http.ResponseWriter, r *http.Request) {
 	fullPath := r.PathValue("path")
 
 	// Check for /history suffix.
-	if strings.HasSuffix(fullPath, "/history") {
-		filePath := strings.TrimSuffix(fullPath, "/history")
+	if filePath, ok := strings.CutSuffix(fullPath, "/history"); ok {
 		s.handleFileHistory(w, r, repo, filePath)
 		return
 	}

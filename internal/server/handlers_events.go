@@ -243,7 +243,7 @@ func (s *server) streamSSE(w http.ResponseWriter, r *http.Request, repo string) 
 	// Parse optional type filter.
 	var types []string
 	if q := r.URL.Query().Get("types"); q != "" {
-		for _, t := range strings.Split(q, ",") {
+		for t := range strings.SplitSeq(q, ",") {
 			t = strings.TrimSpace(t)
 			if t != "" {
 				types = append(types, t)

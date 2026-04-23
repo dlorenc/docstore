@@ -191,7 +191,7 @@ func (m issueDetailModel) View() string {
 		if m.issue.Body != "" {
 			sb.WriteString("\n")
 			sb.WriteString(styleHeader.Render("  Description") + "\n")
-			for _, line := range strings.Split(m.issue.Body, "\n") {
+			for line := range strings.SplitSeq(m.issue.Body, "\n") {
 				sb.WriteString("  " + line + "\n")
 			}
 		}
@@ -205,7 +205,7 @@ func (m issueDetailModel) View() string {
 					styleModified.Render(c.Author),
 					c.CreatedAt.Format("2006-01-02 15:04"),
 				))
-				for _, line := range strings.Split(c.Body, "\n") {
+				for line := range strings.SplitSeq(c.Body, "\n") {
 					sb.WriteString("    " + line + "\n")
 				}
 				sb.WriteString("\n")

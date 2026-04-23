@@ -39,22 +39,22 @@ func (m *mockRunner) Run(_ context.Context, _ string, _ executor.Config, _ cicon
 type mockLogStore struct {
 	writeURL string
 	writeErr error
-	calls    int32
+	calls    atomic.Int32
 }
 
 func (m *mockLogStore) Write(_ context.Context, _, _ string, _ int64, _, _ string) (string, error) {
-	atomic.AddInt32(&m.calls, 1)
+	m.calls.Add(1)
 	return m.writeURL, m.writeErr
 }
 
 // mockHeartbeater implements heartbeater for tests.
 type mockHeartbeater struct {
-	calls int32
+	calls atomic.Int32
 	err   error
 }
 
 func (m *mockHeartbeater) HeartbeatCIJob(_ context.Context, _ string) error {
-	atomic.AddInt32(&m.calls, 1)
+	m.calls.Add(1)
 	return m.err
 }
 
@@ -393,7 +393,7 @@ func TestHeartbeat_StopsOnDone(t *testing.T) {
 func TestHeartbeat_StopsOnContextCancel(t *testing.T) {
 	hb := &mockHeartbeater{}
 	done := make(chan struct{})
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 
 	finished := make(chan struct{})
 	go func() {
@@ -421,7 +421,7 @@ func TestHeartbeat_CallsHeartbeatPeriodically(t *testing.T) {
 	time.Sleep(90 * time.Millisecond)
 	close(done)
 
-	n := atomic.LoadInt32(&hb.calls)
+	n := hb.calls.Load()
 	if n < 2 {
 		t.Errorf("expected ≥2 heartbeat calls in 90ms at 20ms interval, got %d", n)
 	}
@@ -574,7 +574,7 @@ func TestRunJob_AllChecksPassed(t *testing.T) {
 	if errMsg != nil {
 		t.Errorf("expected nil errMsg, got %q", *errMsg)
 	}
-	if n := atomic.LoadInt32(&ls.calls); n != 2 {
+	if n := ls.calls.Load(); n != 2 {
 		t.Errorf("expected 2 log store writes, got %d", n)
 	}
 }

@@ -38,9 +38,9 @@ func TestOutbox_InsertAndDeliver(t *testing.T) {
 	d := testutil.TestDBFromShared(t, sharedAdminDSN, dbpkg.RunMigrations)
 
 	// Start a test webhook server that counts calls.
-	var callCount int64
+	var callCount atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt64(&callCount, 1)
+		callCount.Add(1)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -67,7 +67,7 @@ func TestOutbox_InsertAndDeliver(t *testing.T) {
 	if deliveredAt == nil {
 		t.Fatal("outbox row not marked as delivered")
 	}
-	if atomic.LoadInt64(&callCount) == 0 {
+	if callCount.Load() == 0 {
 		t.Fatal("webhook was never called")
 	}
 }
@@ -178,12 +178,9 @@ func TestPGListener_NotifyWakesBroker(t *testing.T) {
 
 	b := events.NewBroker(nil) // WaitForEvent/Notify need no DB
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	// StartDispatcher launches startPGListener in a goroutine. Give it a moment
 	// to open the pq.Listener connection and call LISTEN before we notify.
-	events.StartDispatcher(ctx, d, dsn, b)
+	events.StartDispatcher(t.Context(), d, dsn, b)
 	time.Sleep(300 * time.Millisecond)
 
 	// WaitForEvent should unblock when broker.Notify() is called by the listener.
