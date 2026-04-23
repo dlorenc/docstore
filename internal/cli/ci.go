@@ -109,7 +109,7 @@ func (a *App) CIRun(checkFilter, trigger, baseBranch, buildkitAddr string) error
 		prefix := "[" + result.Name + "]"
 		logs := strings.TrimRight(result.Logs, "\n")
 		if logs != "" {
-			for _, line := range strings.Split(logs, "\n") {
+			for line := range strings.SplitSeq(logs, "\n") {
 				fmt.Fprintf(a.Out, "%s  %s\n", prefix, line)
 			}
 		}

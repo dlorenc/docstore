@@ -95,8 +95,7 @@ func TestSSE_ReceivesEventsOnCommit(t *testing.T) {
 			break
 		}
 		line := scanner.Text()
-		if strings.HasPrefix(line, "data: ") {
-			data := strings.TrimPrefix(line, "data: ")
+		if data, ok := strings.CutPrefix(line, "data: "); ok {
 			var env map[string]any
 			if err := json.Unmarshal([]byte(data), &env); err != nil {
 				continue
@@ -146,8 +145,7 @@ func TestSSE_FilterByType(t *testing.T) {
 			break
 		}
 		line := scanner.Text()
-		if strings.HasPrefix(line, "data: ") {
-			data := strings.TrimPrefix(line, "data: ")
+		if data, ok := strings.CutPrefix(line, "data: "); ok {
 			var env map[string]any
 			if err := json.Unmarshal([]byte(data), &env); err != nil {
 				continue
@@ -238,9 +236,9 @@ func TestWebhook_DeliveredAfterMutation(t *testing.T) {
 	db.Exec(`INSERT INTO roles (repo, identity, role) VALUES ('default/default', 'test@example.com', 'admin') ON CONFLICT DO NOTHING`)
 
 	// Webhook target.
-	var receivedCount int64
+	var receivedCount atomic.Int64
 	webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt64(&receivedCount, 1)
+		receivedCount.Add(1)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer webhook.Close()
@@ -255,9 +253,7 @@ func TestWebhook_DeliveredAfterMutation(t *testing.T) {
 	srv, _ := newEventTestServer(t, db)
 
 	// Start the outbox dispatcher (no DSN/broker needed for webhook-only test).
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	events.StartDispatcher(ctx, db, "", nil)
+	events.StartDispatcher(t.Context(), db, "", nil)
 
 	// Post a commit.
 	commitBody, _ := json.Marshal(model.CommitRequest{
@@ -278,12 +274,12 @@ func TestWebhook_DeliveredAfterMutation(t *testing.T) {
 	// Wait for webhook delivery.
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
-		if atomic.LoadInt64(&receivedCount) > 0 {
+		if receivedCount.Load() > 0 {
 			return // success
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	t.Fatalf("webhook was not delivered within timeout; received count = %d", atomic.LoadInt64(&receivedCount))
+	t.Fatalf("webhook was not delivered within timeout; received count = %d", receivedCount.Load())
 }
 
 func TestWebhook_HMACSignatureValid(t *testing.T) {
@@ -317,9 +313,7 @@ func TestWebhook_HMACSignatureValid(t *testing.T) {
 
 	srv, _ := newEventTestServer(t, db)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	events.StartDispatcher(ctx, db, "", nil)
+	events.StartDispatcher(t.Context(), db, "", nil)
 
 	commitBody, _ := json.Marshal(model.CommitRequest{
 		Branch:  "main",
@@ -355,11 +349,11 @@ func TestWebhook_RetriedOnFailure(t *testing.T) {
 	seedForEvents(t, db)
 	db.Exec(`INSERT INTO roles (repo, identity, role) VALUES ('default/default', 'test@example.com', 'admin') ON CONFLICT DO NOTHING`)
 
-	var callCount int64
+	var callCount atomic.Int64
 	var fail atomic.Bool
 	fail.Store(true)
 	webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt64(&callCount, 1)
+		callCount.Add(1)
 		if fail.Load() {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
@@ -375,9 +369,7 @@ func TestWebhook_RetriedOnFailure(t *testing.T) {
 
 	srv, _ := newEventTestServer(t, db)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	events.StartDispatcher(ctx, db, "", nil)
+	events.StartDispatcher(t.Context(), db, "", nil)
 
 	commitBody, _ := json.Marshal(model.CommitRequest{
 		Branch:  "main",
@@ -392,7 +384,7 @@ func TestWebhook_RetriedOnFailure(t *testing.T) {
 
 	// Wait for first failure.
 	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) && atomic.LoadInt64(&callCount) == 0 {
+	for time.Now().Before(deadline) && callCount.Load() == 0 {
 		time.Sleep(100 * time.Millisecond)
 	}
 
@@ -413,7 +405,7 @@ func TestWebhook_RetriedOnFailure(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	t.Fatalf("webhook was never delivered after retry; call count = %d", atomic.LoadInt64(&callCount))
+	t.Fatalf("webhook was never delivered after retry; call count = %d", callCount.Load())
 }
 
 func TestSSE_CurrentSeqFailure_Returns503(t *testing.T) {
