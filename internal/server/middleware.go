@@ -91,10 +91,8 @@ func repoFromPath(path string) string {
 		return ""
 	}
 	rest := path[len(prefix):]
-	if slash := strings.IndexByte(rest, '/'); slash != -1 {
-		return rest[:slash]
-	}
-	return rest
+	repo, _, _ := strings.Cut(rest, "/")
+	return repo
 }
 
 // RequestLogger returns an HTTP middleware that logs one structured line per
@@ -208,12 +206,12 @@ func repoAndSubPath(path string) (repo, subPath string) {
 		return "", ""
 	}
 	rest := path[len(prefix):]
-	idx := strings.Index(rest, "/-/")
-	if idx == -1 {
+	repo, subPath, found := strings.Cut(rest, "/-/")
+	if !found {
 		// /repos/:repopath with no /-/ — no sub-path, no RBAC check needed.
 		return "", ""
 	}
-	return rest[:idx], rest[idx+3:]
+	return repo, subPath
 }
 
 // roleAllows checks whether the given role is permitted to execute the HTTP

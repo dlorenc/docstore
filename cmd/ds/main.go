@@ -644,12 +644,12 @@ func main() {
 				os.Exit(1)
 			}
 			fullName := args[2]
-			slash := strings.Index(fullName, "/")
-			if slash <= 0 || slash == len(fullName)-1 {
+			owner, name, ok := strings.Cut(fullName, "/")
+			if !ok || owner == "" || name == "" {
 				fmt.Fprintln(os.Stderr, "error: repo name must be in owner/name format")
 				os.Exit(1)
 			}
-			err = app.ReposCreate(fullName[:slash], fullName[slash+1:])
+			err = app.ReposCreate(owner, name)
 		case "get":
 			if len(args) < 3 {
 				fmt.Fprintln(os.Stderr, "usage: ds repo get <owner/name>")
