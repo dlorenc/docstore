@@ -300,12 +300,11 @@ func TestHandleGetLogs_ClaimedWithWorkerIP_ProxiesToWorker(t *testing.T) {
 	fakeWorker.Start()
 	defer fakeWorker.Close()
 
-	workerIP := "127.0.0.1"
 	stub := &stubStore{
 		getJob: &model.CIJob{
 			ID:          "job-1",
 			Status:      "claimed",
-			WorkerPodIP: &workerIP,
+			WorkerPodIP: new("127.0.0.1"),
 		},
 	}
 	sched := &scheduler{store: stub}
@@ -1153,8 +1152,7 @@ func TestStartReaper_CallsReapOnInterval(t *testing.T) {
 			{ID: "stale-1", Repo: "org/repo", Branch: "main", Status: "queued"},
 		},
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	startReaper(ctx, store, 10*time.Millisecond)
 
@@ -1174,8 +1172,7 @@ func TestStartReaper_CallsReapOnInterval(t *testing.T) {
 // by ReapStaleCIJobs does not stop the reaper — it continues ticking.
 func TestStartReaper_ReapError_ContinuesRunning(t *testing.T) {
 	store := &countingStore{reapErr: context.DeadlineExceeded}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	startReaper(ctx, store, 10*time.Millisecond)
 
@@ -1196,7 +1193,7 @@ func TestStartReaper_ReapError_ContinuesRunning(t *testing.T) {
 // context causes the reaper goroutine to stop accepting new ticks.
 func TestStartReaper_StopsOnContextCancellation(t *testing.T) {
 	store := &countingStore{}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 
 	startReaper(ctx, store, 10*time.Millisecond)
 
@@ -1223,7 +1220,7 @@ func TestStartReaper_StopsOnContextCancellation(t *testing.T) {
 // TestStartCronRunner_StopsOnContextCancellation verifies that startCronRunner
 // launches without panicking and its goroutine exits when the context is cancelled.
 func TestStartCronRunner_StopsOnContextCancellation(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	stub := &stubStore{}
 	sched := &scheduler{store: stub, docstoreURL: "", httpClient: &http.Client{}}
 

@@ -28,12 +28,12 @@ func parseRepoPath(path string) (repoName, endpoint string, ok bool) {
 	if rest == "" {
 		return "", "", false
 	}
-	idx := strings.Index(rest, "/-/")
-	if idx == -1 {
+	repoName, endpoint, found := strings.Cut(rest, "/-/")
+	if !found {
 		// Bare /repos/:repopath — no endpoint
 		return rest, "", true
 	}
-	return rest[:idx], rest[idx+3:], true
+	return repoName, endpoint, true
 }
 
 // handleReposPrefix is the catch-all handler for all /repos/... paths (except
@@ -202,8 +202,8 @@ func (s *server) handleReposPrefix(w http.ResponseWriter, r *http.Request) {
 
 	case strings.HasPrefix(endpoint, "commit/"):
 		rest := strings.TrimPrefix(endpoint, "commit/")
-		if strings.HasSuffix(rest, "/issues") {
-			r.SetPathValue("sequence", strings.TrimSuffix(rest, "/issues"))
+		if seq, ok := strings.CutSuffix(rest, "/issues"); ok {
+			r.SetPathValue("sequence", seq)
 			if r.Method == http.MethodGet {
 				s.handleCommitIssues(w, r)
 			} else {
@@ -240,8 +240,7 @@ func (s *server) handleReposPrefix(w http.ResponseWriter, r *http.Request) {
 
 	case strings.HasPrefix(endpoint, "branch/"):
 		bpath := strings.TrimPrefix(endpoint, "branch/")
-		if strings.HasSuffix(bpath, "/auto-merge") {
-			branchName := strings.TrimSuffix(bpath, "/auto-merge")
+		if branchName, ok := strings.CutSuffix(bpath, "/auto-merge"); ok {
 			r.SetPathValue("bname", branchName)
 			switch r.Method {
 			case http.MethodPost:
@@ -260,11 +259,9 @@ func (s *server) handleReposPrefix(w http.ResponseWriter, r *http.Request) {
 				r.SetPathValue("bname", bpath)
 				s.handleUpdateBranch(w, r)
 			case http.MethodGet:
-				if strings.HasSuffix(bpath, "/status") {
-					branchName := strings.TrimSuffix(bpath, "/status")
+				if branchName, ok := strings.CutSuffix(bpath, "/status"); ok {
 					s.handleBranchStatus(w, r, repoName, branchName)
-				} else if strings.HasSuffix(bpath, "/agent-context") {
-					branchName := strings.TrimSuffix(bpath, "/agent-context")
+				} else if branchName, ok := strings.CutSuffix(bpath, "/agent-context"); ok {
 					s.handleAgentContext(w, r, repoName, branchName)
 				} else {
 					r.SetPathValue("branch", bpath)
@@ -295,16 +292,14 @@ func (s *server) handleReposPrefix(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(endpoint, "proposals/"):
 		rest := strings.TrimPrefix(endpoint, "proposals/")
 		// Check for /proposals/:id/close
-		if strings.HasSuffix(rest, "/close") {
-			proposalID := strings.TrimSuffix(rest, "/close")
+		if proposalID, ok := strings.CutSuffix(rest, "/close"); ok {
 			r.SetPathValue("proposalID", proposalID)
 			if r.Method == http.MethodPost {
 				s.handleCloseProposal(w, r)
 			} else {
 				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 			}
-		} else if strings.HasSuffix(rest, "/issues") {
-			proposalID := strings.TrimSuffix(rest, "/issues")
+		} else if proposalID, ok := strings.CutSuffix(rest, "/issues"); ok {
 			r.SetPathValue("proposalID", proposalID)
 			if r.Method == http.MethodGet {
 				s.handleProposalIssues(w, r)

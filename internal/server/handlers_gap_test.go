@@ -193,7 +193,7 @@ func TestRequireGlobalAdmin_WrongIdentity(t *testing.T) {
 
 func TestHandleCreateSubscription_MissingBackend(t *testing.T) {
 	srv := New(&mockStore{}, nil, devID, devID)
-	body, _ := json.Marshal(map[string]interface{}{
+	body, _ := json.Marshal(map[string]any{
 		"config": map[string]string{"url": "https://example.com/hook"},
 	})
 	req := httptest.NewRequest(http.MethodPost, "/subscriptions", bytes.NewReader(body))
@@ -207,7 +207,7 @@ func TestHandleCreateSubscription_MissingBackend(t *testing.T) {
 
 func TestHandleCreateSubscription_UnsupportedBackend(t *testing.T) {
 	srv := New(&mockStore{}, nil, devID, devID)
-	body, _ := json.Marshal(map[string]interface{}{
+	body, _ := json.Marshal(map[string]any{
 		"backend": "pubsub",
 		"config":  map[string]string{"url": "https://example.com/hook"},
 	})
@@ -222,7 +222,7 @@ func TestHandleCreateSubscription_UnsupportedBackend(t *testing.T) {
 
 func TestHandleCreateSubscription_MissingConfig(t *testing.T) {
 	srv := New(&mockStore{}, nil, devID, devID)
-	body, _ := json.Marshal(map[string]interface{}{
+	body, _ := json.Marshal(map[string]any{
 		"backend": "webhook",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/subscriptions", bytes.NewReader(body))
@@ -236,7 +236,7 @@ func TestHandleCreateSubscription_MissingConfig(t *testing.T) {
 
 func TestHandleCreateSubscription_MissingURL(t *testing.T) {
 	srv := New(&mockStore{}, nil, devID, devID)
-	body, _ := json.Marshal(map[string]interface{}{
+	body, _ := json.Marshal(map[string]any{
 		"backend": "webhook",
 		"config":  map[string]string{"secret": "s3cr3t"},
 	})
@@ -251,7 +251,7 @@ func TestHandleCreateSubscription_MissingURL(t *testing.T) {
 
 func TestHandleCreateSubscription_InvalidURL(t *testing.T) {
 	srv := New(&mockStore{}, nil, devID, devID)
-	body, _ := json.Marshal(map[string]interface{}{
+	body, _ := json.Marshal(map[string]any{
 		"backend": "webhook",
 		"config":  map[string]string{"url": "ftp://not-http.example.com"},
 	})
@@ -271,7 +271,7 @@ func TestHandleCreateSubscription_Success(t *testing.T) {
 		},
 	}
 	srv := New(ms, nil, devID, devID)
-	body, _ := json.Marshal(map[string]interface{}{
+	body, _ := json.Marshal(map[string]any{
 		"backend": "webhook",
 		"config":  map[string]string{"url": "https://example.com/hook", "secret": "s3cr3t"},
 	})
@@ -297,7 +297,7 @@ func TestHandleCreateSubscription_Success(t *testing.T) {
 func TestHandleCreateSubscription_NonAdmin_GlobalScope_Forbidden(t *testing.T) {
 	// Non-admin caller with no repo field: tests the 'no repo field on non-admin' path → 403.
 	srv := New(&mockStore{}, nil, devID, "admin@other.com")
-	body, _ := json.Marshal(map[string]interface{}{
+	body, _ := json.Marshal(map[string]any{
 		"backend": "webhook",
 		"config":  map[string]string{"url": "https://example.com/hook"},
 	})
@@ -328,7 +328,7 @@ func TestHandleCreateSubscription_StoreError(t *testing.T) {
 		},
 	}
 	srv := New(ms, nil, devID, devID)
-	body, _ := json.Marshal(map[string]interface{}{
+	body, _ := json.Marshal(map[string]any{
 		"backend": "webhook",
 		"config":  map[string]string{"url": "https://example.com/hook"},
 	})
@@ -571,7 +571,7 @@ func TestHandleCreateSubscription_RepoScoped_NonAdmin_Success(t *testing.T) {
 	}
 	srv := New(ms, nil, devID, "admin@other.com")
 	repoName := "myorg/myrepo"
-	body, _ := json.Marshal(map[string]interface{}{
+	body, _ := json.Marshal(map[string]any{
 		"repo":    repoName,
 		"backend": "webhook",
 		"config":  map[string]string{"url": "https://example.com/hook", "secret": "s3cr3t"},
@@ -590,7 +590,7 @@ func TestHandleCreateSubscription_RepoScoped_NoRepoAccess_Forbidden(t *testing.T
 	// Default mockStore.getRoleFn returns db.ErrRoleNotFound → no access.
 	srv := New(&mockStore{}, nil, devID, "admin@other.com")
 	repoName := "myorg/myrepo"
-	body, _ := json.Marshal(map[string]interface{}{
+	body, _ := json.Marshal(map[string]any{
 		"repo":    repoName,
 		"backend": "webhook",
 		"config":  map[string]string{"url": "https://example.com/hook"},
@@ -1011,7 +1011,7 @@ func TestHandleMerge_DryRun_DoesNotPersist(t *testing.T) {
 // 14. Config sent as a JSON array → 400.
 func TestHandleCreateSubscription_InvalidConfigType(t *testing.T) {
 	srv := New(&mockStore{}, nil, devID, devID)
-	body, _ := json.Marshal(map[string]interface{}{
+	body, _ := json.Marshal(map[string]any{
 		"backend": "webhook",
 		"config":  []int{1, 2, 3},
 	})

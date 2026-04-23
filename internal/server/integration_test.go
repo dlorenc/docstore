@@ -503,7 +503,7 @@ func TestIntegrationRebase_FullFlow(t *testing.T) {
 	r = post("/repos/default/default/-/rebase", `{"branch":"feature/rebase-flow","author":"bob"}`)
 	defer r.Body.Close()
 	if r.StatusCode != http.StatusOK {
-		var errBody map[string]interface{}
+		var errBody map[string]any
 		json.NewDecoder(r.Body).Decode(&errBody)
 		t.Fatalf("POST /rebase: expected 200, got %d; body: %v", r.StatusCode, errBody)
 	}
@@ -540,7 +540,7 @@ func TestIntegrationRebase_FullFlow(t *testing.T) {
 	r = post("/repos/default/default/-/merge", `{"branch":"feature/rebase-flow","author":"alice"}`)
 	defer r.Body.Close()
 	if r.StatusCode != http.StatusOK {
-		var errBody map[string]interface{}
+		var errBody map[string]any
 		json.NewDecoder(r.Body).Decode(&errBody)
 		t.Fatalf("POST /merge after rebase: expected 200, got %d; body: %v", r.StatusCode, errBody)
 	}
@@ -1103,7 +1103,7 @@ func TestIntegrationReviewRepoIsolation(t *testing.T) {
 		t.Fatalf("GET reviews: expected 200, got %d", getResp.StatusCode)
 	}
 
-	var reviews []interface{}
+	var reviews []any
 	if err := json.NewDecoder(getResp.Body).Decode(&reviews); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -1354,7 +1354,7 @@ func TestIntegrationMerge_ConflictBody(t *testing.T) {
 	r = post("/repos/default/default/-/merge", `{"branch":"feature/merge-conflict"}`)
 	defer r.Body.Close()
 	if r.StatusCode != http.StatusConflict {
-		var errBody map[string]interface{}
+		var errBody map[string]any
 		json.NewDecoder(r.Body).Decode(&errBody)
 		t.Fatalf("POST /merge: expected 409, got %d; body: %v", r.StatusCode, errBody)
 	}
@@ -1436,7 +1436,7 @@ func TestIntegrationRebase_ConflictBody(t *testing.T) {
 	r = post("/repos/default/default/-/rebase", `{"branch":"feature/rebase-conflict"}`)
 	defer r.Body.Close()
 	if r.StatusCode != http.StatusConflict {
-		var errBody map[string]interface{}
+		var errBody map[string]any
 		json.NewDecoder(r.Body).Decode(&errBody)
 		t.Fatalf("POST /rebase: expected 409, got %d; body: %v", r.StatusCode, errBody)
 	}
@@ -1659,7 +1659,7 @@ func TestIntegrationPurge_FullFlow(t *testing.T) {
 	r = post("/repos/default/default/-/purge", `{"older_than":"1d"}`)
 	defer r.Body.Close()
 	if r.StatusCode != http.StatusOK {
-		var errBody map[string]interface{}
+		var errBody map[string]any
 		json.NewDecoder(r.Body).Decode(&errBody)
 		t.Fatalf("purge: expected 200, got %d; body: %v", r.StatusCode, errBody)
 	}

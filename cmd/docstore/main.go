@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"flag"
 	"log/slog"
@@ -61,10 +62,7 @@ func main() {
 		logger.Info("bootstrap admin configured", "identity", *bootstrapAdmin)
 	}
 
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
+	port := cmp.Or(os.Getenv("PORT"), "8080")
 
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
@@ -116,10 +114,7 @@ func main() {
 		bs = gcsStore
 		logger.Info("blob store configured", "backend", "gcs", "bucket", bucket, "threshold_bytes", blobThreshold)
 	case "", "local":
-		localDir := os.Getenv("DOCSTORE_BLOB_LOCAL_DIR")
-		if localDir == "" {
-			localDir = "/tmp/docstore-blobs"
-		}
+		localDir := cmp.Or(os.Getenv("DOCSTORE_BLOB_LOCAL_DIR"), "/tmp/docstore-blobs")
 		localStore, err := blob.NewLocalBlobStore(localDir)
 		if err != nil {
 			logger.Error("failed to create local blob store", "error", err)

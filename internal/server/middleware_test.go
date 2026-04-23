@@ -35,7 +35,7 @@ func makeTestJWT(t *testing.T, key *rsa.PrivateKey, kid, email string, exp time.
 	t.Helper()
 
 	headerJSON, _ := json.Marshal(map[string]string{"alg": "RS256", "kid": kid, "typ": "JWT"})
-	payloadJSON, _ := json.Marshal(map[string]interface{}{
+	payloadJSON, _ := json.Marshal(map[string]any{
 		"email": email,
 		"exp":   exp.Unix(),
 		"iat":   time.Now().Unix(),
@@ -429,7 +429,7 @@ func TestRBACMiddleware_RepoIsolation(t *testing.T) {
 // buildJWT constructs a JWT with the given header and payload maps, signed
 // with key. The helper exists to produce tokens with non-standard fields
 // (wrong alg, missing kid, missing email, etc.) without going through makeTestJWT.
-func buildJWT(t *testing.T, key *rsa.PrivateKey, header, payload map[string]interface{}) string {
+func buildJWT(t *testing.T, key *rsa.PrivateKey, header, payload map[string]any) string {
 	t.Helper()
 	headerJSON, _ := json.Marshal(header)
 	payloadJSON, _ := json.Marshal(payload)
@@ -467,8 +467,8 @@ func TestIAPMiddleware_WrongAlgorithm(t *testing.T) {
 	key := generateTestKey(t)
 	kid := "test-key-1"
 	token := buildJWT(t, key,
-		map[string]interface{}{"alg": "HS256", "kid": kid, "typ": "JWT"},
-		map[string]interface{}{"email": "alice@example.com", "exp": time.Now().Add(time.Hour).Unix()},
+		map[string]any{"alg": "HS256", "kid": kid, "typ": "JWT"},
+		map[string]any{"email": "alice@example.com", "exp": time.Now().Add(time.Hour).Unix()},
 	)
 
 	mw := newMiddleware("", staticKeyFetcher(kid, &key.PublicKey))
@@ -489,8 +489,8 @@ func TestIAPMiddleware_WrongAlgorithm(t *testing.T) {
 func TestIAPMiddleware_MissingKid(t *testing.T) {
 	key := generateTestKey(t)
 	token := buildJWT(t, key,
-		map[string]interface{}{"alg": "RS256", "typ": "JWT"}, // no kid
-		map[string]interface{}{"email": "alice@example.com", "exp": time.Now().Add(time.Hour).Unix()},
+		map[string]any{"alg": "RS256", "typ": "JWT"}, // no kid
+		map[string]any{"email": "alice@example.com", "exp": time.Now().Add(time.Hour).Unix()},
 	)
 
 	mw := newMiddleware("", func(kid string) (*rsa.PublicKey, error) {
@@ -535,8 +535,8 @@ func TestIAPMiddleware_MissingEmailClaim(t *testing.T) {
 	key := generateTestKey(t)
 	kid := "test-key-1"
 	token := buildJWT(t, key,
-		map[string]interface{}{"alg": "RS256", "kid": kid, "typ": "JWT"},
-		map[string]interface{}{"exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Unix()}, // no email
+		map[string]any{"alg": "RS256", "kid": kid, "typ": "JWT"},
+		map[string]any{"exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Unix()}, // no email
 	)
 
 	mw := newMiddleware("", staticKeyFetcher(kid, &key.PublicKey))
@@ -558,8 +558,8 @@ func TestIAPMiddleware_EmptyEmailClaim(t *testing.T) {
 	key := generateTestKey(t)
 	kid := "test-key-1"
 	token := buildJWT(t, key,
-		map[string]interface{}{"alg": "RS256", "kid": kid, "typ": "JWT"},
-		map[string]interface{}{"email": "", "exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Unix()},
+		map[string]any{"alg": "RS256", "kid": kid, "typ": "JWT"},
+		map[string]any{"email": "", "exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Unix()},
 	)
 
 	mw := newMiddleware("", staticKeyFetcher(kid, &key.PublicKey))
@@ -582,8 +582,8 @@ func TestIAPMiddleware_MissingExpClaim(t *testing.T) {
 	key := generateTestKey(t)
 	kid := "test-key-1"
 	token := buildJWT(t, key,
-		map[string]interface{}{"alg": "RS256", "kid": kid, "typ": "JWT"},
-		map[string]interface{}{"email": "alice@example.com", "iat": time.Now().Unix()}, // no exp
+		map[string]any{"alg": "RS256", "kid": kid, "typ": "JWT"},
+		map[string]any{"email": "alice@example.com", "iat": time.Now().Unix()}, // no exp
 	)
 
 	mw := newMiddleware("", staticKeyFetcher(kid, &key.PublicKey))
@@ -607,8 +607,8 @@ func TestIAPMiddleware_FutureIatIsAccepted(t *testing.T) {
 	key := generateTestKey(t)
 	kid := "test-key-1"
 	token := buildJWT(t, key,
-		map[string]interface{}{"alg": "RS256", "kid": kid, "typ": "JWT"},
-		map[string]interface{}{
+		map[string]any{"alg": "RS256", "kid": kid, "typ": "JWT"},
+		map[string]any{
 			"email": "alice@example.com",
 			"exp":   time.Now().Add(time.Hour).Unix(),
 			"iat":   time.Now().Add(time.Hour).Unix(), // future iat

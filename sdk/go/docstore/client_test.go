@@ -399,7 +399,7 @@ func TestContextCancellation(t *testing.T) {
 	defer srv.Close()
 
 	c := newClient(t, srv.URL)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	_, err := c.Repo("a/b").File(ctx, "x")
 	if err == nil {

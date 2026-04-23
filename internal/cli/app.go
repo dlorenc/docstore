@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"mime"
 	"net/http"
 	"net/url"
@@ -16,7 +17,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -373,9 +374,9 @@ func (a *App) Status() error {
 		}
 	}
 
-	sort.Strings(newFiles)
-	sort.Strings(modifiedFiles)
-	sort.Strings(deletedFiles)
+	slices.Sort(newFiles)
+	slices.Sort(modifiedFiles)
+	slices.Sort(deletedFiles)
 
 	if len(newFiles) == 0 && len(modifiedFiles) == 0 && len(deletedFiles) == 0 {
 		fmt.Fprintf(a.Out, "No changes\n")
@@ -439,7 +440,7 @@ func (a *App) Commit(message string) error {
 	}
 
 	// Sort for deterministic ordering.
-	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+	slices.SortFunc(files, func(a, b model.FileChange) int { return strings.Compare(a.Path, b.Path) })
 
 	req := model.CommitRequest{
 		Branch:  cfg.Branch,
@@ -1221,7 +1222,7 @@ func (a *App) doDELETE(urlStr string) (*http.Response, error) {
 }
 
 // doPOSTJSON sends a POST request with JSON body without requiring a workspace config.
-func (a *App) doPOSTJSON(urlStr string, body interface{}) (*http.Response, error) {
+func (a *App) doPOSTJSON(urlStr string, body any) (*http.Response, error) {
 	data, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
@@ -1235,7 +1236,7 @@ func (a *App) doPOSTJSON(urlStr string, body interface{}) (*http.Response, error
 }
 
 // doPUTJSON sends a PUT request with JSON body without requiring a workspace config.
-func (a *App) doPUTJSON(urlStr string, body interface{}) (*http.Response, error) {
+func (a *App) doPUTJSON(urlStr string, body any) (*http.Response, error) {
 	data, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
@@ -1249,7 +1250,7 @@ func (a *App) doPUTJSON(urlStr string, body interface{}) (*http.Response, error)
 }
 
 // postJSON sends a POST request with a JSON body and the X-DocStore-Identity header set.
-func (a *App) postJSON(cfg *Config, urlStr string, body interface{}) (*http.Response, error) {
+func (a *App) postJSON(cfg *Config, urlStr string, body any) (*http.Response, error) {
 	data, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
@@ -1264,7 +1265,7 @@ func (a *App) postJSON(cfg *Config, urlStr string, body interface{}) (*http.Resp
 }
 
 // patchJSON sends a PATCH request with a JSON body and the X-DocStore-Identity header set.
-func (a *App) patchJSON(cfg *Config, urlStr string, body interface{}) (*http.Response, error) {
+func (a *App) patchJSON(cfg *Config, urlStr string, body any) (*http.Response, error) {
 	data, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
@@ -1883,12 +1884,9 @@ func (a *App) Checks(branch string, showAll bool) error {
 				latest[c.CheckName] = c
 			}
 		}
-		checkRuns = make([]model.CheckRun, 0, len(latest))
-		for _, c := range latest {
-			checkRuns = append(checkRuns, c)
-		}
-		sort.Slice(checkRuns, func(i, j int) bool {
-			return checkRuns[i].CheckName < checkRuns[j].CheckName
+		checkRuns = slices.Collect(maps.Values(latest))
+		slices.SortFunc(checkRuns, func(a, b model.CheckRun) int {
+			return strings.Compare(a.CheckName, b.CheckName)
 		})
 	}
 
@@ -2160,7 +2158,7 @@ func (a *App) importGitReplay(cfg *Config, repoPath string) error {
 		}
 
 		var changes []model.FileChange
-		for _, fline := range strings.Split(strings.TrimRight(string(filesOut), "\n"), "\n") {
+		for fline := range strings.SplitSeq(strings.TrimRight(string(filesOut), "\n"), "\n") {
 			if fline == "" {
 				continue
 			}
@@ -2226,7 +2224,7 @@ func (a *App) importGitSquash(cfg *Config, repoPath string) error {
 	}
 
 	var filePaths []string
-	for _, f := range strings.Split(strings.TrimRight(string(filesOut), "\n"), "\n") {
+	for f := range strings.SplitSeq(strings.TrimRight(string(filesOut), "\n"), "\n") {
 		if f != "" {
 			filePaths = append(filePaths, f)
 		}
@@ -2825,7 +2823,7 @@ func (a *App) ReleaseCreate(name string, sequence int64, notes string) error {
 		return err
 	}
 
-	body := map[string]interface{}{
+	body := map[string]any{
 		"name": name,
 	}
 	if sequence != 0 {
