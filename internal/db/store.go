@@ -1071,7 +1071,7 @@ func (s *Store) ListReviews(ctx context.Context, repo, branch string, atSeq *int
 	q := `SELECT id, reviewer, sequence, status, COALESCE(body, ''), created_at
 	      FROM reviews
 	      WHERE repo = $1 AND branch = $2`
-	args := []interface{}{repo, branch}
+	args := []any{repo, branch}
 	if atSeq != nil {
 		q += " AND sequence = $3"
 		args = append(args, *atSeq)
@@ -1158,7 +1158,7 @@ func (s *Store) ListReviewComments(ctx context.Context, repo, branch string, pat
 	q := `SELECT id::text, review_id::text, path, version_id::text, body, author, sequence, created_at
 	      FROM review_comments
 	      WHERE repo = $1 AND branch = $2`
-	args := []interface{}{repo, branch}
+	args := []any{repo, branch}
 	if path != nil {
 		q += " AND path = $3"
 		args = append(args, *path)
@@ -1387,7 +1387,7 @@ func (s *Store) RetryChecks(ctx context.Context, repo, branch string, seq int64,
 // check_name is returned; when history is true, all attempt rows are returned.
 func (s *Store) ListCheckRuns(ctx context.Context, repo, branch string, atSeq *int64, history bool) ([]model.CheckRun, error) {
 	var q string
-	args := []interface{}{repo, branch}
+	args := []any{repo, branch}
 
 	if history {
 		q = `SELECT id, sequence, check_name, status, reporter, log_url, created_at, attempt, metadata
@@ -2090,8 +2090,7 @@ func (s *Store) CommitSequenceExists(ctx context.Context, repo string, sequence 
 
 // isDuplicateKeyError checks if a PostgreSQL error is a unique violation (23505).
 func isDuplicateKeyError(err error) bool {
-	var pqErr *pq.Error
-	if errors.As(err, &pqErr) {
+	if pqErr, ok := errors.AsType[*pq.Error](err); ok {
 		return pqErr.Code == "23505"
 	}
 	return false
@@ -2099,8 +2098,7 @@ func isDuplicateKeyError(err error) bool {
 
 // isForeignKeyViolation checks if a PostgreSQL error is a FK violation (23503).
 func isForeignKeyViolation(err error) bool {
-	var pqErr *pq.Error
-	if errors.As(err, &pqErr) {
+	if pqErr, ok := errors.AsType[*pq.Error](err); ok {
 		return pqErr.Code == "23503"
 	}
 	return false
@@ -2363,7 +2361,7 @@ func (s *Store) GetProposal(ctx context.Context, repo, proposalID string) (*mode
 func (s *Store) ListProposals(ctx context.Context, repo string, state *model.ProposalState, branch *string) ([]*model.Proposal, error) {
 	q := `SELECT id::text, repo, branch, base_branch, title, description, author, state, created_at, updated_at
 	      FROM proposals WHERE repo = $1`
-	args := []interface{}{repo}
+	args := []any{repo}
 	if state != nil {
 		args = append(args, string(*state))
 		q += fmt.Sprintf(" AND state = $%d", len(args))
@@ -2403,7 +2401,7 @@ func (s *Store) UpdateProposal(ctx context.Context, repo, proposalID string, tit
 	}
 
 	setClauses := []string{"updated_at = now()"}
-	args := []interface{}{}
+	args := []any{}
 	argIdx := 1
 
 	if title != nil {

@@ -39,7 +39,7 @@ func (c *tuiClient) repoBase() string {
 	return c.remote + "/repos/" + c.repo + "/-"
 }
 
-func (c *tuiClient) debugf(format string, args ...interface{}) {
+func (c *tuiClient) debugf(format string, args ...any) {
 	if c.debug != nil {
 		c.debug.Printf(format, args...)
 	}
@@ -62,7 +62,7 @@ func (c *tuiClient) get(path string) (*http.Response, error) {
 	return resp, nil
 }
 
-func (c *tuiClient) postJSON(path string, body interface{}) (*http.Response, error) {
+func (c *tuiClient) postJSON(path string, body any) (*http.Response, error) {
 	fullURL := c.repoBase() + path
 	data, err := json.Marshal(body)
 	if err != nil {
@@ -92,7 +92,7 @@ func (c *tuiClient) postJSON(path string, body interface{}) (*http.Response, err
 // (e.g. decoding `{"error":"..."}` as `[]model.CheckRun`).
 //
 // The caller retains responsibility for closing resp.Body.
-func (c *tuiClient) decodeJSON(resp *http.Response, target interface{}) error {
+func (c *tuiClient) decodeJSON(resp *http.Response, target any) error {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
 		var errResp model.ErrorResponse
@@ -518,11 +518,8 @@ func loadBranchDetail(c *tuiClient, branchName string) tea.Cmd {
 				changeType = "+"
 			}
 
-			entry := entry // capture loop variable
 			ct := changeType
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				sem <- struct{}{}
 				defer func() { <-sem }()
 
@@ -558,7 +555,7 @@ func loadBranchDetail(c *tuiClient, branchName string) tea.Cmd {
 				fcMu.Lock()
 				fileContents[entry.Path] = result
 				fcMu.Unlock()
-			}()
+			})
 		}
 		wg.Wait()
 
