@@ -216,7 +216,7 @@ func contains(s, substr string) bool {
 }
 
 func containsHelper(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
+	for i := range len(s) - len(substr) + 1 {
 		if s[i:i+len(substr)] == substr {
 			return true
 		}

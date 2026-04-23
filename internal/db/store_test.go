@@ -1671,7 +1671,7 @@ func TestCreateReview_RecordedAtHeadSequence(t *testing.T) {
 	ctx := context.Background()
 
 	// Two commits on main by alice.
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		_, err := s.Commit(ctx, model.CommitRequest{
 			Repo: "default/default", Branch: "main",
 			Files:   []model.FileChange{{Path: "f.txt", Content: []byte("v" + string(rune('1'+i)))}},
