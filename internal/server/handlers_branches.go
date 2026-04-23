@@ -243,19 +243,19 @@ func (s *server) handleBranchGet(w http.ResponseWriter, r *http.Request) {
 	repo := r.PathValue("name")
 	branchPath := r.PathValue("branch")
 
-	switch {
-	case strings.HasSuffix(branchPath, "/reviews"):
-		branch := strings.TrimSuffix(branchPath, "/reviews")
+	if branch, ok := strings.CutSuffix(branchPath, "/reviews"); ok {
 		s.handleGetReviews(w, r, repo, branch)
-	case strings.HasSuffix(branchPath, "/checks"):
-		branch := strings.TrimSuffix(branchPath, "/checks")
-		s.handleGetChecks(w, r, repo, branch)
-	case strings.HasSuffix(branchPath, "/comments"):
-		branch := strings.TrimSuffix(branchPath, "/comments")
-		s.handleListReviewComments(w, r, repo, branch)
-	default:
-		s.handleGetBranch(w, r, repo, branchPath)
+		return
 	}
+	if branch, ok := strings.CutSuffix(branchPath, "/checks"); ok {
+		s.handleGetChecks(w, r, repo, branch)
+		return
+	}
+	if branch, ok := strings.CutSuffix(branchPath, "/comments"); ok {
+		s.handleListReviewComments(w, r, repo, branch)
+		return
+	}
+	s.handleGetBranch(w, r, repo, branchPath)
 }
 
 // handleGetBranch implements GET /repos/:name/branch/:branch (bare branch fetch).

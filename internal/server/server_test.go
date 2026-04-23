@@ -1945,7 +1945,7 @@ func TestHandlePurge_Success(t *testing.T) {
 	}
 	srv := New(ms, nil, devID, devID)
 
-	body, _ := json.Marshal(map[string]interface{}{"older_than": "30d"})
+	body, _ := json.Marshal(map[string]any{"older_than": "30d"})
 	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/purge", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
@@ -1976,7 +1976,7 @@ func TestHandlePurge_DryRun(t *testing.T) {
 	}
 	srv := New(ms, nil, devID, devID)
 
-	body, _ := json.Marshal(map[string]interface{}{"older_than": "7d", "dry_run": true})
+	body, _ := json.Marshal(map[string]any{"older_than": "7d", "dry_run": true})
 	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/purge", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
@@ -2028,7 +2028,7 @@ func TestHandlePurge_RepoNotFound(t *testing.T) {
 	}
 	srv := New(ms, nil, devID, devID)
 
-	body, _ := json.Marshal(map[string]interface{}{"older_than": "30d"})
+	body, _ := json.Marshal(map[string]any{"older_than": "30d"})
 	req := httptest.NewRequest(http.MethodPost, "/repos/noexist/noexist/-/purge", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)

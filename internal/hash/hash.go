@@ -6,8 +6,9 @@ package hash
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"sort"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -24,9 +25,8 @@ type File struct {
 // prevHash is the hex-encoded hash of the previous commit (or GenesisHash for the first commit).
 // Files are sorted by path internally, so caller order does not matter.
 func CommitHash(prevHash string, seq int64, repo, branch, author, message string, createdAt time.Time, files []File) string {
-	sorted := make([]File, len(files))
-	copy(sorted, files)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Path < sorted[j].Path })
+	sorted := slices.Clone(files)
+	slices.SortFunc(sorted, func(a, b File) int { return strings.Compare(a.Path, b.Path) })
 
 	h := sha256.New()
 	h.Write([]byte(prevHash + "\n"))

@@ -74,11 +74,11 @@ func scanCIJob(row interface {
 // triggerBaseBranch is the base branch for proposal-triggered jobs (empty string for others).
 // triggerProposalID is the proposal ID for proposal-triggered jobs (empty string for others).
 func (s *Store) InsertCIJob(ctx context.Context, repo, branch string, sequence int64, triggerType, triggerBranch, triggerBaseBranch, triggerProposalID string) (*model.CIJob, error) {
-	var proposalID interface{}
+	var proposalID any
 	if triggerProposalID != "" {
 		proposalID = triggerProposalID
 	}
-	var baseBranch interface{}
+	var baseBranch any
 	if triggerBaseBranch != "" {
 		baseBranch = triggerBaseBranch
 	}

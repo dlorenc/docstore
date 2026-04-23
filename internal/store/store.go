@@ -110,7 +110,7 @@ WHERE l.version_id IS NOT NULL
 ORDER BY l.path
 LIMIT $5`
 
-	var at interface{}
+	var at any
 	if atSequence != nil {
 		at = *atSequence
 	}
@@ -153,7 +153,7 @@ AND ($4::bigint IS NULL OR fc.sequence <= $4)
 ORDER BY fc.sequence DESC
 LIMIT 1`
 
-	var at interface{}
+	var at any
 	if atSequence != nil {
 		at = *atSequence
 	}
@@ -227,7 +227,7 @@ AND ($4::bigint IS NULL OR fc.sequence < $4)
 ORDER BY fc.sequence DESC
 LIMIT $5`
 
-	var after interface{}
+	var after any
 	if afterSequence != nil {
 		after = *afterSequence
 	}
@@ -308,7 +308,7 @@ func (s *Store) GetBranch(ctx context.Context, repo, branch string) (*BranchInfo
 // By default (both false), draft branches are excluded.
 func (s *Store) ListBranches(ctx context.Context, repo, statusFilter string, includeDraft, onlyDraft bool) ([]BranchInfo, error) {
 	q := "SELECT name, head_sequence, base_sequence, status, draft, auto_merge FROM branches WHERE repo = $1"
-	args := []interface{}{repo}
+	args := []any{repo}
 
 	if statusFilter != "" {
 		args = append(args, statusFilter)
