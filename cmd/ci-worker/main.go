@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -54,10 +55,7 @@ func mustEnv(key string) string {
 }
 
 func envOrDefault(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
+	return cmp.Or(os.Getenv(key), def)
 }
 
 // waitServiceReady polls addr (tcp:// or unix://) until a connection succeeds.
