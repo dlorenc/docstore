@@ -743,7 +743,7 @@ func BenchmarkGetChain_100(b *testing.B) {
 		_, err := ds.Commit(ctx, model.CommitRequest{
 			Repo:    "default/default",
 			Branch:  "main",
-			Files:   []model.FileChange{{Path: fmt.Sprintf("file%03d.txt", i), Content: []byte(fmt.Sprintf("content %d", i))}},
+			Files:   []model.FileChange{{Path: fmt.Sprintf("file%03d.txt", i), Content: fmt.Appendf(nil, "content %d", i)}},
 			Message: fmt.Sprintf("commit %d", i),
 			Author:  "bench@example.com",
 		})
@@ -753,7 +753,7 @@ func BenchmarkGetChain_100(b *testing.B) {
 	}
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		entries, err := s.GetChain(ctx, "default/default", 1, n)
 		if err != nil {
 			b.Fatalf("GetChain: %v", err)

@@ -2,7 +2,8 @@ package tui
 
 import (
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -604,12 +605,9 @@ func (m branchDetailModel) renderChecks() string {
 			latest[c.CheckName] = c
 		}
 	}
-	deduped := make([]model.CheckRun, 0, len(latest))
-	for _, c := range latest {
-		deduped = append(deduped, c)
-	}
-	sort.Slice(deduped, func(i, j int) bool {
-		return deduped[i].CheckName < deduped[j].CheckName
+	deduped := slices.Collect(maps.Values(latest))
+	slices.SortFunc(deduped, func(a, b model.CheckRun) int {
+		return strings.Compare(a.CheckName, b.CheckName)
 	})
 
 	var sb strings.Builder

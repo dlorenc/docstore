@@ -136,7 +136,7 @@ func (s *Store) GetIssue(ctx context.Context, repo string, number int64) (*model
 // stateFilter, if non-empty, restricts to that state. authorFilter, if non-empty, restricts to that author.
 func (s *Store) ListIssues(ctx context.Context, repo, stateFilter, authorFilter string) ([]model.Issue, error) {
 	q := `SELECT ` + issueColumns + ` FROM issues WHERE repo = $1`
-	args := []interface{}{repo}
+	args := []any{repo}
 	if stateFilter != "" {
 		args = append(args, stateFilter)
 		q += fmt.Sprintf(" AND state = $%d::issue_state", len(args))
@@ -175,7 +175,7 @@ func (s *Store) UpdateIssue(ctx context.Context, repo string, number int64, titl
 	}
 
 	setClauses := []string{"updated_at = now()"}
-	args := []interface{}{}
+	args := []any{}
 	argIdx := 1
 
 	if title != nil {

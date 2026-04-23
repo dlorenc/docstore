@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 
@@ -101,9 +102,8 @@ func (e *Executor) Run(ctx context.Context, source string, cfg Config, triggerCt
 	results := make([]CheckResult, len(toRun))
 	var wg sync.WaitGroup
 	for j, ic := range toRun {
-		wg.Add(1)
-		go func(j int, check Check) {
-			defer wg.Done()
+		check := ic.check
+		wg.Go(func() {
 			defer func() {
 				if r := recover(); r != nil {
 					results[j] = CheckResult{
@@ -114,7 +114,7 @@ func (e *Executor) Run(ctx context.Context, source string, cfg Config, triggerCt
 				}
 			}()
 			results[j] = e.runCheck(ctx, source, check)
-		}(j, ic.check)
+		})
 	}
 	wg.Wait()
 	return results, nil
@@ -133,13 +133,11 @@ func (e *Executor) runCheck(ctx context.Context, source string, check Check) Che
 	// Reject local paths containing ".." segments to prevent directory traversal.
 	if isLocal {
 		cleaned := filepath.Clean(source)
-		for _, seg := range strings.Split(cleaned, string(filepath.Separator)) {
-			if seg == ".." {
-				return CheckResult{
-					Name:   check.Name,
-					Status: "failed",
-					Logs:   "invalid source path: '..' path traversal is not allowed",
-				}
+		if slices.Contains(strings.Split(cleaned, string(filepath.Separator)), "..") {
+			return CheckResult{
+				Name:   check.Name,
+				Status: "failed",
+				Logs:   "invalid source path: '..' path traversal is not allowed",
 			}
 		}
 	}
@@ -148,9 +146,7 @@ func (e *Executor) runCheck(ctx context.Context, source string, check Check) Che
 	ch := make(chan *client.SolveStatus)
 
 	var collectWg sync.WaitGroup
-	collectWg.Add(1)
-	go func() {
-		defer collectWg.Done()
+	collectWg.Go(func() {
 		for status := range ch {
 			for _, vlog := range status.Logs {
 				logBuf.Write(vlog.Data)
@@ -165,7 +161,7 @@ func (e *Executor) runCheck(ctx context.Context, source string, check Check) Che
 				}
 			}
 		}
-	}()
+	})
 
 	dockerConfigDir := os.Getenv("DOCKER_CONFIG")
 	if dockerConfigDir == "" {
