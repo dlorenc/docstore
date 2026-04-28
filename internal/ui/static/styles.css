@@ -373,3 +373,47 @@ pre.code .text { white-space: pre; padding-right: 12px; }
   border-color: var(--border);
   border-bottom-color: var(--bg-2);
 }
+
+/* Form inputs and selects shared by issue write forms. */
+.form-input {
+  width: 100%;
+  background: var(--bg-3);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+  box-sizing: border-box;
+}
+.form-input:focus { outline: none; border-color: var(--accent); }
+textarea.form-input { resize: vertical; }
+
+/* Generic action button (not the nav theme-toggle). */
+.btn {
+  background: var(--bg-3);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  padding: 5px 12px;
+  font-family: var(--mono);
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-block;
+  line-height: 1.45;
+}
+.btn:hover { border-color: var(--accent); color: var(--accent); text-decoration: none; }
+.btn.danger { border-color: var(--bad); color: var(--bad); }
+.btn.danger:hover { background: var(--bad-bg); text-decoration: none; }
+
+/* Disclosure widget used for inline edit forms. */
+details.form-section > summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 12px;
+  user-select: none;
+  list-style: none;
+}
+details.form-section > summary:hover { text-decoration: underline; }
+details.form-section > summary::-webkit-details-marker { display: none; }
