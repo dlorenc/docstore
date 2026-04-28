@@ -7,7 +7,7 @@
   <a href="/ui/r/{{.Repo.Name}}/issues">issues</a>
   <a href="/ui/r/{{.Repo.Name}}/releases">releases</a>
   <a href="/ui/r/{{.Repo.Name}}/proposals">proposals</a>
-  <a href="/ui/r/{{.Repo.Name}}/log">log</a>
+  <a href="/ui/r/{{.Repo.Name}}/b/main/log">log</a>
 </nav>
 
 <div class="filter-bar"><input type="search" data-branch-filter placeholder="filter branches by name…" autocomplete="off"></div>
@@ -65,7 +65,7 @@
     <tbody>
     {{range .Rows}}
     <tr>
-      <td><a href="/ui/r/{{$.Repo}}/b/{{.Name}}">{{.Name}}</a></td>
+      <td><a href="/ui/r/{{$.Repo}}/b/{{urlPathEscape .Name}}">{{.Name}}</a></td>
       <td><span class="badge {{statusClass .Status}}">{{.Status}}</span></td>
       <td>{{.HeadSequence}}</td>
       <td>{{.BaseSequence}}</td>
@@ -73,7 +73,7 @@
         {{if .Draft}}<span class="badge warn">draft</span>{{end}}
         {{if .AutoMerge}}<span class="badge ok">auto-merge</span>{{end}}
       </td>
-      <td><a href="/ui/r/{{$.Repo}}/f/?branch={{.Name}}">files →</a> · <a href="/ui/r/{{$.Repo}}/b/{{.Name}}/log">log →</a></td>
+      <td><a href="/ui/r/{{$.Repo}}/f/?branch={{urlPathEscape .Name}}">files →</a> · <a href="/ui/r/{{$.Repo}}/b/{{urlPathEscape .Name}}/log">log →</a></td>
     </tr>
     {{end}}
     </tbody>

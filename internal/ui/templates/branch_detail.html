@@ -39,7 +39,7 @@
 <div class="two-col">
   <div>
     <h2>Checks ({{len $ctx.CheckRuns}})</h2>
-    <div class="card" data-poll-url="/ui/_/r/{{.Repo.Name}}/b/{{$ctx.Branch.Name}}/checks" data-poll-interval="10000">
+    <div class="card" data-poll-url="/ui/_/r/{{.Repo.Name}}/b/{{urlPathEscape $ctx.Branch.Name}}/checks" data-poll-interval="10000">
       {{template "branch_checks.html" $ctx}}
     </div>
   </div>
@@ -116,7 +116,7 @@
     <tbody>
     {{range $ctx.RecentCommits}}
     <tr>
-      <td>{{.Sequence}}</td>
+      <td><a href="/ui/r/{{$page.Repo.Name}}/b/{{urlPathEscape $ctx.Branch.Name}}/c/{{.Sequence}}">{{.Sequence}}</a></td>
       <td>{{.Message}}</td>
       <td>{{.Author}}</td>
       <td class="meta">{{relTime .CreatedAt}}</td>
