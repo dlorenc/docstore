@@ -62,6 +62,37 @@
     }).catch(function () {});
   });
 
+  // Minimal HTMX-like click handler for hx-get, hx-target, hx-swap attributes.
+  // Supports two patterns:
+  //   hx-swap="afterend" + hx-target="closest .selector" — inserts fetched HTML after closest ancestor
+  //   hx-swap="innerHTML" + hx-target="#id"              — replaces innerHTML of target element
+  document.addEventListener('click', function (e) {
+    var el = e.target.closest('[hx-get]');
+    if (!el) return;
+    var url = el.getAttribute('hx-get');
+    var targetSel = el.getAttribute('hx-target');
+    var swap = el.getAttribute('hx-swap') || 'innerHTML';
+    if (!url || !targetSel) return;
+    e.preventDefault();
+    fetch(url, { credentials: 'same-origin' }).then(function (r) {
+      if (!r.ok) return;
+      return r.text().then(function (html) {
+        if (swap === 'afterend') {
+          // targetSel is like "closest .check-row"
+          var parts = targetSel.match(/^closest\s+(.+)$/);
+          var anchor = parts ? el.closest(parts[1]) : el;
+          if (!anchor) return;
+          anchor.insertAdjacentHTML('afterend', html);
+        } else {
+          // innerHTML: targetSel is a CSS selector like "#some-id"
+          var target = document.querySelector(targetSel);
+          if (!target) return;
+          target.innerHTML = html;
+        }
+      });
+    }).catch(function () {});
+  });
+
   // Branch-list filter. Hides tbody rows whose first cell text doesn't match.
   document.addEventListener('DOMContentLoaded', function () {
     var inputs = document.querySelectorAll('[data-branch-filter]');
