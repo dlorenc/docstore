@@ -1,0 +1,35 @@
+{{define "content"}}
+{{with .Body}}
+<div class="headline">
+  <h1>{{.Proposal.Title}}</h1>
+  <span class="badge {{statusClass (printf "%s" .Proposal.State)}}">{{.Proposal.State}}</span>
+</div>
+
+<div class="meta" style="margin-bottom:14px">
+  by {{.Proposal.Author}} · opened {{relTime .Proposal.CreatedAt}} · updated {{relTime .Proposal.UpdatedAt}}
+</div>
+
+<h2>Details</h2>
+<div class="card">
+  <div class="row">
+    <div><strong>base branch</strong></div>
+    <div>{{.Proposal.BaseBranch}}</div>
+  </div>
+  <div class="row">
+    <div><strong>branch</strong></div>
+    <div><a href="/ui/r/{{.Repo.Name}}/b/{{.Proposal.Branch}}">{{.Proposal.Branch}}</a></div>
+  </div>
+  <div class="row">
+    <div><strong>id</strong></div>
+    <div class="meta">{{.Proposal.ID}}</div>
+  </div>
+</div>
+
+{{if .Proposal.Description}}
+<h2>Description</h2>
+<div class="card">
+  <div style="white-space:pre-wrap;color:var(--text);">{{.Proposal.Description}}</div>
+</div>
+{{end}}
+{{end}}
+{{end}}

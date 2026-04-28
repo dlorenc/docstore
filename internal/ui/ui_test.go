@@ -51,6 +51,8 @@ type fakeWrite struct {
 	issues        []model.Issue
 	issueComments []model.IssueComment
 	miss          bool
+	proposals     []*model.Proposal
+	releases      []model.Release
 }
 
 func (f *fakeWrite) ListRepos(_ context.Context) ([]model.Repo, error) { return f.repos, nil }
@@ -109,6 +111,37 @@ func (f *fakeWrite) ListOrgRepos(_ context.Context, owner string) ([]model.Repo,
 		}
 	}
 	return out, nil
+}
+func (f *fakeWrite) ListProposals(_ context.Context, _ string, state *model.ProposalState, _ *string) ([]*model.Proposal, error) {
+	if state == nil {
+		return f.proposals, nil
+	}
+	var out []*model.Proposal
+	for _, p := range f.proposals {
+		if p.State == *state {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+func (f *fakeWrite) GetProposal(_ context.Context, _, id string) (*model.Proposal, error) {
+	for _, p := range f.proposals {
+		if p.ID == id {
+			return p, nil
+		}
+	}
+	return nil, nil
+}
+func (f *fakeWrite) ListReleases(_ context.Context, _ string, _ int, _ string) ([]model.Release, error) {
+	return f.releases, nil
+}
+func (f *fakeWrite) GetRelease(_ context.Context, _, name string) (*model.Release, error) {
+	for _, r := range f.releases {
+		if r.Name == name {
+			return &r, nil
+		}
+	}
+	return nil, nil
 }
 
 func newFakeAssembler(branchName string) AssembleFn {
@@ -445,5 +478,136 @@ func TestSiblingTreeRows_DedupsDirs(t *testing.T) {
 	}
 	if rows[1].IsDir || rows[1].Name != "a.md" {
 		t.Errorf("want file a.md second, got %+v", rows[1])
+	}
+}
+
+func TestHandleProposals_RendersList(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now(), CreatedBy: "me"}}
+	ps := model.ProposalOpen
+	w := &fakeWrite{
+		repos: repos,
+		proposals: []*model.Proposal{
+			{ID: "p-1", Repo: "acme/a", Branch: "feat-x", BaseBranch: "main", Title: "My Proposal", Author: "alice", State: ps, CreatedAt: time.Now()},
+		},
+	}
+	h := newTestHandler(t, &fakeRead{}, w, nil)
+
+	code, body := getStatusAndBody(t, h, "/ui/r/acme/a/proposals?state=open")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", code, body)
+	}
+	for _, want := range []string{"My Proposal", "alice", "main", "open"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q", want)
+		}
+	}
+}
+
+func TestHandleProposalsPartial_ReturnsFragment(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme"}}
+	ps := model.ProposalOpen
+	w := &fakeWrite{
+		repos: repos,
+		proposals: []*model.Proposal{
+			{ID: "p-1", Title: "Frag Proposal", Author: "bob", State: ps, BaseBranch: "main", CreatedAt: time.Now()},
+		},
+	}
+	h := newTestHandler(t, &fakeRead{}, w, nil)
+
+	code, body := getStatusAndBody(t, h, "/ui/_/r/acme/a/proposals?state=open")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d", code)
+	}
+	if strings.Contains(body, "<!doctype html>") {
+		t.Errorf("expected fragment, got full layout")
+	}
+	if !strings.Contains(body, "Frag Proposal") {
+		t.Errorf("expected proposal title in fragment, got: %s", body)
+	}
+}
+
+func TestHandleProposalDetail_RendersDetail(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now(), CreatedBy: "me"}}
+	ps := model.ProposalOpen
+	w := &fakeWrite{
+		repos: repos,
+		proposals: []*model.Proposal{
+			{ID: "p-abc", Repo: "acme/a", Branch: "feat-x", BaseBranch: "main", Title: "Detail Proposal", Description: "some details", Author: "carol", State: ps, CreatedAt: time.Now()},
+		},
+	}
+	h := newTestHandler(t, &fakeRead{}, w, nil)
+
+	code, body := getStatusAndBody(t, h, "/ui/r/acme/a/proposals/p-abc")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", code, body)
+	}
+	for _, want := range []string{"Detail Proposal", "carol", "feat-x", "some details"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q", want)
+		}
+	}
+}
+
+func TestHandleProposalDetail_NotFound_Returns404(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now()}}
+	w := &fakeWrite{repos: repos}
+	h := newTestHandler(t, &fakeRead{}, w, nil)
+
+	code, _ := getStatusAndBody(t, h, "/ui/r/acme/a/proposals/nonexistent")
+	if code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", code)
+	}
+}
+
+func TestHandleReleases_RendersList(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now(), CreatedBy: "me"}}
+	w := &fakeWrite{
+		repos: repos,
+		releases: []model.Release{
+			{ID: "r-1", Repo: "acme/a", Name: "v1.0.0", Sequence: 42, Body: "first release", CreatedBy: "dave", CreatedAt: time.Now()},
+		},
+	}
+	h := newTestHandler(t, &fakeRead{}, w, nil)
+
+	code, body := getStatusAndBody(t, h, "/ui/r/acme/a/releases")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", code, body)
+	}
+	for _, want := range []string{"v1.0.0", "42", "dave", "first release"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q", want)
+		}
+	}
+}
+
+func TestHandleReleaseDetail_RendersDetail(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now(), CreatedBy: "me"}}
+	w := &fakeWrite{
+		repos: repos,
+		releases: []model.Release{
+			{ID: "r-2", Repo: "acme/a", Name: "v2.0.0", Sequence: 99, Body: "second release notes", CreatedBy: "eve", CreatedAt: time.Now()},
+		},
+	}
+	h := newTestHandler(t, &fakeRead{}, w, nil)
+
+	code, body := getStatusAndBody(t, h, "/ui/r/acme/a/releases/v2.0.0")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", code, body)
+	}
+	for _, want := range []string{"v2.0.0", "99", "eve", "second release notes"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q", want)
+		}
+	}
+}
+
+func TestHandleReleaseDetail_NotFound_Returns404(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now()}}
+	w := &fakeWrite{repos: repos}
+	h := newTestHandler(t, &fakeRead{}, w, nil)
+
+	code, _ := getStatusAndBody(t, h, "/ui/r/acme/a/releases/nonexistent")
+	if code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", code)
 	}
 }
