@@ -31,6 +31,8 @@ type branchesPage struct {
 	Active    []branchRow
 	Merged    []branchRow
 	Abandoned []branchRow
+	Members   []model.OrgMember
+	Roles     []model.Role
 }
 
 type branchRow struct {
@@ -40,6 +42,11 @@ type branchRow struct {
 	Draft        bool
 	AutoMerge    bool
 	Status       string
+}
+
+type reviewCommentGroup struct {
+	Path     string
+	Comments []model.ReviewComment
 }
 
 type branchDetailPage struct {
@@ -52,13 +59,14 @@ type branchDetailPage struct {
 }
 
 type filePage struct {
-	Repo      model.Repo
-	Branch    string
-	AtSeq     *int64
-	Path      string
-	File      *fileView
-	Tree      []treeRow
-	ParentDir string
+	Repo        model.Repo
+	Branch      string
+	AtSeq       *int64
+	Path        string
+	File        *fileView
+	Tree        []treeRow
+	ParentDir   string
+	FileHistory []store.FileHistoryEntry
 }
 
 type fileView struct {
@@ -131,7 +139,20 @@ func (h *Handler) handleBranches(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	page := branchesPage{Repo: *repo}
+	members, err := h.write.ListOrgMembers(ctx, repo.Owner)
+	if err != nil {
+		slog.Error("ui list org members", "org", repo.Owner, "error", err)
+		// Non-fatal: render page without members.
+		members = nil
+	}
+	roles, err := h.write.ListRoles(ctx, repoName)
+	if err != nil {
+		slog.Error("ui list roles", "repo", repoName, "error", err)
+		// Non-fatal: render page without roles.
+		roles = nil
+	}
+
+	page := branchesPage{Repo: *repo, Members: members, Roles: roles}
 	for _, b := range branches {
 		row := branchRow{
 			Name:         b.Name,
@@ -320,6 +341,14 @@ func (h *Handler) handleFile(w http.ResponseWriter, r *http.Request) {
 				ContentType: fc.ContentType,
 			}
 		}
+
+		hist, err := h.read.GetFileHistory(r.Context(), repoName, branch, path, 20, nil)
+		if err != nil {
+			slog.Error("ui get file history", "repo", repoName, "path", path, "error", err)
+			// Non-fatal: render without history.
+		} else {
+			page.FileHistory = hist
+		}
 	}
 
 	h.render(w, h.tmpl.fileView, "layout.html", pageData{
@@ -331,6 +360,38 @@ func (h *Handler) handleFile(w http.ResponseWriter, r *http.Request) {
 		},
 		Body: page,
 	})
+}
+
+// handleReviewCommentsPartial returns the inline review comments for a branch,
+// grouped by file path, as an HTMX partial.
+func (h *Handler) handleReviewCommentsPartial(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	branch := r.PathValue("branch")
+	repoName := owner + "/" + name
+
+	comments, err := h.write.ListReviewComments(r.Context(), repoName, branch, nil)
+	if err != nil {
+		slog.Error("ui list review comments", "repo", repoName, "branch", branch, "error", err)
+		http.Error(w, "query failed", http.StatusInternalServerError)
+		return
+	}
+
+	// Group by file path.
+	order := []string{}
+	byPath := map[string][]model.ReviewComment{}
+	for _, c := range comments {
+		if _, seen := byPath[c.Path]; !seen {
+			order = append(order, c.Path)
+		}
+		byPath[c.Path] = append(byPath[c.Path], c)
+	}
+	groups := make([]reviewCommentGroup, 0, len(order))
+	for _, p := range order {
+		groups = append(groups, reviewCommentGroup{Path: p, Comments: byPath[p]})
+	}
+
+	h.render(w, h.tmpl.reviewComments, "review_comments.html", groups)
 }
 
 // siblingTreeRows returns the immediate children of dir within entries, with

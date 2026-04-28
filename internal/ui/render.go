@@ -14,12 +14,13 @@ import (
 // templateSet holds the parsed template tree. Each page has its own *Template
 // so it can define its own "content" block against the shared layout.
 type templateSet struct {
-	repos         *template.Template
-	branches      *template.Template
-	branchDetail  *template.Template
-	branchChecks  *template.Template
-	fileView      *template.Template
-	errorPage     *template.Template
+	repos          *template.Template
+	branches       *template.Template
+	branchDetail   *template.Template
+	branchChecks   *template.Template
+	reviewComments *template.Template
+	fileView       *template.Template
+	errorPage      *template.Template
 }
 
 func parseTemplates(root fs.FS) (*templateSet, error) {
@@ -58,6 +59,10 @@ func parseTemplates(root fs.FS) (*templateSet, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse branch_checks: %w", err)
 	}
+	reviewComments, err := loadFragment("review_comments.html")
+	if err != nil {
+		return nil, fmt.Errorf("parse review_comments: %w", err)
+	}
 	fileView, err := load("file.html")
 	if err != nil {
 		return nil, fmt.Errorf("parse file: %w", err)
@@ -67,12 +72,13 @@ func parseTemplates(root fs.FS) (*templateSet, error) {
 		return nil, fmt.Errorf("parse error: %w", err)
 	}
 	return &templateSet{
-		repos:        repos,
-		branches:     branches,
-		branchDetail: branchDetail,
-		branchChecks: branchChecks,
-		fileView:     fileView,
-		errorPage:    errorPage,
+		repos:          repos,
+		branches:       branches,
+		branchDetail:   branchDetail,
+		branchChecks:   branchChecks,
+		reviewComments: reviewComments,
+		fileView:       fileView,
+		errorPage:      errorPage,
 	}, nil
 }
 
