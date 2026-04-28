@@ -1,5 +1,14 @@
 {{define "content"}}
 {{with .Body}}
+<nav class="repo-tabs">
+  <a href="/ui/r/{{.Repo.Name}}">branches</a>
+  <a href="/ui/r/{{.Repo.Name}}/issues">issues</a>
+  <a href="/ui/r/{{.Repo.Name}}/releases" class="active">releases</a>
+  <a href="/ui/r/{{.Repo.Name}}/proposals">proposals</a>
+  <a href="/ui/r/{{.Repo.Name}}/ci-jobs">ci-jobs</a>
+  <a href="/ui/r/{{.Repo.Name}}/b/main/log">log</a>
+</nav>
+
 <div class="headline">
   <h1>{{.Release.Name}}</h1>
   <span class="meta">seq {{.Release.Sequence}}</span>
