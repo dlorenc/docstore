@@ -1712,6 +1712,10 @@ func (h *Handler) handleCreateOrg(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := h.write.AddOrgMember(ctx, name, identity, model.OrgRoleOwner, identity); err != nil {
+		slog.Error("ui create org: add owner", "name", name, "identity", identity, "error", err)
+	}
+
 	http.Redirect(w, r, "/ui/o/"+name, http.StatusSeeOther)
 }
 
@@ -1768,6 +1772,10 @@ func (h *Handler) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 			renderPage(owner, name, "Could not create repository: "+err.Error())
 		}
 		return
+	}
+
+	if err := h.write.SetRole(ctx, owner+"/"+name, identity, model.RoleAdmin); err != nil {
+		slog.Error("ui create repo: set admin role", "repo", owner+"/"+name, "identity", identity, "error", err)
 	}
 
 	http.Redirect(w, r, "/ui/r/"+owner+"/"+name, http.StatusSeeOther)
