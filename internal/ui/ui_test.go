@@ -81,6 +81,9 @@ func (f *fakeWrite) ListOrgMemberships(_ context.Context, _ string) ([]model.Org
 func (f *fakeWrite) ListRoles(_ context.Context, _ string) ([]model.Role, error) {
 	return nil, nil
 }
+func (f *fakeWrite) ListRolesByIdentity(_ context.Context, _ string) ([]model.RepoRole, error) {
+	return nil, nil
+}
 func (f *fakeWrite) ListCheckRuns(_ context.Context, _, _ string, _ *int64, _ bool) ([]model.CheckRun, error) {
 	return nil, nil
 }
@@ -1091,6 +1094,23 @@ func TestHandleDeleteRole_RedirectsToSettings(t *testing.T) {
 	}
 	if loc != "/ui/r/acme/a/settings" {
 		t.Errorf("location = %q, want /ui/r/acme/a/settings", loc)
+	}
+}
+
+func TestHandleUserProfile_RendersPage(t *testing.T) {
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{}, nil)
+	code, body := getStatusAndBody(t, h, "/ui/u/alice@example.com")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200. body=%s", code, body)
+	}
+	if !strings.Contains(body, "alice@example.com") {
+		t.Errorf("body missing identity")
+	}
+	if !strings.Contains(body, "Org memberships") {
+		t.Errorf("body missing org memberships section")
+	}
+	if !strings.Contains(body, "Repo roles") {
+		t.Errorf("body missing repo roles section")
 	}
 }
 

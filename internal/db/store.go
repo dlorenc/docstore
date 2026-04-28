@@ -1554,6 +1554,27 @@ func (s *Store) ListRoles(ctx context.Context, repo string) ([]model.Role, error
 	return roles, rows.Err()
 }
 
+// ListRolesByIdentity returns all repo roles held by the given identity, ordered by repo.
+func (s *Store) ListRolesByIdentity(ctx context.Context, identity string) ([]model.RepoRole, error) {
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT repo, role FROM roles WHERE identity = $1 ORDER BY repo",
+		identity,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var roles []model.RepoRole
+	for rows.Next() {
+		var r model.RepoRole
+		if err := rows.Scan(&r.Repo, &r.Role); err != nil {
+			return nil, err
+		}
+		roles = append(roles, r)
+	}
+	return roles, rows.Err()
+}
+
 // HasAdmin returns true if any admin role exists for the given repo.
 func (s *Store) HasAdmin(ctx context.Context, repo string) (bool, error) {
 	var exists bool

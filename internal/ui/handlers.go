@@ -236,6 +236,12 @@ type commitFormPage struct {
 	Err             string
 }
 
+type userProfilePage struct {
+	Identity    string
+	Memberships []model.OrgMember
+	RepoRoles   []model.RepoRole
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -286,6 +292,37 @@ func (h *Handler) handleRepos(w http.ResponseWriter, r *http.Request) {
 		Title:       "Repos",
 		Breadcrumbs: []crumb{{Label: "repos", Href: "/ui/"}},
 		Body:        reposPage{MyOrgs: myOrgs, Orgs: orgs, ShowGetStarted: showGetStarted},
+	})
+}
+
+// handleUserProfile renders the profile page for the given identity, showing
+// org memberships and repo roles.
+func (h *Handler) handleUserProfile(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	identity := r.PathValue("identity")
+
+	memberships, err := h.write.ListOrgMemberships(ctx, identity)
+	if err != nil {
+		slog.Error("ui list org memberships for profile", "identity", identity, "error", err)
+		h.renderError(w, r, http.StatusInternalServerError, "could not load org memberships")
+		return
+	}
+
+	repoRoles, err := h.write.ListRolesByIdentity(ctx, identity)
+	if err != nil {
+		slog.Error("ui list repo roles for profile", "identity", identity, "error", err)
+		h.renderError(w, r, http.StatusInternalServerError, "could not load repo roles")
+		return
+	}
+
+	h.render(w, r, h.tmpl.userProfile, "layout.html", pageData{
+		Title:       identity,
+		Breadcrumbs: []crumb{{Label: "repos", Href: "/ui/"}, {Label: identity, Href: "/ui/u/" + url.PathEscape(identity)}},
+		Body: userProfilePage{
+			Identity:    identity,
+			Memberships: memberships,
+			RepoRoles:   repoRoles,
+		},
 	})
 }
 
