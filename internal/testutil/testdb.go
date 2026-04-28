@@ -35,6 +35,10 @@ func StartSharedPostgres() (adminDSN string, cleanup func(), err error) {
 
 	ctx := context.Background()
 
+	// WithReuseByName makes all test packages share a single persistent
+	// container. The first run starts it; subsequent runs reattach to the
+	// existing one. Ryuk automatically excludes reusable containers from its
+	// cleanup sweep, so the container stays up between test runs.
 	ctr, err := postgres.Run(ctx,
 		"postgres:16-alpine",
 		postgres.WithDatabase("postgres"),
@@ -47,6 +51,7 @@ func StartSharedPostgres() (adminDSN string, cleanup func(), err error) {
 				WithOccurrence(2).
 				WithStartupTimeout(30*time.Second),
 		),
+		testcontainers.WithReuseByName("docstore-test-postgres"),
 	)
 	if err != nil {
 		return "", func() {}, fmt.Errorf("start postgres container: %w", err)
@@ -54,15 +59,12 @@ func StartSharedPostgres() (adminDSN string, cleanup func(), err error) {
 
 	connStr, err := ctr.ConnectionString(ctx, "sslmode=disable")
 	if err != nil {
-		_ = ctr.Terminate(ctx)
 		return "", func() {}, fmt.Errorf("get connection string: %w", err)
 	}
 
-	return connStr, func() {
-		if termErr := ctr.Terminate(ctx); termErr != nil {
-			fmt.Fprintf(os.Stderr, "terminate postgres container: %v\n", termErr)
-		}
-	}, nil
+	// No-op cleanup: the container is persistent and shared across packages.
+	// Ryuk excludes reusable containers from automatic cleanup.
+	return connStr, func() {}, nil
 }
 
 // TestDBFromShared creates an isolated database from a shared admin DSN,
