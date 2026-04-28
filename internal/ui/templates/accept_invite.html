@@ -8,6 +8,7 @@
   <div class="row"><span class="badge bad">{{.Err}}</span></div>
   {{else}}
   <form method="POST" action="/ui/o/{{.Org}}/invites/{{.Token}}/accept" style="padding:14px 12px 4px">
+    {{csrfField}}
     <button type="submit">Accept invitation</button>
   </form>
   {{end}}

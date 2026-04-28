@@ -237,8 +237,10 @@ func parseTemplates(root fs.FS) (*templateSet, error) {
 }
 
 // render executes the named template against data and writes it to w as HTML.
-// On execution error it logs and emits a 500; templates must not panic.
+// The request r is used to inject a per-request csrfField template function so
+// that forms can call {{csrfField}} without any additional template arguments.
 // If data is a pageData and h.identity is set, Identity is populated automatically.
+// On execution error it logs and emits a 500; templates must not panic.
 func (h *Handler) render(w http.ResponseWriter, r *http.Request, t *template.Template, name string, data any) {
 	if h.identity != nil {
 		if pd, ok := data.(pageData); ok {
@@ -246,8 +248,18 @@ func (h *Handler) render(w http.ResponseWriter, r *http.Request, t *template.Tem
 			data = pd
 		}
 	}
+	token := csrfTokenFromCtx(r.Context())
+	cloned, err := t.Clone()
+	if err != nil {
+		slog.Error("ui template clone error", "template", name, "error", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	cloned.Funcs(template.FuncMap{
+		"csrfField": func() template.HTML { return csrfFieldHTML(token) },
+	})
 	var buf bytes.Buffer
-	if err := t.ExecuteTemplate(&buf, name, data); err != nil {
+	if err := cloned.ExecuteTemplate(&buf, name, data); err != nil {
 		slog.Error("ui render error", "template", name, "error", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
@@ -321,6 +333,10 @@ func funcMap() template.FuncMap {
 		"joinStrings":    strings.Join,
 		"repoShortName":  repoShortName,
 		"markdown":       renderMarkdown,
+		// csrfField is a stub replaced per-request in render() with a closure
+		// that captures the CSRF token for that request. Templates that contain
+		// POST forms call {{csrfField}} to emit the hidden CSRF input field.
+		"csrfField": func() template.HTML { return "" },
 	}
 }
 

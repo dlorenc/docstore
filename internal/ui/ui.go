@@ -123,6 +123,9 @@ type Handler struct {
 	identity  IdentityFn
 	tmpl      *templateSet
 	staticSub fs.FS
+	// devMode disables the Secure flag on the CSRF cookie so the UI works
+	// over plain HTTP in local development.
+	devMode bool
 }
 
 // NewHandler constructs a UI handler wired to the given data sources.
@@ -167,12 +170,24 @@ func NewHandlerDev(read ReadStore, write WriteStoreLite, assemble AssembleFn, id
 		identity:  identity,
 		tmpl:      t,
 		staticSub: static,
+		devMode:   true,
 	}, nil
 }
 
-// Register wires UI routes onto the provided mux. Caller is responsible for
-// placing this mux behind the same middleware chain used by the JSON API.
+// Register wires UI routes onto the provided mux behind CSRF middleware.
+// Caller is responsible for placing this mux behind the same middleware chain
+// used by the JSON API.
 func (h *Handler) Register(mux *http.ServeMux) {
+	inner := http.NewServeMux()
+	h.registerRoutes(inner)
+	// Wrap all UI routes with CSRF protection. Secure=true in production;
+	// Secure=false in dev mode so the cookie works over plain HTTP.
+	mux.Handle("/ui/", CSRFMiddleware(!h.devMode, inner))
+}
+
+// registerRoutes adds all UI route handlers to the provided mux. Called by
+// Register after wrapping the mux with CSRF middleware.
+func (h *Handler) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /ui/{$}", h.handleRepos)
 	mux.HandleFunc("GET /ui/u/{identity}", h.handleUserProfile)
 	mux.HandleFunc("GET /ui/o/{org}", h.handleOrg)

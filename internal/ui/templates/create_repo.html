@@ -6,6 +6,7 @@
   <div class="row"><span class="badge bad">{{.Err}}</span></div>
   {{end}}
   <form method="POST" action="/ui/repos/new" style="padding:14px 12px 4px">
+    {{csrfField}}
     <div class="row">
       <label for="owner">Organisation</label>
       {{if .Orgs}}

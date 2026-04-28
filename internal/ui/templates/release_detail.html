@@ -45,6 +45,7 @@
 <h2>Danger zone</h2>
 <div class="card">
   <form method="POST" action="/ui/r/{{.Repo.Name}}/releases/{{.Release.Name}}/delete" style="padding:4px 0">
+    {{csrfField}}
     <p style="margin:0 0 8px;font-size:0.9em;color:var(--meta)">Permanently deletes this release. This action cannot be undone.</p>
     <button type="submit" class="btn-danger">Delete release</button>
   </form>

@@ -21,6 +21,7 @@
 <h2>Create branch</h2>
 <div class="card">
   <form method="POST" action="/ui/r/{{.Repo.Name}}/-/create-branch" style="display:flex;gap:8px;align-items:center;padding:4px 0">
+    {{csrfField}}
     <input type="text" name="branch_name" placeholder="branch name" required
            style="flex:1;background:var(--bg-3);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:6px 10px;font-family:var(--mono);font-size:12px">
     <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text-dim)">
@@ -54,6 +55,60 @@
   </table>
   {{end}}
 </div>
+
+<h2>Roles ({{len .Roles}})</h2>
+<div class="card">
+  {{if not .Roles}}<div class="empty">no roles configured</div>{{else}}
+  <table class="grid">
+    <thead><tr><th>identity</th><th>role</th><th></th></tr></thead>
+    <tbody>
+    {{range .Roles}}
+    <tr>
+      <td>{{.Identity}}</td>
+      <td><span class="badge neutral">{{.Role}}</span></td>
+      <td>
+        <form method="POST" action="/ui/r/{{$.Repo.Name}}/roles/{{.Identity}}/delete" style="display:inline">
+          {{csrfField}}
+          <button type="submit" class="btn-danger-small">revoke</button>
+        </form>
+      </td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{end}}
+  <details style="margin-top:12px">
+    <summary style="cursor:pointer;font-size:12px;color:var(--accent)">Grant role</summary>
+    <form method="POST" action="/ui/r/{{.Repo.Name}}/roles" style="padding:10px 0 4px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+      {{csrfField}}
+      <input type="text" name="identity" placeholder="identity (email)" required class="form-input" style="flex:1;min-width:180px">
+      <select name="role" class="form-input" style="width:auto">
+        <option value="reader">reader</option>
+        <option value="writer">writer</option>
+        <option value="maintainer">maintainer</option>
+        <option value="admin">admin</option>
+      </select>
+      <button type="submit" class="btn">Grant</button>
+    </form>
+  </details>
+</div>
+
+<h2 style="color:var(--bad)">Danger zone</h2>
+<div class="card" style="border-left:3px solid var(--bad)">
+  <details>
+    <summary style="cursor:pointer;font-size:0.9em;color:var(--bad)">Delete this repository</summary>
+    <p style="font-size:0.85em;color:var(--text-dim);margin:8px 0">This permanently deletes the repository and all its data. This cannot be undone.</p>
+    <form method="POST" action="/ui/r/{{.Repo.Name}}/-/delete-repo" style="padding:4px 0">
+      {{csrfField}}
+      {{- $shortName := repoShortName .Repo.Name -}}
+      <label style="font-size:0.85em;display:block;margin-bottom:4px">Type <strong>{{$shortName}}</strong> to confirm:</label>
+      <input type="text" name="confirm" placeholder="{{$shortName}}" required
+             style="background:var(--bg-3);color:var(--text);border:1px solid var(--bad);border-radius:4px;padding:6px 10px;font-family:var(--mono);font-size:12px;margin-right:6px"
+             oninput="this.form.querySelector('button').disabled=(this.value!='{{$shortName}}')">
+      <button type="submit" class="btn-danger-small" disabled>Delete repo</button>
+    </form>
+  </details>
+</div>
 {{end}}
 {{end}}
 
@@ -81,24 +136,28 @@
         {{if eq .Status "active"}}
         {{if .Draft}}
         <form method="POST" action="/ui/r/{{$.Repo}}/-/promote-branch" style="display:inline">
+          {{csrfField}}
           <input type="hidden" name="branch" value="{{.Name}}">
           <button type="submit" class="btn-link" style="font-size:11px">promote</button>
         </form> ·
         {{end}}
         {{if .AutoMerge}}
         <form method="POST" action="/ui/r/{{$.Repo}}/-/set-auto-merge" style="display:inline">
+          {{csrfField}}
           <input type="hidden" name="branch" value="{{.Name}}">
           <input type="hidden" name="enable" value="0">
           <button type="submit" class="btn-link" style="font-size:11px">disable auto-merge</button>
         </form> ·
         {{else}}
         <form method="POST" action="/ui/r/{{$.Repo}}/-/set-auto-merge" style="display:inline">
+          {{csrfField}}
           <input type="hidden" name="branch" value="{{.Name}}">
           <input type="hidden" name="enable" value="1">
           <button type="submit" class="btn-link" style="font-size:11px">enable auto-merge</button>
         </form> ·
         {{end}}
         <form method="POST" action="/ui/r/{{$.Repo}}/-/delete-branch" style="display:inline">
+          {{csrfField}}
           <input type="hidden" name="branch" value="{{.Name}}">
           <button type="submit" class="btn-link" style="font-size:11px;color:var(--bad)" onclick="return confirm('Abandon branch {{.Name}}?')">delete</button>
         </form>
