@@ -306,6 +306,37 @@ func (h *Handler) handleChecksPartial(w http.ResponseWriter, r *http.Request) {
 	h.render(w, h.tmpl.branchChecks, "branch_checks.html", actCtx)
 }
 
+// handleCheckHistoryPartial returns the attempt history for a single named
+// check as an HTML fragment (no layout wrapper) for HTMX inline expansion.
+func (h *Handler) handleCheckHistoryPartial(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	branch := r.PathValue("branch")
+	checkName := r.URL.Query().Get("check")
+	repoName := owner + "/" + name
+
+	if checkName == "" {
+		http.Error(w, "check query parameter required", http.StatusBadRequest)
+		return
+	}
+
+	runs, err := h.write.ListCheckRuns(r.Context(), repoName, branch, nil, true)
+	if err != nil {
+		slog.Error("ui list check runs history", "repo", repoName, "branch", branch, "error", err)
+		http.Error(w, "query failed", http.StatusInternalServerError)
+		return
+	}
+
+	var filtered []model.CheckRun
+	for _, run := range runs {
+		if run.CheckName == checkName {
+			filtered = append(filtered, run)
+		}
+	}
+
+	h.render(w, h.tmpl.checkHistory, "check_history.html", filtered)
+}
+
 // handleFile renders a file viewer with a sibling tree pane.
 func (h *Handler) handleFile(w http.ResponseWriter, r *http.Request) {
 	owner := r.PathValue("owner")
