@@ -28,7 +28,8 @@ type templateSet struct {
 	commitDetail   *template.Template
 	issues         *template.Template
 	issuesRows     *template.Template
-	issueDetail     *template.Template
+	issueDetail    *template.Template
+	newIssue       *template.Template
 	acceptInvite    *template.Template
 	org             *template.Template
 	proposals       *template.Template
@@ -131,6 +132,10 @@ func parseTemplates(root fs.FS) (*templateSet, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse issue_detail: %w", err)
 	}
+	newIssue, err := load("new_issue.html")
+	if err != nil {
+		return nil, fmt.Errorf("parse new_issue: %w", err)
+	}
 	acceptInvite, err := load("accept_invite.html")
 	if err != nil {
 		return nil, fmt.Errorf("parse accept_invite: %w", err)
@@ -195,8 +200,9 @@ func parseTemplates(root fs.FS) (*templateSet, error) {
 		commitDetail:   commitDetail,
 		issues:         issues,
 		issuesRows:     issuesRows,
-		issueDetail:     issueDetail,
-		acceptInvite:    acceptInvite,
+		issueDetail:    issueDetail,
+		newIssue:       newIssue,
+		acceptInvite:   acceptInvite,
 		org:             org,
 		proposals:       proposals,
 		proposalsRows:   proposalsRows,
@@ -281,6 +287,7 @@ func funcMap() template.FuncMap {
 		"dict":           dict,
 		"add":            func(a, b int) int { return a + b },
 		"urlPathEscape":  url.PathEscape,
+		"joinStrings":    strings.Join,
 	}
 }
 
