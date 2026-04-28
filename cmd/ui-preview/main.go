@@ -127,6 +127,41 @@ func (fakeWrite) GetRepo(_ context.Context, name string) (*model.Repo, error) {
 	return nil, db.ErrRepoNotFound
 }
 
+func (fakeWrite) ListProposals(_ context.Context, _ string, _ *model.ProposalState, _ *string) ([]*model.Proposal, error) {
+	t := time.Now()
+	return []*model.Proposal{
+		{ID: "p-preview-1", Repo: "acme/platform", Branch: "add-onboarding-guide", BaseBranch: "main", Title: "docs: add onboarding guide", Author: "ajay@acme", State: model.ProposalOpen, CreatedAt: t.Add(-3 * time.Hour)},
+		{ID: "p-preview-2", Repo: "acme/platform", Branch: "bump-arch-doc", BaseBranch: "main", Title: "docs: update architecture notes", Author: "sam@acme", State: model.ProposalMerged, CreatedAt: t.Add(-24 * time.Hour)},
+	}, nil
+}
+
+func (fakeWrite) GetProposal(_ context.Context, _, id string) (*model.Proposal, error) {
+	t := time.Now()
+	proposals := map[string]*model.Proposal{
+		"p-preview-1": {ID: "p-preview-1", Repo: "acme/platform", Branch: "add-onboarding-guide", BaseBranch: "main", Title: "docs: add onboarding guide", Description: "Fills the gap new contributors keep asking about in slack.", Author: "ajay@acme", State: model.ProposalOpen, CreatedAt: t.Add(-3 * time.Hour), UpdatedAt: t.Add(-30 * time.Minute)},
+		"p-preview-2": {ID: "p-preview-2", Repo: "acme/platform", Branch: "bump-arch-doc", BaseBranch: "main", Title: "docs: update architecture notes", Author: "sam@acme", State: model.ProposalMerged, CreatedAt: t.Add(-24 * time.Hour), UpdatedAt: t.Add(-24 * time.Hour)},
+	}
+	return proposals[id], nil
+}
+
+func (fakeWrite) ListReleases(_ context.Context, _ string, _ int, _ string) ([]model.Release, error) {
+	t := time.Now()
+	return []model.Release{
+		{ID: "rel-1", Repo: "acme/platform", Name: "v1.0.0", Sequence: 42, Body: "Initial stable release.\n\n- Platform foundation\n- Reviewer policy v1\n- Onboarding guide", CreatedBy: "ajay@acme", CreatedAt: t.Add(-7 * 24 * time.Hour)},
+		{ID: "rel-2", Repo: "acme/platform", Name: "v1.1.0", Sequence: 48, Body: "Minor update.\n\n- Updated architecture doc\n- Tightened reviewer policy", CreatedBy: "sam@acme", CreatedAt: t.Add(-2 * 24 * time.Hour)},
+	}, nil
+}
+
+func (fakeWrite) GetRelease(_ context.Context, _, name string) (*model.Release, error) {
+	t := time.Now()
+	releases := map[string]*model.Release{
+		"v1.0.0": {ID: "rel-1", Repo: "acme/platform", Name: "v1.0.0", Sequence: 42, Body: "Initial stable release.\n\n- Platform foundation\n- Reviewer policy v1\n- Onboarding guide", CreatedBy: "ajay@acme", CreatedAt: t.Add(-7 * 24 * time.Hour)},
+		"v1.1.0": {ID: "rel-2", Repo: "acme/platform", Name: "v1.1.0", Sequence: 48, Body: "Minor update.\n\n- Updated architecture doc\n- Tightened reviewer policy", CreatedBy: "sam@acme", CreatedAt: t.Add(-2 * 24 * time.Hour)},
+	}
+	r := releases[name]
+	return r, nil
+}
+
 func fakeAssemble(_ context.Context, _, branch string) (*model.AgentContextResponse, error) {
 	t := time.Now()
 	vid := func(s string) *string { return &s }
