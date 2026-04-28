@@ -11,7 +11,7 @@
 </nav>
 
 <div class="headline">
-  <h1>CI Job {{slice .Job.ID 0 8}}</h1>
+  <h1>CI Job {{printf "%.8s" .Job.ID}}</h1>
   <span class="badge {{statusClass .Job.Status}}">{{.Job.Status}}</span>
 </div>
 
