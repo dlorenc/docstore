@@ -30,6 +30,7 @@ type templateSet struct {
 	proposalDetail *template.Template
 	releases       *template.Template
 	releaseDetail  *template.Template
+	org            *template.Template
 }
 
 func parseTemplates(root fs.FS) (*templateSet, error) {
@@ -129,6 +130,10 @@ func parseTemplates(root fs.FS) (*templateSet, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse release_detail: %w", err)
 	}
+	org, err := load("org.html")
+	if err != nil {
+		return nil, fmt.Errorf("parse org: %w", err)
+	}
 	return &templateSet{
 		repos:          repos,
 		branches:       branches,
@@ -146,6 +151,7 @@ func parseTemplates(root fs.FS) (*templateSet, error) {
 		proposalDetail: proposalDetail,
 		releases:       releases,
 		releaseDetail:  releaseDetail,
+		org:            org,
 	}, nil
 }
 

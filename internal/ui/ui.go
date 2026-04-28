@@ -41,6 +41,8 @@ type WriteStoreLite interface {
 	GetProposal(ctx context.Context, repo, proposalID string) (*model.Proposal, error)
 	ListReleases(ctx context.Context, repo string, limit int, afterID string) ([]model.Release, error)
 	GetRelease(ctx context.Context, repo, name string) (*model.Release, error)
+	ListInvites(ctx context.Context, org string) ([]model.OrgInvite, error)
+	ListOrgRepos(ctx context.Context, owner string) ([]model.Repo, error)
 }
 
 // AssembleFn builds the full branch context snapshot used by the branch detail
@@ -110,6 +112,7 @@ func NewHandlerDev(read ReadStore, write WriteStoreLite, assemble AssembleFn) (*
 // placing this mux behind the same middleware chain used by the JSON API.
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /ui/{$}", h.handleRepos)
+	mux.HandleFunc("GET /ui/o/{org}", h.handleOrg)
 	mux.HandleFunc("GET /ui/r/{owner}/{name}", h.handleBranches)
 	mux.HandleFunc("GET /ui/r/{owner}/{name}/b/{branch}", h.handleBranchDetail)
 	mux.HandleFunc("GET /ui/_/r/{owner}/{name}/b/{branch}/checks", h.handleChecksPartial)

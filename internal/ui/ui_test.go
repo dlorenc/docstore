@@ -90,6 +90,18 @@ func (f *fakeWrite) ListProposals(_ context.Context, _ string, state *model.Prop
 	}
 	return out, nil
 }
+func (f *fakeWrite) ListInvites(_ context.Context, _ string) ([]model.OrgInvite, error) {
+	return nil, nil
+}
+func (f *fakeWrite) ListOrgRepos(_ context.Context, owner string) ([]model.Repo, error) {
+	var out []model.Repo
+	for _, r := range f.repos {
+		if r.Owner == owner {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
 func (f *fakeWrite) GetProposal(_ context.Context, _, id string) (*model.Proposal, error) {
 	for _, p := range f.proposals {
 		if p.ID == id {
@@ -323,6 +335,28 @@ func TestHandleProposals_RendersList(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing %q", want)
 		}
+	}
+}
+
+func TestHandleOrg_RendersReposMembersInvites(t *testing.T) {
+	repos := []model.Repo{
+		{Name: "acme/a", Owner: "acme", CreatedBy: "me", CreatedAt: time.Now().Add(-1 * time.Hour)},
+		{Name: "acme/b", Owner: "acme", CreatedBy: "me", CreatedAt: time.Now()},
+		{Name: "beta/x", Owner: "beta", CreatedBy: "you", CreatedAt: time.Now()},
+	}
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, nil)
+
+	code, body := getStatusAndBody(t, h, "/ui/o/acme")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200. body=%s", code, body)
+	}
+	for _, want := range []string{"acme/a", "acme/b", "Members", "Pending invites"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q", want)
+		}
+	}
+	if strings.Contains(body, "beta/x") {
+		t.Errorf("body should not contain repo from different org")
 	}
 }
 
