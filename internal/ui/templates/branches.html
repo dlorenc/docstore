@@ -76,7 +76,7 @@
         {{if .Draft}}<span class="badge warn">draft</span>{{end}}
         {{if .AutoMerge}}<span class="badge ok">auto-merge</span>{{end}}
       </td>
-      <td><a href="/ui/r/{{$.Repo}}/f/?branch={{.Name}}">files →</a> · <a href="/ui/r/{{$.Repo}}/b/{{urlPathEscape .Name}}/log">log →</a></td>
+      <td><a href="/ui/r/{{$.Repo}}/f/?branch={{.Name}}">files →</a> · <a href="/ui/r/{{$.Repo}}/b/{{urlPathEscape .Name}}/log">log →</a>{{if .Proposal}} · <a href="/ui/r/{{$.Repo}}/proposals/{{.Proposal.ID}}" class="badge ok" style="font-size:10px;text-decoration:none">↗ proposal</a>{{end}}</td>
       <td>
         {{if eq .Status "active"}}
         {{if .Draft}}

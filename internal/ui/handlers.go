@@ -31,8 +31,9 @@ type myOrgEntry struct {
 }
 
 type reposPage struct {
-	MyOrgs []myOrgEntry
-	Orgs   []orgGroup
+	MyOrgs         []myOrgEntry
+	Orgs           []orgGroup
+	ShowGetStarted bool
 }
 
 type orgGroup struct {
@@ -70,6 +71,7 @@ type branchRow struct {
 	Draft        bool
 	AutoMerge    bool
 	Status       string
+	Proposal     *model.Proposal
 }
 
 type reviewCommentGroup struct {
@@ -259,6 +261,7 @@ func (h *Handler) handleRepos(w http.ResponseWriter, r *http.Request) {
 	slices.SortFunc(orgs, func(a, b orgGroup) int { return strings.Compare(a.Name, b.Name) })
 
 	var myOrgs []myOrgEntry
+	showGetStarted := false
 	if h.identity != nil {
 		identity := h.identity(ctx)
 		if identity != "" {
@@ -274,6 +277,7 @@ func (h *Handler) handleRepos(w http.ResponseWriter, r *http.Request) {
 						RepoCount: len(byOrg[m.Org]),
 					})
 				}
+				showGetStarted = len(myOrgs) == 0
 			}
 		}
 	}
@@ -281,7 +285,7 @@ func (h *Handler) handleRepos(w http.ResponseWriter, r *http.Request) {
 	h.render(w, r, h.tmpl.repos, "layout.html", pageData{
 		Title:       "Repos",
 		Breadcrumbs: []crumb{{Label: "repos", Href: "/ui/"}},
-		Body:        reposPage{MyOrgs: myOrgs, Orgs: orgs},
+		Body:        reposPage{MyOrgs: myOrgs, Orgs: orgs, ShowGetStarted: showGetStarted},
 	})
 }
 
@@ -1372,6 +1376,18 @@ func (h *Handler) renderBranchesPage(w http.ResponseWriter, r *http.Request, own
 		members = nil
 	}
 
+	openState := model.ProposalOpen
+	proposalList, err := h.write.ListProposals(ctx, repoName, &openState, nil)
+	if err != nil {
+		slog.Error("ui list proposals", "repo", repoName, "error", err)
+	}
+	proposalByBranch := make(map[string]*model.Proposal)
+	for _, p := range proposalList {
+		if _, exists := proposalByBranch[p.Branch]; !exists {
+			proposalByBranch[p.Branch] = p
+		}
+	}
+
 	page := branchesPage{Repo: *repo, Members: members, Err: errMsg}
 	for _, b := range branches {
 		row := branchRow{
@@ -1381,6 +1397,7 @@ func (h *Handler) renderBranchesPage(w http.ResponseWriter, r *http.Request, own
 			Draft:        b.Draft,
 			AutoMerge:    b.AutoMerge,
 			Status:       b.Status,
+			Proposal:     proposalByBranch[b.Name],
 		}
 		switch b.Status {
 		case "merged":
@@ -1415,11 +1432,11 @@ func (h *Handler) renderRepoSettingsPage(w http.ResponseWriter, r *http.Request,
 	repo, err := h.write.GetRepo(ctx, repoName)
 	if err != nil {
 		if errors.Is(err, db.ErrRepoNotFound) {
-			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
+			h.renderError(w, r, http.StatusNotFound, "repo not found: "+repoName)
 			return
 		}
 		slog.Error("ui get repo", "repo", repoName, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load repo")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load repo")
 		return
 	}
 
@@ -1429,7 +1446,7 @@ func (h *Handler) renderRepoSettingsPage(w http.ResponseWriter, r *http.Request,
 		roles = nil
 	}
 
-	h.render(w, h.tmpl.repoSettings, "layout.html", pageData{
+	h.render(w, r, h.tmpl.repoSettings, "layout.html", pageData{
 		Title: repoName + " / settings",
 		Breadcrumbs: []crumb{
 			{Label: "repos", Href: "/ui/"},
