@@ -202,6 +202,25 @@ func (f *fakeWrite) DeleteBranch(_ context.Context, _, _ string) error {
 func (f *fakeWrite) SetBranchAutoMerge(_ context.Context, _, _ string, _ bool) error {
 	return nil
 }
+func (f *fakeWrite) AddOrgMember(_ context.Context, _, _ string, _ model.OrgRole, _ string) error {
+	return nil
+}
+func (f *fakeWrite) RemoveOrgMember(_ context.Context, _, _ string) error { return nil }
+func (f *fakeWrite) CreateInvite(_ context.Context, _, _ string, _ model.OrgRole, _, _ string, _ time.Time) (*model.OrgInvite, error) {
+	return &model.OrgInvite{}, nil
+}
+func (f *fakeWrite) RevokeInvite(_ context.Context, _, _ string) error { return nil }
+func (f *fakeWrite) SetRole(_ context.Context, _, _ string, _ model.RoleType) error {
+	return nil
+}
+func (f *fakeWrite) DeleteRole(_ context.Context, _, _ string) error { return nil }
+func (f *fakeWrite) CreateRelease(_ context.Context, _, _ string, _ int64, _, _ string) (*model.Release, error) {
+	return &model.Release{}, nil
+}
+func (f *fakeWrite) DeleteRelease(_ context.Context, _, _ string) error { return nil }
+
+// Compile-time check that fakeWrite satisfies WriteStoreLite.
+var _ WriteStoreLite = (*fakeWrite)(nil)
 
 func (f *fakeWrite) CreateReview(_ context.Context, _, _, _ string, _ model.ReviewStatus, _ string) (*model.Review, error) {
 	return &model.Review{}, nil
