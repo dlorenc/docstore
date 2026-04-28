@@ -52,6 +52,17 @@ Air watches `*.go` files and rebuilds+restarts the server automatically.
 Template/CSS/JS edits take effect immediately without restart because `DEV_UI`
 reads them from disk at request time.
 
+### Note: production uses IAP
+
+In production, the Cloud Run service sits behind a Global HTTPS Load Balancer
+with Google Cloud Identity-Aware Proxy (IAP) at `https://docstore.dev`. IAP
+handles authentication by injecting `X-Goog-IAP-JWT-Assertion` headers, which
+the app's `IAPMiddleware` validates. Direct requests to `*.run.app` are blocked
+(ingress is `internal-and-cloud-load-balancing`).
+
+`DEV_IDENTITY` / `--dev-identity` is **only for local development** — it bypasses
+IAP entirely and must never be set in production.
+
 ### 4. Visual iteration with Playwright MCP
 
 With the server running, you can use the Playwright MCP tool to inspect and
