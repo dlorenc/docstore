@@ -160,6 +160,40 @@ func (s *Store) CompleteCIJob(ctx context.Context, id, status string, logURL, er
 	return nil
 }
 
+// ListCIJobs returns ci_jobs for the given repo, optionally filtered by branch
+// and status, ordered by created_at DESC, up to limit rows.
+func (s *Store) ListCIJobs(ctx context.Context, repo string, branch, status *string, limit int) ([]model.CIJob, error) {
+	query := `SELECT ` + ciJobColumns + ` FROM ci_jobs WHERE repo = $1`
+	args := []any{repo}
+
+	if branch != nil {
+		args = append(args, *branch)
+		query += fmt.Sprintf(` AND branch = $%d`, len(args))
+	}
+	if status != nil {
+		args = append(args, *status)
+		query += fmt.Sprintf(` AND status = $%d`, len(args))
+	}
+	args = append(args, limit)
+	query += fmt.Sprintf(` ORDER BY created_at DESC LIMIT $%d`, len(args))
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list ci jobs: %w", err)
+	}
+	defer rows.Close()
+
+	var jobs []model.CIJob
+	for rows.Next() {
+		j, err := scanCIJob(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan ci job: %w", err)
+		}
+		jobs = append(jobs, *j)
+	}
+	return jobs, rows.Err()
+}
+
 // CountQueuedCIJobs returns the number of ci_jobs with status 'queued'.
 func (s *Store) CountQueuedCIJobs(ctx context.Context) (int64, error) {
 	var n int64
