@@ -51,6 +51,12 @@ func (fakeRead) GetFile(_ context.Context, _, _, path string, _ *int64) (*store.
 }
 
 func (fakeRead) GetBranch(_ context.Context, _, _ string) (*store.BranchInfo, error) { return nil, nil }
+func (fakeRead) GetChain(_ context.Context, _ string, _, _ int64) ([]store.ChainEntry, error) {
+	return nil, nil
+}
+func (fakeRead) GetCommit(_ context.Context, _ string, _ int64) (*store.CommitDetail, error) {
+	return nil, nil
+}
 
 func (fakeRead) GetFileHistory(_ context.Context, _, _, _ string, _ int, _ *int64) ([]store.FileHistoryEntry, error) {
 	t := time.Now()
