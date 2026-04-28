@@ -58,17 +58,35 @@
 <div class="card">
   {{if not .Roles}}<div class="empty">no roles configured</div>{{else}}
   <table class="grid">
-    <thead><tr><th>identity</th><th>role</th></tr></thead>
+    <thead><tr><th>identity</th><th>role</th><th></th></tr></thead>
     <tbody>
     {{range .Roles}}
     <tr>
       <td>{{.Identity}}</td>
       <td><span class="badge neutral">{{.Role}}</span></td>
+      <td>
+        <form method="POST" action="/ui/r/{{$.Repo.Name}}/roles/{{.Identity}}/delete" style="display:inline">
+          <button type="submit" class="btn-danger-small">revoke</button>
+        </form>
+      </td>
     </tr>
     {{end}}
     </tbody>
   </table>
   {{end}}
+  <details style="margin-top:12px">
+    <summary style="cursor:pointer;font-size:0.9em">Grant role</summary>
+    <form method="POST" action="/ui/r/{{.Repo.Name}}/roles" style="padding:10px 0 4px">
+      <input type="text" name="identity" placeholder="identity (email)" required style="margin-right:6px">
+      <select name="role" style="margin-right:6px">
+        <option value="reader">reader</option>
+        <option value="writer">writer</option>
+        <option value="maintainer">maintainer</option>
+        <option value="admin">admin</option>
+      </select>
+      <button type="submit">Grant</button>
+    </form>
+  </details>
 </div>
 {{end}}
 {{end}}

@@ -2,6 +2,10 @@
 {{with .Body}}
 <div class="headline"><h1>{{.Org}}</h1></div>
 
+{{if .Err}}
+<div class="card" style="margin-bottom:12px"><span class="badge bad">{{.Err}}</span></div>
+{{end}}
+
 <h2>Repos ({{len .Repos}})</h2>
 <div class="card">
   {{if not .Repos}}
@@ -24,7 +28,7 @@
     <div class="empty">No members.</div>
   {{else}}
   <table class="grid">
-    <thead><tr><th>identity</th><th>role</th><th>invited by</th><th>joined</th></tr></thead>
+    <thead><tr><th>identity</th><th>role</th><th>invited by</th><th>joined</th><th></th></tr></thead>
     <tbody>
     {{range .Members}}
     <tr>
@@ -32,11 +36,27 @@
       <td><span class="badge {{statusClass .Role}}">{{.Role}}</span></td>
       <td>{{.InvitedBy}}</td>
       <td>{{relTime .CreatedAt}}</td>
+      <td>
+        <form method="POST" action="/ui/o/{{$.Org}}/members/{{.Identity}}/remove" style="display:inline">
+          <button type="submit" class="btn-danger-small">remove</button>
+        </form>
+      </td>
     </tr>
     {{end}}
     </tbody>
   </table>
   {{end}}
+  <details style="margin-top:12px">
+    <summary style="cursor:pointer;font-size:0.9em">Add member</summary>
+    <form method="POST" action="/ui/o/{{.Org}}/members" style="padding:10px 0 4px">
+      <input type="text" name="identity" placeholder="identity (email)" required style="margin-right:6px">
+      <select name="role" style="margin-right:6px">
+        <option value="member">member</option>
+        <option value="owner">owner</option>
+      </select>
+      <button type="submit">Add</button>
+    </form>
+  </details>
 </div>
 
 <h2>Pending invites ({{len .Invites}})</h2>
@@ -45,7 +65,7 @@
     <div class="empty">No pending invites.</div>
   {{else}}
   <table class="grid">
-    <thead><tr><th>email</th><th>role</th><th>invited by</th><th>expires</th></tr></thead>
+    <thead><tr><th>email</th><th>role</th><th>invited by</th><th>expires</th><th></th></tr></thead>
     <tbody>
     {{range .Invites}}
     <tr>
@@ -53,11 +73,27 @@
       <td><span class="badge {{statusClass .Role}}">{{.Role}}</span></td>
       <td>{{.InvitedBy}}</td>
       <td>{{relTime .ExpiresAt}}</td>
+      <td>
+        <form method="POST" action="/ui/o/{{$.Org}}/invites/{{.ID}}/revoke" style="display:inline">
+          <button type="submit" class="btn-danger-small">revoke</button>
+        </form>
+      </td>
     </tr>
     {{end}}
     </tbody>
   </table>
   {{end}}
+  <details style="margin-top:12px">
+    <summary style="cursor:pointer;font-size:0.9em">Create invite</summary>
+    <form method="POST" action="/ui/o/{{.Org}}/invites" style="padding:10px 0 4px">
+      <input type="email" name="email" placeholder="email address" required style="margin-right:6px">
+      <select name="role" style="margin-right:6px">
+        <option value="member">member</option>
+        <option value="owner">owner</option>
+      </select>
+      <button type="submit">Create invite</button>
+    </form>
+  </details>
 </div>
 {{end}}
 {{end}}
