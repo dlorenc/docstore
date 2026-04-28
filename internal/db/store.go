@@ -197,7 +197,21 @@ func (s *Store) ListOrgs(ctx context.Context) ([]model.Org, error) {
 // DeleteOrg hard-deletes an org. Returns ErrOrgNotFound if it doesn't exist
 // and ErrOrgHasRepos if there are repos still owned by this org.
 func (s *Store) DeleteOrg(ctx context.Context, name string) error {
-	result, err := s.db.ExecContext(ctx, "DELETE FROM orgs WHERE name = $1", name)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("delete org: begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Clean up org membership and invites before deleting the org.
+	if _, err := tx.ExecContext(ctx, "DELETE FROM org_invites WHERE org = $1", name); err != nil {
+		return fmt.Errorf("delete org invites: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM org_members WHERE org = $1", name); err != nil {
+		return fmt.Errorf("delete org members: %w", err)
+	}
+
+	result, err := tx.ExecContext(ctx, "DELETE FROM orgs WHERE name = $1", name)
 	if err != nil {
 		if isForeignKeyViolation(err) {
 			return ErrOrgHasRepos
@@ -211,7 +225,7 @@ func (s *Store) DeleteOrg(ctx context.Context, name string) error {
 	if n == 0 {
 		return ErrOrgNotFound
 	}
-	return nil
+	return tx.Commit()
 }
 
 // ListOrgRepos returns all repos owned by an org, ordered by name.
