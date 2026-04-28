@@ -766,6 +766,80 @@ func TestRBACMiddleware_ReaderUpgradedToWriter(t *testing.T) {
 	}
 }
 
+func TestRBACMiddleware_CheckAndReviewAccess(t *testing.T) {
+	// Reader cannot POST /check or /review.
+	storeR := &mockRoleStore{
+		getRoleFn: func(_ context.Context, repo, identity string) (*model.Role, error) {
+			return &model.Role{Identity: identity, Role: model.RoleReader}, nil
+		},
+	}
+	hR := rbacTestServer(storeR, "", "alice@example.com")
+
+	rec := rbacDo(t, hR, http.MethodPost, "/repos/myrepo/myrepo/-/check", `{}`)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("reader POST check: expected 403, got %d", rec.Code)
+	}
+	rec = rbacDo(t, hR, http.MethodPost, "/repos/myrepo/myrepo/-/review", `{}`)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("reader POST review: expected 403, got %d", rec.Code)
+	}
+
+	// Writer can POST /check and /review.
+	storeW := &mockRoleStore{
+		getRoleFn: func(_ context.Context, repo, identity string) (*model.Role, error) {
+			return &model.Role{Identity: identity, Role: model.RoleWriter}, nil
+		},
+	}
+	hW := rbacTestServer(storeW, "", "bob@example.com")
+
+	rec = rbacDo(t, hW, http.MethodPost, "/repos/myrepo/myrepo/-/check", `{}`)
+	if rec.Code != http.StatusOK {
+		t.Errorf("writer POST check: expected 200, got %d", rec.Code)
+	}
+	rec = rbacDo(t, hW, http.MethodPost, "/repos/myrepo/myrepo/-/review", `{}`)
+	if rec.Code != http.StatusOK {
+		t.Errorf("writer POST review: expected 200, got %d", rec.Code)
+	}
+}
+
+func TestRBACMiddleware_ChecksRetryAccess(t *testing.T) {
+	// Reader cannot POST /checks/retry.
+	storeR := &mockRoleStore{
+		getRoleFn: func(_ context.Context, repo, identity string) (*model.Role, error) {
+			return &model.Role{Identity: identity, Role: model.RoleReader}, nil
+		},
+	}
+	hR := rbacTestServer(storeR, "", "alice@example.com")
+	rec := rbacDo(t, hR, http.MethodPost, "/repos/myrepo/myrepo/-/checks/retry", `{}`)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("reader POST checks/retry: expected 403, got %d", rec.Code)
+	}
+
+	// Writer cannot POST /checks/retry.
+	storeW := &mockRoleStore{
+		getRoleFn: func(_ context.Context, repo, identity string) (*model.Role, error) {
+			return &model.Role{Identity: identity, Role: model.RoleWriter}, nil
+		},
+	}
+	hW := rbacTestServer(storeW, "", "bob@example.com")
+	rec = rbacDo(t, hW, http.MethodPost, "/repos/myrepo/myrepo/-/checks/retry", `{}`)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("writer POST checks/retry: expected 403, got %d", rec.Code)
+	}
+
+	// Maintainer can POST /checks/retry.
+	storeM := &mockRoleStore{
+		getRoleFn: func(_ context.Context, repo, identity string) (*model.Role, error) {
+			return &model.Role{Identity: identity, Role: model.RoleMaintainer}, nil
+		},
+	}
+	hM := rbacTestServer(storeM, "", "carol@example.com")
+	rec = rbacDo(t, hM, http.MethodPost, "/repos/myrepo/myrepo/-/checks/retry", `{}`)
+	if rec.Code != http.StatusOK {
+		t.Errorf("maintainer POST checks/retry: expected 200, got %d", rec.Code)
+	}
+}
+
 func TestRBACMiddleware_ReleasesAccess(t *testing.T) {
 	store := &mockRoleStore{
 		getRoleFn: func(_ context.Context, repo, identity string) (*model.Role, error) {
