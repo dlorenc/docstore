@@ -58,6 +58,7 @@ type WriteStore interface {
 	// Org invitations
 	CreateInvite(ctx context.Context, org, email string, role model.OrgRole, invitedBy, token string, expiresAt time.Time) (*model.OrgInvite, error)
 	ListInvites(ctx context.Context, org string) ([]model.OrgInvite, error)
+	GetInviteByToken(ctx context.Context, org, token string) (*model.OrgInvite, error)
 	AcceptInvite(ctx context.Context, org, token, identity string) error
 	RevokeInvite(ctx context.Context, org, inviteID string) error
 
@@ -258,9 +259,9 @@ func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore Wri
 		var uiHandler *ui.Handler
 		var err error
 		if os.Getenv("DEV_UI") != "" {
-			uiHandler, err = ui.NewHandlerDev(s.readStore, writeStore, assemble)
+			uiHandler, err = ui.NewHandlerDev(s.readStore, writeStore, assemble, IdentityFromContext)
 		} else {
-			uiHandler, err = ui.NewHandler(s.readStore, writeStore, assemble)
+			uiHandler, err = ui.NewHandler(s.readStore, writeStore, assemble, IdentityFromContext)
 		}
 		if err != nil {
 			slog.Error("ui init failed", "error", err)
