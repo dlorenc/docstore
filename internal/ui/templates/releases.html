@@ -30,7 +30,7 @@
     <td><a href="releases/{{.Name}}">{{.Name}}</a></td>
     <td>{{.Sequence}}</td>
     <td>{{.CreatedBy}}</td>
-    <td class="meta">{{if gt (len .Body) 80}}{{slice .Body 0 80}}…{{else}}{{.Body}}{{end}}</td>
+    <td class="meta markdown-body">{{markdown .Body}}</td>
     <td class="meta">{{relTime .CreatedAt}}</td>
   </tr>
   {{end}}

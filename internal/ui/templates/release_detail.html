@@ -37,7 +37,7 @@
 {{if .Release.Body}}
 <h2>Body</h2>
 <div class="card">
-  <div style="white-space:pre-wrap;color:var(--text);">{{.Release.Body}}</div>
+  <div class="markdown-body">{{markdown .Release.Body}}</div>
 </div>
 {{end}}
 

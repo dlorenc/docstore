@@ -49,7 +49,7 @@
 
 {{if .Issue.Body}}
 <div class="card" style="margin-bottom:16px">
-  <div class="row-body">{{.Issue.Body}}</div>
+  <div class="row-body markdown-body">{{markdown .Issue.Body}}</div>
 </div>
 {{end}}
 
@@ -87,7 +87,7 @@
       <button type="submit" class="btn danger" style="font-size:11px;padding:3px 8px">delete</button>
     </form>
   </div>
-  {{if .Body}}<div class="row-body">{{.Body}}</div>{{end}}
+  {{if .Body}}<div class="row-body markdown-body">{{markdown .Body}}</div>{{end}}
   <details class="form-section" style="padding:4px 4px 8px">
     <summary>edit comment</summary>
     <form method="POST" action="/ui/r/{{$d.Repo.Name}}/issues/{{$d.Issue.Number}}/comments/{{.ID}}/edit" style="padding-top:8px">

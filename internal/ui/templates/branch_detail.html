@@ -153,7 +153,7 @@
           hx-target="#review-comments"
           hx-swap="innerHTML">inline comments ▾</button>
       </div>
-      {{if .Body}}<div class="row-body">{{.Body}}</div>{{end}}
+      {{if .Body}}<div class="row-body markdown-body">{{markdown .Body}}</div>{{end}}
       {{end}}
       <div id="review-comments"></div>
     </div>
@@ -226,7 +226,7 @@
     </div>
     <span class="badge {{statusClass (printf "%s" .State)}}">{{.State}}</span>
   </div>
-  {{if .Description}}<div class="row-body">{{.Description}}</div>{{end}}
+  {{if .Description}}<div class="row-body markdown-body">{{markdown .Description}}</div>{{end}}
   {{end}}
 </div>
 

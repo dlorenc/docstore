@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/yuin/goldmark"
 )
 
 // templateSet holds the parsed template tree. Each page has its own *Template
@@ -306,7 +308,25 @@ func funcMap() template.FuncMap {
 		"urlPathEscape":  url.PathEscape,
 		"joinStrings":    strings.Join,
 		"repoShortName":  repoShortName,
+		"markdown":       renderMarkdown,
 	}
+}
+
+// renderMarkdown converts a markdown string to sanitized HTML.
+// It uses goldmark's safe defaults (no html.WithUnsafe), which means:
+// - Raw HTML in markdown is stripped (not passed through)
+// - Dangerous URL schemes (javascript:, vbscript:, etc.) are omitted from links
+// The returned template.HTML is safe to use directly in templates.
+func renderMarkdown(s string) template.HTML {
+	if s == "" {
+		return ""
+	}
+	var buf bytes.Buffer
+	md := goldmark.New()
+	if err := md.Convert([]byte(s), &buf); err != nil {
+		return template.HTML(template.HTMLEscapeString(s))
+	}
+	return template.HTML(buf.String())
 }
 
 // repoShortName returns the short name portion of a full "owner/name" repo

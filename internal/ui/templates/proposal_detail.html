@@ -43,7 +43,7 @@
 {{if .Proposal.Description}}
 <h2>Description</h2>
 <div class="card">
-  <div style="white-space:pre-wrap;color:var(--text);">{{.Proposal.Description}}</div>
+  <div class="markdown-body">{{markdown .Proposal.Description}}</div>
 </div>
 {{end}}
 
