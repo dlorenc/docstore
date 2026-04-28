@@ -48,6 +48,9 @@ type WriteStoreLite interface {
 	GetProposal(ctx context.Context, repo, proposalID string) (*model.Proposal, error)
 	ListReleases(ctx context.Context, repo string, limit int, afterID string) ([]model.Release, error)
 	GetRelease(ctx context.Context, repo, name string) (*model.Release, error)
+	ListIssueRefs(ctx context.Context, repo string, number int64) ([]model.IssueRef, error)
+	ListCIJobs(ctx context.Context, repo string, branch, status *string, limit int) ([]model.CIJob, error)
+	GetCIJob(ctx context.Context, id string) (*model.CIJob, error)
 }
 
 // AssembleFn builds the full branch context snapshot used by the branch detail
@@ -143,6 +146,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /ui/r/{owner}/{name}/proposals/{id}", h.handleProposalDetail)
 	mux.HandleFunc("GET /ui/r/{owner}/{name}/releases", h.handleReleases)
 	mux.HandleFunc("GET /ui/r/{owner}/{name}/releases/{rname}", h.handleReleaseDetail)
+	mux.HandleFunc("GET /ui/r/{owner}/{name}/ci-jobs", h.handleCIJobs)
+	mux.HandleFunc("GET /ui/r/{owner}/{name}/ci-jobs/{id}", h.handleCIJobDetail)
 	mux.HandleFunc("GET /ui/o/{org}/invites/{token}/accept", h.handleAcceptInvite)
 	mux.HandleFunc("POST /ui/o/{org}/invites/{token}/accept", h.handleAcceptInvite)
 	mux.Handle("GET /ui/static/", http.StripPrefix("/ui/static/", http.FileServer(http.FS(h.staticSub))))
