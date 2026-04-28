@@ -1,0 +1,36 @@
+{{define "content"}}
+{{with .Body}}
+<div class="headline">
+  <h1>commit {{.Commit.Sequence}}</h1>
+  <span class="meta">{{.Repo.Name}} · {{.Branch}}</span>
+</div>
+
+<div class="card">
+  <div class="commit-meta">
+    <div><strong>message</strong> {{.Commit.Message}}</div>
+    <div><strong>author</strong> {{.Commit.Author}}</div>
+    <div><strong>branch</strong> {{.Commit.Branch}}</div>
+    <div><strong>when</strong> {{relTime .Commit.CreatedAt}}</div>
+  </div>
+</div>
+
+<h2>files changed ({{len .Commit.Files}})</h2>
+<div class="card">
+  {{if not .Commit.Files}}
+    <div class="empty">no files changed</div>
+  {{else}}
+  <table class="grid">
+    <thead><tr><th>path</th><th>change</th></tr></thead>
+    <tbody>
+    {{range .Commit.Files}}
+    <tr>
+      <td><a href="/ui/r/{{$.Repo.Name}}/f/{{.Path}}?branch={{$.Branch}}&at={{$.Commit.Sequence}}">{{.Path}}</a></td>
+      <td><span class="badge {{diffClass .VersionID}}">{{if .VersionID}}modified{{else}}deleted{{end}}</span></td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{end}}
+</div>
+{{end}}
+{{end}}
