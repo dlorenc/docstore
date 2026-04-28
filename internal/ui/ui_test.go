@@ -73,6 +73,9 @@ func (f *fakeWrite) ListOrgMembers(_ context.Context, _ string) ([]model.OrgMemb
 func (f *fakeWrite) ListRoles(_ context.Context, _ string) ([]model.Role, error) {
 	return nil, nil
 }
+func (f *fakeWrite) ListCheckRuns(_ context.Context, _, _ string, _ *int64, _ bool) ([]model.CheckRun, error) {
+	return nil, nil
+}
 
 func newFakeAssembler(branchName string) AssembleFn {
 	return func(_ context.Context, _, branch string) (*model.AgentContextResponse, error) {
@@ -217,6 +220,29 @@ func TestHandleChecksPartial_ReturnsFragment(t *testing.T) {
 	}
 	if !strings.Contains(body, "no checks yet") {
 		t.Errorf("expected empty-checks marker, got: %s", body)
+	}
+}
+
+func TestHandleCheckHistoryPartial_ReturnsFragment(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme"}}
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, newFakeAssembler("feat-x"))
+
+	// Missing check param → 400
+	code, _ := getStatusAndBody(t, h, "/ui/_/r/acme/a/b/feat-x/check-history")
+	if code != http.StatusBadRequest {
+		t.Fatalf("missing check param: status = %d, want 400", code)
+	}
+
+	// With check param → 200 fragment (no layout)
+	code, body := getStatusAndBody(t, h, "/ui/_/r/acme/a/b/feat-x/check-history?check=lint")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d", code)
+	}
+	if strings.Contains(body, "<!doctype html>") {
+		t.Errorf("expected fragment, got full layout")
+	}
+	if !strings.Contains(body, "no history found") {
+		t.Errorf("expected empty-history marker, got: %s", body)
 	}
 }
 

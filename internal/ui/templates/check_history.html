@@ -1,0 +1,28 @@
+{{define "check_history.html"}}
+{{if not .}}<div class="meta">no history found</div>{{else}}
+<table class="check-history-table">
+  <thead>
+    <tr>
+      <th>Attempt</th>
+      <th>Status</th>
+      <th>Reporter</th>
+      <th>Seq</th>
+      <th>When</th>
+      <th>Logs</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .}}
+    <tr>
+      <td>{{.Attempt}}</td>
+      <td><span class="badge {{statusClass (printf "%s" .Status)}}">{{.Status}}</span></td>
+      <td>{{.Reporter}}</td>
+      <td>{{.Sequence}}</td>
+      <td>{{relTime .CreatedAt}}</td>
+      <td>{{if .LogURL}}<a href="{{.LogURL}}" target="_blank" rel="noopener">logs</a>{{else}}—{{end}}</td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+{{end}}
+{{end}}

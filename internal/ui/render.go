@@ -18,6 +18,7 @@ type templateSet struct {
 	branches       *template.Template
 	branchDetail   *template.Template
 	branchChecks   *template.Template
+	checkHistory   *template.Template
 	reviewComments *template.Template
 	fileView       *template.Template
 	errorPage      *template.Template
@@ -62,6 +63,10 @@ func parseTemplates(root fs.FS) (*templateSet, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse branch_checks: %w", err)
 	}
+	checkHistory, err := loadFragment("check_history.html")
+	if err != nil {
+		return nil, fmt.Errorf("parse check_history: %w", err)
+	}
 	reviewComments, err := loadFragment("review_comments.html")
 	if err != nil {
 		return nil, fmt.Errorf("parse review_comments: %w", err)
@@ -98,6 +103,7 @@ func parseTemplates(root fs.FS) (*templateSet, error) {
 		branches:       branches,
 		branchDetail:   branchDetail,
 		branchChecks:   branchChecks,
+		checkHistory:   checkHistory,
 		reviewComments: reviewComments,
 		fileView:       fileView,
 		errorPage:      errorPage,
