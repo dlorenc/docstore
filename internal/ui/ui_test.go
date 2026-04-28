@@ -98,6 +98,18 @@ func (f *fakeWrite) GetInviteByToken(_ context.Context, _, _ string) (*model.Org
 func (f *fakeWrite) AcceptInvite(_ context.Context, _, _, _ string) error {
 	return nil
 }
+func (f *fakeWrite) ListInvites(_ context.Context, _ string) ([]model.OrgInvite, error) {
+	return nil, nil
+}
+func (f *fakeWrite) ListOrgRepos(_ context.Context, owner string) ([]model.Repo, error) {
+	var out []model.Repo
+	for _, r := range f.repos {
+		if r.Owner == owner {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
 
 func newFakeAssembler(branchName string) AssembleFn {
 	return func(_ context.Context, _, branch string) (*model.AgentContextResponse, error) {
@@ -392,6 +404,28 @@ func TestHandleIssueDetail_InvalidNumber_Returns400(t *testing.T) {
 	code, _ := getStatusAndBody(t, h, "/ui/r/acme/a/issues/notanumber")
 	if code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", code)
+	}
+}
+
+func TestHandleOrg_RendersReposMembersInvites(t *testing.T) {
+	repos := []model.Repo{
+		{Name: "acme/a", Owner: "acme", CreatedBy: "me", CreatedAt: time.Now().Add(-1 * time.Hour)},
+		{Name: "acme/b", Owner: "acme", CreatedBy: "me", CreatedAt: time.Now()},
+		{Name: "beta/x", Owner: "beta", CreatedBy: "you", CreatedAt: time.Now()},
+	}
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, nil)
+
+	code, body := getStatusAndBody(t, h, "/ui/o/acme")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200. body=%s", code, body)
+	}
+	for _, want := range []string{"acme/a", "acme/b", "Members", "Pending invites"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q", want)
+		}
+	}
+	if strings.Contains(body, "beta/x") {
+		t.Errorf("body should not contain repo from different org")
 	}
 }
 
