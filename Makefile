@@ -2,7 +2,7 @@
 
 BINARY := docstore
 BUILD_DIR := bin
-DEFAULT_REMOTE ?= https://docstore-efuj4cj54a-uc.a.run.app
+DEFAULT_REMOTE ?= https://docstore.dev
 
 build:
 	go build -o $(BUILD_DIR)/$(BINARY) ./cmd/docstore
