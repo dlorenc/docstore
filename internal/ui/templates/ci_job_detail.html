@@ -1,0 +1,97 @@
+{{define "content"}}
+{{with .Body}}
+<nav class="repo-tabs">
+  <a href="/ui/r/{{.Repo.Name}}">branches</a>
+  <a href="/ui/r/{{.Repo.Name}}/issues">issues</a>
+  <a href="/ui/r/{{.Repo.Name}}/releases">releases</a>
+  <a href="/ui/r/{{.Repo.Name}}/proposals">proposals</a>
+  <a href="/ui/r/{{.Repo.Name}}/ci-jobs" class="active">ci-jobs</a>
+  <a href="/ui/r/{{.Repo.Name}}/b/main/log">log</a>
+</nav>
+
+<div class="headline">
+  <h1>CI Job {{slice .Job.ID 0 8}}</h1>
+  <span class="badge {{statusClass .Job.Status}}">{{.Job.Status}}</span>
+</div>
+
+<div class="meta" style="margin-bottom:14px">
+  created {{relTime .Job.CreatedAt}}
+</div>
+
+<h2>Details</h2>
+<div class="card">
+  <div class="row">
+    <div><strong>id</strong></div>
+    <div class="meta">{{.Job.ID}}</div>
+  </div>
+  <div class="row">
+    <div><strong>repo</strong></div>
+    <div>{{.Job.Repo}}</div>
+  </div>
+  <div class="row">
+    <div><strong>branch</strong></div>
+    <div><a href="/ui/r/{{.Repo.Name}}/b/{{urlPathEscape .Job.Branch}}">{{.Job.Branch}}</a></div>
+  </div>
+  <div class="row">
+    <div><strong>sequence</strong></div>
+    <div>{{.Job.Sequence}}</div>
+  </div>
+  <div class="row">
+    <div><strong>status</strong></div>
+    <div><span class="badge {{statusClass .Job.Status}}">{{.Job.Status}}</span></div>
+  </div>
+  <div class="row">
+    <div><strong>trigger type</strong></div>
+    <div class="meta">{{.Job.TriggerType}}</div>
+  </div>
+  {{if .Job.TriggerBranch}}
+  <div class="row">
+    <div><strong>trigger branch</strong></div>
+    <div><a href="/ui/r/{{.Repo.Name}}/b/{{urlPathEscape .Job.TriggerBranch}}">{{.Job.TriggerBranch}}</a></div>
+  </div>
+  {{end}}
+  {{if .Job.TriggerBaseBranch}}
+  <div class="row">
+    <div><strong>trigger base branch</strong></div>
+    <div>{{.Job.TriggerBaseBranch}}</div>
+  </div>
+  {{end}}
+  {{if .Job.TriggerProposalID}}
+  <div class="row">
+    <div><strong>trigger proposal</strong></div>
+    <div><a href="/ui/r/{{.Repo.Name}}/proposals/{{.Job.TriggerProposalID}}">{{.Job.TriggerProposalID}}</a></div>
+  </div>
+  {{end}}
+  {{if .Job.WorkerPod}}
+  <div class="row">
+    <div><strong>worker pod</strong></div>
+    <div class="meta">{{.Job.WorkerPod}}</div>
+  </div>
+  {{end}}
+  {{if .Job.ClaimedAt}}
+  <div class="row">
+    <div><strong>claimed</strong></div>
+    <div class="meta">{{relTimep .Job.ClaimedAt}}</div>
+  </div>
+  {{end}}
+  {{if .Job.LastHeartbeatAt}}
+  <div class="row">
+    <div><strong>last heartbeat</strong></div>
+    <div class="meta">{{relTimep .Job.LastHeartbeatAt}}</div>
+  </div>
+  {{end}}
+  {{if .Job.LogURL}}
+  <div class="row">
+    <div><strong>log</strong></div>
+    <div><a href="{{.Job.LogURL}}" target="_blank" rel="noopener">view logs →</a></div>
+  </div>
+  {{end}}
+  {{if .Job.ErrorMessage}}
+  <div class="row">
+    <div><strong>error</strong></div>
+    <div class="meta" style="color:var(--bad)">{{.Job.ErrorMessage}}</div>
+  </div>
+  {{end}}
+</div>
+{{end}}
+{{end}}

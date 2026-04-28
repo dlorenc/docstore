@@ -5,6 +5,15 @@
   <span class="meta">owner {{.Repo.Owner}}</span>
 </div>
 
+<nav class="repo-tabs">
+  <a href="/ui/r/{{.Repo.Name}}">branches</a>
+  <a href="/ui/r/{{.Repo.Name}}/issues">issues</a>
+  <a href="/ui/r/{{.Repo.Name}}/releases">releases</a>
+  <a href="/ui/r/{{.Repo.Name}}/proposals" class="active">proposals</a>
+  <a href="/ui/r/{{.Repo.Name}}/ci-jobs">ci-jobs</a>
+  <a href="/ui/r/{{.Repo.Name}}/b/main/log">log</a>
+</nav>
+
 <div class="tab-bar" data-tab-group>
   <a class="tab{{if eq .State "open"}} active{{end}}"
      href="?state=open"

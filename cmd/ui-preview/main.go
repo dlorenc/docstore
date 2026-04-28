@@ -232,6 +232,29 @@ func (fakeWrite) GetRelease(_ context.Context, _, name string) (*model.Release, 
 	return r, nil
 }
 
+func (fakeWrite) ListIssueRefs(_ context.Context, _ string, _ int64) ([]model.IssueRef, error) {
+	return nil, nil
+}
+
+func (fakeWrite) ListCIJobs(_ context.Context, _ string, _, _ *string, _ int) ([]model.CIJob, error) {
+	t := time.Now()
+	logURL := "https://ci.example/logs/42"
+	return []model.CIJob{
+		{ID: "job-aabbccdd-1111-2222-3333-444455556666", Repo: "acme/platform", Branch: "add-onboarding-guide", Sequence: 47, Status: "passed", TriggerType: "push", TriggerBranch: "add-onboarding-guide", CreatedAt: t.Add(-30 * time.Minute), LogURL: &logURL},
+		{ID: "job-bbccddee-2222-3333-4444-555566667777", Repo: "acme/platform", Branch: "main", Sequence: 42, Status: "queued", TriggerType: "push", TriggerBranch: "main", CreatedAt: t.Add(-5 * time.Minute)},
+	}, nil
+}
+
+func (fakeWrite) GetCIJob(_ context.Context, id string) (*model.CIJob, error) {
+	t := time.Now()
+	logURL := "https://ci.example/logs/42"
+	jobs := map[string]*model.CIJob{
+		"job-aabbccdd-1111-2222-3333-444455556666": {ID: "job-aabbccdd-1111-2222-3333-444455556666", Repo: "acme/platform", Branch: "add-onboarding-guide", Sequence: 47, Status: "passed", TriggerType: "push", TriggerBranch: "add-onboarding-guide", CreatedAt: t.Add(-30 * time.Minute), LogURL: &logURL},
+		"job-bbccddee-2222-3333-4444-555566667777": {ID: "job-bbccddee-2222-3333-4444-555566667777", Repo: "acme/platform", Branch: "main", Sequence: 42, Status: "queued", TriggerType: "push", TriggerBranch: "main", CreatedAt: t.Add(-5 * time.Minute)},
+	}
+	return jobs[id], nil
+}
+
 func fakeAssemble(_ context.Context, _, branch string) (*model.AgentContextResponse, error) {
 	t := time.Now()
 	vid := func(s string) *string { return &s }
