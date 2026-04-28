@@ -106,4 +106,6 @@ type ListIssueRefsResponse = api.ListIssueRefsResponse
 
 type AgentContextResponse = api.AgentContextResponse
 
+type ListCIJobsResponse = api.ListCIJobsResponse
+
 type ErrorResponse = api.ErrorResponse
