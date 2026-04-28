@@ -1,5 +1,6 @@
 {{define "content"}}
 {{with .Body}}
+{{$page := .}}
 <div class="headline">
   <h1>commit {{.Commit.Sequence}}</h1>
   <span class="meta">{{.Repo.Name}} · {{.Branch}}</span>
@@ -24,7 +25,7 @@
     <tbody>
     {{range .Commit.Files}}
     <tr>
-      <td><a href="/ui/r/{{$.Repo.Name}}/f/{{.Path}}?branch={{$.Branch}}&at={{$.Commit.Sequence}}">{{.Path}}</a></td>
+      <td><a href="/ui/r/{{$page.Repo.Name}}/f/{{.Path}}?branch={{urlPathEscape $page.Branch}}&at={{$page.Commit.Sequence}}">{{.Path}}</a></td>
       <td><span class="badge {{diffClass .VersionID}}">{{if .VersionID}}modified{{else}}deleted{{end}}</span></td>
     </tr>
     {{end}}
