@@ -2,11 +2,13 @@ package ui
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/model"
@@ -16,6 +18,8 @@ import (
 // ---------------------------------------------------------------------------
 // Page data types
 // ---------------------------------------------------------------------------
+
+const logPageSize = 25
 
 type reposPage struct {
 	Orgs []orgGroup
@@ -81,6 +85,36 @@ type treeRow struct {
 	Name  string
 	Path  string
 	IsDir bool
+}
+
+type commitLogRow struct {
+	Seq     int64
+	Branch  string
+	Author  string
+	Message string
+	Time    time.Time
+}
+
+type logPage struct {
+	Repo      model.Repo
+	Branch    string
+	Rows      []commitLogRow
+	HasMore   bool
+	NextAfter int64
+}
+
+type logRowsData struct {
+	Repo      model.Repo
+	Branch    string
+	Rows      []commitLogRow
+	HasMore   bool
+	NextAfter int64
+}
+
+type commitDetailPage struct {
+	Repo   model.Repo
+	Branch string
+	Commit *store.CommitDetail
 }
 
 // ---------------------------------------------------------------------------
@@ -434,3 +468,200 @@ func siblingTreeRows(entries []store.TreeEntry, dir string) []treeRow {
 	})
 	return rows
 }
+
+// handleCommitLog renders the paginated commit log for a branch.
+func (h *Handler) handleCommitLog(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	branch := r.PathValue("branch")
+	repoName := owner + "/" + name
+
+	repo, err := h.write.GetRepo(r.Context(), repoName)
+	if err != nil {
+		if errors.Is(err, db.ErrRepoNotFound) {
+			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
+			return
+		}
+		slog.Error("ui get repo", "repo", repoName, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load repo")
+		return
+	}
+
+	bi, err := h.read.GetBranch(r.Context(), repoName, branch)
+	if err != nil {
+		slog.Error("ui get branch", "repo", repoName, "branch", branch, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load branch")
+		return
+	}
+	if bi == nil {
+		h.renderError(w, http.StatusNotFound, "branch not found: "+branch)
+		return
+	}
+
+	headSeq := bi.HeadSequence
+	from := headSeq - int64(logPageSize) + 1
+	if from < 1 {
+		from = 1
+	}
+
+	entries, err := h.read.GetChain(r.Context(), repoName, from, headSeq)
+	if err != nil {
+		slog.Error("ui get chain", "repo", repoName, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load commits")
+		return
+	}
+
+	rows := chainToLogRows(entries, branch)
+	slices.Reverse(rows)
+
+	var nextAfter int64
+	hasMore := from > 1
+	if hasMore {
+		nextAfter = from
+	}
+
+	h.render(w, h.tmpl.commitLog, "layout.html", pageData{
+		Title: repoName + " / " + branch + " / log",
+		Breadcrumbs: []crumb{
+			{Label: "repos", Href: "/ui/"},
+			{Label: repoName, Href: "/ui/r/" + repoName},
+			{Label: branch, Href: "/ui/r/" + repoName + "/b/" + branch},
+			{Label: "log", Href: ""},
+		},
+		Body: logPage{
+			Repo:      *repo,
+			Branch:    branch,
+			Rows:      rows,
+			HasMore:   hasMore,
+			NextAfter: nextAfter,
+		},
+	})
+}
+
+// handleLogRowsPartial returns just the table rows for HTMX "load more".
+func (h *Handler) handleLogRowsPartial(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	branch := r.PathValue("branch")
+	repoName := owner + "/" + name
+
+	afterStr := r.URL.Query().Get("after")
+	if afterStr == "" {
+		http.Error(w, "after parameter required", http.StatusBadRequest)
+		return
+	}
+	after, err := strconv.ParseInt(afterStr, 10, 64)
+	if err != nil || after < 1 {
+		http.Error(w, "invalid after parameter", http.StatusBadRequest)
+		return
+	}
+
+	to := after - 1
+	if to < 1 {
+		h.render(w, h.tmpl.logRows, "log_rows.html", logRowsData{})
+		return
+	}
+
+	from := to - int64(logPageSize) + 1
+	if from < 1 {
+		from = 1
+	}
+
+	entries, err := h.read.GetChain(r.Context(), repoName, from, to)
+	if err != nil {
+		slog.Error("ui get chain partial", "repo", repoName, "error", err)
+		http.Error(w, "query failed", http.StatusInternalServerError)
+		return
+	}
+
+	rows := chainToLogRows(entries, branch)
+	slices.Reverse(rows)
+
+	var nextAfter int64
+	hasMore := from > 1
+	if hasMore {
+		nextAfter = from
+	}
+
+	repo := &model.Repo{Name: repoName, Owner: owner}
+	h.render(w, h.tmpl.logRows, "log_rows.html", logRowsData{
+		Repo:      *repo,
+		Branch:    branch,
+		Rows:      rows,
+		HasMore:   hasMore,
+		NextAfter: nextAfter,
+	})
+}
+
+// handleCommitDetail renders a single commit with its changed files.
+func (h *Handler) handleCommitDetail(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	branch := r.PathValue("branch")
+	seqStr := r.PathValue("seq")
+	repoName := owner + "/" + name
+
+	seq, err := strconv.ParseInt(seqStr, 10, 64)
+	if err != nil || seq < 1 {
+		h.renderError(w, http.StatusBadRequest, "invalid seq")
+		return
+	}
+
+	repo, err := h.write.GetRepo(r.Context(), repoName)
+	if err != nil {
+		if errors.Is(err, db.ErrRepoNotFound) {
+			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
+			return
+		}
+		slog.Error("ui get repo", "repo", repoName, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load repo")
+		return
+	}
+
+	commit, err := h.read.GetCommit(r.Context(), repoName, seq)
+	if err != nil {
+		slog.Error("ui get commit", "repo", repoName, "seq", seq, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load commit")
+		return
+	}
+	if commit == nil {
+		h.renderError(w, http.StatusNotFound, fmt.Sprintf("commit %d not found", seq))
+		return
+	}
+
+	h.render(w, h.tmpl.commitDetail, "layout.html", pageData{
+		Title: fmt.Sprintf("%s / %s / commit %d", repoName, branch, seq),
+		Breadcrumbs: []crumb{
+			{Label: "repos", Href: "/ui/"},
+			{Label: repoName, Href: "/ui/r/" + repoName},
+			{Label: branch, Href: "/ui/r/" + repoName + "/b/" + branch},
+			{Label: "log", Href: "/ui/r/" + repoName + "/b/" + branch + "/log"},
+			{Label: fmt.Sprintf("seq %d", seq), Href: ""},
+		},
+		Body: commitDetailPage{
+			Repo:   *repo,
+			Branch: branch,
+			Commit: commit,
+		},
+	})
+}
+
+// chainToLogRows filters and converts ChainEntries to commitLogRows.
+// Only entries for the named branch are included.
+func chainToLogRows(entries []store.ChainEntry, branch string) []commitLogRow {
+	rows := make([]commitLogRow, 0, len(entries))
+	for _, e := range entries {
+		if e.Branch != branch {
+			continue
+		}
+		rows = append(rows, commitLogRow{
+			Seq:     e.Sequence,
+			Branch:  e.Branch,
+			Author:  e.Author,
+			Message: e.Message,
+			Time:    e.CreatedAt,
+		})
+	}
+	return rows
+}
+

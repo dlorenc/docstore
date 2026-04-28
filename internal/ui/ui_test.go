@@ -39,6 +39,12 @@ func (f *fakeRead) ListBranches(_ context.Context, repo, _ string, _, _ bool) ([
 func (f *fakeRead) GetFileHistory(_ context.Context, _, _, _ string, _ int, _ *int64) ([]store.FileHistoryEntry, error) {
 	return nil, nil
 }
+func (f *fakeRead) GetChain(_ context.Context, _ string, _, _ int64) ([]store.ChainEntry, error) {
+	return nil, nil
+}
+func (f *fakeRead) GetCommit(_ context.Context, _ string, _ int64) (*store.CommitDetail, error) {
+	return nil, nil
+}
 
 type fakeWrite struct {
 	repos []model.Repo
