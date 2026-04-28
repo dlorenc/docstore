@@ -1,5 +1,14 @@
 {{define "content"}}
 {{with .Body}}
+<nav class="repo-tabs">
+  <a href="/ui/r/{{.Repo.Name}}">branches</a>
+  <a href="/ui/r/{{.Repo.Name}}/issues" class="active">issues</a>
+  <a href="/ui/r/{{.Repo.Name}}/releases">releases</a>
+  <a href="/ui/r/{{.Repo.Name}}/proposals">proposals</a>
+  <a href="/ui/r/{{.Repo.Name}}/ci-jobs">ci-jobs</a>
+  <a href="/ui/r/{{.Repo.Name}}/b/main/log">log</a>
+</nav>
+
 <div class="headline">
   <h1>#{{.Issue.Number}} {{.Issue.Title}}</h1>
   <span class="badge {{statusClass (printf "%s" .Issue.State)}}">{{.Issue.State}}</span>
@@ -33,5 +42,26 @@
   {{if .Body}}<div class="row-body">{{.Body}}</div>{{end}}
   {{end}}
 </div>
+
+{{if .Refs}}
+<h2>References ({{len .Refs}})</h2>
+<div class="card">
+  {{range .Refs}}
+  <div class="row">
+    <div>
+      <span class="badge neutral">{{.RefType}}</span>
+      {{if eq (printf "%s" .RefType) "proposal"}}
+        <a href="/ui/r/{{$.Repo.Name}}/proposals/{{.RefID}}">{{.RefID}}</a>
+      {{else if eq (printf "%s" .RefType) "commit"}}
+        <a href="/ui/r/{{$.Repo.Name}}/b/main/c/{{.RefID}}">seq {{.RefID}}</a>
+      {{else}}
+        <span>{{.RefID}}</span>
+      {{end}}
+    </div>
+    <span class="meta">{{relTime .CreatedAt}}</span>
+  </div>
+  {{end}}
+</div>
+{{end}}
 {{end}}
 {{end}}
