@@ -144,6 +144,27 @@ type acceptInvitePage struct {
 	Err   string
 }
 
+type proposalsPage struct {
+	Repo      model.Repo
+	Proposals []*model.Proposal
+	State     string
+}
+
+type proposalDetailPage struct {
+	Repo     model.Repo
+	Proposal *model.Proposal
+}
+
+type releasesPage struct {
+	Repo     model.Repo
+	Releases []model.Release
+}
+
+type releaseDetailPage struct {
+	Repo    model.Repo
+	Release *model.Release
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -667,6 +688,206 @@ func (h *Handler) handleIssueDetail(w http.ResponseWriter, r *http.Request) {
 			{Label: "#" + numberStr, Href: ""},
 		},
 		Body: page,
+	})
+}
+
+// proposalStateFromQuery parses the "state" query param into a ProposalState
+// pointer. Unknown or empty values default to open.
+func proposalStateFromQuery(s string) (model.ProposalState, *model.ProposalState) {
+	switch s {
+	case "closed":
+		st := model.ProposalClosed
+		return st, &st
+	case "merged":
+		st := model.ProposalMerged
+		return st, &st
+	default:
+		st := model.ProposalOpen
+		return st, &st
+	}
+}
+
+// handleProposals renders the proposals list for a repo with state filter tabs.
+func (h *Handler) handleProposals(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	repoName := owner + "/" + name
+	ctx := r.Context()
+
+	repo, err := h.write.GetRepo(ctx, repoName)
+	if err != nil {
+		if errors.Is(err, db.ErrRepoNotFound) {
+			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
+			return
+		}
+		slog.Error("ui get repo", "repo", repoName, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load repo")
+		return
+	}
+
+	stateStr := r.URL.Query().Get("state")
+	if stateStr == "" {
+		stateStr = "open"
+	}
+	_, ps := proposalStateFromQuery(stateStr)
+
+	proposals, err := h.write.ListProposals(ctx, repoName, ps, nil)
+	if err != nil {
+		slog.Error("ui list proposals", "repo", repoName, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load proposals")
+		return
+	}
+
+	h.render(w, h.tmpl.proposals, "layout.html", pageData{
+		Title: repoName + " / proposals",
+		Breadcrumbs: []crumb{
+			{Label: "repos", Href: "/ui/"},
+			{Label: repoName, Href: "/ui/r/" + repoName},
+			{Label: "proposals", Href: ""},
+		},
+		Body: proposalsPage{Repo: *repo, Proposals: proposals, State: stateStr},
+	})
+}
+
+// handleProposalsPartial returns just the proposals rows for HTMX tab swapping.
+func (h *Handler) handleProposalsPartial(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	repoName := owner + "/" + name
+	ctx := r.Context()
+
+	stateStr := r.URL.Query().Get("state")
+	if stateStr == "" {
+		stateStr = "open"
+	}
+	_, ps := proposalStateFromQuery(stateStr)
+
+	proposals, err := h.write.ListProposals(ctx, repoName, ps, nil)
+	if err != nil {
+		slog.Error("ui list proposals partial", "repo", repoName, "error", err)
+		http.Error(w, "query failed", http.StatusInternalServerError)
+		return
+	}
+	h.render(w, h.tmpl.proposalsRows, "proposals_rows.html", proposals)
+}
+
+// handleProposalDetail renders the detail view for a single proposal.
+func (h *Handler) handleProposalDetail(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	id := r.PathValue("id")
+	repoName := owner + "/" + name
+	ctx := r.Context()
+
+	repo, err := h.write.GetRepo(ctx, repoName)
+	if err != nil {
+		if errors.Is(err, db.ErrRepoNotFound) {
+			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
+			return
+		}
+		slog.Error("ui get repo", "repo", repoName, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load repo")
+		return
+	}
+
+	proposal, err := h.write.GetProposal(ctx, repoName, id)
+	if err != nil {
+		slog.Error("ui get proposal", "repo", repoName, "id", id, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load proposal")
+		return
+	}
+	if proposal == nil {
+		h.renderError(w, http.StatusNotFound, "proposal not found")
+		return
+	}
+
+	h.render(w, h.tmpl.proposalDetail, "layout.html", pageData{
+		Title: repoName + " / proposals / " + id,
+		Breadcrumbs: []crumb{
+			{Label: "repos", Href: "/ui/"},
+			{Label: repoName, Href: "/ui/r/" + repoName},
+			{Label: "proposals", Href: "/ui/r/" + repoName + "/proposals"},
+			{Label: proposal.Title, Href: ""},
+		},
+		Body: proposalDetailPage{Repo: *repo, Proposal: proposal},
+	})
+}
+
+// handleReleases renders the releases list for a repo.
+func (h *Handler) handleReleases(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	repoName := owner + "/" + name
+	ctx := r.Context()
+
+	repo, err := h.write.GetRepo(ctx, repoName)
+	if err != nil {
+		if errors.Is(err, db.ErrRepoNotFound) {
+			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
+			return
+		}
+		slog.Error("ui get repo", "repo", repoName, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load repo")
+		return
+	}
+
+	releases, err := h.write.ListReleases(ctx, repoName, 100, "")
+	if err != nil {
+		slog.Error("ui list releases", "repo", repoName, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load releases")
+		return
+	}
+
+	h.render(w, h.tmpl.releases, "layout.html", pageData{
+		Title: repoName + " / releases",
+		Breadcrumbs: []crumb{
+			{Label: "repos", Href: "/ui/"},
+			{Label: repoName, Href: "/ui/r/" + repoName},
+			{Label: "releases", Href: ""},
+		},
+		Body: releasesPage{Repo: *repo, Releases: releases},
+	})
+}
+
+// handleReleaseDetail renders the detail view for a single release.
+func (h *Handler) handleReleaseDetail(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	rname := r.PathValue("rname")
+	repoName := owner + "/" + name
+	ctx := r.Context()
+
+	repo, err := h.write.GetRepo(ctx, repoName)
+	if err != nil {
+		if errors.Is(err, db.ErrRepoNotFound) {
+			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
+			return
+		}
+		slog.Error("ui get repo", "repo", repoName, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load repo")
+		return
+	}
+
+	release, err := h.write.GetRelease(ctx, repoName, rname)
+	if err != nil {
+		slog.Error("ui get release", "repo", repoName, "name", rname, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load release")
+		return
+	}
+	if release == nil {
+		h.renderError(w, http.StatusNotFound, "release not found")
+		return
+	}
+
+	h.render(w, h.tmpl.releaseDetail, "layout.html", pageData{
+		Title: repoName + " / releases / " + rname,
+		Breadcrumbs: []crumb{
+			{Label: "repos", Href: "/ui/"},
+			{Label: repoName, Href: "/ui/r/" + repoName},
+			{Label: "releases", Href: "/ui/r/" + repoName + "/releases"},
+			{Label: rname, Href: ""},
+		},
+		Body: releaseDetailPage{Repo: *repo, Release: release},
 	})
 }
 
