@@ -54,8 +54,13 @@ type branchesPage struct {
 	Merged    []branchRow
 	Abandoned []branchRow
 	Members   []model.OrgMember
-	Roles     []model.Role
 	Err       string
+}
+
+type repoSettingsPage struct {
+	Repo  model.Repo
+	Roles []model.Role
+	Err   string
 }
 
 type branchRow struct {
@@ -1366,13 +1371,8 @@ func (h *Handler) renderBranchesPage(w http.ResponseWriter, r *http.Request, own
 		slog.Error("ui list org members", "org", repo.Owner, "error", err)
 		members = nil
 	}
-	roles, err := h.write.ListRoles(ctx, repoName)
-	if err != nil {
-		slog.Error("ui list roles", "repo", repoName, "error", err)
-		roles = nil
-	}
 
-	page := branchesPage{Repo: *repo, Members: members, Roles: roles, Err: errMsg}
+	page := branchesPage{Repo: *repo, Members: members, Err: errMsg}
 	for _, b := range branches {
 		row := branchRow{
 			Name:         b.Name,
@@ -1402,6 +1402,44 @@ func (h *Handler) renderBranchesPage(w http.ResponseWriter, r *http.Request, own
 	})
 }
 
+// handleRepoSettings renders the settings page for a single repo.
+func (h *Handler) handleRepoSettings(w http.ResponseWriter, r *http.Request) {
+	h.renderRepoSettingsPage(w, r, r.PathValue("owner"), r.PathValue("name"), "")
+}
+
+// renderRepoSettingsPage loads repo/role data and renders the settings page with an optional error.
+func (h *Handler) renderRepoSettingsPage(w http.ResponseWriter, r *http.Request, owner, name, errMsg string) {
+	repoName := owner + "/" + name
+	ctx := r.Context()
+
+	repo, err := h.write.GetRepo(ctx, repoName)
+	if err != nil {
+		if errors.Is(err, db.ErrRepoNotFound) {
+			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
+			return
+		}
+		slog.Error("ui get repo", "repo", repoName, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load repo")
+		return
+	}
+
+	roles, err := h.write.ListRoles(ctx, repoName)
+	if err != nil {
+		slog.Error("ui list roles", "repo", repoName, "error", err)
+		roles = nil
+	}
+
+	h.render(w, h.tmpl.repoSettings, "layout.html", pageData{
+		Title: repoName + " / settings",
+		Breadcrumbs: []crumb{
+			{Label: "repos", Href: "/ui/"},
+			{Label: repoName, Href: "/ui/r/" + repoName},
+			{Label: "settings", Href: ""},
+		},
+		Body: repoSettingsPage{Repo: *repo, Roles: roles, Err: errMsg},
+	})
+}
+
 // handleSetRole processes POST /ui/r/{owner}/{name}/roles to grant or update a repo role.
 func (h *Handler) handleSetRole(w http.ResponseWriter, r *http.Request) {
 	owner := r.PathValue("owner")
@@ -1410,30 +1448,30 @@ func (h *Handler) handleSetRole(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	if err := r.ParseForm(); err != nil {
-		h.renderBranchesPage(w, r, owner, name, "invalid form data")
+		h.renderRepoSettingsPage(w, r, owner, name, "invalid form data")
 		return
 	}
 	identity := strings.TrimSpace(r.FormValue("identity"))
 	role := model.RoleType(r.FormValue("role"))
 
 	if identity == "" {
-		h.renderBranchesPage(w, r, owner, name, "identity is required")
+		h.renderRepoSettingsPage(w, r, owner, name, "identity is required")
 		return
 	}
 	switch role {
 	case model.RoleReader, model.RoleWriter, model.RoleMaintainer, model.RoleAdmin:
 	default:
-		h.renderBranchesPage(w, r, owner, name, "invalid role; must be reader, writer, maintainer, or admin")
+		h.renderRepoSettingsPage(w, r, owner, name, "invalid role; must be reader, writer, maintainer, or admin")
 		return
 	}
 
 	if err := h.write.SetRole(ctx, repoName, identity, role); err != nil {
 		slog.Error("ui set role", "repo", repoName, "identity", identity, "error", err)
-		h.renderBranchesPage(w, r, owner, name, "could not set role: "+err.Error())
+		h.renderRepoSettingsPage(w, r, owner, name, "could not set role: "+err.Error())
 		return
 	}
 
-	http.Redirect(w, r, "/ui/r/"+repoName, http.StatusSeeOther)
+	http.Redirect(w, r, "/ui/r/"+repoName+"/settings", http.StatusSeeOther)
 }
 
 // handleDeleteRole processes POST /ui/r/{owner}/{name}/roles/{identity}/delete.
@@ -1447,15 +1485,15 @@ func (h *Handler) handleDeleteRole(w http.ResponseWriter, r *http.Request) {
 	if err := h.write.DeleteRole(ctx, repoName, identity); err != nil {
 		switch {
 		case errors.Is(err, db.ErrRoleNotFound):
-			h.renderBranchesPage(w, r, owner, name, "role not found")
+			h.renderRepoSettingsPage(w, r, owner, name, "role not found")
 		default:
 			slog.Error("ui delete role", "repo", repoName, "identity", identity, "error", err)
-			h.renderBranchesPage(w, r, owner, name, "could not delete role")
+			h.renderRepoSettingsPage(w, r, owner, name, "could not delete role")
 		}
 		return
 	}
 
-	http.Redirect(w, r, "/ui/r/"+repoName, http.StatusSeeOther)
+	http.Redirect(w, r, "/ui/r/"+repoName+"/settings", http.StatusSeeOther)
 }
 
 // renderReleasesPage loads releases for a repo and renders the releases page with an optional error.
@@ -2484,12 +2522,12 @@ func (h *Handler) handleUIDeleteRepo(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	if err := r.ParseForm(); err != nil {
-		h.renderBranchesPage(w, r, owner, name, "invalid form data")
+		h.renderRepoSettingsPage(w, r, owner, name, "invalid form data")
 		return
 	}
 	confirm := r.FormValue("confirm")
 	if confirm != name {
-		h.renderBranchesPage(w, r, owner, name, "confirmation does not match repo name")
+		h.renderRepoSettingsPage(w, r, owner, name, "confirmation does not match repo name")
 		return
 	}
 
@@ -2499,7 +2537,7 @@ func (h *Handler) handleUIDeleteRepo(w http.ResponseWriter, r *http.Request) {
 			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
 		default:
 			slog.Error("ui delete repo", "repo", repoName, "error", err)
-			h.renderBranchesPage(w, r, owner, name, "could not delete repo: "+err.Error())
+			h.renderRepoSettingsPage(w, r, owner, name, "could not delete repo: "+err.Error())
 		}
 		return
 	}
