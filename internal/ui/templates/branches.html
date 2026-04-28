@@ -2,6 +2,14 @@
 {{with .Body}}
 <div class="headline"><h1>{{.Repo.Name}}</h1><span class="meta">owner {{.Repo.Owner}} · {{relTime .Repo.CreatedAt}}</span></div>
 
+<nav class="repo-tabs">
+  <a href="/ui/r/{{.Repo.Name}}">branches</a>
+  <a href="/ui/r/{{.Repo.Name}}/issues">issues</a>
+  <a href="/ui/r/{{.Repo.Name}}/releases">releases</a>
+  <a href="/ui/r/{{.Repo.Name}}/proposals">proposals</a>
+  <a href="/ui/r/{{.Repo.Name}}/log">log</a>
+</nav>
+
 <div class="filter-bar"><input type="search" data-branch-filter placeholder="filter branches by name…" autocomplete="off"></div>
 
 {{template "branchSection" (dict "Title" "Active" "Rows" .Active "Repo" .Repo.Name)}}
@@ -29,7 +37,7 @@
         {{if .Draft}}<span class="badge warn">draft</span>{{end}}
         {{if .AutoMerge}}<span class="badge ok">auto-merge</span>{{end}}
       </td>
-      <td><a href="/ui/r/{{$.Repo}}/f/?branch={{.Name}}">files →</a></td>
+      <td><a href="/ui/r/{{$.Repo}}/f/?branch={{.Name}}">files →</a> · <a href="/ui/r/{{$.Repo}}/b/{{.Name}}/log">log →</a></td>
     </tr>
     {{end}}
     </tbody>
