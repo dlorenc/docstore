@@ -255,6 +255,14 @@ func (fakeWrite) GetCIJob(_ context.Context, id string) (*model.CIJob, error) {
 	return jobs[id], nil
 }
 
+func (fakeWrite) CreateOrg(_ context.Context, name, _ string) (*model.Org, error) {
+	return &model.Org{Name: name}, nil
+}
+
+func (fakeWrite) CreateRepo(_ context.Context, req model.CreateRepoRequest) (*model.Repo, error) {
+	return &model.Repo{Name: req.FullName(), Owner: req.Owner}, nil
+}
+
 func fakeAssemble(_ context.Context, _, branch string) (*model.AgentContextResponse, error) {
 	t := time.Now()
 	vid := func(s string) *string { return &s }

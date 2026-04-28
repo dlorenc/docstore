@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -151,6 +152,18 @@ func (f *fakeWrite) ListCIJobs(_ context.Context, _ string, _, _ *string, _ int)
 }
 func (f *fakeWrite) GetCIJob(_ context.Context, _ string) (*model.CIJob, error) {
 	return nil, nil
+}
+func (f *fakeWrite) CreateOrg(_ context.Context, name, _ string) (*model.Org, error) {
+	if f.miss {
+		return nil, db.ErrOrgExists
+	}
+	return &model.Org{Name: name}, nil
+}
+func (f *fakeWrite) CreateRepo(_ context.Context, req model.CreateRepoRequest) (*model.Repo, error) {
+	if f.miss {
+		return nil, db.ErrRepoExists
+	}
+	return &model.Repo{Name: req.FullName(), Owner: req.Owner}, nil
 }
 
 func newFakeAssembler(branchName string) AssembleFn {
@@ -618,5 +631,122 @@ func TestHandleReleaseDetail_NotFound_Returns404(t *testing.T) {
 	code, _ := getStatusAndBody(t, h, "/ui/r/acme/a/releases/nonexistent")
 	if code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", code)
+	}
+}
+
+// postForm issues a POST with application/x-www-form-urlencoded body.
+// It does not follow redirects; the raw response is returned.
+func postForm(t *testing.T, h http.Handler, target string, vals url.Values) (int, string, string) {
+	t.Helper()
+	body := vals.Encode()
+	req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec.Code, rec.Body.String(), rec.Header().Get("Location")
+}
+
+func TestHandleCreateOrg_GET_RendersForm(t *testing.T) {
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{}, nil)
+	code, body := getStatusAndBody(t, h, "/ui/orgs/new")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", code, body)
+	}
+	for _, want := range []string{"New organisation", `name="name"`, "Create organisation"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q", want)
+		}
+	}
+}
+
+func TestHandleCreateOrg_POST_RedirectsOnSuccess(t *testing.T) {
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{}, nil)
+	code, _, loc := postForm(t, h, "/ui/orgs/new", url.Values{"name": {"acme"}})
+	if code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", code)
+	}
+	if loc != "/ui/o/acme" {
+		t.Errorf("location = %q, want /ui/o/acme", loc)
+	}
+}
+
+func TestHandleCreateOrg_POST_EmptyName_ReturnsError(t *testing.T) {
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{}, nil)
+	code, body, _ := postForm(t, h, "/ui/orgs/new", url.Values{"name": {""}})
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 with error", code)
+	}
+	if !strings.Contains(body, "required") {
+		t.Errorf("expected required error in body: %s", body)
+	}
+}
+
+func TestHandleCreateOrg_POST_DuplicateName_ReturnsError(t *testing.T) {
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{miss: true}, nil)
+	code, body, _ := postForm(t, h, "/ui/orgs/new", url.Values{"name": {"acme"}})
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 with error", code)
+	}
+	if !strings.Contains(body, "already exists") {
+		t.Errorf("expected already-exists error in body: %s", body)
+	}
+}
+
+func TestHandleCreateRepo_GET_RendersForm(t *testing.T) {
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{}, nil)
+	code, body := getStatusAndBody(t, h, "/ui/repos/new")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", code, body)
+	}
+	for _, want := range []string{"New repository", `name="name"`, "Create repository"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q", want)
+		}
+	}
+}
+
+func TestHandleCreateRepo_POST_RedirectsOnSuccess(t *testing.T) {
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{}, nil)
+	code, _, loc := postForm(t, h, "/ui/repos/new", url.Values{"owner": {"acme"}, "name": {"myrepo"}})
+	if code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", code)
+	}
+	if loc != "/ui/r/acme/myrepo" {
+		t.Errorf("location = %q, want /ui/r/acme/myrepo", loc)
+	}
+}
+
+func TestHandleCreateRepo_POST_MissingFields_ReturnsError(t *testing.T) {
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{}, nil)
+	code, body, _ := postForm(t, h, "/ui/repos/new", url.Values{"owner": {"acme"}, "name": {""}})
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 with error", code)
+	}
+	if !strings.Contains(body, "required") {
+		t.Errorf("expected required error in body: %s", body)
+	}
+}
+
+func TestHandleCreateRepo_POST_DuplicateRepo_ReturnsError(t *testing.T) {
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{miss: true}, nil)
+	code, body, _ := postForm(t, h, "/ui/repos/new", url.Values{"owner": {"acme"}, "name": {"myrepo"}})
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 with error", code)
+	}
+	if !strings.Contains(body, "already exists") {
+		t.Errorf("expected already-exists error in body: %s", body)
+	}
+}
+
+func TestHandleRepos_ShowsNewButtons(t *testing.T) {
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{}, nil)
+	code, body := getStatusAndBody(t, h, "/ui/")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d", code)
+	}
+	for _, want := range []string{"/ui/orgs/new", "/ui/repos/new"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing link %q", want)
+		}
 	}
 }

@@ -51,6 +51,8 @@ type WriteStoreLite interface {
 	ListIssueRefs(ctx context.Context, repo string, number int64) ([]model.IssueRef, error)
 	ListCIJobs(ctx context.Context, repo string, branch, status *string, limit int) ([]model.CIJob, error)
 	GetCIJob(ctx context.Context, id string) (*model.CIJob, error)
+	CreateOrg(ctx context.Context, name, createdBy string) (*model.Org, error)
+	CreateRepo(ctx context.Context, req model.CreateRepoRequest) (*model.Repo, error)
 }
 
 // AssembleFn builds the full branch context snapshot used by the branch detail
@@ -150,5 +152,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /ui/r/{owner}/{name}/ci-jobs/{id}", h.handleCIJobDetail)
 	mux.HandleFunc("GET /ui/o/{org}/invites/{token}/accept", h.handleAcceptInvite)
 	mux.HandleFunc("POST /ui/o/{org}/invites/{token}/accept", h.handleAcceptInvite)
+	mux.HandleFunc("GET /ui/orgs/new", h.handleCreateOrg)
+	mux.HandleFunc("POST /ui/orgs/new", h.handleCreateOrg)
+	mux.HandleFunc("GET /ui/repos/new", h.handleCreateRepo)
+	mux.HandleFunc("POST /ui/repos/new", h.handleCreateRepo)
 	mux.Handle("GET /ui/static/", http.StripPrefix("/ui/static/", http.FileServer(http.FS(h.staticSub))))
 }
