@@ -222,6 +222,10 @@ func (m *mockStore) ListRoles(ctx context.Context, repo string) ([]model.Role, e
 	return []model.Role{}, nil
 }
 
+func (m *mockStore) ListRolesByIdentity(ctx context.Context, identity string) ([]db.IdentityRole, error) {
+	return nil, nil
+}
+
 func (m *mockStore) HasAdmin(ctx context.Context, repo string) (bool, error) {
 	if m.hasAdminFn != nil {
 		return m.hasAdminFn(ctx, repo)

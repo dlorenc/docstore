@@ -1554,6 +1554,36 @@ func (s *Store) ListRoles(ctx context.Context, repo string) ([]model.Role, error
 	return roles, rows.Err()
 }
 
+// IdentityRole is a repo-scoped role entry returned by ListRolesByIdentity.
+type IdentityRole struct {
+	Repo string
+	Role model.RoleType
+}
+
+// ListRolesByIdentity returns all repos where the given identity has an explicit
+// role, ordered by repo name.
+func (s *Store) ListRolesByIdentity(ctx context.Context, identity string) ([]IdentityRole, error) {
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT repo, role FROM roles WHERE identity = $1 ORDER BY repo",
+		identity,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []IdentityRole
+	for rows.Next() {
+		var ir IdentityRole
+		var roleStr string
+		if err := rows.Scan(&ir.Repo, &roleStr); err != nil {
+			return nil, err
+		}
+		ir.Role = model.RoleType(roleStr)
+		result = append(result, ir)
+	}
+	return result, rows.Err()
+}
+
 // HasAdmin returns true if any admin role exists for the given repo.
 func (s *Store) HasAdmin(ctx context.Context, repo string) (bool, error) {
 	var exists bool

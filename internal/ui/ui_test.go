@@ -81,6 +81,9 @@ func (f *fakeWrite) ListOrgMemberships(_ context.Context, _ string) ([]model.Org
 func (f *fakeWrite) ListRoles(_ context.Context, _ string) ([]model.Role, error) {
 	return nil, nil
 }
+func (f *fakeWrite) ListRolesByIdentity(_ context.Context, _ string) ([]db.IdentityRole, error) {
+	return nil, nil
+}
 func (f *fakeWrite) ListCheckRuns(_ context.Context, _, _ string, _ *int64, _ bool) ([]model.CheckRun, error) {
 	return nil, nil
 }

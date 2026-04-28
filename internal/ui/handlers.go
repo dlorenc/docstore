@@ -234,6 +234,12 @@ type commitFormPage struct {
 	Err             string
 }
 
+type userProfilePage struct {
+	ProfileIdentity string
+	OrgMemberships  []model.OrgMember
+	RepoRoles       []db.IdentityRole
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -288,6 +294,36 @@ func (h *Handler) handleRepos(w http.ResponseWriter, r *http.Request) {
 // handleOrg renders the org overview page: repos, members, and pending invites.
 func (h *Handler) handleOrg(w http.ResponseWriter, r *http.Request) {
 	h.renderOrgPage(w, r, r.PathValue("org"), "")
+}
+
+// handleUserProfile renders the profile page for a given identity.
+func (h *Handler) handleUserProfile(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	identity := r.PathValue("identity")
+
+	memberships, err := h.write.ListOrgMemberships(ctx, identity)
+	if err != nil {
+		slog.Error("ui list org memberships for profile", "identity", identity, "error", err)
+		h.renderError(w, r, http.StatusInternalServerError, "could not load org memberships")
+		return
+	}
+
+	repoRoles, err := h.write.ListRolesByIdentity(ctx, identity)
+	if err != nil {
+		slog.Error("ui list repo roles for profile", "identity", identity, "error", err)
+		h.renderError(w, r, http.StatusInternalServerError, "could not load repo roles")
+		return
+	}
+
+	h.render(w, r, h.tmpl.userProfile, "layout.html", pageData{
+		Title:       identity,
+		Breadcrumbs: []crumb{{Label: "user", Href: ""}, {Label: identity}},
+		Body: userProfilePage{
+			ProfileIdentity: identity,
+			OrgMemberships:  memberships,
+			RepoRoles:       repoRoles,
+		},
+	})
 }
 
 // handleBranches renders the branch list for a single repo.
@@ -1415,11 +1451,11 @@ func (h *Handler) renderRepoSettingsPage(w http.ResponseWriter, r *http.Request,
 	repo, err := h.write.GetRepo(ctx, repoName)
 	if err != nil {
 		if errors.Is(err, db.ErrRepoNotFound) {
-			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
+			h.renderError(w, r, http.StatusNotFound, "repo not found: "+repoName)
 			return
 		}
 		slog.Error("ui get repo", "repo", repoName, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load repo")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load repo")
 		return
 	}
 
@@ -1429,7 +1465,7 @@ func (h *Handler) renderRepoSettingsPage(w http.ResponseWriter, r *http.Request,
 		roles = nil
 	}
 
-	h.render(w, h.tmpl.repoSettings, "layout.html", pageData{
+	h.render(w, r, h.tmpl.repoSettings, "layout.html", pageData{
 		Title: repoName + " / settings",
 		Breadcrumbs: []crumb{
 			{Label: "repos", Href: "/ui/"},

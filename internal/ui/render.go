@@ -45,6 +45,7 @@ type templateSet struct {
 	createRepo      *template.Template
 	newCommit       *template.Template
 	repoSettings    *template.Template
+	userProfile     *template.Template
 }
 
 func parseTemplates(root fs.FS) (*templateSet, error) {
@@ -198,6 +199,10 @@ func parseTemplates(root fs.FS) (*templateSet, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse settings: %w", err)
 	}
+	userProfile, err := load("user.html")
+	if err != nil {
+		return nil, fmt.Errorf("parse user: %w", err)
+	}
 	return &templateSet{
 		repos:          repos,
 		branches:       branches,
@@ -227,6 +232,7 @@ func parseTemplates(root fs.FS) (*templateSet, error) {
 		createRepo:      createRepo,
 		newCommit:       newCommit,
 		repoSettings:    repoSettings,
+		userProfile:     userProfile,
 	}, nil
 }
 

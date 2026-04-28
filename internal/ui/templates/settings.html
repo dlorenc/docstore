@@ -26,7 +26,7 @@
     <tbody>
     {{range .Roles}}
     <tr>
-      <td>{{.Identity}}</td>
+      <td><a href="/ui/u/{{.Identity}}">{{.Identity}}</a></td>
       <td><span class="badge neutral">{{.Role}}</span></td>
       <td>
         <form method="POST" action="/ui/r/{{$.Repo.Name}}/roles/{{.Identity}}/delete" style="display:inline">

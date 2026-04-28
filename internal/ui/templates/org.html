@@ -34,9 +34,9 @@
     <tbody>
     {{range .Members}}
     <tr>
-      <td>{{.Identity}}</td>
+      <td><a href="/ui/u/{{.Identity}}">{{.Identity}}</a></td>
       <td><span class="badge {{statusClass .Role}}">{{.Role}}</span></td>
-      <td>{{.InvitedBy}}</td>
+      <td>{{if .InvitedBy}}<a href="/ui/u/{{.InvitedBy}}">{{.InvitedBy}}</a>{{end}}</td>
       <td>{{relTime .CreatedAt}}</td>
       <td>
         <form method="POST" action="/ui/o/{{$.Org}}/members/{{.Identity}}/remove" style="display:inline">

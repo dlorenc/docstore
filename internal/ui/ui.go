@@ -13,6 +13,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/model"
 	"github.com/dlorenc/docstore/internal/store"
 )
@@ -34,6 +35,7 @@ type ReadStore interface {
 type WriteStoreLite interface {
 	ListRepos(ctx context.Context) ([]model.Repo, error)
 	ListOrgs(ctx context.Context) ([]model.Org, error)
+	ListRolesByIdentity(ctx context.Context, identity string) ([]db.IdentityRole, error)
 	GetRepo(ctx context.Context, name string) (*model.Repo, error)
 	ListReviewComments(ctx context.Context, repo, branch string, path *string) ([]model.ReviewComment, error)
 	ListOrgMembers(ctx context.Context, org string) ([]model.OrgMember, error)
@@ -173,6 +175,7 @@ func NewHandlerDev(read ReadStore, write WriteStoreLite, assemble AssembleFn, id
 // placing this mux behind the same middleware chain used by the JSON API.
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /ui/{$}", h.handleRepos)
+	mux.HandleFunc("GET /ui/u/{identity}", h.handleUserProfile)
 	mux.HandleFunc("GET /ui/o/{org}", h.handleOrg)
 	mux.HandleFunc("GET /ui/r/{owner}/{name}", h.handleBranches)
 	mux.HandleFunc("GET /ui/r/{owner}/{name}/settings", h.handleRepoSettings)

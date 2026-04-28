@@ -124,6 +124,10 @@ func (fakeWrite) ListRoles(_ context.Context, _ string) ([]model.Role, error) {
 	}, nil
 }
 
+func (fakeWrite) ListRolesByIdentity(_ context.Context, _ string) ([]db.IdentityRole, error) {
+	return nil, nil
+}
+
 func (fakeWrite) ListCheckRuns(_ context.Context, _, _ string, _ *int64, _ bool) ([]model.CheckRun, error) {
 	return nil, nil
 }

@@ -1,0 +1,44 @@
+{{define "content"}}
+{{with .Body}}
+<div class="headline"><h1>{{.ProfileIdentity}}</h1></div>
+
+<h2>Org memberships ({{len .OrgMemberships}})</h2>
+<div class="card">
+  {{if not .OrgMemberships}}
+    <div class="empty">No org memberships.</div>
+  {{else}}
+  <table class="grid">
+    <thead><tr><th>org</th><th>role</th><th>member since</th></tr></thead>
+    <tbody>
+    {{range .OrgMemberships}}
+    <tr>
+      <td><a href="/ui/o/{{.Org}}">{{.Org}}</a></td>
+      <td><span class="badge {{statusClass .Role}}">{{.Role}}</span></td>
+      <td>{{relTime .CreatedAt}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{end}}
+</div>
+
+<h2>Repo roles ({{len .RepoRoles}})</h2>
+<div class="card">
+  {{if not .RepoRoles}}
+    <div class="empty">No explicit repo roles.</div>
+  {{else}}
+  <table class="grid">
+    <thead><tr><th>repo</th><th>role</th></tr></thead>
+    <tbody>
+    {{range .RepoRoles}}
+    <tr>
+      <td><a href="/ui/r/{{.Repo}}">{{.Repo}}</a></td>
+      <td><span class="badge {{statusClass .Role}}">{{.Role}}</span></td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{end}}
+</div>
+{{end}}
+{{end}}
