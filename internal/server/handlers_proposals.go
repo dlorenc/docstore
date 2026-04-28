@@ -13,6 +13,7 @@ import (
 	evtypes "github.com/dlorenc/docstore/internal/events/types"
 	mergeutil "github.com/dlorenc/docstore/internal/merge"
 	"github.com/dlorenc/docstore/internal/model"
+	"github.com/dlorenc/docstore/internal/service"
 )
 
 // ---------------------------------------------------------------------------
@@ -38,7 +39,7 @@ func (s *server) handleReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	review, err := s.commitStore.CreateReview(r.Context(), repo, req.Branch, reviewer, req.Status, req.Body)
+	review, err := s.svc.CreateReview(r.Context(), reviewer, repo, req.Branch, req.Status, req.Body)
 	if err != nil {
 		switch {
 		case errors.Is(err, db.ErrBranchNotFound):
@@ -52,19 +53,6 @@ func (s *server) handleReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	bs, bsErr := s.computeBranchStatus(r.Context(), repo, req.Branch, reviewer)
-	if bsErr != nil {
-		slog.Warn("branch status computation failed", "op", "review", "repo", repo, "branch", req.Branch, "error", bsErr)
-	}
-	s.emit(r.Context(), evtypes.ReviewSubmitted{
-		Repo:         repo,
-		Branch:       req.Branch,
-		Sequence:     review.Sequence,
-		Reviewer:     reviewer,
-		Status:       string(req.Status),
-		BranchStatus: bs,
-	})
-	slog.Info("review submitted", "repo", repo, "branch", req.Branch, "reviewer", reviewer, "status", req.Status)
 	writeJSON(w, http.StatusCreated, model.CreateReviewResponse{
 		ID:       review.ID,
 		Sequence: review.Sequence,
@@ -300,27 +288,16 @@ func (s *server) handleDeleteReviewComment(w http.ResponseWriter, r *http.Reques
 	identity := IdentityFromContext(r.Context())
 	role := RoleFromContext(r.Context())
 
-	comment, err := s.commitStore.GetReviewComment(r.Context(), repo, commentID)
-	if err != nil {
+	if err := s.svc.DeleteReviewComment(r.Context(), identity, role, repo, commentID); err != nil {
 		switch {
+		case errors.Is(err, service.ErrForbidden):
+			writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, err.Error())
 		case errors.Is(err, db.ErrCommentNotFound):
 			writeAPIError(w, ErrCodeCommentNotFound, http.StatusNotFound, "comment not found")
 		default:
-			slog.Error("internal error", "op", "get_review_comment", "repo", repo, "comment", commentID, "error", err)
+			slog.Error("internal error", "op", "delete_review_comment", "repo", repo, "comment", commentID, "error", err)
 			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
-		return
-	}
-
-	// Only the comment author or a maintainer+ may delete a comment.
-	if comment.Author != identity && role != model.RoleMaintainer && role != model.RoleAdmin {
-		writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, "forbidden: must be comment author or maintainer")
-		return
-	}
-
-	if err := s.commitStore.DeleteReviewComment(r.Context(), repo, commentID); err != nil {
-		slog.Error("internal error", "op", "delete_review_comment", "repo", repo, "comment", commentID, "error", err)
-		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
@@ -359,7 +336,7 @@ func (s *server) handleCreateProposal(w http.ResponseWriter, r *http.Request) {
 		baseBranch = "main"
 	}
 
-	p, err := s.commitStore.CreateProposal(r.Context(), repo, req.Branch, baseBranch, req.Title, req.Description, author)
+	p, err := s.svc.CreateProposal(r.Context(), author, repo, req.Branch, baseBranch, req.Title, req.Description)
 	if err != nil {
 		switch {
 		case errors.Is(err, db.ErrProposalExists):
@@ -373,22 +350,6 @@ func (s *server) handleCreateProposal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var headSeq int64
-	if bi, err := s.readStore.GetBranch(r.Context(), repo, req.Branch); err == nil {
-		headSeq = bi.HeadSequence
-	} else {
-		slog.Warn("could not fetch branch head for proposal event", "repo", repo, "branch", req.Branch, "error", err)
-	}
-	s.emit(r.Context(), evtypes.ProposalOpened{
-		Repo:       repo,
-		Branch:     req.Branch,
-		BaseBranch: baseBranch,
-		ProposalID: p.ID,
-		Author:     author,
-		Sequence:   headSeq,
-	})
-	s.upsertProposalMentionRefs(r.Context(), repo, p.ID, req.Description)
-	slog.Info("proposal opened", "repo", repo, "branch", req.Branch, "proposal_id", p.ID, "author", author)
 	writeJSON(w, http.StatusCreated, model.CreateProposalResponse{ID: p.ID})
 }
 
@@ -462,7 +423,7 @@ func (s *server) handleUpdateProposal(w http.ResponseWriter, r *http.Request) {
 	identity := IdentityFromContext(r.Context())
 	role := RoleFromContext(r.Context())
 
-	// Fetch existing proposal to check authz.
+	// Fetch existing proposal for If-Match validation.
 	existing, err := s.commitStore.GetProposal(r.Context(), repo, proposalID)
 	if err != nil {
 		if errors.Is(err, db.ErrProposalNotFound) {
@@ -471,11 +432,6 @@ func (s *server) handleUpdateProposal(w http.ResponseWriter, r *http.Request) {
 			slog.Error("internal error", "op", "update_proposal", "repo", repo, "error", err)
 			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
-		return
-	}
-
-	if existing.Author != identity && role != model.RoleMaintainer && role != model.RoleAdmin {
-		writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, "forbidden: must be proposal author or maintainer")
 		return
 	}
 
@@ -489,18 +445,18 @@ func (s *server) handleUpdateProposal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p, err := s.commitStore.UpdateProposal(r.Context(), repo, proposalID, req.Title, req.Description)
+	p, err := s.svc.UpdateProposal(r.Context(), identity, role, repo, proposalID, req.Title, req.Description)
 	if err != nil {
-		if errors.Is(err, db.ErrProposalNotFound) {
+		switch {
+		case errors.Is(err, service.ErrForbidden):
+			writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, err.Error())
+		case errors.Is(err, db.ErrProposalNotFound):
 			writeAPIError(w, ErrCodeProposalNotFound, http.StatusNotFound, "proposal not found")
-		} else {
+		default:
 			slog.Error("internal error", "op", "update_proposal", "repo", repo, "error", err)
 			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
-	}
-	if req.Description != nil {
-		s.upsertProposalMentionRefs(r.Context(), repo, proposalID, *req.Description)
 	}
 	writeJSON(w, http.StatusOK, p)
 }
@@ -516,7 +472,7 @@ func (s *server) handleCloseProposal(w http.ResponseWriter, r *http.Request) {
 	identity := IdentityFromContext(r.Context())
 	role := RoleFromContext(r.Context())
 
-	// Fetch existing proposal to check authz.
+	// Fetch existing proposal for If-Match validation.
 	existing, err := s.commitStore.GetProposal(r.Context(), repo, proposalID)
 	if err != nil {
 		if errors.Is(err, db.ErrProposalNotFound) {
@@ -528,31 +484,23 @@ func (s *server) handleCloseProposal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if existing.Author != identity && role != model.RoleMaintainer && role != model.RoleAdmin {
-		writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, "forbidden: must be proposal author or maintainer")
-		return
-	}
-
 	if !checkProposalIfMatch(w, r, existing) {
 		return
 	}
 
-	if err := s.commitStore.CloseProposal(r.Context(), repo, proposalID); err != nil {
-		if errors.Is(err, db.ErrProposalNotFound) {
+	if err := s.svc.CloseProposal(r.Context(), identity, role, repo, proposalID); err != nil {
+		switch {
+		case errors.Is(err, service.ErrForbidden):
+			writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, err.Error())
+		case errors.Is(err, db.ErrProposalNotFound):
 			writeAPIError(w, ErrCodeProposalNotFound, http.StatusNotFound, "proposal not found")
-		} else {
+		default:
 			slog.Error("internal error", "op", "close_proposal", "repo", repo, "error", err)
 			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
 
-	s.emit(r.Context(), evtypes.ProposalClosed{
-		Repo:       repo,
-		Branch:     existing.Branch,
-		ProposalID: proposalID,
-	})
-	slog.Info("proposal closed", "repo", repo, "proposal_id", proposalID, "by", identity)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -681,23 +629,6 @@ func (s *server) handleMerge(w http.ResponseWriter, r *http.Request) {
 // When readStore or policyCache are nil, or no policies exist, the merge is allowed.
 func (s *server) evaluateMergePolicy(ctx context.Context, repo, branch, actor string) ([]model.PolicyResult, error) {
 	return mergeutil.EvaluatePolicy(ctx, s.policyCache, s.readStore, s.commitStore, repo, branch, actor)
-}
-
-// ---------------------------------------------------------------------------
-// Cross-reference helpers
-// ---------------------------------------------------------------------------
-
-// upsertProposalMentionRefs creates issue_refs for issues mentioned in a proposal body.
-// When a proposal body contains "#N", an issue_ref of type "proposal" pointing at proposalID
-// is upserted on issue N.
-func (s *server) upsertProposalMentionRefs(ctx context.Context, repo, proposalID, body string) {
-	_, _, issueNums := parseMentions(body)
-	for _, num := range issueNums {
-		_, err := s.commitStore.CreateIssueRef(ctx, repo, num, model.IssueRefTypeProposal, proposalID)
-		if err != nil && !errors.Is(err, db.ErrIssueRefExists) && !errors.Is(err, db.ErrIssueNotFound) {
-			slog.Warn("upsert proposal mention ref", "repo", repo, "issue", num, "proposal", proposalID, "error", err)
-		}
-	}
 }
 
 // checkProposalIfMatch validates the If-Match header against the proposal's ETag.

@@ -13,7 +13,9 @@ import (
 	"os"
 	"time"
 
+	"github.com/dlorenc/docstore/internal/events"
 	"github.com/dlorenc/docstore/internal/model"
+	"github.com/dlorenc/docstore/internal/service"
 	"github.com/dlorenc/docstore/internal/store"
 )
 
@@ -86,6 +88,7 @@ type WriteStoreLite interface {
 	RemoveOrgMember(ctx context.Context, org, identity string) error
 	CreateInvite(ctx context.Context, org, email string, role model.OrgRole, invitedBy, token string, expiresAt time.Time) (*model.OrgInvite, error)
 	RevokeInvite(ctx context.Context, org, inviteID string) error
+	GetRole(ctx context.Context, repo, identity string) (*model.Role, error)
 	SetRole(ctx context.Context, repo, identity string, role model.RoleType) error
 	DeleteRole(ctx context.Context, repo, identity string) error
 	CreateRelease(ctx context.Context, repo, name string, sequence int64, body, createdBy string) (*model.Release, error)
@@ -119,6 +122,7 @@ var staticFS embed.FS
 type Handler struct {
 	read      ReadStore
 	write     WriteStoreLite
+	svc       *service.Service
 	assemble  AssembleFn
 	identity  IdentityFn
 	tmpl      *templateSet
@@ -126,20 +130,20 @@ type Handler struct {
 	// devMode disables the Secure flag on the CSRF cookie so the UI works
 	// over plain HTTP in local development.
 	devMode bool
-	// Emit, if non-nil, is called after each successful write operation to
-	// publish a domain event. The server wires this to the event broker.
-	Emit func(ctx context.Context, event any)
 }
 
-// emit publishes an event if an emitter is configured.
-func (h *Handler) emit(ctx context.Context, event any) {
-	if h.Emit != nil {
-		h.Emit(ctx, event)
+// emit publishes a domain event via the service layer. No-op if svc is nil.
+// Used by UI write handlers for operations not owned by the service
+// (e.g. branch CRUD, role management, releases).
+func (h *Handler) emit(ctx context.Context, e events.Event) {
+	if h.svc != nil {
+		h.svc.Emit(ctx, e)
 	}
 }
 
 // NewHandler constructs a UI handler wired to the given data sources.
-func NewHandler(read ReadStore, write WriteStoreLite, assemble AssembleFn, identity IdentityFn) (*Handler, error) {
+// svc is the service layer that enforces business logic for write operations.
+func NewHandler(read ReadStore, write WriteStoreLite, svc *service.Service, assemble AssembleFn, identity IdentityFn) (*Handler, error) {
 	t, err := parseTemplates(templatesFS)
 	if err != nil {
 		return nil, err
@@ -151,6 +155,7 @@ func NewHandler(read ReadStore, write WriteStoreLite, assemble AssembleFn, ident
 	return &Handler{
 		read:      read,
 		write:     write,
+		svc:       svc,
 		assemble:  assemble,
 		identity:  identity,
 		tmpl:      t,
@@ -163,7 +168,7 @@ func NewHandler(read ReadStore, write WriteStoreLite, assemble AssembleFn, ident
 // during development so template edits take effect on the next request without
 // recompiling. The server must be run from the repository root so that the
 // path "internal/ui" resolves correctly.
-func NewHandlerDev(read ReadStore, write WriteStoreLite, assemble AssembleFn, identity IdentityFn) (*Handler, error) {
+func NewHandlerDev(read ReadStore, write WriteStoreLite, svc *service.Service, assemble AssembleFn, identity IdentityFn) (*Handler, error) {
 	root := os.DirFS("internal/ui")
 	t, err := parseTemplates(root)
 	if err != nil {
@@ -176,6 +181,7 @@ func NewHandlerDev(read ReadStore, write WriteStoreLite, assemble AssembleFn, id
 	return &Handler{
 		read:      read,
 		write:     write,
+		svc:       svc,
 		assemble:  assemble,
 		identity:  identity,
 		tmpl:      t,

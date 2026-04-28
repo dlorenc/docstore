@@ -13,9 +13,9 @@ import (
 	"github.com/dlorenc/docstore/internal/blob"
 	"github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/events"
-	evtypes "github.com/dlorenc/docstore/internal/events/types"
 	"github.com/dlorenc/docstore/internal/model"
 	"github.com/dlorenc/docstore/internal/policy"
+	"github.com/dlorenc/docstore/internal/service"
 	"github.com/dlorenc/docstore/internal/store"
 	"github.com/dlorenc/docstore/internal/ui"
 )
@@ -164,10 +164,14 @@ type ReadStore = readStore
 // Intended for contract tests outside this package that need to verify the server's
 // wire format against clients that consume the API (e.g. cmd/ci-scheduler).
 func NewWithReadStore(ws WriteStore, rs ReadStore, devIdentity, bootstrapAdmin string) http.Handler {
+	pc := policy.NewCache()
 	s := &server{
 		commitStore: ws,
 		readStore:   rs,
-		policyCache: policy.NewCache(),
+		policyCache: pc,
+	}
+	if ws != nil {
+		s.svc = service.New(ws, nil, pc)
 	}
 	return s.buildHandler(devIdentity, bootstrapAdmin, ws)
 }
@@ -194,11 +198,19 @@ func NewWithBroker(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, b
 }
 
 func newServer(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, broker *events.Broker, devIdentity, bootstrapAdmin string) http.Handler {
+	pc := policy.NewCache()
 	s := &server{
 		commitStore: writeStore,
-		policyCache: policy.NewCache(),
+		policyCache: pc,
 		broker:      broker,
 		globalAdmin: bootstrapAdmin,
+	}
+	if writeStore != nil {
+		var emitter service.EventEmitter
+		if broker != nil {
+			emitter = broker
+		}
+		s.svc = service.New(writeStore, emitter, pc)
 	}
 	if database != nil {
 		rs := store.New(database)
@@ -261,20 +273,13 @@ func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore Wri
 		var uiHandler *ui.Handler
 		var err error
 		if os.Getenv("DEV_UI") != "" {
-			uiHandler, err = ui.NewHandlerDev(s.readStore, writeStore, assemble, IdentityFromContext)
+			uiHandler, err = ui.NewHandlerDev(s.readStore, writeStore, s.svc, assemble, IdentityFromContext)
 		} else {
-			uiHandler, err = ui.NewHandler(s.readStore, writeStore, assemble, IdentityFromContext)
+			uiHandler, err = ui.NewHandler(s.readStore, writeStore, s.svc, assemble, IdentityFromContext)
 		}
 		if err != nil {
 			slog.Error("ui init failed", "error", err)
 		} else {
-			if s.broker != nil {
-				uiHandler.Emit = func(ctx context.Context, event any) {
-					if e, ok := event.(events.Event); ok {
-						s.broker.Emit(ctx, e)
-					}
-				}
-			}
 			uiHandler.Register(inner)
 		}
 	}
@@ -306,6 +311,7 @@ type server struct {
 	readStore   readStore
 	policyCache policyCache
 	broker      *events.Broker
+	svc         *service.Service
 	// globalAdmin is the identity that may manage global resources like
 	// event subscriptions. Corresponds to the --bootstrap-admin flag.
 	globalAdmin string
@@ -344,9 +350,9 @@ func (s *server) handleCommit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Author always comes from the authenticated identity; clients cannot override it.
-	req.Author = IdentityFromContext(r.Context())
+	identity := IdentityFromContext(r.Context())
 
-	resp, err := s.commitStore.Commit(r.Context(), req)
+	resp, err := s.svc.Commit(r.Context(), identity, req)
 	if err != nil {
 		switch {
 		case errors.Is(err, db.ErrBranchNotFound):
@@ -360,22 +366,6 @@ func (s *server) handleCommit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Invalidate the policy cache when committing directly to main so the
-	// next merge picks up any updated .rego or OWNERS files.
-	if req.Branch == "main" && s.policyCache != nil {
-		s.policyCache.Invalidate(repo)
-	}
-
-	s.emit(r.Context(), evtypes.CommitCreated{
-		Repo:      repo,
-		Branch:    req.Branch,
-		Sequence:  resp.Sequence,
-		Author:    req.Author,
-		Message:   req.Message,
-		FileCount: len(req.Files),
-	})
-
-	slog.Info("commit created", "repo", repo, "branch", req.Branch, "sequence", resp.Sequence, "files", len(req.Files), "author", req.Author)
 	writeJSON(w, http.StatusCreated, resp)
 }
 
