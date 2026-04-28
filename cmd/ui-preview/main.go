@@ -117,6 +117,10 @@ func (fakeWrite) ListRoles(_ context.Context, _ string) ([]model.Role, error) {
 	}, nil
 }
 
+func (fakeWrite) ListCheckRuns(_ context.Context, _, _ string, _ *int64, _ bool) ([]model.CheckRun, error) {
+	return nil, nil
+}
+
 func (fakeWrite) GetRepo(_ context.Context, name string) (*model.Repo, error) {
 	all, _ := (fakeWrite{}).ListRepos(context.Background())
 	for _, r := range all {
