@@ -878,6 +878,35 @@ type AgentContextResponse struct {
 }
 
 // ---------------------------------------------------------------------------
+// CI Jobs
+// ---------------------------------------------------------------------------
+
+// CIJob tracks a CI run scheduled via the ci-scheduler webhook.
+type CIJob struct {
+	ID                string     `json:"id"`
+	Repo              string     `json:"repo"`
+	Branch            string     `json:"branch"`
+	Sequence          int64      `json:"sequence"`
+	Status            string     `json:"status"` // queued, claimed, passed, failed
+	ClaimedAt         *time.Time `json:"claimed_at,omitempty"`
+	LastHeartbeatAt   *time.Time `json:"last_heartbeat_at,omitempty"`
+	WorkerPod         *string    `json:"worker_pod,omitempty"`
+	WorkerPodIP       *string    `json:"worker_pod_ip,omitempty"`
+	LogURL            *string    `json:"log_url,omitempty"`
+	ErrorMessage      *string    `json:"error_message,omitempty"`
+	CreatedAt         time.Time  `json:"created_at"`
+	TriggerType       string     `json:"trigger_type,omitempty"`
+	TriggerBranch     string     `json:"trigger_branch,omitempty"`
+	TriggerBaseBranch string     `json:"trigger_base_branch,omitempty"`
+	TriggerProposalID *string    `json:"trigger_proposal_id,omitempty"`
+}
+
+// ListCIJobsResponse is the response for GET .../ci-jobs
+type ListCIJobsResponse struct {
+	Jobs []CIJob `json:"jobs"`
+}
+
+// ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
 
