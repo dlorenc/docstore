@@ -135,6 +135,7 @@ type issueDetailPage struct {
 	Repo     model.Repo
 	Issue    *model.Issue
 	Comments []model.IssueComment
+	Refs     []model.IssueRef
 }
 
 type acceptInvitePage struct {
@@ -163,6 +164,17 @@ type releasesPage struct {
 type releaseDetailPage struct {
 	Repo    model.Repo
 	Release *model.Release
+}
+
+type ciJobsPage struct {
+	Repo   model.Repo
+	Jobs   []model.CIJob
+	Status string
+}
+
+type ciJobDetailPage struct {
+	Repo model.Repo
+	Job  *model.CIJob
 }
 
 // ---------------------------------------------------------------------------
@@ -678,7 +690,14 @@ func (h *Handler) handleIssueDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	page := issueDetailPage{Repo: *repo, Issue: issue, Comments: comments}
+	refs, err := h.write.ListIssueRefs(ctx, repoName, number)
+	if err != nil {
+		slog.Error("ui list issue refs", "repo", repoName, "number", number, "error", err)
+		// Non-fatal: render page without refs.
+		refs = nil
+	}
+
+	page := issueDetailPage{Repo: *repo, Issue: issue, Comments: comments, Refs: refs}
 	h.render(w, h.tmpl.issueDetail, "layout.html", pageData{
 		Title: repoName + " / issue #" + numberStr,
 		Breadcrumbs: []crumb{
@@ -888,6 +907,91 @@ func (h *Handler) handleReleaseDetail(w http.ResponseWriter, r *http.Request) {
 			{Label: rname, Href: ""},
 		},
 		Body: releaseDetailPage{Repo: *repo, Release: release},
+	})
+}
+
+// handleCIJobs renders the CI jobs list for a repo with optional status filter.
+func (h *Handler) handleCIJobs(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	repoName := owner + "/" + name
+	ctx := r.Context()
+
+	statusFilter := r.URL.Query().Get("status")
+
+	repo, err := h.write.GetRepo(ctx, repoName)
+	if err != nil {
+		if errors.Is(err, db.ErrRepoNotFound) {
+			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
+			return
+		}
+		slog.Error("ui get repo", "repo", repoName, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load repo")
+		return
+	}
+
+	var statusPtr *string
+	if statusFilter != "" {
+		statusPtr = &statusFilter
+	}
+
+	jobs, err := h.write.ListCIJobs(ctx, repoName, nil, statusPtr, 100)
+	if err != nil {
+		slog.Error("ui list ci jobs", "repo", repoName, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load ci jobs")
+		return
+	}
+
+	h.render(w, h.tmpl.ciJobs, "layout.html", pageData{
+		Title: repoName + " / ci-jobs",
+		Breadcrumbs: []crumb{
+			{Label: "repos", Href: "/ui/"},
+			{Label: repoName, Href: "/ui/r/" + repoName},
+			{Label: "ci-jobs", Href: ""},
+		},
+		Body: ciJobsPage{Repo: *repo, Jobs: jobs, Status: statusFilter},
+	})
+}
+
+// handleCIJobDetail renders the detail view for a single CI job.
+func (h *Handler) handleCIJobDetail(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	id := r.PathValue("id")
+	repoName := owner + "/" + name
+	ctx := r.Context()
+
+	repo, err := h.write.GetRepo(ctx, repoName)
+	if err != nil {
+		if errors.Is(err, db.ErrRepoNotFound) {
+			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
+			return
+		}
+		slog.Error("ui get repo", "repo", repoName, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load repo")
+		return
+	}
+
+	job, err := h.write.GetCIJob(ctx, id)
+	if err != nil {
+		slog.Error("ui get ci job", "id", id, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load ci job")
+		return
+	}
+	if job == nil {
+		h.renderError(w, http.StatusNotFound, "ci job not found")
+		return
+	}
+
+	h.render(w, h.tmpl.ciJobDetail, "layout.html", pageData{
+		Title: repoName + " / ci-jobs / " + id,
+		Breadcrumbs: []crumb{
+			{Label: "repos", Href: "/ui/"},
+			{Label: repoName, Href: "/ui/r/" + repoName},
+			{Label: "ci-jobs", Href: "/ui/r/" + repoName + "/ci-jobs"},
+			{Label: id[:8], Href: ""},
+		},
+		Body: ciJobDetailPage{Repo: *repo, Job: job},
 	})
 }
 

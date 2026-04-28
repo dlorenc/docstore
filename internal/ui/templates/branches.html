@@ -3,10 +3,11 @@
 <div class="headline"><h1>{{.Repo.Name}}</h1><span class="meta">owner {{.Repo.Owner}} · {{relTime .Repo.CreatedAt}} · <a href="/repos/{{.Repo.Name}}/-/archive">download archive</a></span></div>
 
 <nav class="repo-tabs">
-  <a href="/ui/r/{{.Repo.Name}}">branches</a>
+  <a href="/ui/r/{{.Repo.Name}}" class="active">branches</a>
   <a href="/ui/r/{{.Repo.Name}}/issues">issues</a>
   <a href="/ui/r/{{.Repo.Name}}/releases">releases</a>
   <a href="/ui/r/{{.Repo.Name}}/proposals">proposals</a>
+  <a href="/ui/r/{{.Repo.Name}}/ci-jobs">ci-jobs</a>
   <a href="/ui/r/{{.Repo.Name}}/b/main/log">log</a>
 </nav>
 

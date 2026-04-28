@@ -1,5 +1,14 @@
 {{define "content"}}
 {{with .Body}}
+<nav class="repo-tabs">
+  <a href="/ui/r/{{.Repo.Name}}">branches</a>
+  <a href="/ui/r/{{.Repo.Name}}/issues">issues</a>
+  <a href="/ui/r/{{.Repo.Name}}/releases">releases</a>
+  <a href="/ui/r/{{.Repo.Name}}/proposals" class="active">proposals</a>
+  <a href="/ui/r/{{.Repo.Name}}/ci-jobs">ci-jobs</a>
+  <a href="/ui/r/{{.Repo.Name}}/b/main/log">log</a>
+</nav>
+
 <div class="headline">
   <h1>{{.Proposal.Title}}</h1>
   <span class="badge {{statusClass (printf "%s" .Proposal.State)}}">{{.Proposal.State}}</span>

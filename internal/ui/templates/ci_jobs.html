@@ -1,0 +1,54 @@
+{{define "content"}}
+{{with .Body}}
+<div class="headline">
+  <h1>{{.Repo.Name}} / ci-jobs</h1>
+  <span class="meta">owner {{.Repo.Owner}}</span>
+</div>
+
+<nav class="repo-tabs">
+  <a href="/ui/r/{{.Repo.Name}}">branches</a>
+  <a href="/ui/r/{{.Repo.Name}}/issues">issues</a>
+  <a href="/ui/r/{{.Repo.Name}}/releases">releases</a>
+  <a href="/ui/r/{{.Repo.Name}}/proposals">proposals</a>
+  <a href="/ui/r/{{.Repo.Name}}/ci-jobs" class="active">ci-jobs</a>
+  <a href="/ui/r/{{.Repo.Name}}/b/main/log">log</a>
+</nav>
+
+<div class="tab-bar">
+  <a class="tab{{if eq .Status ""}} active{{end}}" href="?">all</a>
+  <a class="tab{{if eq .Status "queued"}} active{{end}}" href="?status=queued">queued</a>
+  <a class="tab{{if eq .Status "claimed"}} active{{end}}" href="?status=claimed">running</a>
+  <a class="tab{{if eq .Status "passed"}} active{{end}}" href="?status=passed">passed</a>
+  <a class="tab{{if eq .Status "failed"}} active{{end}}" href="?status=failed">failed</a>
+</div>
+
+<div class="card">
+{{if not .Jobs}}<div class="empty">no ci jobs found</div>{{else}}
+<table class="grid">
+  <thead>
+    <tr>
+      <th>id</th>
+      <th>branch</th>
+      <th>seq</th>
+      <th>trigger</th>
+      <th>status</th>
+      <th>created</th>
+    </tr>
+  </thead>
+  <tbody>
+  {{range .Jobs}}
+  <tr>
+    <td><a href="ci-jobs/{{.ID}}">{{slice .ID 0 8}}</a></td>
+    <td><a href="/ui/r/{{$.Repo.Name}}/b/{{urlPathEscape .Branch}}">{{.Branch}}</a></td>
+    <td>{{.Sequence}}</td>
+    <td class="meta">{{.TriggerType}}{{if .TriggerBranch}} / {{.TriggerBranch}}{{end}}</td>
+    <td><span class="badge {{statusClass .Status}}">{{.Status}}</span></td>
+    <td class="meta">{{relTime .CreatedAt}}</td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}
+</div>
+{{end}}
+{{end}}

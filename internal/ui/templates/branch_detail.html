@@ -42,6 +42,23 @@
     <div class="card" data-poll-url="/ui/_/r/{{.Repo.Name}}/b/{{urlPathEscape $ctx.Branch.Name}}/checks" data-poll-interval="10000">
       {{template "branch_checks.html" $ctx}}
     </div>
+    {{if $ctx.CheckRuns}}
+    <div style="margin-top:8px">
+      <button class="btn-link" id="retry-checks-btn" onclick="(function(){
+        var btn = document.getElementById('retry-checks-btn');
+        btn.disabled = true;
+        btn.textContent = 'retrying…';
+        fetch('/repos/{{$page.Repo.Name}}/-/checks/retry', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({branch: '{{$ctx.Branch.Name}}', sequence: {{$ctx.Branch.HeadSequence}}, checks: []})
+        }).then(function(r){
+          if(r.ok){ btn.textContent = 'retried'; setTimeout(function(){ location.reload(); }, 1000); }
+          else { btn.textContent = 'retry failed'; btn.disabled = false; }
+        }).catch(function(){ btn.textContent = 'retry failed'; btn.disabled = false; });
+      })()">retry all checks</button>
+    </div>
+    {{end}}
   </div>
   <div>
     <h2>Reviews ({{len $ctx.Reviews}})</h2>
