@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
@@ -361,9 +363,10 @@ func IAPMiddleware(devIdentity string) func(http.Handler) http.Handler {
 	return newMiddleware(devIdentity, cache.get)
 }
 
+
 // newMiddleware is the testable core of IAPMiddleware. fetchKey is called with a
 // key ID and returns the corresponding RSA public key.
-func newMiddleware(devIdentity string, fetchKey func(kid string) (*rsa.PublicKey, error)) func(http.Handler) http.Handler {
+func newMiddleware(devIdentity string, fetchKey func(kid string) (crypto.PublicKey, error)) func(http.Handler) http.Handler {
 	if devIdentity != "" {
 		return func(next http.Handler) http.Handler {
 			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -398,8 +401,8 @@ func newMiddleware(devIdentity string, fetchKey func(kid string) (*rsa.PublicKey
 	}
 }
 
-// validateIAPJWT parses and validates an IAP RS256 JWT, returning the email claim.
-func validateIAPJWT(tokenString string, fetchKey func(kid string) (*rsa.PublicKey, error)) (string, error) {
+// validateIAPJWT parses and validates an IAP JWT (RS256 or ES256), returning the email claim.
+func validateIAPJWT(tokenString string, fetchKey func(kid string) (crypto.PublicKey, error)) (string, error) {
 	parts := strings.SplitN(tokenString, ".", 3)
 	if len(parts) != 3 {
 		return "", fmt.Errorf("invalid JWT format")
@@ -417,7 +420,7 @@ func validateIAPJWT(tokenString string, fetchKey func(kid string) (*rsa.PublicKe
 	if err := json.Unmarshal(headerJSON, &header); err != nil {
 		return "", fmt.Errorf("parse header: %w", err)
 	}
-	if header.Alg != "RS256" {
+	if header.Alg != "RS256" && header.Alg != "ES256" {
 		return "", fmt.Errorf("unsupported algorithm: %s", header.Alg)
 	}
 	if header.Kid == "" {
@@ -430,15 +433,37 @@ func validateIAPJWT(tokenString string, fetchKey func(kid string) (*rsa.PublicKe
 		return "", fmt.Errorf("fetch key: %w", err)
 	}
 
-	// Verify the RS256 signature over header.payload.
+	// Verify the signature over header.payload.
 	sigBytes, err := base64.RawURLEncoding.DecodeString(parts[2])
 	if err != nil {
 		return "", fmt.Errorf("decode signature: %w", err)
 	}
 	signingInput := parts[0] + "." + parts[1]
 	digest := sha256.Sum256([]byte(signingInput))
-	if err := rsa.VerifyPKCS1v15(key, crypto.SHA256, digest[:], sigBytes); err != nil {
-		return "", fmt.Errorf("invalid signature: %w", err)
+
+	switch header.Alg {
+	case "RS256":
+		rsaKey, ok := key.(*rsa.PublicKey)
+		if !ok {
+			return "", fmt.Errorf("expected RSA key for RS256")
+		}
+		if err := rsa.VerifyPKCS1v15(rsaKey, crypto.SHA256, digest[:], sigBytes); err != nil {
+			return "", fmt.Errorf("invalid signature: %w", err)
+		}
+	case "ES256":
+		ecKey, ok := key.(*ecdsa.PublicKey)
+		if !ok {
+			return "", fmt.Errorf("expected EC key for ES256")
+		}
+		// JWT ES256 signature is raw r||s (each 32 bytes for P-256), not ASN.1 DER.
+		if len(sigBytes) != 64 {
+			return "", fmt.Errorf("invalid ES256 signature length: %d", len(sigBytes))
+		}
+		r := new(big.Int).SetBytes(sigBytes[:32])
+		s := new(big.Int).SetBytes(sigBytes[32:])
+		if !ecdsa.Verify(ecKey, digest[:], r, s) {
+			return "", fmt.Errorf("invalid signature")
+		}
 	}
 
 	// Parse payload claims.
@@ -471,7 +496,7 @@ const iapJWKURL = "https://www.gstatic.com/iap/verify/public_key-jwk"
 
 type keyCache struct {
 	mu        sync.RWMutex
-	keys      map[string]*rsa.PublicKey
+	keys      map[string]crypto.PublicKey
 	fetchedAt time.Time
 	ttl       time.Duration
 }
@@ -482,7 +507,7 @@ func newKeyCache() *keyCache {
 	}
 }
 
-func (c *keyCache) get(kid string) (*rsa.PublicKey, error) {
+func (c *keyCache) get(kid string) (crypto.PublicKey, error) {
 	c.mu.RLock()
 	if c.keys != nil && time.Since(c.fetchedAt) < c.ttl {
 		key, ok := c.keys[kid]
@@ -525,24 +550,35 @@ func (c *keyCache) refresh() error {
 		Keys []struct {
 			Kid string `json:"kid"`
 			Kty string `json:"kty"`
-			N   string `json:"n"`
-			E   string `json:"e"`
+			// RSA fields
+			N string `json:"n"`
+			E string `json:"e"`
+			// EC fields
+			Crv string `json:"crv"`
+			X   string `json:"x"`
+			Y   string `json:"y"`
 		} `json:"keys"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&jwks); err != nil {
 		return err
 	}
 
-	keys := make(map[string]*rsa.PublicKey, len(jwks.Keys))
+	keys := make(map[string]crypto.PublicKey, len(jwks.Keys))
 	for _, k := range jwks.Keys {
-		if k.Kty != "RSA" {
-			continue
+		switch k.Kty {
+		case "RSA":
+			pub, err := jwkToRSA(k.N, k.E)
+			if err != nil {
+				continue
+			}
+			keys[k.Kid] = pub
+		case "EC":
+			pub, err := jwkToEC(k.Crv, k.X, k.Y)
+			if err != nil {
+				continue
+			}
+			keys[k.Kid] = pub
 		}
-		pub, err := jwkToRSA(k.N, k.E)
-		if err != nil {
-			continue
-		}
-		keys[k.Kid] = pub
 	}
 	c.keys = keys
 	c.fetchedAt = time.Now()
@@ -565,4 +601,25 @@ func jwkToRSA(nB64, eB64 string) (*rsa.PublicKey, error) {
 		e = e<<8 | int(b)
 	}
 	return &rsa.PublicKey{N: n, E: e}, nil
+}
+
+// jwkToEC converts base64url-encoded JWK x and y values to an *ecdsa.PublicKey.
+// Only P-256 (ES256) is supported.
+func jwkToEC(crv, xB64, yB64 string) (*ecdsa.PublicKey, error) {
+	if crv != "P-256" {
+		return nil, fmt.Errorf("unsupported EC curve: %s", crv)
+	}
+	xBytes, err := base64.RawURLEncoding.DecodeString(xB64)
+	if err != nil {
+		return nil, fmt.Errorf("decode x: %w", err)
+	}
+	yBytes, err := base64.RawURLEncoding.DecodeString(yB64)
+	if err != nil {
+		return nil, fmt.Errorf("decode y: %w", err)
+	}
+	return &ecdsa.PublicKey{
+		Curve: elliptic.P256(),
+		X:     new(big.Int).SetBytes(xBytes),
+		Y:     new(big.Int).SetBytes(yBytes),
+	}, nil
 }
