@@ -460,3 +460,19 @@ details.form-section > summary::-webkit-details-marker { display: none; }
   text-decoration: none;
 }
 .btn-link:hover { text-decoration: underline; }
+
+/* Get-started call-to-action card on the landing page. */
+.card-cta {
+  border-left: 3px solid var(--accent);
+  padding: 20px 22px;
+}
+.card-cta-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.card-cta-body {
+  color: var(--text-dim);
+  margin-bottom: 16px;
+  font-size: 13px;
+}

@@ -5,6 +5,13 @@
   <a href="/ui/orgs/new"><button>New org</button></a>
   <a href="/ui/repos/new" style="margin-left:8px"><button>New repo</button></a>
 </div>
+{{if .ShowGetStarted}}
+<div class="card card-cta" style="margin-bottom:24px">
+  <div class="card-cta-title">Welcome to docstore</div>
+  <div class="card-cta-body">You don't belong to any orgs yet. Create your first org to get started.</div>
+  <a href="/ui/orgs/new" class="btn">Create your first org &rarr;</a>
+</div>
+{{end}}
 {{if .MyOrgs}}
 <h2>Your orgs</h2>
 <div class="row-list" style="margin-bottom:24px">
