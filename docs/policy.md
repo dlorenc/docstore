@@ -10,7 +10,7 @@ DocStore has three layers of access control:
 
 The server validates the `X-Goog-IAP-JWT-Assertion` header on every request (except `GET /healthz`). The JWT is RS256-signed by Google. Public keys are fetched from `https://www.gstatic.com/iap/verify/public_key-jwk` and cached for 1 hour. The identity is extracted from the `email` claim.
 
-**Dev mode:** Set `DEV_IDENTITY=alice@example.com` (or `--dev-identity`) on the server to bypass JWT validation. All requests are treated as that identity.
+**Local dev only:** Set `DEV_IDENTITY=you@example.com` (or `--dev-identity`) on the server to bypass JWT validation. All requests are treated as that identity. This must never be set in production — production uses real IAP JWTs at `https://docstore.dev`.
 
 ## RBAC roles
 
