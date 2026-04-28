@@ -1,0 +1,20 @@
+{{define "issues_rows.html"}}
+<div class="card">
+  {{if not .Issues}}<div class="empty">no {{.State}} issues</div>{{else}}
+  <table class="grid">
+    <thead><tr><th>#</th><th>title</th><th>author</th><th>state</th><th>opened</th></tr></thead>
+    <tbody>
+    {{range .Issues}}
+    <tr>
+      <td><a href="/ui/r/{{$.Repo.Name}}/issues/{{.Number}}">#{{.Number}}</a></td>
+      <td><a href="/ui/r/{{$.Repo.Name}}/issues/{{.Number}}">{{.Title}}</a></td>
+      <td>{{.Author}}</td>
+      <td><span class="badge {{statusClass (printf "%s" .State)}}">{{.State}}</span></td>
+      <td class="meta">{{relTime .CreatedAt}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{end}}
+</div>
+{{end}}
