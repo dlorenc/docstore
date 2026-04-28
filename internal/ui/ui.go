@@ -22,6 +22,7 @@ type ReadStore interface {
 	GetFile(ctx context.Context, repo, branch, path string, atSeq *int64) (*store.FileContent, error)
 	GetBranch(ctx context.Context, repo, branch string) (*store.BranchInfo, error)
 	ListBranches(ctx context.Context, repo, statusFilter string, includeDraft, onlyDraft bool) ([]store.BranchInfo, error)
+	GetFileHistory(ctx context.Context, repo, branch, path string, limit int, afterSeq *int64) ([]store.FileHistoryEntry, error)
 }
 
 // WriteStoreLite is the subset of server.WriteStore that the UI needs for
@@ -30,6 +31,9 @@ type WriteStoreLite interface {
 	ListRepos(ctx context.Context) ([]model.Repo, error)
 	ListOrgs(ctx context.Context) ([]model.Org, error)
 	GetRepo(ctx context.Context, name string) (*model.Repo, error)
+	ListReviewComments(ctx context.Context, repo, branch string, path *string) ([]model.ReviewComment, error)
+	ListOrgMembers(ctx context.Context, org string) ([]model.OrgMember, error)
+	ListRoles(ctx context.Context, repo string) ([]model.Role, error)
 }
 
 // AssembleFn builds the full branch context snapshot used by the branch detail
@@ -102,6 +106,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /ui/r/{owner}/{name}", h.handleBranches)
 	mux.HandleFunc("GET /ui/r/{owner}/{name}/b/{branch}", h.handleBranchDetail)
 	mux.HandleFunc("GET /ui/_/r/{owner}/{name}/b/{branch}/checks", h.handleChecksPartial)
+	mux.HandleFunc("GET /ui/_/r/{owner}/{name}/b/{branch}/comments", h.handleReviewCommentsPartial)
 	mux.HandleFunc("GET /ui/r/{owner}/{name}/f/{path...}", h.handleFile)
 	mux.Handle("GET /ui/static/", http.StripPrefix("/ui/static/", http.FileServer(http.FS(h.staticSub))))
 }

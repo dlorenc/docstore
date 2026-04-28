@@ -7,6 +7,42 @@
 {{template "branchSection" (dict "Title" "Active" "Rows" .Active "Repo" .Repo.Name)}}
 {{template "branchSection" (dict "Title" "Merged" "Rows" .Merged "Repo" .Repo.Name)}}
 {{template "branchSection" (dict "Title" "Abandoned" "Rows" .Abandoned "Repo" .Repo.Name)}}
+
+<h2>Members ({{len .Members}})</h2>
+<div class="card">
+  {{if not .Members}}<div class="empty">no members</div>{{else}}
+  <table class="grid">
+    <thead><tr><th>identity</th><th>role</th><th>invited by</th><th>joined</th></tr></thead>
+    <tbody>
+    {{range .Members}}
+    <tr>
+      <td>{{.Identity}}</td>
+      <td><span class="badge neutral">{{.Role}}</span></td>
+      <td>{{.InvitedBy}}</td>
+      <td class="meta">{{relTime .CreatedAt}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{end}}
+</div>
+
+<h2>Roles ({{len .Roles}})</h2>
+<div class="card">
+  {{if not .Roles}}<div class="empty">no roles configured</div>{{else}}
+  <table class="grid">
+    <thead><tr><th>identity</th><th>role</th></tr></thead>
+    <tbody>
+    {{range .Roles}}
+    <tr>
+      <td>{{.Identity}}</td>
+      <td><span class="badge neutral">{{.Role}}</span></td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{end}}
+</div>
 {{end}}
 {{end}}
 
