@@ -98,6 +98,26 @@ h2:first-child { margin-top: 0; }
 }
 .headline h1 { margin: 0; }
 
+.repo-tabs {
+  display: flex;
+  gap: 0;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--border);
+}
+.repo-tabs a {
+  padding: 6px 14px;
+  color: var(--text-dim);
+  font-size: 13px;
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.repo-tabs a:hover { color: var(--text); }
+.repo-tabs a.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
 .card {
   background: var(--bg-2);
   border: 1px solid var(--border);
