@@ -130,6 +130,13 @@ type issueDetailPage struct {
 	Comments []model.IssueComment
 }
 
+type acceptInvitePage struct {
+	Org   string
+	Token string
+	Role  model.OrgRole
+	Err   string
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -827,6 +834,71 @@ func (h *Handler) handleCommitDetail(w http.ResponseWriter, r *http.Request) {
 			Commit: commit,
 		},
 	})
+}
+
+// handleAcceptInvite renders the invite acceptance confirmation page (GET) and
+// processes the acceptance (POST).
+func (h *Handler) handleAcceptInvite(w http.ResponseWriter, r *http.Request) {
+	org := r.PathValue("org")
+	token := r.PathValue("token")
+	ctx := r.Context()
+
+	renderPage := func(role model.OrgRole, errMsg string) {
+		h.render(w, h.tmpl.acceptInvite, "layout.html", pageData{
+			Title: "Accept invitation · " + org,
+			Breadcrumbs: []crumb{
+				{Label: "repos", Href: "/ui/"},
+			},
+			Body: acceptInvitePage{
+				Org:   org,
+				Token: token,
+				Role:  role,
+				Err:   errMsg,
+			},
+		})
+	}
+
+	// Look up invite details so we can show the role on GET and re-render on POST error.
+	invite, err := h.write.GetInviteByToken(ctx, org, token)
+	if err != nil {
+		if errors.Is(err, db.ErrInviteNotFound) {
+			h.renderError(w, http.StatusNotFound, "invite not found")
+			return
+		}
+		slog.Error("ui get invite by token", "org", org, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load invite")
+		return
+	}
+
+	if r.Method == http.MethodGet {
+		renderPage(invite.Role, "")
+		return
+	}
+
+	// POST: accept the invite.
+	var identity string
+	if h.identity != nil {
+		identity = h.identity(ctx)
+	}
+
+	if err := h.write.AcceptInvite(ctx, org, token, identity); err != nil {
+		switch {
+		case errors.Is(err, db.ErrInviteNotFound):
+			h.renderError(w, http.StatusNotFound, "invite not found")
+		case errors.Is(err, db.ErrInviteExpired):
+			renderPage(invite.Role, "This invitation has expired.")
+		case errors.Is(err, db.ErrInviteAlreadyAccepted):
+			renderPage(invite.Role, "This invitation has already been accepted.")
+		case errors.Is(err, db.ErrEmailMismatch):
+			renderPage(invite.Role, "This invitation was sent to a different email address.")
+		default:
+			slog.Error("ui accept invite", "org", org, "error", err)
+			h.renderError(w, http.StatusInternalServerError, "could not accept invite")
+		}
+		return
+	}
+
+	http.Redirect(w, r, "/ui/o/"+org, http.StatusSeeOther)
 }
 
 // chainToLogRows filters and converts ChainEntries to commitLogRows.

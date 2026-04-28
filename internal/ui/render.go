@@ -28,6 +28,7 @@ type templateSet struct {
 	issues         *template.Template
 	issuesRows     *template.Template
 	issueDetail    *template.Template
+	acceptInvite   *template.Template
 }
 
 func parseTemplates(root fs.FS) (*templateSet, error) {
@@ -119,6 +120,10 @@ func parseTemplates(root fs.FS) (*templateSet, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse issue_detail: %w", err)
 	}
+	acceptInvite, err := load("accept_invite.html")
+	if err != nil {
+		return nil, fmt.Errorf("parse accept_invite: %w", err)
+	}
 	return &templateSet{
 		repos:          repos,
 		branches:       branches,
@@ -134,6 +139,7 @@ func parseTemplates(root fs.FS) (*templateSet, error) {
 		issues:         issues,
 		issuesRows:     issuesRows,
 		issueDetail:    issueDetail,
+		acceptInvite:   acceptInvite,
 	}, nil
 }
 
