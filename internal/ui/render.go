@@ -417,7 +417,10 @@ func shortHash(s string) string {
 // "ok" is reserved for genuine success states (passed, approved); lifecycle
 // states like "active" and "merged" map to "neutral" so they don't compete
 // visually with the mergeable verdict on the branch detail page.
-func statusClass(s string) string {
+// Accepts any value so templates can pass named string types (e.g. OrgRole)
+// without an explicit fmt.Sprint conversion.
+func statusClass(v any) string {
+	s := fmt.Sprint(v)
 	switch strings.ToLower(s) {
 	case "passed", "approved", "open":
 		return "ok"
