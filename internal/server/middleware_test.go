@@ -55,8 +55,8 @@ func makeTestJWT(t *testing.T, key *rsa.PrivateKey, kid, email string, exp time.
 }
 
 // staticKeyFetcher returns a fetcher that serves a single known key.
-func staticKeyFetcher(kid string, pub *rsa.PublicKey) func(string) (*rsa.PublicKey, error) {
-	return func(requestedKid string) (*rsa.PublicKey, error) {
+func staticKeyFetcher(kid string, pub crypto.PublicKey) func(string) (crypto.PublicKey, error) {
+	return func(requestedKid string) (crypto.PublicKey, error) {
 		if requestedKid != kid {
 			return nil, fmt.Errorf("key %q not found", requestedKid)
 		}
@@ -95,7 +95,7 @@ func TestIAPMiddleware_ValidJWT(t *testing.T) {
 }
 
 func TestIAPMiddleware_MissingHeader(t *testing.T) {
-	mw := newMiddleware("", func(kid string) (*rsa.PublicKey, error) {
+	mw := newMiddleware("", func(kid string) (crypto.PublicKey, error) {
 		return nil, fmt.Errorf("should not be called")
 	})
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -445,7 +445,7 @@ func buildJWT(t *testing.T, key *rsa.PrivateKey, header, payload map[string]any)
 }
 
 func TestIAPMiddleware_MalformedToken(t *testing.T) {
-	mw := newMiddleware("", func(kid string) (*rsa.PublicKey, error) {
+	mw := newMiddleware("", func(kid string) (crypto.PublicKey, error) {
 		return nil, fmt.Errorf("should not be reached")
 	})
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -493,7 +493,7 @@ func TestIAPMiddleware_MissingKid(t *testing.T) {
 		map[string]any{"email": "alice@example.com", "exp": time.Now().Add(time.Hour).Unix()},
 	)
 
-	mw := newMiddleware("", func(kid string) (*rsa.PublicKey, error) {
+	mw := newMiddleware("", func(kid string) (crypto.PublicKey, error) {
 		return nil, fmt.Errorf("should not be reached")
 	})
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -513,7 +513,7 @@ func TestIAPMiddleware_MissingKid(t *testing.T) {
 func TestIAPMiddleware_UnknownKid(t *testing.T) {
 	key := generateTestKey(t)
 
-	mw := newMiddleware("", func(kid string) (*rsa.PublicKey, error) {
+	mw := newMiddleware("", func(kid string) (crypto.PublicKey, error) {
 		return nil, fmt.Errorf("key %q not found", kid)
 	})
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
