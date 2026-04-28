@@ -39,6 +39,7 @@ type WriteStoreLite interface {
 	ListOrgMembers(ctx context.Context, org string) ([]model.OrgMember, error)
 	ListOrgMemberships(ctx context.Context, identity string) ([]model.OrgMember, error)
 	ListRoles(ctx context.Context, repo string) ([]model.Role, error)
+	ListRolesByIdentity(ctx context.Context, identity string) ([]model.RepoRole, error)
 	ListCheckRuns(ctx context.Context, repo, branch string, atSeq *int64, history bool) ([]model.CheckRun, error)
 	ListIssues(ctx context.Context, repo, stateFilter, authorFilter string) ([]model.Issue, error)
 	GetIssue(ctx context.Context, repo string, number int64) (*model.Issue, error)
@@ -173,6 +174,7 @@ func NewHandlerDev(read ReadStore, write WriteStoreLite, assemble AssembleFn, id
 // placing this mux behind the same middleware chain used by the JSON API.
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /ui/{$}", h.handleRepos)
+	mux.HandleFunc("GET /ui/u/{identity}", h.handleUserProfile)
 	mux.HandleFunc("GET /ui/o/{org}", h.handleOrg)
 	mux.HandleFunc("GET /ui/r/{owner}/{name}", h.handleBranches)
 	mux.HandleFunc("GET /ui/r/{owner}/{name}/settings", h.handleRepoSettings)

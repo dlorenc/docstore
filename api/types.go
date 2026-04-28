@@ -132,6 +132,13 @@ type Role struct {
 	Role     RoleType `json:"role"`
 }
 
+// RepoRole maps a repo to the role held by a specific identity on that repo.
+// Used when listing all repo roles for a given identity (e.g. user profile pages).
+type RepoRole struct {
+	Repo string   `json:"repo"`
+	Role RoleType `json:"role"`
+}
+
 // Review records an approval or rejection scoped to a branch at a specific
 // head sequence.
 type Review struct {

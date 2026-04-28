@@ -96,6 +96,7 @@ type WriteStore interface {
 	SetRole(ctx context.Context, repo, identity string, role model.RoleType) error
 	DeleteRole(ctx context.Context, repo, identity string) error
 	ListRoles(ctx context.Context, repo string) ([]model.Role, error)
+	ListRolesByIdentity(ctx context.Context, identity string) ([]model.RepoRole, error)
 	HasAdmin(ctx context.Context, repo string) (bool, error)
 
 	// Purge

@@ -64,6 +64,7 @@ const (
 
 type Branch = api.Branch
 type Role = api.Role
+type RepoRole = api.RepoRole
 type Review = api.Review
 type CheckRun = api.CheckRun
 type ReviewComment = api.ReviewComment
