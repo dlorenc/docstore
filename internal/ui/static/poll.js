@@ -38,6 +38,27 @@
     }
   });
 
+  // Tab navigation. Clicks on [data-tab-url] fetch the URL and replace the
+  // innerHTML of the element with id matching [data-tab-target].
+  document.addEventListener('click', function (e) {
+    var el = e.target.closest('[data-tab-url]');
+    if (!el) return;
+    e.preventDefault();
+    var url = el.getAttribute('data-tab-url');
+    var targetId = el.getAttribute('data-tab-target');
+    if (!url || !targetId) return;
+    var siblings = el.parentElement ? el.parentElement.querySelectorAll('[data-tab-url]') : [];
+    for (var i = 0; i < siblings.length; i++) siblings[i].classList.remove('active');
+    el.classList.add('active');
+    fetch(url, { credentials: 'same-origin' }).then(function (r) {
+      if (!r.ok) return;
+      return r.text().then(function (t) {
+        var target = document.getElementById(targetId);
+        if (target) target.innerHTML = t;
+      });
+    }).catch(function () {});
+  });
+
   // Branch-list filter. Hides tbody rows whose first cell text doesn't match.
   document.addEventListener('DOMContentLoaded', function () {
     var inputs = document.querySelectorAll('[data-branch-filter]');

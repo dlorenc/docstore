@@ -37,6 +37,9 @@ type WriteStoreLite interface {
 	ListOrgMembers(ctx context.Context, org string) ([]model.OrgMember, error)
 	ListRoles(ctx context.Context, repo string) ([]model.Role, error)
 	ListCheckRuns(ctx context.Context, repo, branch string, atSeq *int64, history bool) ([]model.CheckRun, error)
+	ListIssues(ctx context.Context, repo, stateFilter, authorFilter string) ([]model.Issue, error)
+	GetIssue(ctx context.Context, repo string, number int64) (*model.Issue, error)
+	ListIssueComments(ctx context.Context, repo string, number int64) ([]model.IssueComment, error)
 }
 
 // AssembleFn builds the full branch context snapshot used by the branch detail
@@ -115,5 +118,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /ui/r/{owner}/{name}/b/{branch}/c/{seq}", h.handleCommitDetail)
 	mux.HandleFunc("GET /ui/_/r/{owner}/{name}/b/{branch}/check-history", h.handleCheckHistoryPartial)
 	mux.HandleFunc("GET /ui/r/{owner}/{name}/f/{path...}", h.handleFile)
+	mux.HandleFunc("GET /ui/r/{owner}/{name}/issues", h.handleIssues)
+	mux.HandleFunc("GET /ui/r/{owner}/{name}/issues/{number}", h.handleIssueDetail)
+	mux.HandleFunc("GET /ui/_/r/{owner}/{name}/issues", h.handleIssuesPartial)
 	mux.Handle("GET /ui/static/", http.StripPrefix("/ui/static/", http.FileServer(http.FS(h.staticSub))))
 }

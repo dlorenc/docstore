@@ -1,0 +1,37 @@
+{{define "content"}}
+{{with .Body}}
+<div class="headline">
+  <h1>#{{.Issue.Number}} {{.Issue.Title}}</h1>
+  <span class="badge {{statusClass (printf "%s" .Issue.State)}}">{{.Issue.State}}</span>
+</div>
+<div class="meta" style="margin-bottom:14px">
+  by {{.Issue.Author}} · opened {{relTime .Issue.CreatedAt}}{{if .Issue.ClosedAt}} · closed {{relTimep .Issue.ClosedAt}}{{end}}
+</div>
+
+{{if .Issue.Labels}}
+<div style="margin-bottom:12px">
+  {{range .Issue.Labels}}<span class="badge neutral">{{.}}</span> {{end}}
+</div>
+{{end}}
+
+{{if .Issue.Body}}
+<div class="card" style="margin-bottom:16px">
+  <div class="row-body">{{.Issue.Body}}</div>
+</div>
+{{end}}
+
+<h2>Comments ({{len .Comments}})</h2>
+<div class="card">
+  {{if not .Comments}}<div class="empty">no comments yet</div>{{end}}
+  {{range .Comments}}
+  <div class="row">
+    <div>
+      <strong>{{.Author}}</strong>
+      <span class="meta">{{relTime .CreatedAt}}{{if .EditedAt}} · edited{{end}}</span>
+    </div>
+  </div>
+  {{if .Body}}<div class="row-body">{{.Body}}</div>{{end}}
+  {{end}}
+</div>
+{{end}}
+{{end}}

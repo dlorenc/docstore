@@ -47,8 +47,10 @@ func (f *fakeRead) GetCommit(_ context.Context, _ string, _ int64) (*store.Commi
 }
 
 type fakeWrite struct {
-	repos []model.Repo
-	miss  bool
+	repos         []model.Repo
+	issues        []model.Issue
+	issueComments []model.IssueComment
+	miss          bool
 }
 
 func (f *fakeWrite) ListRepos(_ context.Context) ([]model.Repo, error) { return f.repos, nil }
@@ -75,6 +77,20 @@ func (f *fakeWrite) ListRoles(_ context.Context, _ string) ([]model.Role, error)
 }
 func (f *fakeWrite) ListCheckRuns(_ context.Context, _, _ string, _ *int64, _ bool) ([]model.CheckRun, error) {
 	return nil, nil
+}
+func (f *fakeWrite) ListIssues(_ context.Context, _, _, _ string) ([]model.Issue, error) {
+	return f.issues, nil
+}
+func (f *fakeWrite) GetIssue(_ context.Context, _ string, number int64) (*model.Issue, error) {
+	for _, iss := range f.issues {
+		if iss.Number == number {
+			return &iss, nil
+		}
+	}
+	return nil, db.ErrIssueNotFound
+}
+func (f *fakeWrite) ListIssueComments(_ context.Context, _ string, _ int64) ([]model.IssueComment, error) {
+	return f.issueComments, nil
 }
 
 func newFakeAssembler(branchName string) AssembleFn {
@@ -268,6 +284,108 @@ func TestHandleFile_RendersTreeAndContent(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing %q in body", want)
 		}
+	}
+}
+
+func TestHandleIssues_RendersTable(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now(), CreatedBy: "me"}}
+	issues := []model.Issue{
+		{ID: "i1", Repo: "acme/a", Number: 1, Title: "first bug", Author: "alice", State: "open", CreatedAt: time.Now()},
+		{ID: "i2", Repo: "acme/a", Number: 2, Title: "second bug", Author: "bob", State: "open", CreatedAt: time.Now()},
+	}
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos, issues: issues}, nil)
+
+	code, body := getStatusAndBody(t, h, "/ui/r/acme/a/issues")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", code, body)
+	}
+	for _, want := range []string{"first bug", "second bug", "alice", "bob", "#1", "#2"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q", want)
+		}
+	}
+}
+
+func TestHandleIssues_DefaultsToOpen(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now(), CreatedBy: "me"}}
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, nil)
+
+	code, body := getStatusAndBody(t, h, "/ui/r/acme/a/issues")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", code, body)
+	}
+	// Active tab should be "open"
+	if !strings.Contains(body, `tab active`) {
+		t.Errorf("expected active tab in body")
+	}
+}
+
+func TestHandleIssues_UnknownRepo_Returns404(t *testing.T) {
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{miss: true}, nil)
+	code, _ := getStatusAndBody(t, h, "/ui/r/unknown/repo/issues")
+	if code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", code)
+	}
+}
+
+func TestHandleIssuesPartial_ReturnsFragment(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now(), CreatedBy: "me"}}
+	issues := []model.Issue{
+		{ID: "i1", Repo: "acme/a", Number: 3, Title: "partial issue", Author: "carol", State: "closed", CreatedAt: time.Now()},
+	}
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos, issues: issues}, nil)
+
+	code, body := getStatusAndBody(t, h, "/ui/_/r/acme/a/issues?state=closed")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d", code)
+	}
+	if strings.Contains(body, "<!doctype html>") {
+		t.Errorf("expected fragment, got full layout")
+	}
+	if !strings.Contains(body, "partial issue") {
+		t.Errorf("expected issue title in fragment, got: %s", body)
+	}
+}
+
+func TestHandleIssueDetail_RendersIssueAndComments(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now(), CreatedBy: "me"}}
+	issues := []model.Issue{
+		{ID: "i1", Repo: "acme/a", Number: 7, Title: "detail issue", Author: "dave", State: "open",
+			Body: "some description", Labels: []string{"bug", "priority"}, CreatedAt: time.Now()},
+	}
+	comments := []model.IssueComment{
+		{ID: "c1", IssueID: "i1", Repo: "acme/a", Body: "nice comment", Author: "eve", CreatedAt: time.Now()},
+	}
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos, issues: issues, issueComments: comments}, nil)
+
+	code, body := getStatusAndBody(t, h, "/ui/r/acme/a/issues/7")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", code, body)
+	}
+	for _, want := range []string{"detail issue", "dave", "some description", "bug", "priority", "nice comment", "eve"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q", want)
+		}
+	}
+}
+
+func TestHandleIssueDetail_NotFound_Returns404(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now(), CreatedBy: "me"}}
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, nil)
+
+	code, _ := getStatusAndBody(t, h, "/ui/r/acme/a/issues/999")
+	if code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", code)
+	}
+}
+
+func TestHandleIssueDetail_InvalidNumber_Returns400(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now(), CreatedBy: "me"}}
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, nil)
+
+	code, _ := getStatusAndBody(t, h, "/ui/r/acme/a/issues/notanumber")
+	if code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", code)
 	}
 }
 
