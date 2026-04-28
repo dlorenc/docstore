@@ -288,7 +288,17 @@ func funcMap() template.FuncMap {
 		"add":            func(a, b int) int { return a + b },
 		"urlPathEscape":  url.PathEscape,
 		"joinStrings":    strings.Join,
+		"repoShortName":  repoShortName,
 	}
+}
+
+// repoShortName returns the short name portion of a full "owner/name" repo
+// name. If there is no slash it returns the input unchanged.
+func repoShortName(fullName string) string {
+	if i := strings.LastIndex(fullName, "/"); i >= 0 {
+		return fullName[i+1:]
+	}
+	return fullName
 }
 
 // dict builds a map from alternating key/value pairs for template composition:

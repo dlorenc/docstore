@@ -2407,6 +2407,70 @@ func (h *Handler) handleCloseProposalUI(w http.ResponseWriter, r *http.Request) 
 
 	http.Redirect(w, r, "/ui/r/"+repoName+"/proposals/"+id, http.StatusSeeOther)}
 
+// handleUIDeleteOrg processes POST /ui/o/{org}/delete to delete an org.
+// The form must include a "confirm" field matching the org name.
+func (h *Handler) handleUIDeleteOrg(w http.ResponseWriter, r *http.Request) {
+	org := r.PathValue("org")
+	ctx := r.Context()
+
+	if err := r.ParseForm(); err != nil {
+		h.renderOrgPage(w, r, org, "invalid form data")
+		return
+	}
+	confirm := r.FormValue("confirm")
+	if confirm != org {
+		h.renderOrgPage(w, r, org, "confirmation does not match org name")
+		return
+	}
+
+	if err := h.write.DeleteOrg(ctx, org); err != nil {
+		switch {
+		case errors.Is(err, db.ErrOrgNotFound):
+			h.renderError(w, http.StatusNotFound, "org not found: "+org)
+		case errors.Is(err, db.ErrOrgHasRepos):
+			h.renderOrgPage(w, r, org, "cannot delete org: org still has repos; delete them first")
+		default:
+			slog.Error("ui delete org", "org", org, "error", err)
+			h.renderOrgPage(w, r, org, "could not delete org: "+err.Error())
+		}
+		return
+	}
+
+	http.Redirect(w, r, "/ui/", http.StatusSeeOther)
+}
+
+// handleUIDeleteRepo processes POST /ui/r/{owner}/{name}/-/delete-repo to delete a repo.
+// The form must include a "confirm" field matching the short repo name.
+func (h *Handler) handleUIDeleteRepo(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	repoName := owner + "/" + name
+	ctx := r.Context()
+
+	if err := r.ParseForm(); err != nil {
+		h.renderBranchesPage(w, r, owner, name, "invalid form data")
+		return
+	}
+	confirm := r.FormValue("confirm")
+	if confirm != name {
+		h.renderBranchesPage(w, r, owner, name, "confirmation does not match repo name")
+		return
+	}
+
+	if err := h.write.DeleteRepo(ctx, repoName); err != nil {
+		switch {
+		case errors.Is(err, db.ErrRepoNotFound):
+			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
+		default:
+			slog.Error("ui delete repo", "repo", repoName, "error", err)
+			h.renderBranchesPage(w, r, owner, name, "could not delete repo: "+err.Error())
+		}
+		return
+	}
+
+	http.Redirect(w, r, "/ui/", http.StatusSeeOther)
+}
+
 // chainToLogRows filters and converts ChainEntries to commitLogRows.
 // Only entries for the named branch are included.
 func chainToLogRows(entries []store.ChainEntry, branch string) []commitLogRow {

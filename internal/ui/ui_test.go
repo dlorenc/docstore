@@ -218,6 +218,8 @@ func (f *fakeWrite) CreateRelease(_ context.Context, _, _ string, _ int64, _, _ 
 	return &model.Release{}, nil
 }
 func (f *fakeWrite) DeleteRelease(_ context.Context, _, _ string) error { return nil }
+func (f *fakeWrite) DeleteOrg(_ context.Context, _ string) error       { return nil }
+func (f *fakeWrite) DeleteRepo(_ context.Context, _ string) error      { return nil }
 
 // Compile-time check that fakeWrite satisfies WriteStoreLite.
 var _ WriteStoreLite = (*fakeWrite)(nil)
