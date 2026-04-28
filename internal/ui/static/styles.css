@@ -417,3 +417,45 @@ details.form-section > summary {
 }
 details.form-section > summary:hover { text-decoration: underline; }
 details.form-section > summary::-webkit-details-marker { display: none; }
+
+/* Active state for repo-level navigation tabs. */
+.repo-tabs a.active { color: var(--text); background: var(--bg-3); }
+
+/* Standalone danger button (e.g. "Delete release"). */
+.btn-danger {
+  background: var(--bad-bg);
+  color: var(--bad);
+  border: 1px solid var(--bad);
+  border-radius: 4px;
+  padding: 5px 12px;
+  font-family: var(--mono);
+  font-size: 12px;
+  cursor: pointer;
+}
+.btn-danger:hover { background: var(--bad); color: var(--bg); }
+
+/* Compact danger button for inline revoke/remove actions. */
+.btn-danger-small {
+  background: transparent;
+  color: var(--bad);
+  border: 1px solid var(--bad);
+  border-radius: 3px;
+  padding: 2px 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  cursor: pointer;
+}
+.btn-danger-small:hover { background: var(--bad-bg); }
+
+/* Link-styled button for subtle inline actions. */
+.btn-link {
+  background: transparent;
+  border: none;
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: none;
+}
+.btn-link:hover { text-decoration: underline; }
