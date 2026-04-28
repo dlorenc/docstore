@@ -322,6 +322,8 @@ func (fakeWrite) CreateRelease(_ context.Context, _, _ string, _ int64, _, _ str
 	return &model.Release{}, nil
 }
 func (fakeWrite) DeleteRelease(_ context.Context, _, _ string) error { return nil }
+func (fakeWrite) DeleteOrg(_ context.Context, _ string) error        { return nil }
+func (fakeWrite) DeleteRepo(_ context.Context, _ string) error       { return nil }
 
 func fakeAssemble(_ context.Context, _, branch string) (*model.AgentContextResponse, error) {
 	t := time.Now()
