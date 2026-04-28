@@ -144,6 +144,10 @@ type WriteStore interface {
 	CreateIssueRef(ctx context.Context, repo string, number int64, refType model.IssueRefType, refID string) (*model.IssueRef, error)
 	ListIssueRefs(ctx context.Context, repo string, number int64) ([]model.IssueRef, error)
 	ListIssuesByRef(ctx context.Context, repo string, refType model.IssueRefType, refID string) ([]model.Issue, error)
+
+	// CI job queries (read-only)
+	GetCIJob(ctx context.Context, id string) (*model.CIJob, error)
+	ListCIJobs(ctx context.Context, repo string, branch, status *string, limit int) ([]model.CIJob, error)
 }
 
 // CommitStore is an alias for backward compatibility with tests.
@@ -270,6 +274,9 @@ func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore Wri
 	inner.HandleFunc("GET /subscriptions", s.handleListSubscriptions)
 	inner.HandleFunc("DELETE /subscriptions/{id}", s.handleDeleteSubscription)
 	inner.HandleFunc("POST /subscriptions/{id}/resume", s.handleResumeSubscription)
+
+	// CI job by-ID lookup (caller must have reader access to job.Repo).
+	inner.HandleFunc("GET /ci-jobs/{id}", s.handleGetCIJob)
 
 	// Global SSE stream (admin only).
 	inner.HandleFunc("GET /events", s.handleSSEGlobalEvents)
