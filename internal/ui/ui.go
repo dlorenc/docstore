@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/dlorenc/docstore/internal/model"
 	"github.com/dlorenc/docstore/internal/store"
@@ -78,6 +79,15 @@ type WriteStoreLite interface {
 	CreateProposal(ctx context.Context, repo, branch, baseBranch, title, description, author string) (*model.Proposal, error)
 	UpdateProposal(ctx context.Context, repo, proposalID string, title, description *string) (*model.Proposal, error)
 	CloseProposal(ctx context.Context, repo, proposalID string) error
+	// Org member/invite, role, and release write operations.
+	AddOrgMember(ctx context.Context, org, identity string, role model.OrgRole, invitedBy string) error
+	RemoveOrgMember(ctx context.Context, org, identity string) error
+	CreateInvite(ctx context.Context, org, email string, role model.OrgRole, invitedBy, token string, expiresAt time.Time) (*model.OrgInvite, error)
+	RevokeInvite(ctx context.Context, org, inviteID string) error
+	SetRole(ctx context.Context, repo, identity string, role model.RoleType) error
+	DeleteRole(ctx context.Context, repo, identity string) error
+	CreateRelease(ctx context.Context, repo, name string, sequence int64, body, createdBy string) (*model.Release, error)
+	DeleteRelease(ctx context.Context, repo, name string) error
 }
 
 // AssembleFn builds the full branch context snapshot used by the branch detail
@@ -204,6 +214,18 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /ui/r/{owner}/{name}/proposals", h.handleCreateProposalUI)
 	mux.HandleFunc("POST /ui/r/{owner}/{name}/proposals/{id}/edit", h.handleEditProposal)
 	mux.HandleFunc("POST /ui/r/{owner}/{name}/proposals/{id}/close", h.handleCloseProposalUI)
+	// Write operations: org members.
+	mux.HandleFunc("POST /ui/o/{org}/members", h.handleAddOrgMember)
+	mux.HandleFunc("POST /ui/o/{org}/members/{identity}/remove", h.handleRemoveOrgMember)
+	// Write operations: org invites.
+	mux.HandleFunc("POST /ui/o/{org}/invites", h.handleCreateInvite)
+	mux.HandleFunc("POST /ui/o/{org}/invites/{id}/revoke", h.handleRevokeInvite)
+	// Write operations: repo roles.
+	mux.HandleFunc("POST /ui/r/{owner}/{name}/roles", h.handleSetRole)
+	mux.HandleFunc("POST /ui/r/{owner}/{name}/roles/{identity}/delete", h.handleDeleteRole)
+	// Write operations: releases.
+	mux.HandleFunc("POST /ui/r/{owner}/{name}/releases", h.handleCreateRelease)
+	mux.HandleFunc("POST /ui/r/{owner}/{name}/releases/{rname}/delete", h.handleDeleteRelease)
 
 	mux.Handle("GET /ui/static/", http.StripPrefix("/ui/static/", http.FileServer(http.FS(h.staticSub))))
 }
