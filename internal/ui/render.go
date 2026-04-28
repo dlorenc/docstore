@@ -27,9 +27,14 @@ type templateSet struct {
 	commitDetail   *template.Template
 	issues         *template.Template
 	issuesRows     *template.Template
-	issueDetail    *template.Template
-	acceptInvite   *template.Template
-	org            *template.Template
+	issueDetail     *template.Template
+	acceptInvite    *template.Template
+	org             *template.Template
+	proposals       *template.Template
+	proposalsRows   *template.Template
+	proposalDetail  *template.Template
+	releases        *template.Template
+	releaseDetail   *template.Template
 }
 
 func parseTemplates(root fs.FS) (*templateSet, error) {
@@ -129,6 +134,32 @@ func parseTemplates(root fs.FS) (*templateSet, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse org: %w", err)
 	}
+	// proposals full page pulls in proposals_rows.html as a partial.
+	proposals, err := template.New("layout.html").
+		Funcs(funcMap()).
+		ParseFS(root,
+			"templates/layout.html",
+			"templates/proposals.html",
+			"templates/proposals_rows.html")
+	if err != nil {
+		return nil, fmt.Errorf("parse proposals: %w", err)
+	}
+	proposalsRows, err := loadFragment("proposals_rows.html")
+	if err != nil {
+		return nil, fmt.Errorf("parse proposals_rows: %w", err)
+	}
+	proposalDetail, err := load("proposal_detail.html")
+	if err != nil {
+		return nil, fmt.Errorf("parse proposal_detail: %w", err)
+	}
+	releases, err := load("releases.html")
+	if err != nil {
+		return nil, fmt.Errorf("parse releases: %w", err)
+	}
+	releaseDetail, err := load("release_detail.html")
+	if err != nil {
+		return nil, fmt.Errorf("parse release_detail: %w", err)
+	}
 	return &templateSet{
 		repos:          repos,
 		branches:       branches,
@@ -143,9 +174,14 @@ func parseTemplates(root fs.FS) (*templateSet, error) {
 		commitDetail:   commitDetail,
 		issues:         issues,
 		issuesRows:     issuesRows,
-		issueDetail:    issueDetail,
-		acceptInvite:   acceptInvite,
-		org:            org,
+		issueDetail:     issueDetail,
+		acceptInvite:    acceptInvite,
+		org:             org,
+		proposals:       proposals,
+		proposalsRows:   proposalsRows,
+		proposalDetail:  proposalDetail,
+		releases:        releases,
+		releaseDetail:   releaseDetail,
 	}, nil
 }
 

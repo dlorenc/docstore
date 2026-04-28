@@ -320,6 +320,25 @@ pre.code .text { white-space: pre; padding-right: 12px; }
 }
 .checks-collapsed:last-child { border-bottom: 0; }
 
+/* State filter tabs used on proposals page. */
+.tab-bar {
+  display: flex;
+  gap: 2px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0;
+}
+.tab-bar .tab {
+  padding: 6px 14px;
+  color: var(--text-dim);
+  text-decoration: none;
+  font-size: 12px;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.tab-bar .tab:hover { color: var(--text); text-decoration: none; }
+.tab-bar .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
 .err-box {
   text-align: center;
   padding: 60px 20px;
