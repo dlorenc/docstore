@@ -16,15 +16,21 @@
 </nav>
 
 <div class="tab-bar" data-tab-group>
-  <a href="/ui/r/{{.Repo.Name}}/issues?state=open"
-     data-tab-url="/ui/_/r/{{.Repo.Name}}/issues?state=open"
+  <a href="/ui/r/{{.Repo.Name}}/issues?state=open{{if .Label}}&label={{.Label}}{{end}}"
+     data-tab-url="/ui/_/r/{{.Repo.Name}}/issues?state=open{{if .Label}}&label={{.Label}}{{end}}"
      data-tab-target="#issues-table"
      class="tab{{if eq .State "open"}} active{{end}}">Open</a>
-  <a href="/ui/r/{{.Repo.Name}}/issues?state=closed"
-     data-tab-url="/ui/_/r/{{.Repo.Name}}/issues?state=closed"
+  <a href="/ui/r/{{.Repo.Name}}/issues?state=closed{{if .Label}}&label={{.Label}}{{end}}"
+     data-tab-url="/ui/_/r/{{.Repo.Name}}/issues?state=closed{{if .Label}}&label={{.Label}}{{end}}"
      data-tab-target="#issues-table"
      class="tab{{if eq .State "closed"}} active{{end}}">Closed</a>
 </div>
+
+{{if .Label}}
+<div class="filter-chips">
+  <span class="chip">label: {{.Label}} <a href="/ui/r/{{.Repo.Name}}/issues?state={{.State}}" class="chip-clear" aria-label="clear label filter">&#x2715;</a></span>
+</div>
+{{end}}
 
 <div id="issues-table">
   {{template "issues_rows.html" .}}

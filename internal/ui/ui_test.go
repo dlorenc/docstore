@@ -87,7 +87,7 @@ func (f *fakeWrite) ListRolesByIdentity(_ context.Context, _ string) ([]model.Re
 func (f *fakeWrite) ListCheckRuns(_ context.Context, _, _ string, _ *int64, _ bool) ([]model.CheckRun, error) {
 	return nil, nil
 }
-func (f *fakeWrite) ListIssues(_ context.Context, _, _, _ string) ([]model.Issue, error) {
+func (f *fakeWrite) ListIssues(_ context.Context, _, _, _, _ string) ([]model.Issue, error) {
 	return f.issues, nil
 }
 func (f *fakeWrite) GetIssue(_ context.Context, _ string, number int64) (*model.Issue, error) {

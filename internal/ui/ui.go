@@ -41,7 +41,7 @@ type WriteStoreLite interface {
 	ListRoles(ctx context.Context, repo string) ([]model.Role, error)
 	ListRolesByIdentity(ctx context.Context, identity string) ([]model.RepoRole, error)
 	ListCheckRuns(ctx context.Context, repo, branch string, atSeq *int64, history bool) ([]model.CheckRun, error)
-	ListIssues(ctx context.Context, repo, stateFilter, authorFilter string) ([]model.Issue, error)
+	ListIssues(ctx context.Context, repo, stateFilter, authorFilter, labelFilter string) ([]model.Issue, error)
 	GetIssue(ctx context.Context, repo string, number int64) (*model.Issue, error)
 	ListIssueComments(ctx context.Context, repo string, number int64) ([]model.IssueComment, error)
 	GetInviteByToken(ctx context.Context, org, token string) (*model.OrgInvite, error)

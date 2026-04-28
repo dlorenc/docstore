@@ -134,7 +134,8 @@ func (s *Store) GetIssue(ctx context.Context, repo string, number int64) (*model
 
 // ListIssues returns issues for a repo ordered by number DESC.
 // stateFilter, if non-empty, restricts to that state. authorFilter, if non-empty, restricts to that author.
-func (s *Store) ListIssues(ctx context.Context, repo, stateFilter, authorFilter string) ([]model.Issue, error) {
+// labelFilter, if non-empty, restricts to issues whose labels array contains that label.
+func (s *Store) ListIssues(ctx context.Context, repo, stateFilter, authorFilter, labelFilter string) ([]model.Issue, error) {
 	q := `SELECT ` + issueColumns + ` FROM issues WHERE repo = $1`
 	args := []any{repo}
 	if stateFilter != "" {
@@ -144,6 +145,10 @@ func (s *Store) ListIssues(ctx context.Context, repo, stateFilter, authorFilter 
 	if authorFilter != "" {
 		args = append(args, authorFilter)
 		q += fmt.Sprintf(" AND author = $%d", len(args))
+	}
+	if labelFilter != "" {
+		args = append(args, labelFilter)
+		q += fmt.Sprintf(" AND $%d = ANY(labels)", len(args))
 	}
 	q += " ORDER BY number DESC"
 

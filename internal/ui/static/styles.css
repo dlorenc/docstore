@@ -460,3 +460,38 @@ details.form-section > summary::-webkit-details-marker { display: none; }
   text-decoration: none;
 }
 .btn-link:hover { text-decoration: underline; }
+
+/* Label badges in issue list — clickable to filter by label. */
+.badge-label {
+  background: var(--bg-3);
+  color: var(--text-dim);
+  text-decoration: none;
+  cursor: pointer;
+}
+.badge-label:hover { background: var(--accent); color: #fff; }
+
+/* Active filter chips shown above tables. */
+.filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 12px;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 3px;
+  font-size: 11px;
+  background: var(--bg-3);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+.chip-clear {
+  color: var(--text-dim);
+  text-decoration: none;
+  font-size: 12px;
+  line-height: 1;
+}
+.chip-clear:hover { color: var(--bad); }
