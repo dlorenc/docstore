@@ -4,6 +4,15 @@
   <h1>{{.Repo.Name}} / issues</h1>
 </div>
 
+<nav class="repo-tabs">
+  <a href="/ui/r/{{.Repo.Name}}">branches</a>
+  <a href="/ui/r/{{.Repo.Name}}/issues" class="active">issues</a>
+  <a href="/ui/r/{{.Repo.Name}}/releases">releases</a>
+  <a href="/ui/r/{{.Repo.Name}}/proposals">proposals</a>
+  <a href="/ui/r/{{.Repo.Name}}/ci-jobs">ci-jobs</a>
+  <a href="/ui/r/{{.Repo.Name}}/b/main/log">log</a>
+</nav>
+
 <div class="tab-bar" data-tab-group>
   <a href="/ui/r/{{.Repo.Name}}/issues?state=open"
      data-tab-url="/ui/_/r/{{.Repo.Name}}/issues?state=open"

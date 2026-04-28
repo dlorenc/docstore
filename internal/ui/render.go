@@ -36,6 +36,8 @@ type templateSet struct {
 	proposalDetail  *template.Template
 	releases        *template.Template
 	releaseDetail   *template.Template
+	ciJobs          *template.Template
+	ciJobDetail     *template.Template
 }
 
 func parseTemplates(root fs.FS) (*templateSet, error) {
@@ -161,6 +163,14 @@ func parseTemplates(root fs.FS) (*templateSet, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse release_detail: %w", err)
 	}
+	ciJobs, err := load("ci_jobs.html")
+	if err != nil {
+		return nil, fmt.Errorf("parse ci_jobs: %w", err)
+	}
+	ciJobDetail, err := load("ci_job_detail.html")
+	if err != nil {
+		return nil, fmt.Errorf("parse ci_job_detail: %w", err)
+	}
 	return &templateSet{
 		repos:          repos,
 		branches:       branches,
@@ -183,6 +193,8 @@ func parseTemplates(root fs.FS) (*templateSet, error) {
 		proposalDetail:  proposalDetail,
 		releases:        releases,
 		releaseDetail:   releaseDetail,
+		ciJobs:          ciJobs,
+		ciJobDetail:     ciJobDetail,
 	}, nil
 }
 
