@@ -28,7 +28,7 @@ type ReadStore interface {
 }
 
 // WriteStoreLite is the subset of server.WriteStore that the UI needs for
-// listing repos and orgs, and for org invite acceptance.
+// listing repos and orgs, org invite acceptance, and issue write operations.
 type WriteStoreLite interface {
 	ListRepos(ctx context.Context) ([]model.Repo, error)
 	ListOrgs(ctx context.Context) ([]model.Org, error)
@@ -53,6 +53,16 @@ type WriteStoreLite interface {
 	GetCIJob(ctx context.Context, id string) (*model.CIJob, error)
 	CreateOrg(ctx context.Context, name, createdBy string) (*model.Org, error)
 	CreateRepo(ctx context.Context, req model.CreateRepoRequest) (*model.Repo, error)
+
+	// Issue write operations.
+	CreateIssue(ctx context.Context, repo, title, body, author string, labels []string) (*model.Issue, error)
+	UpdateIssue(ctx context.Context, repo string, number int64, title, body *string, labels *[]string) (*model.Issue, error)
+	CloseIssue(ctx context.Context, repo string, number int64, reason model.IssueCloseReason, closedBy string) (*model.Issue, error)
+	ReopenIssue(ctx context.Context, repo string, number int64) (*model.Issue, error)
+	CreateIssueComment(ctx context.Context, repo string, number int64, body, author string) (*model.IssueComment, error)
+	UpdateIssueComment(ctx context.Context, repo, id, body string) (*model.IssueComment, error)
+	DeleteIssueComment(ctx context.Context, repo, id string) error
+	CreateIssueRef(ctx context.Context, repo string, number int64, refType model.IssueRefType, refID string) (*model.IssueRef, error)
 }
 
 // AssembleFn builds the full branch context snapshot used by the branch detail
@@ -141,7 +151,16 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /ui/_/r/{owner}/{name}/b/{branch}/check-history", h.handleCheckHistoryPartial)
 	mux.HandleFunc("GET /ui/r/{owner}/{name}/f/{path...}", h.handleFile)
 	mux.HandleFunc("GET /ui/r/{owner}/{name}/issues", h.handleIssues)
+	mux.HandleFunc("GET /ui/r/{owner}/{name}/issues/new", h.handleNewIssue)
+	mux.HandleFunc("POST /ui/r/{owner}/{name}/issues/new", h.handleNewIssue)
 	mux.HandleFunc("GET /ui/r/{owner}/{name}/issues/{number}", h.handleIssueDetail)
+	mux.HandleFunc("POST /ui/r/{owner}/{name}/issues/{number}/edit", h.handleEditIssue)
+	mux.HandleFunc("POST /ui/r/{owner}/{name}/issues/{number}/close", h.handleIssueClose)
+	mux.HandleFunc("POST /ui/r/{owner}/{name}/issues/{number}/reopen", h.handleIssueReopen)
+	mux.HandleFunc("POST /ui/r/{owner}/{name}/issues/{number}/comments", h.handleCreateIssueComment)
+	mux.HandleFunc("POST /ui/r/{owner}/{name}/issues/{number}/comments/{id}/edit", h.handleEditIssueComment)
+	mux.HandleFunc("POST /ui/r/{owner}/{name}/issues/{number}/comments/{id}/delete", h.handleDeleteIssueComment)
+	mux.HandleFunc("POST /ui/r/{owner}/{name}/issues/{number}/refs", h.handleAddIssueRef)
 	mux.HandleFunc("GET /ui/_/r/{owner}/{name}/issues", h.handleIssuesPartial)
 	mux.HandleFunc("GET /ui/r/{owner}/{name}/proposals", h.handleProposals)
 	mux.HandleFunc("GET /ui/_/r/{owner}/{name}/proposals", h.handleProposalsPartial)
