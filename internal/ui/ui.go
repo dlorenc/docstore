@@ -29,7 +29,7 @@ type ReadStore interface {
 
 // WriteStoreLite is the subset of server.WriteStore that the UI needs for
 // listing repos and orgs, org invite acceptance, issue write operations,
-// and branch write operations.
+// branch write operations, and review/comment/proposal write operations.
 type WriteStoreLite interface {
 	ListRepos(ctx context.Context) ([]model.Repo, error)
 	ListOrgs(ctx context.Context) ([]model.Org, error)
@@ -70,6 +70,14 @@ type WriteStoreLite interface {
 	UpdateBranchDraft(ctx context.Context, repo, name string, draft bool) error
 	DeleteBranch(ctx context.Context, repo, name string) error
 	SetBranchAutoMerge(ctx context.Context, repo, name string, autoMerge bool) error
+
+	// Review/comment/proposal write operations.
+	CreateReview(ctx context.Context, repo, branch, reviewer string, status model.ReviewStatus, body string) (*model.Review, error)
+	CreateReviewComment(ctx context.Context, repo, branch, path, versionID, body, author string, reviewID *string) (*model.ReviewComment, error)
+	DeleteReviewComment(ctx context.Context, repo, id string) error
+	CreateProposal(ctx context.Context, repo, branch, baseBranch, title, description, author string) (*model.Proposal, error)
+	UpdateProposal(ctx context.Context, repo, proposalID string, title, description *string) (*model.Proposal, error)
+	CloseProposal(ctx context.Context, repo, proposalID string) error
 }
 
 // AssembleFn builds the full branch context snapshot used by the branch detail
@@ -188,5 +196,14 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /ui/r/{owner}/{name}/-/delete-branch", h.handleUIDeleteBranch)
 	mux.HandleFunc("POST /ui/r/{owner}/{name}/-/promote-branch", h.handleUIPromoteBranch)
 	mux.HandleFunc("POST /ui/r/{owner}/{name}/-/set-auto-merge", h.handleUISetAutoMerge)
+
+	// Write operations — POST forms from branch detail and proposals pages.
+	mux.HandleFunc("POST /ui/r/{owner}/{name}/b/{branch}/review", h.handleSubmitReview)
+	mux.HandleFunc("POST /ui/r/{owner}/{name}/b/{branch}/comment", h.handlePostComment)
+	mux.HandleFunc("POST /ui/r/{owner}/{name}/b/{branch}/comment/{id}/delete", h.handleDeleteComment)
+	mux.HandleFunc("POST /ui/r/{owner}/{name}/proposals", h.handleCreateProposalUI)
+	mux.HandleFunc("POST /ui/r/{owner}/{name}/proposals/{id}/edit", h.handleEditProposal)
+	mux.HandleFunc("POST /ui/r/{owner}/{name}/proposals/{id}/close", h.handleCloseProposalUI)
+
 	mux.Handle("GET /ui/static/", http.StripPrefix("/ui/static/", http.FileServer(http.FS(h.staticSub))))
 }
