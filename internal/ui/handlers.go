@@ -146,6 +146,18 @@ type releaseDetailPage struct {
 	Release *model.Release
 }
 
+type issuesPage struct {
+	Repo   model.Repo
+	Issues []model.Issue
+	State  string
+}
+
+type issueDetailPage struct {
+	Repo     model.Repo
+	Issue    *model.Issue
+	Comments []model.IssueComment
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -513,6 +525,77 @@ func (h *Handler) handleFile(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleIssues renders the issues list page for a repo with open/closed tab state.
+func (h *Handler) handleIssues(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	repoName := owner + "/" + name
+	ctx := r.Context()
+
+	state := r.URL.Query().Get("state")
+	if state != "open" && state != "closed" {
+		state = "open"
+	}
+
+	repo, err := h.write.GetRepo(ctx, repoName)
+	if err != nil {
+		if errors.Is(err, db.ErrRepoNotFound) {
+			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
+			return
+		}
+		slog.Error("ui get repo", "repo", repoName, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load repo")
+		return
+	}
+
+	issues, err := h.write.ListIssues(ctx, repoName, state, "")
+	if err != nil {
+		slog.Error("ui list issues", "repo", repoName, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load issues")
+		return
+	}
+
+	page := issuesPage{Repo: *repo, Issues: issues, State: state}
+	h.render(w, h.tmpl.issues, "layout.html", pageData{
+		Title: repoName + " / issues",
+		Breadcrumbs: []crumb{
+			{Label: "repos", Href: "/ui/"},
+			{Label: repoName, Href: "/ui/r/" + repoName},
+			{Label: "issues", Href: ""},
+		},
+		Body: page,
+	})
+}
+
+// handleIssuesPartial returns just the issues table rows for tab-filter swapping.
+func (h *Handler) handleIssuesPartial(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	repoName := owner + "/" + name
+	ctx := r.Context()
+
+	state := r.URL.Query().Get("state")
+	if state != "open" && state != "closed" {
+		state = "open"
+	}
+
+	repo, err := h.write.GetRepo(ctx, repoName)
+	if err != nil {
+		slog.Error("ui issues partial get repo", "repo", repoName, "error", err)
+		http.Error(w, "query failed", http.StatusInternalServerError)
+		return
+	}
+
+	issues, err := h.write.ListIssues(ctx, repoName, state, "")
+	if err != nil {
+		slog.Error("ui issues partial list", "repo", repoName, "error", err)
+		http.Error(w, "query failed", http.StatusInternalServerError)
+		return
+	}
+
+	h.render(w, h.tmpl.issuesRows, "issues_rows.html", issuesPage{Repo: *repo, Issues: issues, State: state})
+}
+
 // handleReviewCommentsPartial returns the inline review comments for a branch,
 // grouped by file path, as an HTMX partial.
 func (h *Handler) handleReviewCommentsPartial(w http.ResponseWriter, r *http.Request) {
@@ -742,6 +825,62 @@ func (h *Handler) handleReleaseDetail(w http.ResponseWriter, r *http.Request) {
 			{Label: rname, Href: ""},
 		},
 		Body: releaseDetailPage{Repo: *repo, Release: release},
+	})
+}
+
+// handleIssueDetail renders the detail view for a single issue.
+func (h *Handler) handleIssueDetail(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	numberStr := r.PathValue("number")
+	repoName := owner + "/" + name
+	ctx := r.Context()
+
+	number, err := strconv.ParseInt(numberStr, 10, 64)
+	if err != nil {
+		h.renderError(w, http.StatusBadRequest, "invalid issue number")
+		return
+	}
+
+	repo, err := h.write.GetRepo(ctx, repoName)
+	if err != nil {
+		if errors.Is(err, db.ErrRepoNotFound) {
+			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
+			return
+		}
+		slog.Error("ui get repo", "repo", repoName, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load repo")
+		return
+	}
+
+	issue, err := h.write.GetIssue(ctx, repoName, number)
+	if err != nil {
+		if errors.Is(err, db.ErrIssueNotFound) {
+			h.renderError(w, http.StatusNotFound, "issue not found")
+			return
+		}
+		slog.Error("ui get issue", "repo", repoName, "number", number, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load issue")
+		return
+	}
+
+	comments, err := h.write.ListIssueComments(ctx, repoName, number)
+	if err != nil {
+		slog.Error("ui list issue comments", "repo", repoName, "number", number, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load comments")
+		return
+	}
+
+	page := issueDetailPage{Repo: *repo, Issue: issue, Comments: comments}
+	h.render(w, h.tmpl.issueDetail, "layout.html", pageData{
+		Title: repoName + " / issue #" + numberStr,
+		Breadcrumbs: []crumb{
+			{Label: "repos", Href: "/ui/"},
+			{Label: repoName, Href: "/ui/r/" + repoName},
+			{Label: "issues", Href: "/ui/r/" + repoName + "/issues"},
+			{Label: "#" + numberStr, Href: ""},
+		},
+		Body: page,
 	})
 }
 

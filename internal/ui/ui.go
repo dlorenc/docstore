@@ -43,6 +43,9 @@ type WriteStoreLite interface {
 	GetRelease(ctx context.Context, repo, name string) (*model.Release, error)
 	ListInvites(ctx context.Context, org string) ([]model.OrgInvite, error)
 	ListOrgRepos(ctx context.Context, owner string) ([]model.Repo, error)
+	ListIssues(ctx context.Context, repo, stateFilter, authorFilter string) ([]model.Issue, error)
+	GetIssue(ctx context.Context, repo string, number int64) (*model.Issue, error)
+	ListIssueComments(ctx context.Context, repo string, number int64) ([]model.IssueComment, error)
 }
 
 // AssembleFn builds the full branch context snapshot used by the branch detail
@@ -127,5 +130,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /ui/r/{owner}/{name}/proposals/{id}", h.handleProposalDetail)
 	mux.HandleFunc("GET /ui/r/{owner}/{name}/releases", h.handleReleases)
 	mux.HandleFunc("GET /ui/r/{owner}/{name}/releases/{rname}", h.handleReleaseDetail)
+	mux.HandleFunc("GET /ui/r/{owner}/{name}/issues", h.handleIssues)
+	mux.HandleFunc("GET /ui/r/{owner}/{name}/issues/{number}", h.handleIssueDetail)
+	mux.HandleFunc("GET /ui/_/r/{owner}/{name}/issues", h.handleIssuesPartial)
 	mux.Handle("GET /ui/static/", http.StripPrefix("/ui/static/", http.FileServer(http.FS(h.staticSub))))
 }

@@ -31,6 +31,9 @@ type templateSet struct {
 	releases       *template.Template
 	releaseDetail  *template.Template
 	org            *template.Template
+	issues         *template.Template
+	issuesRows     *template.Template
+	issueDetail    *template.Template
 }
 
 func parseTemplates(root fs.FS) (*templateSet, error) {
@@ -134,6 +137,24 @@ func parseTemplates(root fs.FS) (*templateSet, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse org: %w", err)
 	}
+	// issues pulls in issues_rows.html so the initial page render includes the table.
+	issues, err := template.New("layout.html").
+		Funcs(funcMap()).
+		ParseFS(root,
+			"templates/layout.html",
+			"templates/issues.html",
+			"templates/issues_rows.html")
+	if err != nil {
+		return nil, fmt.Errorf("parse issues: %w", err)
+	}
+	issuesRows, err := loadFragment("issues_rows.html")
+	if err != nil {
+		return nil, fmt.Errorf("parse issues_rows: %w", err)
+	}
+	issueDetail, err := load("issue_detail.html")
+	if err != nil {
+		return nil, fmt.Errorf("parse issue_detail: %w", err)
+	}
 	return &templateSet{
 		repos:          repos,
 		branches:       branches,
@@ -152,6 +173,9 @@ func parseTemplates(root fs.FS) (*templateSet, error) {
 		releases:       releases,
 		releaseDetail:  releaseDetail,
 		org:            org,
+		issues:         issues,
+		issuesRows:     issuesRows,
+		issueDetail:    issueDetail,
 	}, nil
 }
 
@@ -214,16 +238,17 @@ type errorInfo struct {
 
 func funcMap() template.FuncMap {
 	return template.FuncMap{
-		"relTime":    relTime,
-		"shortHash":  shortHash,
+		"relTime":     relTime,
+		"relTimep":    relTimep,
+		"shortHash":   shortHash,
 		"statusClass": statusClass,
-		"diffClass":  diffClass,
-		"joinPath":   joinPath,
+		"diffClass":   diffClass,
+		"joinPath":    joinPath,
 		"safeContent": safeContent,
-		"hasPrefix":  strings.HasPrefix,
-		"lines":      splitLines,
-		"dict":       dict,
-		"add":        func(a, b int) int { return a + b },
+		"hasPrefix":   strings.HasPrefix,
+		"lines":       splitLines,
+		"dict":        dict,
+		"add":         func(a, b int) int { return a + b },
 	}
 }
 
@@ -258,6 +283,13 @@ func relTime(t time.Time) string {
 	default:
 		return t.Format("2006-01-02")
 	}
+}
+
+func relTimep(t *time.Time) string {
+	if t == nil {
+		return ""
+	}
+	return relTime(*t)
 }
 
 func shortHash(s string) string {

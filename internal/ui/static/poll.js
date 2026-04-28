@@ -47,13 +47,16 @@
     var targetSel = el.getAttribute('data-tab-target');
     if (!url || !targetSel) return;
     e.preventDefault();
-    var target = document.querySelector(targetSel);
+    var target = document.querySelector(targetSel) || document.getElementById(targetSel);
     if (!target) return;
     // Update active class on siblings within [data-tab-group].
     var group = el.closest('[data-tab-group]');
     if (group) {
       var tabs = group.querySelectorAll('[data-tab-url]');
       for (var i = 0; i < tabs.length; i++) tabs[i].classList.remove('active');
+    } else {
+      var siblings = el.parentElement ? el.parentElement.querySelectorAll('[data-tab-url]') : [];
+      for (var i = 0; i < siblings.length; i++) siblings[i].classList.remove('active');
     }
     el.classList.add('active');
     fetch(url, { credentials: 'same-origin' }).then(function (r) {

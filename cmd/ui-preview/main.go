@@ -184,6 +184,45 @@ func (fakeWrite) GetRelease(_ context.Context, _, name string) (*model.Release, 
 	return r, nil
 }
 
+func (fakeWrite) ListIssues(_ context.Context, repo, state, _ string) ([]model.Issue, error) {
+	t := time.Now()
+	if state == "closed" {
+		return []model.Issue{
+			{ID: "i3", Repo: repo, Number: 3, Title: "closed issue example", Author: "sam@acme",
+				State: "closed", Labels: []string{"wontfix"}, CreatedAt: t.Add(-10 * 24 * time.Hour)},
+		}, nil
+	}
+	return []model.Issue{
+		{ID: "i1", Repo: repo, Number: 1, Title: "add pagination to file tree", Author: "ajay@acme",
+			State: "open", Labels: []string{"enhancement"}, Body: "The file tree doesn't paginate yet.", CreatedAt: t.Add(-2 * 24 * time.Hour)},
+		{ID: "i2", Repo: repo, Number: 2, Title: "branch detail page flickers on reload", Author: "lee@beta",
+			State: "open", Labels: []string{"bug"}, Body: "Seen in Chrome 124.", CreatedAt: t.Add(-5 * time.Hour)},
+	}, nil
+}
+
+func (fakeWrite) GetIssue(_ context.Context, repo string, number int64) (*model.Issue, error) {
+	all, _ := (fakeWrite{}).ListIssues(context.Background(), repo, "open", "")
+	for _, iss := range all {
+		if iss.Number == number {
+			return &iss, nil
+		}
+	}
+	closed, _ := (fakeWrite{}).ListIssues(context.Background(), repo, "closed", "")
+	for _, iss := range closed {
+		if iss.Number == number {
+			return &iss, nil
+		}
+	}
+	return nil, db.ErrIssueNotFound
+}
+
+func (fakeWrite) ListIssueComments(_ context.Context, _ string, _ int64) ([]model.IssueComment, error) {
+	t := time.Now()
+	return []model.IssueComment{
+		{ID: "c1", Body: "Agreed, this would be very helpful.", Author: "sam@acme", CreatedAt: t.Add(-1 * time.Hour)},
+		{ID: "c2", Body: "I can take this one.", Author: "ajay@acme", CreatedAt: t.Add(-30 * time.Minute)},
+	}, nil
+}
 func fakeAssemble(_ context.Context, _, branch string) (*model.AgentContextResponse, error) {
 	t := time.Now()
 	vid := func(s string) *string { return &s }
