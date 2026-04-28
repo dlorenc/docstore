@@ -67,6 +67,7 @@ type filePage struct {
 	Tree        []treeRow
 	ParentDir   string
 	FileHistory []store.FileHistoryEntry
+	Branches    []string
 }
 
 type fileView struct {
@@ -316,6 +317,17 @@ func (h *Handler) handleFile(w http.ResponseWriter, r *http.Request) {
 	}
 	tree := siblingTreeRows(entries, parentDir)
 
+	branchList, err := h.read.ListBranches(r.Context(), repoName, "", true, false)
+	if err != nil {
+		slog.Error("ui list branches for file page", "repo", repoName, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load branches")
+		return
+	}
+	branchNames := make([]string, 0, len(branchList))
+	for _, b := range branchList {
+		branchNames = append(branchNames, b.Name)
+	}
+
 	page := filePage{
 		Repo:      *repo,
 		Branch:    branch,
@@ -323,6 +335,7 @@ func (h *Handler) handleFile(w http.ResponseWriter, r *http.Request) {
 		Path:      path,
 		Tree:      tree,
 		ParentDir: parentDir,
+		Branches:  branchNames,
 	}
 
 	if path != "" {

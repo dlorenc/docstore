@@ -1,6 +1,6 @@
 {{define "content"}}
 {{with .Body}}
-<div class="headline"><h1>{{.Repo.Name}}</h1><span class="meta">owner {{.Repo.Owner}} · {{relTime .Repo.CreatedAt}}</span></div>
+<div class="headline"><h1>{{.Repo.Name}}</h1><span class="meta">owner {{.Repo.Owner}} · {{relTime .Repo.CreatedAt}} · <a href="/repos/{{.Repo.Name}}/-/archive">download archive</a></span></div>
 
 <div class="filter-bar"><input type="search" data-branch-filter placeholder="filter branches by name…" autocomplete="off"></div>
 
