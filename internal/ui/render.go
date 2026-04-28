@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -253,8 +254,9 @@ func funcMap() template.FuncMap {
 		"safeContent": safeContent,
 		"hasPrefix":   strings.HasPrefix,
 		"lines":       splitLines,
-		"dict":        dict,
-		"add":         func(a, b int) int { return a + b },
+		"dict":           dict,
+		"add":            func(a, b int) int { return a + b },
+		"urlPathEscape":  url.PathEscape,
 	}
 }
 

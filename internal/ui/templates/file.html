@@ -44,7 +44,7 @@
         <tbody>
         {{range $page.FileHistory}}
         <tr>
-          <td><a href="/ui/r/{{$page.Repo.Name}}/b/{{$page.Branch}}/c/{{.Sequence}}">{{.Sequence}}</a></td>
+          <td><a href="/ui/r/{{$page.Repo.Name}}/b/{{urlPathEscape $page.Branch}}/c/{{.Sequence}}">{{.Sequence}}</a></td>
           <td>{{.Message}}</td>
           <td>{{.Author}}</td>
           <td class="meta">{{relTime .CreatedAt}}</td>

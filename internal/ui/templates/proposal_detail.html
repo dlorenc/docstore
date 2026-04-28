@@ -17,7 +17,7 @@
   </div>
   <div class="row">
     <div><strong>branch</strong></div>
-    <div><a href="/ui/r/{{.Repo.Name}}/b/{{.Proposal.Branch}}">{{.Proposal.Branch}}</a></div>
+    <div><a href="/ui/r/{{.Repo.Name}}/b/{{urlPathEscape .Proposal.Branch}}">{{.Proposal.Branch}}</a></div>
   </div>
   <div class="row">
     <div><strong>id</strong></div>
