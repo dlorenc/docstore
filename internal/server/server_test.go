@@ -514,6 +514,14 @@ func (m *mockStore) ListIssuesByRef(ctx context.Context, repo string, refType mo
 	return []model.Issue{}, nil
 }
 
+func (m *mockStore) GetCIJob(_ context.Context, _ string) (*model.CIJob, error) {
+	return nil, nil
+}
+
+func (m *mockStore) ListCIJobs(_ context.Context, _ string, _, _ *string, _ int) ([]model.CIJob, error) {
+	return []model.CIJob{}, nil
+}
+
 func TestHealthEndpoint(t *testing.T) {
 	// /healthz is exempt from IAP auth, so devIdentity="" is fine here.
 	srv := New(nil, nil, "", "")
