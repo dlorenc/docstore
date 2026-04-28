@@ -1,0 +1,63 @@
+{{define "content"}}
+{{with .Body}}
+<div class="headline"><h1>{{.Org}}</h1></div>
+
+<h2>Repos ({{len .Repos}})</h2>
+<div class="card">
+  {{if not .Repos}}
+    <div class="empty">No repos.</div>
+  {{else}}
+  <div class="row-list">
+    {{range .Repos}}
+    <a href="/ui/r/{{.Name}}">
+      <span>{{.Name}}</span>
+      <span class="meta">by {{.CreatedBy}} · {{relTime .CreatedAt}}</span>
+    </a>
+    {{end}}
+  </div>
+  {{end}}
+</div>
+
+<h2>Members ({{len .Members}})</h2>
+<div class="card">
+  {{if not .Members}}
+    <div class="empty">No members.</div>
+  {{else}}
+  <table class="grid">
+    <thead><tr><th>identity</th><th>role</th><th>invited by</th><th>joined</th></tr></thead>
+    <tbody>
+    {{range .Members}}
+    <tr>
+      <td>{{.Identity}}</td>
+      <td><span class="badge {{statusClass .Role}}">{{.Role}}</span></td>
+      <td>{{.InvitedBy}}</td>
+      <td>{{relTime .CreatedAt}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{end}}
+</div>
+
+<h2>Pending invites ({{len .Invites}})</h2>
+<div class="card">
+  {{if not .Invites}}
+    <div class="empty">No pending invites.</div>
+  {{else}}
+  <table class="grid">
+    <thead><tr><th>email</th><th>role</th><th>invited by</th><th>expires</th></tr></thead>
+    <tbody>
+    {{range .Invites}}
+    <tr>
+      <td>{{.Email}}</td>
+      <td><span class="badge {{statusClass .Role}}">{{.Role}}</span></td>
+      <td>{{.InvitedBy}}</td>
+      <td>{{relTime .ExpiresAt}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{end}}
+</div>
+{{end}}
+{{end}}
