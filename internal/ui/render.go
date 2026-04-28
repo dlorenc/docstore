@@ -2,9 +2,9 @@ package ui
 
 import (
 	"bytes"
-	"embed"
 	"fmt"
 	"html/template"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -22,7 +22,7 @@ type templateSet struct {
 	errorPage     *template.Template
 }
 
-func parseTemplates(root embed.FS) (*templateSet, error) {
+func parseTemplates(root fs.FS) (*templateSet, error) {
 	load := func(page string) (*template.Template, error) {
 		return template.New("layout.html").
 			Funcs(funcMap()).
