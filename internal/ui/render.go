@@ -224,7 +224,14 @@ func parseTemplates(root fs.FS) (*templateSet, error) {
 
 // render executes the named template against data and writes it to w as HTML.
 // On execution error it logs and emits a 500; templates must not panic.
-func (h *Handler) render(w http.ResponseWriter, t *template.Template, name string, data any) {
+// If data is a pageData and h.identity is set, Identity is populated automatically.
+func (h *Handler) render(w http.ResponseWriter, r *http.Request, t *template.Template, name string, data any) {
+	if h.identity != nil {
+		if pd, ok := data.(pageData); ok {
+			pd.Identity = h.identity(r.Context())
+			data = pd
+		}
+	}
 	var buf bytes.Buffer
 	if err := t.ExecuteTemplate(&buf, name, data); err != nil {
 		slog.Error("ui render error", "template", name, "error", err)
@@ -236,7 +243,7 @@ func (h *Handler) render(w http.ResponseWriter, t *template.Template, name strin
 }
 
 // renderError renders the error page with the given status.
-func (h *Handler) renderError(w http.ResponseWriter, status int, message string) {
+func (h *Handler) renderError(w http.ResponseWriter, r *http.Request, status int, message string) {
 	var buf bytes.Buffer
 	data := pageData{
 		Title: fmt.Sprintf("%d %s", status, http.StatusText(status)),
@@ -244,6 +251,9 @@ func (h *Handler) renderError(w http.ResponseWriter, status int, message string)
 			Status:  status,
 			Message: message,
 		},
+	}
+	if h.identity != nil {
+		data.Identity = h.identity(r.Context())
 	}
 	if err := h.tmpl.errorPage.ExecuteTemplate(&buf, "layout.html", data); err != nil {
 		http.Error(w, message, status)
@@ -263,6 +273,7 @@ type pageData struct {
 	Breadcrumbs []crumb
 	Body        any
 	Err         errorInfo
+	Identity    string
 }
 
 type crumb struct {
