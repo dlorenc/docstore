@@ -1041,3 +1041,68 @@ func TestHandleNewCommit_UnknownRepo_Returns404(t *testing.T) {
 		t.Fatalf("status = %d, want 404", code)
 	}
 }
+
+func TestHandleRepoSettings_RendersPage(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now(), CreatedBy: "me"}}
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, nil)
+
+	code, body := getStatusAndBody(t, h, "/ui/r/acme/a/settings")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", code, body)
+	}
+	for _, want := range []string{"settings", "Roles", "Danger zone", "Grant role", "Delete this repository"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q", want)
+		}
+	}
+}
+
+func TestHandleRepoSettings_UnknownRepo_Returns404(t *testing.T) {
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{miss: true}, nil)
+	code, _ := getStatusAndBody(t, h, "/ui/r/unknown/repo/settings")
+	if code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", code)
+	}
+}
+
+func TestHandleSetRole_RedirectsToSettings(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now()}}
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, nil)
+
+	code, _, loc := postForm(t, h, "/ui/r/acme/a/roles", url.Values{
+		"identity": {"alice@example.com"},
+		"role":     {"reader"},
+	})
+	if code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", code)
+	}
+	if loc != "/ui/r/acme/a/settings" {
+		t.Errorf("location = %q, want /ui/r/acme/a/settings", loc)
+	}
+}
+
+func TestHandleDeleteRole_RedirectsToSettings(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now()}}
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, nil)
+
+	code, _, loc := postForm(t, h, "/ui/r/acme/a/roles/alice@example.com/delete", nil)
+	if code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", code)
+	}
+	if loc != "/ui/r/acme/a/settings" {
+		t.Errorf("location = %q, want /ui/r/acme/a/settings", loc)
+	}
+}
+
+func TestHandleBranches_NoRolesOrDangerZone(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now(), CreatedBy: "me"}}
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, nil)
+
+	_, body := getStatusAndBody(t, h, "/ui/r/acme/a")
+	if strings.Contains(body, "Danger zone") {
+		t.Errorf("branches page should not contain Danger zone section")
+	}
+	if strings.Contains(body, "Grant role") {
+		t.Errorf("branches page should not contain Grant role form")
+	}
+}
