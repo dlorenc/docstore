@@ -75,6 +75,9 @@ func (f *fakeWrite) ListReviewComments(_ context.Context, _, _ string, _ *string
 func (f *fakeWrite) ListOrgMembers(_ context.Context, _ string) ([]model.OrgMember, error) {
 	return nil, nil
 }
+func (f *fakeWrite) ListOrgMemberships(_ context.Context, _ string) ([]model.OrgMember, error) {
+	return nil, nil
+}
 func (f *fakeWrite) ListRoles(_ context.Context, _ string) ([]model.Role, error) {
 	return nil, nil
 }

@@ -5,22 +5,37 @@
   <a href="/ui/orgs/new"><button>New org</button></a>
   <a href="/ui/repos/new" style="margin-left:8px"><button>New repo</button></a>
 </div>
-{{if not .Orgs}}
-  <div class="card empty">No repos yet.</div>
-{{else}}
-  {{range .Orgs}}
-  <div class="card">
-    <h2><a href="/ui/o/{{.Name}}">{{.Name}}</a></h2>
-    <div class="row-list">
-      {{range .Repos}}
-      <a href="/ui/r/{{.Name}}">
-        <span>{{.Name}}</span>
-        <span class="meta">by {{.CreatedBy}} · {{relTime .CreatedAt}}</span>
-      </a>
-      {{end}}
-    </div>
-  </div>
+{{if .MyOrgs}}
+<h2>Your orgs</h2>
+<div class="row-list" style="margin-bottom:24px">
+  {{range .MyOrgs}}
+  <a href="/ui/o/{{.Name}}">
+    <span>{{.Name}}</span>
+    <span class="meta">
+      <span class="badge">{{.Role}}</span>
+      · {{.RepoCount}} {{if eq .RepoCount 1}}repo{{else}}repos{{end}}
+    </span>
+  </a>
   {{end}}
+</div>
+{{end}}
+{{if .Orgs}}
+<h2>All orgs</h2>
+{{range .Orgs}}
+<div class="card">
+  <h2><a href="/ui/o/{{.Name}}">{{.Name}}</a></h2>
+  <div class="row-list">
+    {{range .Repos}}
+    <a href="/ui/r/{{.Name}}">
+      <span>{{.Name}}</span>
+      <span class="meta">by {{.CreatedBy}} · {{relTime .CreatedAt}}</span>
+    </a>
+    {{end}}
+  </div>
+</div>
+{{end}}
+{{else}}
+<div class="card empty">No repos yet.</div>
 {{end}}
 {{end}}
 {{end}}
