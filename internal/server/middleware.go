@@ -260,6 +260,16 @@ func roleAllows(role model.RoleType, method, subPath string, r *http.Request) bo
 		return role == model.RoleWriter || role == model.RoleMaintainer || role == model.RoleAdmin
 	}
 
+	// POST /check — writer+.
+	if method == http.MethodPost && subPath == "check" {
+		return role == model.RoleWriter || role == model.RoleMaintainer || role == model.RoleAdmin
+	}
+
+	// POST /review — writer+.
+	if method == http.MethodPost && subPath == "review" {
+		return role == model.RoleWriter || role == model.RoleMaintainer || role == model.RoleAdmin
+	}
+
 	// POST /proposals — writer+.
 	if method == http.MethodPost && subPath == "proposals" {
 		return role == model.RoleWriter || role == model.RoleMaintainer || role == model.RoleAdmin
@@ -295,6 +305,11 @@ func roleAllows(role model.RoleType, method, subPath string, r *http.Request) bo
 
 	// POST /branch, /merge, /rebase — maintainer+.
 	if method == http.MethodPost && (subPath == "branch" || subPath == "merge" || subPath == "rebase") {
+		return role == model.RoleMaintainer || role == model.RoleAdmin
+	}
+
+	// POST /checks/retry — maintainer+.
+	if method == http.MethodPost && subPath == "checks/retry" {
 		return role == model.RoleMaintainer || role == model.RoleAdmin
 	}
 
