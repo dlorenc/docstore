@@ -24,6 +24,7 @@
   <span class="badge {{statusClass (printf "%s" .Issue.State)}}">{{.Issue.State}}</span>
   {{if eq (printf "%s" .Issue.State) "open"}}
   <form method="POST" action="/ui/r/{{.Repo.Name}}/issues/{{.Issue.Number}}/close" style="display:flex;gap:6px;align-items:center">
+    {{csrfField}}
     <select name="reason" class="form-input" style="width:auto">
       <option value="completed">completed</option>
       <option value="not_planned">not planned</option>
@@ -33,6 +34,7 @@
   </form>
   {{else}}
   <form method="POST" action="/ui/r/{{.Repo.Name}}/issues/{{.Issue.Number}}/reopen">
+    {{csrfField}}
     <button type="submit" class="btn">Reopen issue</button>
   </form>
   {{end}}
@@ -58,6 +60,7 @@
   <summary>Edit issue</summary>
   <div class="card" style="margin-top:8px">
     <form method="POST" action="/ui/r/{{.Repo.Name}}/issues/{{.Issue.Number}}/edit" style="padding:8px 4px 4px">
+      {{csrfField}}
       <div style="margin-bottom:10px">
         <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em">Title</label>
         <input name="title" type="text" required value="{{.Issue.Title}}" class="form-input">
@@ -85,6 +88,7 @@
       <span class="meta">{{relTime .CreatedAt}}{{if .EditedAt}} · edited{{end}}</span>
     </div>
     <form method="POST" action="/ui/r/{{$d.Repo.Name}}/issues/{{$d.Issue.Number}}/comments/{{.ID}}/delete">
+      {{csrfField}}
       <button type="submit" class="btn danger" style="font-size:11px;padding:3px 8px">delete</button>
     </form>
   </div>
@@ -92,6 +96,7 @@
   <details class="form-section" style="padding:4px 4px 8px">
     <summary>edit comment</summary>
     <form method="POST" action="/ui/r/{{$d.Repo.Name}}/issues/{{$d.Issue.Number}}/comments/{{.ID}}/edit" style="padding-top:8px">
+      {{csrfField}}
       <textarea name="body" rows="3" required class="form-input">{{.Body}}</textarea>
       <div style="margin-top:6px">
         <button type="submit" class="btn" style="font-size:11px;padding:3px 8px">Save</button>
@@ -103,6 +108,7 @@
 
 <div class="card" style="margin-top:4px">
   <form method="POST" action="/ui/r/{{.Repo.Name}}/issues/{{.Issue.Number}}/comments" style="padding:8px 4px 4px">
+    {{csrfField}}
     <div style="margin-bottom:8px">
       <textarea name="body" rows="3" placeholder="Write a comment..." required class="form-input"></textarea>
     </div>
@@ -135,6 +141,7 @@
   <summary>Add reference</summary>
   <div class="card" style="margin-top:8px">
     <form method="POST" action="/ui/r/{{.Repo.Name}}/issues/{{.Issue.Number}}/refs" style="padding:8px 4px 4px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      {{csrfField}}
       <select name="ref_type" class="form-input" style="width:auto">
         <option value="proposal">proposal</option>
         <option value="commit">commit</option>

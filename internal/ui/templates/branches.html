@@ -21,6 +21,7 @@
 <h2>Create branch</h2>
 <div class="card">
   <form method="POST" action="/ui/r/{{.Repo.Name}}/-/create-branch" style="display:flex;gap:8px;align-items:center;padding:4px 0">
+    {{csrfField}}
     <input type="text" name="branch_name" placeholder="branch name" required
            style="flex:1;background:var(--bg-3);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:6px 10px;font-family:var(--mono);font-size:12px">
     <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text-dim)">
@@ -81,24 +82,28 @@
         {{if eq .Status "active"}}
         {{if .Draft}}
         <form method="POST" action="/ui/r/{{$.Repo}}/-/promote-branch" style="display:inline">
+          {{csrfField}}
           <input type="hidden" name="branch" value="{{.Name}}">
           <button type="submit" class="btn-link" style="font-size:11px">promote</button>
         </form> ·
         {{end}}
         {{if .AutoMerge}}
         <form method="POST" action="/ui/r/{{$.Repo}}/-/set-auto-merge" style="display:inline">
+          {{csrfField}}
           <input type="hidden" name="branch" value="{{.Name}}">
           <input type="hidden" name="enable" value="0">
           <button type="submit" class="btn-link" style="font-size:11px">disable auto-merge</button>
         </form> ·
         {{else}}
         <form method="POST" action="/ui/r/{{$.Repo}}/-/set-auto-merge" style="display:inline">
+          {{csrfField}}
           <input type="hidden" name="branch" value="{{.Name}}">
           <input type="hidden" name="enable" value="1">
           <button type="submit" class="btn-link" style="font-size:11px">enable auto-merge</button>
         </form> ·
         {{end}}
         <form method="POST" action="/ui/r/{{$.Repo}}/-/delete-branch" style="display:inline">
+          {{csrfField}}
           <input type="hidden" name="branch" value="{{.Name}}">
           <button type="submit" class="btn-link" style="font-size:11px;color:var(--bad)" onclick="return confirm('Abandon branch {{.Name}}?')">delete</button>
         </form>
