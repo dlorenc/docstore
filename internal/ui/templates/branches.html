@@ -29,7 +29,10 @@
         {{if .Draft}}<span class="badge warn">draft</span>{{end}}
         {{if .AutoMerge}}<span class="badge ok">auto-merge</span>{{end}}
       </td>
-      <td><a href="/ui/r/{{$.Repo}}/f/?branch={{.Name}}">files →</a></td>
+      <td>
+        <a href="/ui/r/{{$.Repo}}/f/?branch={{.Name}}">files →</a>
+        <a href="/ui/r/{{$.Repo}}/b/{{.Name}}/log">log →</a>
+      </td>
     </tr>
     {{end}}
     </tbody>

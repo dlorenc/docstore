@@ -1,0 +1,21 @@
+{{define "content"}}
+{{with .Body}}
+<div class="headline">
+  <h1>Commit log · <a href="/ui/r/{{.Repo.Owner}}/{{.Repo.Name}}/b/{{.Branch}}">{{.Branch}}</a></h1>
+  <span class="meta">{{.Repo.Owner}}/{{.Repo.Name}}</span>
+</div>
+
+<div class="card">
+  {{if not .Rows}}
+    <div class="empty">no commits</div>
+  {{else}}
+  <table class="grid">
+    <thead><tr><th>seq</th><th>message</th><th>author</th><th>when</th></tr></thead>
+    <tbody id="log-rows">
+      {{template "log_rows.html" (dict "Repo" (joinPath .Repo.Owner .Repo.Name) "Branch" .Branch "Rows" .Rows)}}
+    </tbody>
+  </table>
+  {{end}}
+</div>
+{{end}}
+{{end}}

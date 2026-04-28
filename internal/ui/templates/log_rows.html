@@ -1,0 +1,14 @@
+{{define "log_rows.html"}}
+{{range .Rows}}
+<tr{{if .NextAfter}}
+  hx-get="/ui/_/r/{{$.Repo}}/b/{{$.Branch}}/log?after={{.NextAfter}}"
+  hx-trigger="revealed"
+  hx-swap="afterend"
+  hx-target="this"{{end}}>
+  <td><a href="/ui/r/{{$.Repo}}/b/{{$.Branch}}/c/{{.Seq}}">{{.Seq}}</a></td>
+  <td>{{.Message}}</td>
+  <td>{{.Author}}</td>
+  <td>{{.Time}}</td>
+</tr>
+{{end}}
+{{end}}

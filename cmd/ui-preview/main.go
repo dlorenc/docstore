@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -50,7 +51,39 @@ func (fakeRead) GetFile(_ context.Context, _, _, path string, _ *int64) (*store.
 	return nil, nil
 }
 
-func (fakeRead) GetBranch(_ context.Context, _, _ string) (*store.BranchInfo, error) { return nil, nil }
+func (fakeRead) GetBranch(_ context.Context, _, _ string) (*store.BranchInfo, error) {
+	return &store.BranchInfo{Name: "main", HeadSequence: 5, BaseSequence: 0, Status: "active"}, nil
+}
+
+func (fakeRead) GetChain(_ context.Context, _ string, from, to int64) ([]store.ChainEntry, error) {
+	t := time.Now()
+	var entries []store.ChainEntry
+	for seq := from; seq <= to; seq++ {
+		entries = append(entries, store.ChainEntry{
+			Sequence:  seq,
+			Branch:    "main",
+			Author:    "preview@example.com",
+			Message:   "chore: example commit " + fmt.Sprintf("%d", seq),
+			CreatedAt: t.Add(-time.Duration(to-seq+1) * time.Hour),
+		})
+	}
+	return entries, nil
+}
+
+func (fakeRead) GetCommit(_ context.Context, _ string, seq int64) (*store.CommitDetail, error) {
+	vid := func(s string) *string { return &s }
+	return &store.CommitDetail{
+		Sequence:  seq,
+		Branch:    "main",
+		Message:   "chore: example commit " + fmt.Sprintf("%d", seq),
+		Author:    "preview@example.com",
+		CreatedAt: time.Now().Add(-time.Hour),
+		Files: []store.CommitFile{
+			{CommitID: "c1", Path: "README.md", VersionID: vid("v-readme-01")},
+			{CommitID: "c1", Path: "docs/intro.md", VersionID: nil},
+		},
+	}, nil
+}
 
 func (fakeRead) ListBranches(_ context.Context, repo, _ string, _, _ bool) ([]store.BranchInfo, error) {
 	if repo != "acme/platform" {

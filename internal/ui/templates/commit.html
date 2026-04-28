@@ -1,0 +1,39 @@
+{{define "content"}}
+{{with .Body}}
+{{$repoPath := joinPath .Repo.Owner .Repo.Name}}
+{{$branch := .Branch}}
+{{$seq := .Seq}}
+<div class="headline">
+  <h1>Commit #{{.Seq}}</h1>
+  <span class="meta">{{.Repo.Owner}}/{{.Repo.Name}} · <a href="/ui/r/{{$repoPath}}/b/{{.Branch}}">{{.Branch}}</a></span>
+</div>
+
+<div class="card">
+  <div class="meta-block">
+    <div><strong>message</strong> {{.Detail.Message}}</div>
+    <div><strong>author</strong> {{.Detail.Author}}</div>
+    <div><strong>time</strong> {{relTime .Detail.CreatedAt}}</div>
+    <div><strong>branch</strong> {{.Detail.Branch}}</div>
+  </div>
+</div>
+
+<h2>Files changed ({{len .Detail.Files}})</h2>
+<div class="card">
+  {{if not .Detail.Files}}
+    <div class="empty">no files</div>
+  {{else}}
+  <table class="grid">
+    <thead><tr><th>path</th><th>change</th></tr></thead>
+    <tbody>
+    {{range .Detail.Files}}
+    <tr>
+      <td><a href="/ui/r/{{$repoPath}}/f/{{.Path}}?branch={{$branch}}&amp;at={{$seq}}">{{.Path}}</a></td>
+      <td>{{if .VersionID}}<span class="badge ok">modified</span>{{else}}<span class="badge bad">deleted</span>{{end}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{end}}
+</div>
+{{end}}
+{{end}}

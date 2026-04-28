@@ -30,11 +30,34 @@ func (f *fakeRead) MaterializeTree(_ context.Context, repo, _ string, _ *int64, 
 func (f *fakeRead) GetFile(_ context.Context, repo, _, path string, _ *int64) (*store.FileContent, error) {
 	return f.files[repo+":"+path], nil
 }
-func (f *fakeRead) GetBranch(_ context.Context, _, _ string) (*store.BranchInfo, error) {
-	return nil, nil
+func (f *fakeRead) GetBranch(_ context.Context, _, branch string) (*store.BranchInfo, error) {
+	return &store.BranchInfo{Name: branch, HeadSequence: 5, BaseSequence: 0, Status: "active"}, nil
 }
 func (f *fakeRead) ListBranches(_ context.Context, repo, _ string, _, _ bool) ([]store.BranchInfo, error) {
 	return f.branches[repo], nil
+}
+func (f *fakeRead) GetChain(_ context.Context, _ string, from, to int64) ([]store.ChainEntry, error) {
+	var entries []store.ChainEntry
+	for seq := from; seq <= to; seq++ {
+		entries = append(entries, store.ChainEntry{
+			Sequence:  seq,
+			Branch:    "main",
+			Author:    "test@example.com",
+			Message:   fmt.Sprintf("commit %d", seq),
+			CreatedAt: time.Now(),
+		})
+	}
+	return entries, nil
+}
+func (f *fakeRead) GetCommit(_ context.Context, _ string, seq int64) (*store.CommitDetail, error) {
+	return &store.CommitDetail{
+		Sequence:  seq,
+		Branch:    "main",
+		Message:   fmt.Sprintf("commit %d", seq),
+		Author:    "test@example.com",
+		CreatedAt: time.Now(),
+		Files:     []store.CommitFile{{CommitID: "c1", Path: "README.md"}},
+	}, nil
 }
 
 type fakeWrite struct {
@@ -223,6 +246,59 @@ func TestHandleFile_RendersTreeAndContent(t *testing.T) {
 	for _, want := range []string{"hello.md", "line1", "line2", "nested"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing %q in body", want)
+		}
+	}
+}
+
+func TestHandleCommitLog_RendersRows(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now(), CreatedBy: "me"}}
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, nil)
+
+	code, body := getStatusAndBody(t, h, "/ui/r/acme/a/b/main/log")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", code, body)
+	}
+	for _, want := range []string{"Commit log", "main", "seq", "message", "author"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q", want)
+		}
+	}
+}
+
+func TestHandleCommitLogPartial_ReturnsFragment(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now(), CreatedBy: "me"}}
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, nil)
+
+	code, body := getStatusAndBody(t, h, "/ui/_/r/acme/a/b/main/log?after=5")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", code, body)
+	}
+	if strings.Contains(body, "<!doctype html>") {
+		t.Errorf("expected fragment, got full layout")
+	}
+}
+
+func TestHandleCommitLogPartial_MissingAfter_Returns400(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now(), CreatedBy: "me"}}
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, nil)
+
+	code, _ := getStatusAndBody(t, h, "/ui/_/r/acme/a/b/main/log")
+	if code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", code)
+	}
+}
+
+func TestHandleCommitDetail_RendersFiles(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now(), CreatedBy: "me"}}
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, nil)
+
+	code, body := getStatusAndBody(t, h, "/ui/r/acme/a/b/main/c/3")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", code, body)
+	}
+	for _, want := range []string{"Commit #3", "README.md", "Files changed"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q", want)
 		}
 	}
 }

@@ -14,12 +14,15 @@ import (
 // templateSet holds the parsed template tree. Each page has its own *Template
 // so it can define its own "content" block against the shared layout.
 type templateSet struct {
-	repos         *template.Template
-	branches      *template.Template
-	branchDetail  *template.Template
-	branchChecks  *template.Template
-	fileView      *template.Template
-	errorPage     *template.Template
+	repos          *template.Template
+	branches       *template.Template
+	branchDetail   *template.Template
+	branchChecks   *template.Template
+	fileView       *template.Template
+	errorPage      *template.Template
+	commitLog      *template.Template
+	commitLogRows  *template.Template
+	commitDetail   *template.Template
 }
 
 func parseTemplates(root fs.FS) (*templateSet, error) {
@@ -66,13 +69,34 @@ func parseTemplates(root fs.FS) (*templateSet, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse error: %w", err)
 	}
+	// log.html inlines log_rows.html for the initial page render.
+	commitLog, err := template.New("layout.html").
+		Funcs(funcMap()).
+		ParseFS(root,
+			"templates/layout.html",
+			"templates/log.html",
+			"templates/log_rows.html")
+	if err != nil {
+		return nil, fmt.Errorf("parse log: %w", err)
+	}
+	commitLogRows, err := loadFragment("log_rows.html")
+	if err != nil {
+		return nil, fmt.Errorf("parse log_rows: %w", err)
+	}
+	commitDetail, err := load("commit.html")
+	if err != nil {
+		return nil, fmt.Errorf("parse commit: %w", err)
+	}
 	return &templateSet{
-		repos:        repos,
-		branches:     branches,
-		branchDetail: branchDetail,
-		branchChecks: branchChecks,
-		fileView:     fileView,
-		errorPage:    errorPage,
+		repos:         repos,
+		branches:      branches,
+		branchDetail:  branchDetail,
+		branchChecks:  branchChecks,
+		fileView:      fileView,
+		errorPage:     errorPage,
+		commitLog:     commitLog,
+		commitLogRows: commitLogRows,
+		commitDetail:  commitDetail,
 	}, nil
 }
 

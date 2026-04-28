@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -328,6 +329,219 @@ func (h *Handler) handleFile(w http.ResponseWriter, r *http.Request) {
 			{Label: "repos", Href: "/ui/"},
 			{Label: repoName, Href: "/ui/r/" + repoName},
 			{Label: branch + ":" + path, Href: ""},
+		},
+		Body: page,
+	})
+}
+
+const commitLogPageSize = 50
+
+type commitLogPage struct {
+	Repo   model.Repo
+	Branch string
+	Rows   []commitLogRow
+}
+
+type commitLogRow struct {
+	Seq     int64
+	Message string
+	Author  string
+	Time    string
+	// NextAfter is the seq to use in the HTMX load-more URL; non-zero only on
+	// the last row when there may be more commits.
+	NextAfter int64
+}
+
+type commitDetailPage struct {
+	Repo   model.Repo
+	Branch string
+	Seq    int64
+	Detail *store.CommitDetail
+}
+
+// handleCommitLog renders the paginated commit log for a branch.
+func (h *Handler) handleCommitLog(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	branch := r.PathValue("branch")
+	if branch == "" {
+		branch = "main"
+	}
+	repoName := owner + "/" + name
+	ctx := r.Context()
+
+	repo, err := h.write.GetRepo(ctx, repoName)
+	if err != nil {
+		if errors.Is(err, db.ErrRepoNotFound) {
+			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
+			return
+		}
+		slog.Error("ui get repo", "repo", repoName, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load repo")
+		return
+	}
+
+	bi, err := h.read.GetBranch(ctx, repoName, branch)
+	if err != nil {
+		slog.Error("ui get branch", "repo", repoName, "branch", branch, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load branch")
+		return
+	}
+	if bi == nil {
+		h.renderError(w, http.StatusNotFound, "branch not found: "+branch)
+		return
+	}
+
+	rows, nextAfter := h.loadCommitRows(ctx, repoName, bi.HeadSequence, 0)
+
+	page := commitLogPage{
+		Repo:   *repo,
+		Branch: branch,
+		Rows:   rows,
+	}
+	if len(rows) > 0 && nextAfter > 0 {
+		page.Rows[len(page.Rows)-1].NextAfter = nextAfter
+	}
+
+	h.render(w, h.tmpl.commitLog, "layout.html", pageData{
+		Title: repoName + " / " + branch + " / log",
+		Breadcrumbs: []crumb{
+			{Label: "repos", Href: "/ui/"},
+			{Label: repoName, Href: "/ui/r/" + repoName},
+			{Label: branch, Href: "/ui/r/" + repoName + "/b/" + branch},
+			{Label: "log", Href: ""},
+		},
+		Body: page,
+	})
+}
+
+// handleCommitLogPartial returns table rows for HTMX "load more" pagination.
+func (h *Handler) handleCommitLogPartial(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	branch := r.PathValue("branch")
+	if branch == "" {
+		branch = "main"
+	}
+	repoName := owner + "/" + name
+
+	afterStr := r.URL.Query().Get("after")
+	if afterStr == "" {
+		http.Error(w, "after param required", http.StatusBadRequest)
+		return
+	}
+	after, err := strconv.ParseInt(afterStr, 10, 64)
+	if err != nil || after <= 0 {
+		http.Error(w, "invalid after param", http.StatusBadRequest)
+		return
+	}
+
+	rows, nextAfter := h.loadCommitRows(r.Context(), repoName, after-1, 0)
+	if len(rows) > 0 && nextAfter > 0 {
+		rows[len(rows)-1].NextAfter = nextAfter
+	}
+
+	h.render(w, h.tmpl.commitLogRows, "log_rows.html", commitLogRowsPartial{
+		Repo:   repoName,
+		Branch: branch,
+		Rows:   rows,
+	})
+}
+
+// commitLogRowsPartial is the data type for the HTMX log rows fragment.
+type commitLogRowsPartial struct {
+	Repo   string
+	Branch string
+	Rows   []commitLogRow
+}
+
+// loadCommitRows loads up to commitLogPageSize rows ending at toSeq (inclusive).
+// It returns rows in newest-first order and a nextAfter value (the seq to pass
+// as ?after= for the next page), or 0 if there are no more rows.
+func (h *Handler) loadCommitRows(ctx context.Context, repo string, toSeq, _ int64) ([]commitLogRow, int64) {
+	if toSeq <= 0 {
+		return nil, 0
+	}
+	from := toSeq - commitLogPageSize + 1
+	if from < 1 {
+		from = 1
+	}
+	entries, err := h.read.GetChain(ctx, repo, from, toSeq)
+	if err != nil {
+		slog.Error("ui get chain", "repo", repo, "error", err)
+		return nil, 0
+	}
+
+	// Reverse to show newest first.
+	rows := make([]commitLogRow, len(entries))
+	for i, e := range entries {
+		rows[len(entries)-1-i] = commitLogRow{
+			Seq:     e.Sequence,
+			Message: e.Message,
+			Author:  e.Author,
+			Time:    relTime(e.CreatedAt),
+		}
+	}
+
+	var nextAfter int64
+	if from > 1 {
+		nextAfter = from // caller should pass from as ?after= to get the previous page
+	}
+	return rows, nextAfter
+}
+
+// handleCommitDetail renders the detail view for a single commit.
+func (h *Handler) handleCommitDetail(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	branch := r.PathValue("branch")
+	seqStr := r.PathValue("seq")
+	repoName := owner + "/" + name
+	ctx := r.Context()
+
+	seq, err := strconv.ParseInt(seqStr, 10, 64)
+	if err != nil || seq <= 0 {
+		h.renderError(w, http.StatusBadRequest, "invalid sequence number")
+		return
+	}
+
+	repo, err := h.write.GetRepo(ctx, repoName)
+	if err != nil {
+		if errors.Is(err, db.ErrRepoNotFound) {
+			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
+			return
+		}
+		slog.Error("ui get repo", "repo", repoName, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load repo")
+		return
+	}
+
+	detail, err := h.read.GetCommit(ctx, repoName, seq)
+	if err != nil {
+		slog.Error("ui get commit", "repo", repoName, "seq", seq, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load commit")
+		return
+	}
+	if detail == nil {
+		h.renderError(w, http.StatusNotFound, "commit not found")
+		return
+	}
+
+	page := commitDetailPage{
+		Repo:   *repo,
+		Branch: branch,
+		Seq:    seq,
+		Detail: detail,
+	}
+
+	h.render(w, h.tmpl.commitDetail, "layout.html", pageData{
+		Title: repoName + " / commit " + seqStr,
+		Breadcrumbs: []crumb{
+			{Label: "repos", Href: "/ui/"},
+			{Label: repoName, Href: "/ui/r/" + repoName},
+			{Label: branch, Href: "/ui/r/" + repoName + "/b/" + branch},
+			{Label: "log", Href: "/ui/r/" + repoName + "/b/" + branch + "/log"},
+			{Label: "#" + seqStr, Href: ""},
 		},
 		Body: page,
 	})

@@ -22,6 +22,8 @@ type ReadStore interface {
 	GetFile(ctx context.Context, repo, branch, path string, atSeq *int64) (*store.FileContent, error)
 	GetBranch(ctx context.Context, repo, branch string) (*store.BranchInfo, error)
 	ListBranches(ctx context.Context, repo, statusFilter string, includeDraft, onlyDraft bool) ([]store.BranchInfo, error)
+	GetChain(ctx context.Context, repo string, from, to int64) ([]store.ChainEntry, error)
+	GetCommit(ctx context.Context, repo string, seq int64) (*store.CommitDetail, error)
 }
 
 // WriteStoreLite is the subset of server.WriteStore that the UI needs for
@@ -102,6 +104,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /ui/r/{owner}/{name}", h.handleBranches)
 	mux.HandleFunc("GET /ui/r/{owner}/{name}/b/{branch}", h.handleBranchDetail)
 	mux.HandleFunc("GET /ui/_/r/{owner}/{name}/b/{branch}/checks", h.handleChecksPartial)
+	mux.HandleFunc("GET /ui/r/{owner}/{name}/b/{branch}/log", h.handleCommitLog)
+	mux.HandleFunc("GET /ui/_/r/{owner}/{name}/b/{branch}/log", h.handleCommitLogPartial)
+	mux.HandleFunc("GET /ui/r/{owner}/{name}/b/{branch}/c/{seq}", h.handleCommitDetail)
 	mux.HandleFunc("GET /ui/r/{owner}/{name}/f/{path...}", h.handleFile)
 	mux.Handle("GET /ui/static/", http.StripPrefix("/ui/static/", http.FileServer(http.FS(h.staticSub))))
 }
