@@ -19,7 +19,9 @@
 </div>
 
 {{if .Err}}
-<div class="card" style="margin-bottom:14px"><span class="badge bad">{{.Err}}</span></div>
+<div class="card" style="border-color:var(--bad);margin-bottom:14px">
+  <div class="row"><span class="badge bad">error</span> <span>{{.Err}}</span></div>
+</div>
 {{end}}
 
 <h2>Details</h2>
@@ -47,25 +49,25 @@
 
 <h2>Edit proposal</h2>
 <div class="card">
-  <form method="POST" action="/ui/r/{{.Repo.Name}}/proposals/{{.Proposal.ID}}/edit" style="padding:14px 12px 4px">
+  <form method="POST" action="/ui/r/{{.Repo.Name}}/proposals/{{.Proposal.ID}}/edit" style="padding:8px 4px 4px">
     <div style="margin-bottom:10px">
-      <label style="display:block;margin-bottom:4px;font-size:0.85em;color:var(--text-muted)">Title</label>
-      <input type="text" name="title" value="{{.Proposal.Title}}" required style="width:100%;padding:6px 8px;background:var(--bg-input,var(--bg2));border:1px solid var(--border);border-radius:4px;color:var(--text);box-sizing:border-box">
+      <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em">Title</label>
+      <input type="text" name="title" value="{{.Proposal.Title}}" required class="form-input">
     </div>
     <div style="margin-bottom:10px">
-      <label style="display:block;margin-bottom:4px;font-size:0.85em;color:var(--text-muted)">Description</label>
-      <textarea name="description" rows="4" style="width:100%;padding:6px 8px;background:var(--bg-input,var(--bg2));border:1px solid var(--border);border-radius:4px;color:var(--text);resize:vertical;box-sizing:border-box">{{.Proposal.Description}}</textarea>
+      <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em">Description</label>
+      <textarea name="description" rows="4" class="form-input">{{.Proposal.Description}}</textarea>
     </div>
-    <button type="submit">Save changes</button>
+    <button type="submit" class="btn">Save changes</button>
   </form>
 </div>
 
 {{if eq (printf "%s" .Proposal.State) "open"}}
 <h2>Close proposal</h2>
 <div class="card">
-  <form method="POST" action="/ui/r/{{.Repo.Name}}/proposals/{{.Proposal.ID}}/close" style="padding:14px 12px 4px">
-    <p style="margin:0 0 10px;color:var(--text-muted);font-size:0.9em">Closing this proposal will mark it as closed and it will no longer appear in the open proposals list.</p>
-    <button type="submit">Close proposal</button>
+  <form method="POST" action="/ui/r/{{.Repo.Name}}/proposals/{{.Proposal.ID}}/close" style="padding:8px 4px 4px">
+    <p style="margin:0 0 10px;color:var(--text-dim);font-size:12px">Closing this proposal marks it as closed and removes it from the open list.</p>
+    <button type="submit" class="btn">Close proposal</button>
   </form>
 </div>
 {{end}}

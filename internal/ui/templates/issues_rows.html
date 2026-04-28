@@ -1,6 +1,6 @@
 {{define "issues_rows.html"}}
 <div class="card">
-  {{if not .Issues}}<div class="empty">no {{.State}} issues</div>{{else}}
+  {{if not .Issues}}<div class="empty">no {{.State}} issues{{if eq .State "open"}} — <a href="/ui/r/{{.Repo.Name}}/issues/new">open one</a>{{end}}</div>{{else}}
   <table class="grid">
     <thead><tr><th>#</th><th>title</th><th>author</th><th>state</th><th>opened</th></tr></thead>
     <tbody>

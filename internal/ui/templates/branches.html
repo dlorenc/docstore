@@ -31,9 +31,9 @@
 
 <div class="filter-bar"><input type="search" data-branch-filter placeholder="filter branches by name…" autocomplete="off"></div>
 
-{{template "branchSection" (dict "Title" "Active" "Rows" .Active "Repo" .Repo.Name)}}
-{{template "branchSection" (dict "Title" "Merged" "Rows" .Merged "Repo" .Repo.Name)}}
-{{template "branchSection" (dict "Title" "Abandoned" "Rows" .Abandoned "Repo" .Repo.Name)}}
+{{template "branchSection" (dict "Title" "Active" "EmptyMsg" "no active branches — create one above" "Rows" .Active "Repo" .Repo.Name)}}
+{{template "branchSection" (dict "Title" "Merged" "EmptyMsg" "no merged branches" "Rows" .Merged "Repo" .Repo.Name)}}
+{{template "branchSection" (dict "Title" "Abandoned" "EmptyMsg" "no abandoned branches" "Rows" .Abandoned "Repo" .Repo.Name)}}
 
 <h2>Members ({{len .Members}})</h2>
 <div class="card">
@@ -75,16 +75,16 @@
   </table>
   {{end}}
   <details style="margin-top:12px">
-    <summary style="cursor:pointer;font-size:0.9em">Grant role</summary>
-    <form method="POST" action="/ui/r/{{.Repo.Name}}/roles" style="padding:10px 0 4px">
-      <input type="text" name="identity" placeholder="identity (email)" required style="margin-right:6px">
-      <select name="role" style="margin-right:6px">
+    <summary style="cursor:pointer;font-size:12px;color:var(--accent)">Grant role</summary>
+    <form method="POST" action="/ui/r/{{.Repo.Name}}/roles" style="padding:10px 0 4px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+      <input type="text" name="identity" placeholder="identity (email)" required class="form-input" style="flex:1;min-width:180px">
+      <select name="role" class="form-input" style="width:auto">
         <option value="reader">reader</option>
         <option value="writer">writer</option>
         <option value="maintainer">maintainer</option>
         <option value="admin">admin</option>
       </select>
-      <button type="submit">Grant</button>
+      <button type="submit" class="btn">Grant</button>
     </form>
   </details>
 </div>
@@ -111,7 +111,7 @@
 <h2>{{.Title}} ({{len .Rows}})</h2>
 <div class="card">
   {{if not .Rows}}
-    <div class="empty">none</div>
+    <div class="empty">{{.EmptyMsg}}</div>
   {{else}}
   <table class="grid">
     <thead><tr><th>branch</th><th>status</th><th>head</th><th>base</th><th>flags</th><th>links</th><th>actions</th></tr></thead>
