@@ -88,6 +88,10 @@ type WriteStoreLite interface {
 	DeleteRole(ctx context.Context, repo, identity string) error
 	CreateRelease(ctx context.Context, repo, name string, sequence int64, body, createdBy string) (*model.Release, error)
 	DeleteRelease(ctx context.Context, repo, name string) error
+
+	// Org/repo delete operations.
+	DeleteOrg(ctx context.Context, name string) error
+	DeleteRepo(ctx context.Context, name string) error
 }
 
 // AssembleFn builds the full branch context snapshot used by the branch detail
@@ -226,6 +230,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	// Write operations: releases.
 	mux.HandleFunc("POST /ui/r/{owner}/{name}/releases", h.handleCreateRelease)
 	mux.HandleFunc("POST /ui/r/{owner}/{name}/releases/{rname}/delete", h.handleDeleteRelease)
+	// Write operations: delete org/repo.
+	mux.HandleFunc("POST /ui/o/{org}/delete", h.handleUIDeleteOrg)
+	mux.HandleFunc("POST /ui/r/{owner}/{name}/-/delete-repo", h.handleUIDeleteRepo)
 
 	mux.Handle("GET /ui/static/", http.StripPrefix("/ui/static/", http.FileServer(http.FS(h.staticSub))))
 }

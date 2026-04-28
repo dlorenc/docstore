@@ -95,5 +95,20 @@
     </form>
   </details>
 </div>
+
+<h2 style="color:var(--bad)">Danger zone</h2>
+<div class="card" style="border-left:3px solid var(--bad)">
+  <details>
+    <summary style="cursor:pointer;font-size:0.9em;color:var(--bad)">Delete this organisation</summary>
+    <p style="font-size:0.85em;color:var(--text-dim);margin:8px 0">This permanently deletes the org and cannot be undone. The org must have no repos.</p>
+    <form method="POST" action="/ui/o/{{.Org}}/delete" style="padding:4px 0">
+      <label style="font-size:0.85em;display:block;margin-bottom:4px">Type <strong>{{.Org}}</strong> to confirm:</label>
+      <input type="text" name="confirm" placeholder="{{.Org}}" required
+             style="background:var(--bg-3);color:var(--text);border:1px solid var(--bad);border-radius:4px;padding:6px 10px;font-family:var(--mono);font-size:12px;margin-right:6px"
+             oninput="this.form.querySelector('button').disabled=(this.value!='{{.Org}}')">
+      <button type="submit" class="btn-danger-small" disabled>Delete org</button>
+    </form>
+  </details>
+</div>
 {{end}}
 {{end}}
