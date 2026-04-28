@@ -175,6 +175,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /ui/{$}", h.handleRepos)
 	mux.HandleFunc("GET /ui/o/{org}", h.handleOrg)
 	mux.HandleFunc("GET /ui/r/{owner}/{name}", h.handleBranches)
+	mux.HandleFunc("GET /ui/r/{owner}/{name}/settings", h.handleRepoSettings)
 	mux.HandleFunc("GET /ui/r/{owner}/{name}/b/{branch}", h.handleBranchDetail)
 	mux.HandleFunc("GET /ui/_/r/{owner}/{name}/b/{branch}/checks", h.handleChecksPartial)
 	mux.HandleFunc("GET /ui/_/r/{owner}/{name}/b/{branch}/comments", h.handleReviewCommentsPartial)
