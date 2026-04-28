@@ -14,6 +14,10 @@
   <a href="/ui/r/{{.Repo.Name}}/b/main/log">log</a>
 </nav>
 
+{{if .Err}}
+<div class="card" style="margin-bottom:12px"><span class="badge bad">{{.Err}}</span></div>
+{{end}}
+
 <div class="card">
 {{if not .Releases}}<div class="empty">no releases</div>{{else}}
 <table class="grid">
@@ -31,6 +35,25 @@
   </tbody>
 </table>
 {{end}}
+</div>
+
+<h2>Create release</h2>
+<div class="card">
+  <form method="POST" action="/ui/r/{{.Repo.Name}}/releases" style="padding:4px 0">
+    <div style="margin-bottom:8px">
+      <label style="display:block;margin-bottom:4px;font-size:0.9em">Name <span style="color:var(--meta)">(required)</span></label>
+      <input type="text" name="name" placeholder="e.g. v1.0.0" required style="width:240px">
+    </div>
+    <div style="margin-bottom:8px">
+      <label style="display:block;margin-bottom:4px;font-size:0.9em">Sequence <span style="color:var(--meta)">(optional — defaults to main head)</span></label>
+      <input type="number" name="sequence" placeholder="leave blank for main head" min="1" style="width:240px">
+    </div>
+    <div style="margin-bottom:8px">
+      <label style="display:block;margin-bottom:4px;font-size:0.9em">Release notes</label>
+      <textarea name="body" rows="4" style="width:400px;resize:vertical"></textarea>
+    </div>
+    <button type="submit">Create release</button>
+  </form>
 </div>
 {{end}}
 {{end}}
