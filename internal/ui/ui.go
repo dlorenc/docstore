@@ -126,6 +126,16 @@ type Handler struct {
 	// devMode disables the Secure flag on the CSRF cookie so the UI works
 	// over plain HTTP in local development.
 	devMode bool
+	// Emit, if non-nil, is called after each successful write operation to
+	// publish a domain event. The server wires this to the event broker.
+	Emit func(ctx context.Context, event any)
+}
+
+// emit publishes an event if an emitter is configured.
+func (h *Handler) emit(ctx context.Context, event any) {
+	if h.Emit != nil {
+		h.Emit(ctx, event)
+	}
 }
 
 // NewHandler constructs a UI handler wired to the given data sources.
