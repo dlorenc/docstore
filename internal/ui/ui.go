@@ -36,6 +36,7 @@ type WriteStoreLite interface {
 	ListReviewComments(ctx context.Context, repo, branch string, path *string) ([]model.ReviewComment, error)
 	ListOrgMembers(ctx context.Context, org string) ([]model.OrgMember, error)
 	ListRoles(ctx context.Context, repo string) ([]model.Role, error)
+	ListCheckRuns(ctx context.Context, repo, branch string, atSeq *int64, history bool) ([]model.CheckRun, error)
 }
 
 // AssembleFn builds the full branch context snapshot used by the branch detail
@@ -112,6 +113,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /ui/r/{owner}/{name}/b/{branch}/log", h.handleCommitLog)
 	mux.HandleFunc("GET /ui/_/r/{owner}/{name}/b/{branch}/log", h.handleLogRowsPartial)
 	mux.HandleFunc("GET /ui/r/{owner}/{name}/b/{branch}/c/{seq}", h.handleCommitDetail)
+	mux.HandleFunc("GET /ui/_/r/{owner}/{name}/b/{branch}/check-history", h.handleCheckHistoryPartial)
 	mux.HandleFunc("GET /ui/r/{owner}/{name}/f/{path...}", h.handleFile)
 	mux.Handle("GET /ui/static/", http.StripPrefix("/ui/static/", http.FileServer(http.FS(h.staticSub))))
 }
