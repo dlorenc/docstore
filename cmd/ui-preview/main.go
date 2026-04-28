@@ -292,7 +292,20 @@ func (fakeWrite) CreateOrg(_ context.Context, name, _ string) (*model.Org, error
 func (fakeWrite) CreateRepo(_ context.Context, req model.CreateRepoRequest) (*model.Repo, error) {
 	return &model.Repo{Name: req.FullName(), Owner: req.Owner}, nil
 }
-
+func (fakeWrite) CreateReview(_ context.Context, _, _, _ string, _ model.ReviewStatus, _ string) (*model.Review, error) {
+	return &model.Review{}, nil
+}
+func (fakeWrite) CreateReviewComment(_ context.Context, _, _, _, _, _, _ string, _ *string) (*model.ReviewComment, error) {
+	return &model.ReviewComment{}, nil
+}
+func (fakeWrite) DeleteReviewComment(_ context.Context, _, _ string) error { return nil }
+func (fakeWrite) CreateProposal(_ context.Context, _, _, _, _, _, _ string) (*model.Proposal, error) {
+	return &model.Proposal{ID: "new-p"}, nil
+}
+func (fakeWrite) UpdateProposal(_ context.Context, _, _ string, _, _ *string) (*model.Proposal, error) {
+	return &model.Proposal{ID: "updated-p", Title: "updated"}, nil
+}
+func (fakeWrite) CloseProposal(_ context.Context, _, _ string) error { return nil }
 func fakeAssemble(_ context.Context, _, branch string) (*model.AgentContextResponse, error) {
 	t := time.Now()
 	vid := func(s string) *string { return &s }

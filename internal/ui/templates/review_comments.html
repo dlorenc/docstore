@@ -1,8 +1,8 @@
 {{define "review_comments.html"}}
-{{if not .}}
+{{if not .Groups}}
 <div class="empty">no inline comments on this branch</div>
 {{else}}
-{{range .}}
+{{range .Groups}}
 <div class="comment-file-group">
   <div class="comment-file-path">{{.Path}}</div>
   {{range .Comments}}
@@ -11,8 +11,11 @@
       <strong>{{.Author}}</strong>
       <span class="meta">@ seq {{.Sequence}} · {{relTime .CreatedAt}}</span>
     </div>
-    <div class="row-body">{{.Body}}</div>
+    <form method="POST" action="/ui/r/{{$.RepoName}}/b/{{urlPathEscape $.Branch}}/comment/{{.ID}}/delete" style="display:inline">
+      <button type="submit" class="btn-link" style="color:var(--text-muted)">delete</button>
+    </form>
   </div>
+  <div class="row-body">{{.Body}}</div>
   {{end}}
 </div>
 {{end}}

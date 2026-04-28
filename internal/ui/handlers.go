@@ -62,6 +62,12 @@ type reviewCommentGroup struct {
 	Comments []model.ReviewComment
 }
 
+type reviewCommentsData struct {
+	RepoName string
+	Branch   string
+	Groups   []reviewCommentGroup
+}
+
 type branchDetailPage struct {
 	Repo            model.Repo
 	Ctx             *model.AgentContextResponse
@@ -161,11 +167,13 @@ type proposalsPage struct {
 	Repo      model.Repo
 	Proposals []*model.Proposal
 	State     string
+	Err       string
 }
 
 type proposalDetailPage struct {
 	Repo     model.Repo
 	Proposal *model.Proposal
+	Err      string
 }
 
 type releasesPage struct {
@@ -350,68 +358,7 @@ func (h *Handler) handleBranchDetail(w http.ResponseWriter, r *http.Request) {
 	owner := r.PathValue("owner")
 	name := r.PathValue("name")
 	branch := r.PathValue("branch")
-	repoName := owner + "/" + name
-
-	repo, err := h.write.GetRepo(r.Context(), repoName)
-	if err != nil {
-		if errors.Is(err, db.ErrRepoNotFound) {
-			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
-			return
-		}
-		slog.Error("ui get repo", "repo", repoName, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load repo")
-		return
-	}
-
-	if h.assemble == nil {
-		h.renderError(w, http.StatusServiceUnavailable, "agent context assembler not configured")
-		return
-	}
-	actCtx, err := h.assemble(r.Context(), repoName, branch)
-	if err != nil {
-		// Matches the sentinel message from server.ErrAgentContextBranchNotFound.
-		// We avoid importing internal/server to stay free of circular deps.
-		if strings.Contains(err.Error(), "branch not found") {
-			h.renderError(w, http.StatusNotFound, "branch not found: "+branch)
-			return
-		}
-		slog.Error("ui assemble agent context", "repo", repoName, "branch", branch, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load branch")
-		return
-	}
-
-	page := branchDetailPage{Repo: *repo, Ctx: actCtx, Err: r.URL.Query().Get("err")}
-	for _, p := range actCtx.Policies {
-		if !p.Pass {
-			reason := p.Reason
-			if reason == "" {
-				reason = p.Name
-			}
-			page.Blockers = append(page.Blockers, reason)
-		}
-	}
-	for _, c := range actCtx.CheckRuns {
-		switch c.Status {
-		case model.CheckRunPassed:
-			page.PassedCheckCnt++
-		case model.CheckRunPending:
-			page.PendingCheckCnt++
-			page.Blockers = append(page.Blockers, c.CheckName+" pending")
-		case model.CheckRunFailed:
-			page.FailedCheckCnt++
-			page.Blockers = append(page.Blockers, c.CheckName+" failed")
-		}
-	}
-
-	h.render(w, h.tmpl.branchDetail, "layout.html", pageData{
-		Title: repoName + " / " + branch,
-		Breadcrumbs: []crumb{
-			{Label: "repos", Href: "/ui/"},
-			{Label: repoName, Href: "/ui/r/" + repoName},
-			{Label: branch, Href: ""},
-		},
-		Body: page,
-	})
+	h.renderBranchDetail(w, r, owner+"/"+name, branch, "")
 }
 
 // handleChecksPartial returns just the checks table for HTMX polling.
@@ -668,7 +615,11 @@ func (h *Handler) handleReviewCommentsPartial(w http.ResponseWriter, r *http.Req
 		groups = append(groups, reviewCommentGroup{Path: p, Comments: byPath[p]})
 	}
 
-	h.render(w, h.tmpl.reviewComments, "review_comments.html", groups)
+	h.render(w, h.tmpl.reviewComments, "review_comments.html", reviewCommentsData{
+		RepoName: repoName,
+		Branch:   branch,
+		Groups:   groups,
+	})
 }
 
 // handleIssueDetail renders the detail view for a single issue.
@@ -1874,6 +1825,312 @@ func (h *Handler) handleUISetAutoMerge(w http.ResponseWriter, r *http.Request) {
 	}
 
 }
+
+
+// Write handlers (POST forms)
+// ---------------------------------------------------------------------------
+
+// renderBranchDetail is the shared helper that loads and renders the branch
+// detail page. It is called by the GET handler and by POST handlers on error.
+func (h *Handler) renderBranchDetail(w http.ResponseWriter, r *http.Request, repoName, branch, errMsg string) {
+	repo, err := h.write.GetRepo(r.Context(), repoName)
+	if err != nil {
+		if errors.Is(err, db.ErrRepoNotFound) {
+			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
+			return
+		}
+		slog.Error("ui get repo", "repo", repoName, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load repo")
+		return
+	}
+
+	if h.assemble == nil {
+		h.renderError(w, http.StatusServiceUnavailable, "agent context assembler not configured")
+		return
+	}
+	actCtx, err := h.assemble(r.Context(), repoName, branch)
+	if err != nil {
+		if strings.Contains(err.Error(), "branch not found") {
+			h.renderError(w, http.StatusNotFound, "branch not found: "+branch)
+			return
+		}
+		slog.Error("ui assemble agent context", "repo", repoName, "branch", branch, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load branch")
+		return
+	}
+
+	page := branchDetailPage{Repo: *repo, Ctx: actCtx, Err: errMsg}
+	for _, p := range actCtx.Policies {
+		if !p.Pass {
+			reason := p.Reason
+			if reason == "" {
+				reason = p.Name
+			}
+			page.Blockers = append(page.Blockers, reason)
+		}
+	}
+	for _, c := range actCtx.CheckRuns {
+		switch c.Status {
+		case model.CheckRunPassed:
+			page.PassedCheckCnt++
+		case model.CheckRunPending:
+			page.PendingCheckCnt++
+			page.Blockers = append(page.Blockers, c.CheckName+" pending")
+		case model.CheckRunFailed:
+			page.FailedCheckCnt++
+			page.Blockers = append(page.Blockers, c.CheckName+" failed")
+		}
+	}
+
+	h.render(w, h.tmpl.branchDetail, "layout.html", pageData{
+		Title: repoName + " / " + branch,
+		Breadcrumbs: []crumb{
+			{Label: "repos", Href: "/ui/"},
+			{Label: repoName, Href: "/ui/r/" + repoName},
+			{Label: branch, Href: ""},
+		},
+		Body: page,
+	})
+}
+
+// handleSubmitReview processes a POST form to submit a review on a branch.
+func (h *Handler) handleSubmitReview(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	branch := r.PathValue("branch")
+	repoName := owner + "/" + name
+
+	if err := r.ParseForm(); err != nil {
+		h.renderError(w, http.StatusBadRequest, "invalid form data")
+		return
+	}
+
+	status := model.ReviewStatus(r.FormValue("status"))
+	body := r.FormValue("body")
+
+	if status == "" {
+		h.renderBranchDetail(w, r, repoName, branch, "status is required")
+		return
+	}
+
+	var identity string
+	if h.identity != nil {
+		identity = h.identity(r.Context())
+	}
+
+	if _, err := h.write.CreateReview(r.Context(), repoName, branch, identity, status, body); err != nil {
+		slog.Error("ui create review", "repo", repoName, "branch", branch, "error", err)
+		h.renderBranchDetail(w, r, repoName, branch, "could not submit review: "+err.Error())
+		return
+	}
+
+	http.Redirect(w, r, "/ui/r/"+repoName+"/b/"+url.PathEscape(branch), http.StatusSeeOther)
+}
+
+// handlePostComment processes a POST form to add an inline review comment.
+func (h *Handler) handlePostComment(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	branch := r.PathValue("branch")
+	repoName := owner + "/" + name
+
+	if err := r.ParseForm(); err != nil {
+		h.renderError(w, http.StatusBadRequest, "invalid form data")
+		return
+	}
+
+	path := r.FormValue("path")
+	versionID := r.FormValue("version_id")
+	body := r.FormValue("body")
+
+	if path == "" || versionID == "" || body == "" {
+		h.renderBranchDetail(w, r, repoName, branch, "path, version_id, and body are required")
+		return
+	}
+
+	var identity string
+	if h.identity != nil {
+		identity = h.identity(r.Context())
+	}
+
+	if _, err := h.write.CreateReviewComment(r.Context(), repoName, branch, path, versionID, body, identity, nil); err != nil {
+		slog.Error("ui create review comment", "repo", repoName, "branch", branch, "error", err)
+		h.renderBranchDetail(w, r, repoName, branch, "could not post comment: "+err.Error())
+		return
+	}
+
+	http.Redirect(w, r, "/ui/r/"+repoName+"/b/"+url.PathEscape(branch), http.StatusSeeOther)
+}
+
+// handleDeleteComment processes a POST form to delete an inline review comment.
+func (h *Handler) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	branch := r.PathValue("branch")
+	id := r.PathValue("id")
+	repoName := owner + "/" + name
+
+	if err := h.write.DeleteReviewComment(r.Context(), repoName, id); err != nil {
+		slog.Error("ui delete review comment", "repo", repoName, "id", id, "error", err)
+		h.renderBranchDetail(w, r, repoName, branch, "could not delete comment: "+err.Error())
+		return
+	}
+
+	http.Redirect(w, r, "/ui/r/"+repoName+"/b/"+url.PathEscape(branch), http.StatusSeeOther)
+}
+
+// handleCreateProposalUI processes a POST form to create a new proposal.
+func (h *Handler) handleCreateProposalUI(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	repoName := owner + "/" + name
+	ctx := r.Context()
+
+	if err := r.ParseForm(); err != nil {
+		h.renderError(w, http.StatusBadRequest, "invalid form data")
+		return
+	}
+
+	branch := r.FormValue("branch")
+	baseBranch := r.FormValue("base_branch")
+	title := r.FormValue("title")
+	description := r.FormValue("description")
+
+	renderWithErr := func(errMsg string) {
+		repo, err := h.write.GetRepo(ctx, repoName)
+		if err != nil {
+			h.renderError(w, http.StatusInternalServerError, "could not load repo")
+			return
+		}
+		stateStr := "open"
+		_, ps := proposalStateFromQuery(stateStr)
+		proposals, err := h.write.ListProposals(ctx, repoName, ps, nil)
+		if err != nil {
+			proposals = nil
+		}
+		h.render(w, h.tmpl.proposals, "layout.html", pageData{
+			Title: repoName + " / proposals",
+			Breadcrumbs: []crumb{
+				{Label: "repos", Href: "/ui/"},
+				{Label: repoName, Href: "/ui/r/" + repoName},
+				{Label: "proposals", Href: ""},
+			},
+			Body: proposalsPage{Repo: *repo, Proposals: proposals, State: stateStr, Err: errMsg},
+		})
+	}
+
+	if branch == "" || baseBranch == "" || title == "" {
+		renderWithErr("branch, base_branch, and title are required")
+		return
+	}
+
+	var identity string
+	if h.identity != nil {
+		identity = h.identity(ctx)
+	}
+
+	proposal, err := h.write.CreateProposal(ctx, repoName, branch, baseBranch, title, description, identity)
+	if err != nil {
+		slog.Error("ui create proposal", "repo", repoName, "error", err)
+		renderWithErr("could not create proposal: " + err.Error())
+		return
+	}
+
+	http.Redirect(w, r, "/ui/r/"+repoName+"/proposals/"+proposal.ID, http.StatusSeeOther)
+}
+
+// handleEditProposal processes a POST form to update a proposal's title/description.
+func (h *Handler) handleEditProposal(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	id := r.PathValue("id")
+	repoName := owner + "/" + name
+	ctx := r.Context()
+
+	if err := r.ParseForm(); err != nil {
+		h.renderError(w, http.StatusBadRequest, "invalid form data")
+		return
+	}
+
+	titleVal := r.FormValue("title")
+	descVal := r.FormValue("description")
+
+	renderWithErr := func(proposal *model.Proposal, errMsg string) {
+		repo, err := h.write.GetRepo(ctx, repoName)
+		if err != nil {
+			h.renderError(w, http.StatusInternalServerError, "could not load repo")
+			return
+		}
+		h.render(w, h.tmpl.proposalDetail, "layout.html", pageData{
+			Title: repoName + " / proposals / " + id,
+			Breadcrumbs: []crumb{
+				{Label: "repos", Href: "/ui/"},
+				{Label: repoName, Href: "/ui/r/" + repoName},
+				{Label: "proposals", Href: "/ui/r/" + repoName + "/proposals"},
+				{Label: proposal.Title, Href: ""},
+			},
+			Body: proposalDetailPage{Repo: *repo, Proposal: proposal, Err: errMsg},
+		})
+	}
+
+	// Load current proposal for error re-render.
+	proposal, err := h.write.GetProposal(ctx, repoName, id)
+	if err != nil || proposal == nil {
+		h.renderError(w, http.StatusNotFound, "proposal not found")
+		return
+	}
+
+	if titleVal == "" {
+		renderWithErr(proposal, "title is required")
+		return
+	}
+
+	updated, err := h.write.UpdateProposal(ctx, repoName, id, &titleVal, &descVal)
+	if err != nil {
+		slog.Error("ui update proposal", "repo", repoName, "id", id, "error", err)
+		renderWithErr(proposal, "could not update proposal: "+err.Error())
+		return
+	}
+
+	http.Redirect(w, r, "/ui/r/"+repoName+"/proposals/"+updated.ID, http.StatusSeeOther)
+}
+
+// handleCloseProposalUI processes a POST form to close a proposal.
+func (h *Handler) handleCloseProposalUI(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	id := r.PathValue("id")
+	repoName := owner + "/" + name
+	ctx := r.Context()
+
+	if err := h.write.CloseProposal(ctx, repoName, id); err != nil {
+		slog.Error("ui close proposal", "repo", repoName, "id", id, "error", err)
+
+		// Re-render proposal detail with error.
+		proposal, getErr := h.write.GetProposal(ctx, repoName, id)
+		if getErr != nil || proposal == nil {
+			h.renderError(w, http.StatusInternalServerError, "could not close proposal")
+			return
+		}
+		repo, getErr := h.write.GetRepo(ctx, repoName)
+		if getErr != nil {
+			h.renderError(w, http.StatusInternalServerError, "could not load repo")
+			return
+		}
+		h.render(w, h.tmpl.proposalDetail, "layout.html", pageData{
+			Title: repoName + " / proposals / " + id,
+			Breadcrumbs: []crumb{
+				{Label: "repos", Href: "/ui/"},
+				{Label: repoName, Href: "/ui/r/" + repoName},
+				{Label: "proposals", Href: "/ui/r/" + repoName + "/proposals"},
+				{Label: proposal.Title, Href: ""},
+			},
+			Body: proposalDetailPage{Repo: *repo, Proposal: proposal, Err: "could not close proposal: " + err.Error()},
+		})
+		return
+	}
+
+	http.Redirect(w, r, "/ui/r/"+repoName+"/proposals/"+id, http.StatusSeeOther)}
 
 // chainToLogRows filters and converts ChainEntries to commitLogRows.
 // Only entries for the named branch are included.
