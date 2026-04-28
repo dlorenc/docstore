@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/dlorenc/docstore/internal/blob"
@@ -250,7 +251,13 @@ func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore Wri
 		assemble := func(ctx context.Context, repo, branch string) (*model.AgentContextResponse, error) {
 			return s.AssembleAgentContext(ctx, repo, branch, IdentityFromContext(ctx))
 		}
-		uiHandler, err := ui.NewHandler(s.readStore, writeStore, assemble)
+		var uiHandler *ui.Handler
+		var err error
+		if os.Getenv("DEV_UI") != "" {
+			uiHandler, err = ui.NewHandlerDev(s.readStore, writeStore, assemble)
+		} else {
+			uiHandler, err = ui.NewHandler(s.readStore, writeStore, assemble)
+		}
 		if err != nil {
 			slog.Error("ui init failed", "error", err)
 		} else {
