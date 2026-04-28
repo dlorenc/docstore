@@ -78,6 +78,7 @@
       <button type="submit">enable auto-merge</button>
     </form>
     {{end}}
+    <a href="/ui/r/{{$page.Repo.Name}}/b/{{urlPathEscape $ctx.Branch.Name}}/commit" class="btn" style="font-size:12px">new commit</a>
     <form method="POST" action="/ui/r/{{$page.Repo.Name}}/-/delete-branch" style="display:inline">
       <input type="hidden" name="branch" value="{{$ctx.Branch.Name}}">
       <input type="hidden" name="ref" value="detail">
