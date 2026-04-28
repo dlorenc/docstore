@@ -1,0 +1,18 @@
+{{define "proposals_rows.html"}}
+{{if not .}}<div class="empty">no proposals</div>{{else}}
+<table class="grid">
+  <thead><tr><th>title</th><th>state</th><th>author</th><th>base</th><th>opened</th></tr></thead>
+  <tbody>
+  {{range .}}
+  <tr>
+    <td><a href="proposals/{{.ID}}">{{.Title}}</a></td>
+    <td><span class="badge {{statusClass (printf "%s" .State)}}">{{.State}}</span></td>
+    <td>{{.Author}}</td>
+    <td>{{.BaseBranch}}</td>
+    <td class="meta">{{relTime .CreatedAt}}</td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}
+{{end}}
