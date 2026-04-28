@@ -190,6 +190,18 @@ func (f *fakeWrite) CreateRepo(_ context.Context, req model.CreateRepoRequest) (
 	}
 	return &model.Repo{Name: req.FullName(), Owner: req.Owner}, nil
 }
+func (f *fakeWrite) CreateBranch(_ context.Context, req model.CreateBranchRequest) (*model.CreateBranchResponse, error) {
+	return &model.CreateBranchResponse{Name: req.Name}, nil
+}
+func (f *fakeWrite) UpdateBranchDraft(_ context.Context, _, _ string, _ bool) error {
+	return nil
+}
+func (f *fakeWrite) DeleteBranch(_ context.Context, _, _ string) error {
+	return nil
+}
+func (f *fakeWrite) SetBranchAutoMerge(_ context.Context, _, _ string, _ bool) error {
+	return nil
+}
 
 func newFakeAssembler(branchName string) AssembleFn {
 	return func(_ context.Context, _, branch string) (*model.AgentContextResponse, error) {
