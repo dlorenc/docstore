@@ -196,22 +196,45 @@ func (s *Store) ListOrgs(ctx context.Context) ([]model.Org, error) {
 
 // DeleteOrg hard-deletes an org. Returns ErrOrgNotFound if it doesn't exist
 // and ErrOrgHasRepos if there are repos still owned by this org.
+// Org members and invites are removed automatically as part of the deletion.
 func (s *Store) DeleteOrg(ctx context.Context, name string) error {
-	result, err := s.db.ExecContext(ctx, "DELETE FROM orgs WHERE name = $1", name)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		if isForeignKeyViolation(err) {
-			return ErrOrgHasRepos
-		}
-		return fmt.Errorf("delete org: %w", err)
+		return fmt.Errorf("delete org: begin tx: %w", err)
 	}
-	n, err := result.RowsAffected()
-	if err != nil {
-		return err
+	defer tx.Rollback() //nolint:errcheck
+
+	// Verify the org exists.
+	var exists bool
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM orgs WHERE name = $1)", name).Scan(&exists); err != nil {
+		return fmt.Errorf("delete org: check exists: %w", err)
 	}
-	if n == 0 {
+	if !exists {
 		return ErrOrgNotFound
 	}
-	return nil
+
+	// Fail if repos still reference this org.
+	var repoCount int
+	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM repos WHERE owner = $1", name).Scan(&repoCount); err != nil {
+		return fmt.Errorf("delete org: count repos: %w", err)
+	}
+	if repoCount > 0 {
+		return ErrOrgHasRepos
+	}
+
+	// Remove membership records so the FK constraint does not block deletion.
+	if _, err := tx.ExecContext(ctx, "DELETE FROM org_members WHERE org = $1", name); err != nil {
+		return fmt.Errorf("delete org: remove members: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM org_invites WHERE org = $1", name); err != nil {
+		return fmt.Errorf("delete org: remove invites: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, "DELETE FROM orgs WHERE name = $1", name); err != nil {
+		return fmt.Errorf("delete org: %w", err)
+	}
+
+	return tx.Commit()
 }
 
 // ListOrgRepos returns all repos owned by an org, ordered by name.

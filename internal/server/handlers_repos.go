@@ -54,6 +54,9 @@ func (s *server) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	identity := IdentityFromContext(r.Context())
+	if err := s.commitStore.SetRole(r.Context(), repo.Name, identity, model.RoleAdmin); err != nil {
+		slog.Error("failed to add repo creator as admin", "repo", repo.Name, "identity", identity, "error", err)
+	}
 	s.emit(r.Context(), evtypes.RepoCreated{Repo: repo.Name, Owner: repo.Owner, CreatedBy: identity})
 	slog.Info("repo created", "repo", repo.Name, "by", identity)
 	writeJSON(w, http.StatusCreated, repo)
