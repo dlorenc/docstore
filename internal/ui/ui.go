@@ -92,6 +92,9 @@ type WriteStoreLite interface {
 	// Org/repo delete operations.
 	DeleteOrg(ctx context.Context, name string) error
 	DeleteRepo(ctx context.Context, name string) error
+
+	// Commit write operation.
+	Commit(ctx context.Context, req model.CommitRequest) (*model.CommitResponse, error)
 }
 
 // AssembleFn builds the full branch context snapshot used by the branch detail
@@ -233,6 +236,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	// Write operations: delete org/repo.
 	mux.HandleFunc("POST /ui/o/{org}/delete", h.handleUIDeleteOrg)
 	mux.HandleFunc("POST /ui/r/{owner}/{name}/-/delete-repo", h.handleUIDeleteRepo)
+	// Commit form.
+	mux.HandleFunc("GET /ui/r/{owner}/{name}/b/{branch}/commit", h.handleNewCommit)
+	mux.HandleFunc("POST /ui/r/{owner}/{name}/b/{branch}/commit", h.handleNewCommit)
 
 	mux.Handle("GET /ui/static/", http.StripPrefix("/ui/static/", http.FileServer(http.FS(h.staticSub))))
 }
