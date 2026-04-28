@@ -23,6 +23,7 @@
   <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:4px 0">
     {{if $ctx.Branch.Draft}}
     <form method="POST" action="/ui/r/{{$page.Repo.Name}}/-/promote-branch" style="display:inline">
+      {{csrfField}}
       <input type="hidden" name="branch" value="{{$ctx.Branch.Name}}">
       <input type="hidden" name="ref" value="detail">
       <button type="submit">promote to active</button>
@@ -65,6 +66,7 @@
     })()">rebase</button>
     {{if $ctx.Branch.AutoMerge}}
     <form method="POST" action="/ui/r/{{$page.Repo.Name}}/-/set-auto-merge" style="display:inline">
+      {{csrfField}}
       <input type="hidden" name="branch" value="{{$ctx.Branch.Name}}">
       <input type="hidden" name="enable" value="0">
       <input type="hidden" name="ref" value="detail">
@@ -72,6 +74,7 @@
     </form>
     {{else}}
     <form method="POST" action="/ui/r/{{$page.Repo.Name}}/-/set-auto-merge" style="display:inline">
+      {{csrfField}}
       <input type="hidden" name="branch" value="{{$ctx.Branch.Name}}">
       <input type="hidden" name="enable" value="1">
       <input type="hidden" name="ref" value="detail">
@@ -80,6 +83,7 @@
     {{end}}
     <a href="/ui/r/{{$page.Repo.Name}}/b/{{urlPathEscape $ctx.Branch.Name}}/commit" class="btn" style="font-size:12px">new commit</a>
     <form method="POST" action="/ui/r/{{$page.Repo.Name}}/-/delete-branch" style="display:inline">
+      {{csrfField}}
       <input type="hidden" name="branch" value="{{$ctx.Branch.Name}}">
       <input type="hidden" name="ref" value="detail">
       <button type="submit" style="color:var(--bad)" onclick="return confirm('Abandon branch {{$ctx.Branch.Name}}?')">delete</button>
@@ -161,6 +165,7 @@
     <h2>Submit review</h2>
     <div class="card">
       <form method="POST" action="/ui/r/{{$page.Repo.Name}}/b/{{urlPathEscape $ctx.Branch.Name}}/review" style="padding:14px 12px 4px">
+        {{csrfField}}
         <div style="margin-bottom:10px">
           <label style="display:block;margin-bottom:4px;font-size:0.85em;color:var(--text-muted)">Status</label>
           <select name="status" style="width:100%;padding:6px 8px;background:var(--bg-input,var(--bg2));border:1px solid var(--border);border-radius:4px;color:var(--text)">
@@ -182,6 +187,7 @@
 <h2>Add comment</h2>
 <div class="card">
   <form method="POST" action="/ui/r/{{$page.Repo.Name}}/b/{{urlPathEscape $ctx.Branch.Name}}/comment" style="padding:14px 12px 4px">
+    {{csrfField}}
     <div style="margin-bottom:10px">
       <label style="display:block;margin-bottom:4px;font-size:0.85em;color:var(--text-muted)">File path</label>
       <input type="text" name="path" list="diff-paths" placeholder="e.g. docs/hello.md" style="width:100%;padding:6px 8px;background:var(--bg-input,var(--bg2));border:1px solid var(--border);border-radius:4px;color:var(--text);box-sizing:border-box">

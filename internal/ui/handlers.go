@@ -55,6 +55,7 @@ type branchesPage struct {
 	Merged    []branchRow
 	Abandoned []branchRow
 	Members   []model.OrgMember
+	Roles     []model.Role
 	Err       string
 }
 
@@ -1416,6 +1417,12 @@ func (h *Handler) renderBranchesPage(w http.ResponseWriter, r *http.Request, own
 		members = nil
 	}
 
+	roles, err := h.write.ListRoles(ctx, repoName)
+	if err != nil {
+		slog.Error("ui list roles", "repo", repoName, "error", err)
+		roles = nil
+	}
+
 	openState := model.ProposalOpen
 	proposalList, err := h.write.ListProposals(ctx, repoName, &openState, nil)
 	if err != nil {
@@ -1428,7 +1435,7 @@ func (h *Handler) renderBranchesPage(w http.ResponseWriter, r *http.Request, own
 		}
 	}
 
-	page := branchesPage{Repo: *repo, Members: members, Err: errMsg}
+	page := branchesPage{Repo: *repo, Members: members, Roles: roles, Err: errMsg}
 	for _, b := range branches {
 		row := branchRow{
 			Name:         b.Name,

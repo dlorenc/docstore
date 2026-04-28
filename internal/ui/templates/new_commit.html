@@ -13,6 +13,7 @@
 
 <div class="card">
   <form method="POST" action="/ui/r/{{.Repo.Name}}/b/{{urlPathEscape .Branch}}/commit" style="padding:8px 4px 4px">
+    {{csrfField}}
     <div style="margin-bottom:12px">
       <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em">Branch</label>
       <input name="branch" type="text" value="{{.Branch}}" readonly class="form-input" style="opacity:0.6">

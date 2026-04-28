@@ -719,12 +719,20 @@ func TestHandleReleaseDetail_NotFound_Returns404(t *testing.T) {
 }
 
 // postForm issues a POST with application/x-www-form-urlencoded body.
-// It does not follow redirects; the raw response is returned.
+// It automatically includes a CSRF token (cookie + form field) so that the
+// CSRF middleware passes. It does not follow redirects; the raw response is
+// returned.
 func postForm(t *testing.T, h http.Handler, target string, vals url.Values) (int, string, string) {
 	t.Helper()
+	const testCSRFToken = "test-csrf-token-0000000000000000"
+	if vals == nil {
+		vals = url.Values{}
+	}
+	vals.Set(csrfFieldName, testCSRFToken)
 	body := vals.Encode()
 	req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: csrfCookieName, Value: testCSRFToken})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec.Code, rec.Body.String(), rec.Header().Get("Location")
@@ -1124,5 +1132,61 @@ func TestHandleBranches_NoRolesOrDangerZone(t *testing.T) {
 	}
 	if strings.Contains(body, "Grant role") {
 		t.Errorf("branches page should not contain Grant role form")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CSRF middleware tests
+// ---------------------------------------------------------------------------
+
+func TestCSRFMiddleware_MissingTokenReturns403(t *testing.T) {
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{}, nil)
+
+	// POST without any cookie or form field — must be rejected.
+	req := httptest.NewRequest(http.MethodPost, "/ui/orgs/new", strings.NewReader("name=acme"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+}
+
+func TestCSRFMiddleware_MismatchedTokenReturns403(t *testing.T) {
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{}, nil)
+
+	// Cookie token differs from form field token.
+	body := url.Values{csrfFieldName: {"token-a"}, "name": {"acme"}}.Encode()
+	req := httptest.NewRequest(http.MethodPost, "/ui/orgs/new", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: csrfCookieName, Value: "token-b"})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+}
+
+func TestCSRFMiddleware_GETSetsTokenCookie(t *testing.T) {
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{}, nil)
+
+	// GET request should succeed and set the CSRF cookie.
+	code, _ := getStatusAndBody(t, h, "/ui/orgs/new")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+}
+
+func TestCSRFMiddleware_FormContainsCsrfField(t *testing.T) {
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{}, nil)
+
+	// GET the form page: the rendered HTML must contain the hidden CSRF field.
+	// Because the test handler goes through CSRF middleware, a token is set.
+	code, body := getStatusAndBody(t, h, "/ui/orgs/new")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+	if !strings.Contains(body, `name="csrf_token"`) {
+		t.Errorf("rendered form does not contain csrf_token hidden field; body snippet: %.200s", body)
 	}
 }
