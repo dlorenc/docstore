@@ -147,6 +147,31 @@ func (f *fakeWrite) GetRelease(_ context.Context, _, name string) (*model.Releas
 func (f *fakeWrite) ListIssueRefs(_ context.Context, _ string, _ int64) ([]model.IssueRef, error) {
 	return nil, nil
 }
+func (f *fakeWrite) CreateIssue(_ context.Context, _, _, _, _ string, _ []string) (*model.Issue, error) {
+	iss := &model.Issue{ID: "new-id", Number: 99, Title: "new", Author: "test", State: "open"}
+	return iss, nil
+}
+func (f *fakeWrite) UpdateIssue(_ context.Context, _ string, _ int64, _, _ *string, _ *[]string) (*model.Issue, error) {
+	return nil, nil
+}
+func (f *fakeWrite) CloseIssue(_ context.Context, _ string, _ int64, _ model.IssueCloseReason, _ string) (*model.Issue, error) {
+	return nil, nil
+}
+func (f *fakeWrite) ReopenIssue(_ context.Context, _ string, _ int64) (*model.Issue, error) {
+	return nil, nil
+}
+func (f *fakeWrite) CreateIssueComment(_ context.Context, _ string, _ int64, _, _ string) (*model.IssueComment, error) {
+	return &model.IssueComment{ID: "c-new"}, nil
+}
+func (f *fakeWrite) UpdateIssueComment(_ context.Context, _, _, _ string) (*model.IssueComment, error) {
+	return nil, nil
+}
+func (f *fakeWrite) DeleteIssueComment(_ context.Context, _, _ string) error {
+	return nil
+}
+func (f *fakeWrite) CreateIssueRef(_ context.Context, _ string, _ int64, _ model.IssueRefType, _ string) (*model.IssueRef, error) {
+	return &model.IssueRef{ID: "r-new"}, nil
+}
 func (f *fakeWrite) ListCIJobs(_ context.Context, _ string, _, _ *string, _ int) ([]model.CIJob, error) {
 	return nil, nil
 }

@@ -1,0 +1,39 @@
+{{define "content"}}
+{{with .Body}}
+<nav class="repo-tabs">
+  <a href="/ui/r/{{.Repo.Name}}">branches</a>
+  <a href="/ui/r/{{.Repo.Name}}/issues" class="active">issues</a>
+  <a href="/ui/r/{{.Repo.Name}}/releases">releases</a>
+  <a href="/ui/r/{{.Repo.Name}}/proposals">proposals</a>
+  <a href="/ui/r/{{.Repo.Name}}/ci-jobs">ci-jobs</a>
+  <a href="/ui/r/{{.Repo.Name}}/b/main/log">log</a>
+</nav>
+
+<h1>New Issue</h1>
+
+{{if .Err}}
+<div class="card" style="border-color:var(--bad);margin-bottom:14px">
+  <div class="row"><span class="badge bad">{{.Err}}</span></div>
+</div>
+{{end}}
+
+<div class="card">
+  <form method="POST" action="/ui/r/{{.Repo.Name}}/issues/new" style="padding:8px 4px 4px">
+    <div style="margin-bottom:12px">
+      <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em">Title</label>
+      <input name="title" type="text" required value="{{.FormTitle}}" class="form-input">
+    </div>
+    <div style="margin-bottom:12px">
+      <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em">Body</label>
+      <textarea name="body" rows="6" class="form-input">{{.FormBody}}</textarea>
+    </div>
+    <div style="margin-bottom:14px">
+      <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em">Labels <span style="text-transform:none;letter-spacing:normal">(comma-separated)</span></label>
+      <input name="labels" type="text" value="{{.FormLabels}}" class="form-input">
+    </div>
+    <button type="submit" class="btn">Create Issue</button>
+    <a href="/ui/r/{{.Repo.Name}}/issues" style="margin-left:12px;font-size:12px">cancel</a>
+  </form>
+</div>
+{{end}}
+{{end}}

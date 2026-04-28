@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -136,6 +137,15 @@ type issueDetailPage struct {
 	Issue    *model.Issue
 	Comments []model.IssueComment
 	Refs     []model.IssueRef
+	Err      string
+}
+
+type newIssuePage struct {
+	Repo       model.Repo
+	Err        string
+	FormTitle  string
+	FormBody   string
+	FormLabels string
 }
 
 type acceptInvitePage struct {
@@ -710,6 +720,9 @@ func (h *Handler) handleIssueDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	page := issueDetailPage{Repo: *repo, Issue: issue, Comments: comments, Refs: refs}
+	if errMsg := r.URL.Query().Get("error"); errMsg != "" {
+		page.Err = errMsg
+	}
 	h.render(w, h.tmpl.issueDetail, "layout.html", pageData{
 		Title: repoName + " / issue #" + numberStr,
 		Breadcrumbs: []crumb{
@@ -1392,6 +1405,326 @@ func (h *Handler) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, "/ui/r/"+owner+"/"+name, http.StatusSeeOther)
+}
+
+// issueURL returns the UI URL for a specific issue detail page.
+func issueURL(repoName, numberStr string) string {
+	return "/ui/r/" + repoName + "/issues/" + numberStr
+}
+
+// handleNewIssue renders the new-issue form (GET) and creates an issue (POST).
+func (h *Handler) handleNewIssue(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	repoName := owner + "/" + name
+	ctx := r.Context()
+
+	repo, err := h.write.GetRepo(ctx, repoName)
+	if err != nil {
+		if errors.Is(err, db.ErrRepoNotFound) {
+			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
+			return
+		}
+		slog.Error("ui get repo", "repo", repoName, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load repo")
+		return
+	}
+
+	renderForm := func(formTitle, formBody, formLabels, errMsg string) {
+		h.render(w, h.tmpl.newIssue, "layout.html", pageData{
+			Title: repoName + " / new issue",
+			Breadcrumbs: []crumb{
+				{Label: "repos", Href: "/ui/"},
+				{Label: repoName, Href: "/ui/r/" + repoName},
+				{Label: "issues", Href: "/ui/r/" + repoName + "/issues"},
+				{Label: "new", Href: ""},
+			},
+			Body: newIssuePage{
+				Repo:       *repo,
+				Err:        errMsg,
+				FormTitle:  formTitle,
+				FormBody:   formBody,
+				FormLabels: formLabels,
+			},
+		})
+	}
+
+	if r.Method == http.MethodGet {
+		renderForm("", "", "", "")
+		return
+	}
+
+	// POST: create the issue.
+	if err := r.ParseForm(); err != nil {
+		renderForm("", "", "", "invalid form data")
+		return
+	}
+	title := strings.TrimSpace(r.FormValue("title"))
+	body := strings.TrimSpace(r.FormValue("body"))
+	labelsStr := strings.TrimSpace(r.FormValue("labels"))
+
+	if title == "" {
+		renderForm(title, body, labelsStr, "title is required")
+		return
+	}
+
+	var labels []string
+	for _, l := range strings.Split(labelsStr, ",") {
+		if l = strings.TrimSpace(l); l != "" {
+			labels = append(labels, l)
+		}
+	}
+
+	var identity string
+	if h.identity != nil {
+		identity = h.identity(ctx)
+	}
+
+	iss, err := h.write.CreateIssue(ctx, repoName, title, body, identity, labels)
+	if err != nil {
+		slog.Error("ui create issue", "repo", repoName, "error", err)
+		renderForm(title, body, labelsStr, "could not create issue")
+		return
+	}
+
+	http.Redirect(w, r, fmt.Sprintf("/ui/r/%s/issues/%d", repoName, iss.Number), http.StatusSeeOther)
+}
+
+// handleEditIssue processes the edit-issue form POST, updating title/body/labels.
+func (h *Handler) handleEditIssue(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	numberStr := r.PathValue("number")
+	repoName := owner + "/" + name
+	ctx := r.Context()
+
+	number, err := strconv.ParseInt(numberStr, 10, 64)
+	if err != nil {
+		h.renderError(w, http.StatusBadRequest, "invalid issue number")
+		return
+	}
+
+	if err := r.ParseForm(); err != nil {
+		http.Redirect(w, r, issueURL(repoName, numberStr)+"?error=invalid+form", http.StatusSeeOther)
+		return
+	}
+
+	title := strings.TrimSpace(r.FormValue("title"))
+	if title == "" {
+		http.Redirect(w, r, issueURL(repoName, numberStr)+"?error=title+is+required", http.StatusSeeOther)
+		return
+	}
+
+	body := r.FormValue("body")
+	labelsStr := r.FormValue("labels")
+	var labels []string
+	for _, l := range strings.Split(labelsStr, ",") {
+		if l = strings.TrimSpace(l); l != "" {
+			labels = append(labels, l)
+		}
+	}
+	labelsPtr := &labels
+
+	if _, err := h.write.UpdateIssue(ctx, repoName, number, &title, &body, labelsPtr); err != nil {
+		slog.Error("ui edit issue", "repo", repoName, "number", number, "error", err)
+		http.Redirect(w, r, issueURL(repoName, numberStr)+"?error="+url.QueryEscape("could not update issue"), http.StatusSeeOther)
+		return
+	}
+
+	http.Redirect(w, r, issueURL(repoName, numberStr), http.StatusSeeOther)
+}
+
+// handleIssueClose processes the close-issue form POST.
+func (h *Handler) handleIssueClose(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	numberStr := r.PathValue("number")
+	repoName := owner + "/" + name
+	ctx := r.Context()
+
+	number, err := strconv.ParseInt(numberStr, 10, 64)
+	if err != nil {
+		h.renderError(w, http.StatusBadRequest, "invalid issue number")
+		return
+	}
+
+	if err := r.ParseForm(); err != nil {
+		http.Redirect(w, r, issueURL(repoName, numberStr)+"?error=invalid+form", http.StatusSeeOther)
+		return
+	}
+
+	reason := model.IssueCloseReason(r.FormValue("reason"))
+	switch reason {
+	case model.IssueCloseReasonCompleted, model.IssueCloseReasonNotPlanned, model.IssueCloseReasonDuplicate:
+		// valid
+	default:
+		reason = model.IssueCloseReasonCompleted
+	}
+
+	var identity string
+	if h.identity != nil {
+		identity = h.identity(ctx)
+	}
+
+	if _, err := h.write.CloseIssue(ctx, repoName, number, reason, identity); err != nil {
+		slog.Error("ui close issue", "repo", repoName, "number", number, "error", err)
+		http.Redirect(w, r, issueURL(repoName, numberStr)+"?error="+url.QueryEscape("could not close issue"), http.StatusSeeOther)
+		return
+	}
+
+	http.Redirect(w, r, issueURL(repoName, numberStr), http.StatusSeeOther)
+}
+
+// handleIssueReopen processes the reopen-issue form POST.
+func (h *Handler) handleIssueReopen(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	numberStr := r.PathValue("number")
+	repoName := owner + "/" + name
+	ctx := r.Context()
+
+	number, err := strconv.ParseInt(numberStr, 10, 64)
+	if err != nil {
+		h.renderError(w, http.StatusBadRequest, "invalid issue number")
+		return
+	}
+
+	if _, err := h.write.ReopenIssue(ctx, repoName, number); err != nil {
+		slog.Error("ui reopen issue", "repo", repoName, "number", number, "error", err)
+		http.Redirect(w, r, issueURL(repoName, numberStr)+"?error="+url.QueryEscape("could not reopen issue"), http.StatusSeeOther)
+		return
+	}
+
+	http.Redirect(w, r, issueURL(repoName, numberStr), http.StatusSeeOther)
+}
+
+// handleCreateIssueComment processes the add-comment form POST.
+func (h *Handler) handleCreateIssueComment(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	numberStr := r.PathValue("number")
+	repoName := owner + "/" + name
+	ctx := r.Context()
+
+	number, err := strconv.ParseInt(numberStr, 10, 64)
+	if err != nil {
+		h.renderError(w, http.StatusBadRequest, "invalid issue number")
+		return
+	}
+
+	if err := r.ParseForm(); err != nil {
+		http.Redirect(w, r, issueURL(repoName, numberStr)+"?error=invalid+form", http.StatusSeeOther)
+		return
+	}
+
+	body := strings.TrimSpace(r.FormValue("body"))
+	if body == "" {
+		http.Redirect(w, r, issueURL(repoName, numberStr)+"?error=comment+body+is+required", http.StatusSeeOther)
+		return
+	}
+
+	var identity string
+	if h.identity != nil {
+		identity = h.identity(ctx)
+	}
+
+	if _, err := h.write.CreateIssueComment(ctx, repoName, number, body, identity); err != nil {
+		slog.Error("ui create issue comment", "repo", repoName, "number", number, "error", err)
+		http.Redirect(w, r, issueURL(repoName, numberStr)+"?error="+url.QueryEscape("could not post comment"), http.StatusSeeOther)
+		return
+	}
+
+	http.Redirect(w, r, issueURL(repoName, numberStr), http.StatusSeeOther)
+}
+
+// handleEditIssueComment processes the edit-comment form POST.
+func (h *Handler) handleEditIssueComment(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	numberStr := r.PathValue("number")
+	commentID := r.PathValue("id")
+	repoName := owner + "/" + name
+	ctx := r.Context()
+
+	if err := r.ParseForm(); err != nil {
+		http.Redirect(w, r, issueURL(repoName, numberStr)+"?error=invalid+form", http.StatusSeeOther)
+		return
+	}
+
+	body := strings.TrimSpace(r.FormValue("body"))
+	if body == "" {
+		http.Redirect(w, r, issueURL(repoName, numberStr)+"?error=comment+body+is+required", http.StatusSeeOther)
+		return
+	}
+
+	if _, err := h.write.UpdateIssueComment(ctx, repoName, commentID, body); err != nil {
+		slog.Error("ui edit issue comment", "repo", repoName, "comment", commentID, "error", err)
+		http.Redirect(w, r, issueURL(repoName, numberStr)+"?error="+url.QueryEscape("could not update comment"), http.StatusSeeOther)
+		return
+	}
+
+	http.Redirect(w, r, issueURL(repoName, numberStr), http.StatusSeeOther)
+}
+
+// handleDeleteIssueComment processes the delete-comment form POST.
+func (h *Handler) handleDeleteIssueComment(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	numberStr := r.PathValue("number")
+	commentID := r.PathValue("id")
+	repoName := owner + "/" + name
+	ctx := r.Context()
+
+	if err := h.write.DeleteIssueComment(ctx, repoName, commentID); err != nil {
+		slog.Error("ui delete issue comment", "repo", repoName, "comment", commentID, "error", err)
+		http.Redirect(w, r, issueURL(repoName, numberStr)+"?error="+url.QueryEscape("could not delete comment"), http.StatusSeeOther)
+		return
+	}
+
+	http.Redirect(w, r, issueURL(repoName, numberStr), http.StatusSeeOther)
+}
+
+// handleAddIssueRef processes the add-reference form POST.
+func (h *Handler) handleAddIssueRef(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	numberStr := r.PathValue("number")
+	repoName := owner + "/" + name
+	ctx := r.Context()
+
+	number, err := strconv.ParseInt(numberStr, 10, 64)
+	if err != nil {
+		h.renderError(w, http.StatusBadRequest, "invalid issue number")
+		return
+	}
+
+	if err := r.ParseForm(); err != nil {
+		http.Redirect(w, r, issueURL(repoName, numberStr)+"?error=invalid+form", http.StatusSeeOther)
+		return
+	}
+
+	refType := model.IssueRefType(r.FormValue("ref_type"))
+	refID := strings.TrimSpace(r.FormValue("ref_id"))
+
+	if refID == "" {
+		http.Redirect(w, r, issueURL(repoName, numberStr)+"?error=ref+ID+is+required", http.StatusSeeOther)
+		return
+	}
+	switch refType {
+	case model.IssueRefTypeProposal, model.IssueRefTypeCommit:
+		// valid
+	default:
+		http.Redirect(w, r, issueURL(repoName, numberStr)+"?error=invalid+ref+type", http.StatusSeeOther)
+		return
+	}
+
+	if _, err := h.write.CreateIssueRef(ctx, repoName, number, refType, refID); err != nil {
+		slog.Error("ui add issue ref", "repo", repoName, "number", number, "error", err)
+		http.Redirect(w, r, issueURL(repoName, numberStr)+"?error="+url.QueryEscape("could not add reference"), http.StatusSeeOther)
+		return
+	}
+
+	http.Redirect(w, r, issueURL(repoName, numberStr), http.StatusSeeOther)
 }
 
 // chainToLogRows filters and converts ChainEntries to commitLogRows.

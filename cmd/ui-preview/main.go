@@ -235,6 +235,30 @@ func (fakeWrite) GetRelease(_ context.Context, _, name string) (*model.Release, 
 func (fakeWrite) ListIssueRefs(_ context.Context, _ string, _ int64) ([]model.IssueRef, error) {
 	return nil, nil
 }
+func (fakeWrite) CreateIssue(_ context.Context, _, _, _, _ string, _ []string) (*model.Issue, error) {
+	return &model.Issue{ID: "new-id", Number: 99, Title: "new", Author: "test", State: "open"}, nil
+}
+func (fakeWrite) UpdateIssue(_ context.Context, _ string, _ int64, _, _ *string, _ *[]string) (*model.Issue, error) {
+	return nil, nil
+}
+func (fakeWrite) CloseIssue(_ context.Context, _ string, _ int64, _ model.IssueCloseReason, _ string) (*model.Issue, error) {
+	return nil, nil
+}
+func (fakeWrite) ReopenIssue(_ context.Context, _ string, _ int64) (*model.Issue, error) {
+	return nil, nil
+}
+func (fakeWrite) CreateIssueComment(_ context.Context, _ string, _ int64, _, _ string) (*model.IssueComment, error) {
+	return &model.IssueComment{ID: "c-new"}, nil
+}
+func (fakeWrite) UpdateIssueComment(_ context.Context, _, _, _ string) (*model.IssueComment, error) {
+	return nil, nil
+}
+func (fakeWrite) DeleteIssueComment(_ context.Context, _, _ string) error {
+	return nil
+}
+func (fakeWrite) CreateIssueRef(_ context.Context, _ string, _ int64, _ model.IssueRefType, _ string) (*model.IssueRef, error) {
+	return &model.IssueRef{ID: "r-new"}, nil
+}
 
 func (fakeWrite) ListCIJobs(_ context.Context, _ string, _, _ *string, _ int) ([]model.CIJob, error) {
 	t := time.Now()

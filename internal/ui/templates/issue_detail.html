@@ -1,5 +1,6 @@
 {{define "content"}}
 {{with .Body}}
+{{$d := .}}
 <nav class="repo-tabs">
   <a href="/ui/r/{{.Repo.Name}}">branches</a>
   <a href="/ui/r/{{.Repo.Name}}/issues" class="active">issues</a>
@@ -9,10 +10,33 @@
   <a href="/ui/r/{{.Repo.Name}}/b/main/log">log</a>
 </nav>
 
-<div class="headline">
-  <h1>#{{.Issue.Number}} {{.Issue.Title}}</h1>
-  <span class="badge {{statusClass (printf "%s" .Issue.State)}}">{{.Issue.State}}</span>
+{{if .Err}}
+<div class="card" style="border-color:var(--bad);margin-bottom:14px">
+  <div class="row"><span class="badge bad">{{.Err}}</span></div>
 </div>
+{{end}}
+
+<div class="headline">
+  <div style="flex:1">
+    <h1>#{{.Issue.Number}} {{.Issue.Title}}</h1>
+  </div>
+  <span class="badge {{statusClass (printf "%s" .Issue.State)}}">{{.Issue.State}}</span>
+  {{if eq (printf "%s" .Issue.State) "open"}}
+  <form method="POST" action="/ui/r/{{.Repo.Name}}/issues/{{.Issue.Number}}/close" style="display:flex;gap:6px;align-items:center">
+    <select name="reason" class="form-input" style="width:auto">
+      <option value="completed">completed</option>
+      <option value="not_planned">not planned</option>
+      <option value="duplicate">duplicate</option>
+    </select>
+    <button type="submit" class="btn">Close issue</button>
+  </form>
+  {{else}}
+  <form method="POST" action="/ui/r/{{.Repo.Name}}/issues/{{.Issue.Number}}/reopen">
+    <button type="submit" class="btn">Reopen issue</button>
+  </form>
+  {{end}}
+</div>
+
 <div class="meta" style="margin-bottom:14px">
   by {{.Issue.Author}} · opened {{relTime .Issue.CreatedAt}}{{if .Issue.ClosedAt}} · closed {{relTimep .Issue.ClosedAt}}{{end}}
 </div>
@@ -29,6 +53,27 @@
 </div>
 {{end}}
 
+<details class="form-section" style="margin-bottom:16px">
+  <summary>Edit issue</summary>
+  <div class="card" style="margin-top:8px">
+    <form method="POST" action="/ui/r/{{.Repo.Name}}/issues/{{.Issue.Number}}/edit" style="padding:8px 4px 4px">
+      <div style="margin-bottom:10px">
+        <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em">Title</label>
+        <input name="title" type="text" required value="{{.Issue.Title}}" class="form-input">
+      </div>
+      <div style="margin-bottom:10px">
+        <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em">Body</label>
+        <textarea name="body" rows="5" class="form-input">{{.Issue.Body}}</textarea>
+      </div>
+      <div style="margin-bottom:10px">
+        <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em">Labels <span style="text-transform:none;letter-spacing:normal">(comma-separated)</span></label>
+        <input name="labels" type="text" value="{{joinStrings .Issue.Labels ", "}}" class="form-input">
+      </div>
+      <button type="submit" class="btn">Save changes</button>
+    </form>
+  </div>
+</details>
+
 <h2>Comments ({{len .Comments}})</h2>
 <div class="card">
   {{if not .Comments}}<div class="empty">no comments yet</div>{{end}}
@@ -38,9 +83,30 @@
       <strong>{{.Author}}</strong>
       <span class="meta">{{relTime .CreatedAt}}{{if .EditedAt}} · edited{{end}}</span>
     </div>
+    <form method="POST" action="/ui/r/{{$d.Repo.Name}}/issues/{{$d.Issue.Number}}/comments/{{.ID}}/delete">
+      <button type="submit" class="btn danger" style="font-size:11px;padding:3px 8px">delete</button>
+    </form>
   </div>
   {{if .Body}}<div class="row-body">{{.Body}}</div>{{end}}
+  <details class="form-section" style="padding:4px 4px 8px">
+    <summary>edit comment</summary>
+    <form method="POST" action="/ui/r/{{$d.Repo.Name}}/issues/{{$d.Issue.Number}}/comments/{{.ID}}/edit" style="padding-top:8px">
+      <textarea name="body" rows="3" required class="form-input">{{.Body}}</textarea>
+      <div style="margin-top:6px">
+        <button type="submit" class="btn" style="font-size:11px;padding:3px 8px">Save</button>
+      </div>
+    </form>
+  </details>
   {{end}}
+</div>
+
+<div class="card" style="margin-top:4px">
+  <form method="POST" action="/ui/r/{{.Repo.Name}}/issues/{{.Issue.Number}}/comments" style="padding:8px 4px 4px">
+    <div style="margin-bottom:8px">
+      <textarea name="body" rows="3" placeholder="Write a comment..." required class="form-input"></textarea>
+    </div>
+    <button type="submit" class="btn">Post comment</button>
+  </form>
 </div>
 
 {{if .Refs}}
@@ -51,9 +117,9 @@
     <div>
       <span class="badge neutral">{{.RefType}}</span>
       {{if eq (printf "%s" .RefType) "proposal"}}
-        <a href="/ui/r/{{$.Repo.Name}}/proposals/{{.RefID}}">{{.RefID}}</a>
+        <a href="/ui/r/{{$d.Repo.Name}}/proposals/{{.RefID}}">{{.RefID}}</a>
       {{else if eq (printf "%s" .RefType) "commit"}}
-        <a href="/ui/r/{{$.Repo.Name}}/b/main/c/{{.RefID}}">seq {{.RefID}}</a>
+        <a href="/ui/r/{{$d.Repo.Name}}/b/main/c/{{.RefID}}">seq {{.RefID}}</a>
       {{else}}
         <span>{{.RefID}}</span>
       {{end}}
@@ -63,5 +129,20 @@
   {{end}}
 </div>
 {{end}}
+
+<details class="form-section" style="margin-top:4px">
+  <summary>Add reference</summary>
+  <div class="card" style="margin-top:8px">
+    <form method="POST" action="/ui/r/{{.Repo.Name}}/issues/{{.Issue.Number}}/refs" style="padding:8px 4px 4px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <select name="ref_type" class="form-input" style="width:auto">
+        <option value="proposal">proposal</option>
+        <option value="commit">commit</option>
+      </select>
+      <input name="ref_id" type="text" placeholder="ID" required class="form-input" style="flex:1;min-width:180px">
+      <button type="submit" class="btn">Add reference</button>
+    </form>
+  </div>
+</details>
+
 {{end}}
 {{end}}
