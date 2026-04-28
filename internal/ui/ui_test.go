@@ -36,6 +36,9 @@ func (f *fakeRead) GetBranch(_ context.Context, _, _ string) (*store.BranchInfo,
 func (f *fakeRead) ListBranches(_ context.Context, repo, _ string, _, _ bool) ([]store.BranchInfo, error) {
 	return f.branches[repo], nil
 }
+func (f *fakeRead) GetFileHistory(_ context.Context, _, _, _ string, _ int, _ *int64) ([]store.FileHistoryEntry, error) {
+	return nil, nil
+}
 
 type fakeWrite struct {
 	repos []model.Repo
@@ -54,6 +57,15 @@ func (f *fakeWrite) GetRepo(_ context.Context, name string) (*model.Repo, error)
 		}
 	}
 	return nil, db.ErrRepoNotFound
+}
+func (f *fakeWrite) ListReviewComments(_ context.Context, _, _ string, _ *string) ([]model.ReviewComment, error) {
+	return nil, nil
+}
+func (f *fakeWrite) ListOrgMembers(_ context.Context, _ string) ([]model.OrgMember, error) {
+	return nil, nil
+}
+func (f *fakeWrite) ListRoles(_ context.Context, _ string) ([]model.Role, error) {
+	return nil, nil
 }
 
 func newFakeAssembler(branchName string) AssembleFn {
