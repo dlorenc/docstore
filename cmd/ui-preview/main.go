@@ -278,6 +278,12 @@ func (fakeWrite) GetCIJob(_ context.Context, id string) (*model.CIJob, error) {
 	}
 	return jobs[id], nil
 }
+func (fakeWrite) CreateBranch(_ context.Context, req model.CreateBranchRequest) (*model.CreateBranchResponse, error) {
+	return &model.CreateBranchResponse{Name: req.Name}, nil
+}
+func (fakeWrite) UpdateBranchDraft(_ context.Context, _, _ string, _ bool) error { return nil }
+func (fakeWrite) DeleteBranch(_ context.Context, _, _ string) error               { return nil }
+func (fakeWrite) SetBranchAutoMerge(_ context.Context, _, _ string, _ bool) error { return nil }
 
 func (fakeWrite) CreateOrg(_ context.Context, name, _ string) (*model.Org, error) {
 	return &model.Org{Name: name}, nil
