@@ -1,6 +1,6 @@
 {{define "content"}}
 {{with .Body}}
-<div class="headline"><h1>{{.Repo.Name}}</h1><span class="meta">owner {{.Repo.Owner}} · {{relTime .Repo.CreatedAt}}</span></div>
+<div class="headline"><h1>{{.Repo.Name}}</h1><span class="meta">owner {{.Repo.Owner}} · {{relTime .Repo.CreatedAt}} · <a href="/repos/{{.Repo.Name}}/-/archive">download archive</a></span></div>
 
 <nav class="repo-tabs">
   <a href="/ui/r/{{.Repo.Name}}">branches</a>
