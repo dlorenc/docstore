@@ -30,6 +30,13 @@ type orgGroup struct {
 	Repos []model.Repo
 }
 
+type orgPage struct {
+	Org     string
+	Repos   []model.Repo
+	Members []model.OrgMember
+	Invites []model.OrgInvite
+}
+
 type branchesPage struct {
 	Repo      model.Repo
 	Active    []branchRow
@@ -146,6 +153,51 @@ func (h *Handler) handleRepos(w http.ResponseWriter, r *http.Request) {
 		Title:       "Repos",
 		Breadcrumbs: []crumb{{Label: "repos", Href: "/ui/"}},
 		Body:        reposPage{Orgs: orgs},
+	})
+}
+
+// handleOrg renders the org overview page: repos, members, and pending invites.
+func (h *Handler) handleOrg(w http.ResponseWriter, r *http.Request) {
+	org := r.PathValue("org")
+	ctx := r.Context()
+
+	repos, err := h.write.ListOrgRepos(ctx, org)
+	if err != nil {
+		slog.Error("ui list org repos", "org", org, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load repos")
+		return
+	}
+	members, err := h.write.ListOrgMembers(ctx, org)
+	if err != nil {
+		slog.Error("ui list org members", "org", org, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load members")
+		return
+	}
+	invites, err := h.write.ListInvites(ctx, org)
+	if err != nil {
+		slog.Error("ui list invites", "org", org, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load invites")
+		return
+	}
+	var pending []model.OrgInvite
+	for _, inv := range invites {
+		if inv.AcceptedAt == nil {
+			pending = append(pending, inv)
+		}
+	}
+
+	h.render(w, h.tmpl.org, "layout.html", pageData{
+		Title: org,
+		Breadcrumbs: []crumb{
+			{Label: "repos", Href: "/ui/"},
+			{Label: org, Href: ""},
+		},
+		Body: orgPage{
+			Org:     org,
+			Repos:   repos,
+			Members: members,
+			Invites: pending,
+		},
 	})
 }
 

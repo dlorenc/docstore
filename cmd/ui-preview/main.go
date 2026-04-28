@@ -117,6 +117,24 @@ func (fakeWrite) ListRoles(_ context.Context, _ string) ([]model.Role, error) {
 	}, nil
 }
 
+func (fakeWrite) ListInvites(_ context.Context, _ string) ([]model.OrgInvite, error) {
+	t := time.Now()
+	return []model.OrgInvite{
+		{ID: "inv-1", Org: "acme", Email: "newbie@example.com", Role: api.OrgRoleMember, InvitedBy: "ajay@acme", ExpiresAt: t.Add(7 * 24 * time.Hour), CreatedAt: t.Add(-2 * 24 * time.Hour)},
+	}, nil
+}
+
+func (fakeWrite) ListOrgRepos(_ context.Context, owner string) ([]model.Repo, error) {
+	all, _ := (fakeWrite{}).ListRepos(context.Background())
+	var out []model.Repo
+	for _, r := range all {
+		if r.Owner == owner {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
 func (fakeWrite) GetRepo(_ context.Context, name string) (*model.Repo, error) {
 	all, _ := (fakeWrite{}).ListRepos(context.Background())
 	for _, r := range all {
