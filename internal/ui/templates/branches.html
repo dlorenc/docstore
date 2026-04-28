@@ -11,6 +11,24 @@
   <a href="/ui/r/{{.Repo.Name}}/b/main/log">log</a>
 </nav>
 
+{{if .Err}}
+<div class="card" style="border-left: 3px solid var(--bad); margin-bottom:14px">
+  <div class="row"><span class="badge bad">error</span> <span>{{.Err}}</span></div>
+</div>
+{{end}}
+
+<h2>Create branch</h2>
+<div class="card">
+  <form method="POST" action="/ui/r/{{.Repo.Name}}/-/create-branch" style="display:flex;gap:8px;align-items:center;padding:4px 0">
+    <input type="text" name="branch_name" placeholder="branch name" required
+           style="flex:1;background:var(--bg-3);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:6px 10px;font-family:var(--mono);font-size:12px">
+    <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text-dim)">
+      <input type="checkbox" name="draft" value="1"> draft
+    </label>
+    <button type="submit">create</button>
+  </form>
+</div>
+
 <div class="filter-bar"><input type="search" data-branch-filter placeholder="filter branches by name…" autocomplete="off"></div>
 
 {{template "branchSection" (dict "Title" "Active" "Rows" .Active "Repo" .Repo.Name)}}
@@ -62,7 +80,7 @@
     <div class="empty">none</div>
   {{else}}
   <table class="grid">
-    <thead><tr><th>branch</th><th>status</th><th>head</th><th>base</th><th>flags</th><th></th></tr></thead>
+    <thead><tr><th>branch</th><th>status</th><th>head</th><th>base</th><th>flags</th><th>links</th><th>actions</th></tr></thead>
     <tbody>
     {{range .Rows}}
     <tr>
@@ -75,6 +93,33 @@
         {{if .AutoMerge}}<span class="badge ok">auto-merge</span>{{end}}
       </td>
       <td><a href="/ui/r/{{$.Repo}}/f/?branch={{.Name}}">files →</a> · <a href="/ui/r/{{$.Repo}}/b/{{urlPathEscape .Name}}/log">log →</a></td>
+      <td>
+        {{if eq .Status "active"}}
+        {{if .Draft}}
+        <form method="POST" action="/ui/r/{{$.Repo}}/-/promote-branch" style="display:inline">
+          <input type="hidden" name="branch" value="{{.Name}}">
+          <button type="submit" class="btn-link" style="font-size:11px">promote</button>
+        </form> ·
+        {{end}}
+        {{if .AutoMerge}}
+        <form method="POST" action="/ui/r/{{$.Repo}}/-/set-auto-merge" style="display:inline">
+          <input type="hidden" name="branch" value="{{.Name}}">
+          <input type="hidden" name="enable" value="0">
+          <button type="submit" class="btn-link" style="font-size:11px">disable auto-merge</button>
+        </form> ·
+        {{else}}
+        <form method="POST" action="/ui/r/{{$.Repo}}/-/set-auto-merge" style="display:inline">
+          <input type="hidden" name="branch" value="{{.Name}}">
+          <input type="hidden" name="enable" value="1">
+          <button type="submit" class="btn-link" style="font-size:11px">enable auto-merge</button>
+        </form> ·
+        {{end}}
+        <form method="POST" action="/ui/r/{{$.Repo}}/-/delete-branch" style="display:inline">
+          <input type="hidden" name="branch" value="{{.Name}}">
+          <button type="submit" class="btn-link" style="font-size:11px;color:var(--bad)" onclick="return confirm('Abandon branch {{.Name}}?')">delete</button>
+        </form>
+        {{end}}
+      </td>
     </tr>
     {{end}}
     </tbody>

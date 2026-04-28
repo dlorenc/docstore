@@ -28,7 +28,8 @@ type ReadStore interface {
 }
 
 // WriteStoreLite is the subset of server.WriteStore that the UI needs for
-// listing repos and orgs, org invite acceptance, and issue write operations.
+// listing repos and orgs, org invite acceptance, issue write operations,
+// and branch write operations.
 type WriteStoreLite interface {
 	ListRepos(ctx context.Context) ([]model.Repo, error)
 	ListOrgs(ctx context.Context) ([]model.Org, error)
@@ -63,6 +64,12 @@ type WriteStoreLite interface {
 	UpdateIssueComment(ctx context.Context, repo, id, body string) (*model.IssueComment, error)
 	DeleteIssueComment(ctx context.Context, repo, id string) error
 	CreateIssueRef(ctx context.Context, repo string, number int64, refType model.IssueRefType, refID string) (*model.IssueRef, error)
+
+	// Branch write operations.
+	CreateBranch(ctx context.Context, req model.CreateBranchRequest) (*model.CreateBranchResponse, error)
+	UpdateBranchDraft(ctx context.Context, repo, name string, draft bool) error
+	DeleteBranch(ctx context.Context, repo, name string) error
+	SetBranchAutoMerge(ctx context.Context, repo, name string, autoMerge bool) error
 }
 
 // AssembleFn builds the full branch context snapshot used by the branch detail
@@ -175,5 +182,11 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /ui/orgs/new", h.handleCreateOrg)
 	mux.HandleFunc("GET /ui/repos/new", h.handleCreateRepo)
 	mux.HandleFunc("POST /ui/repos/new", h.handleCreateRepo)
+
+	// Branch write operations (POST-redirect-GET pattern).
+	mux.HandleFunc("POST /ui/r/{owner}/{name}/-/create-branch", h.handleUICreateBranch)
+	mux.HandleFunc("POST /ui/r/{owner}/{name}/-/delete-branch", h.handleUIDeleteBranch)
+	mux.HandleFunc("POST /ui/r/{owner}/{name}/-/promote-branch", h.handleUIPromoteBranch)
+	mux.HandleFunc("POST /ui/r/{owner}/{name}/-/set-auto-merge", h.handleUISetAutoMerge)
 	mux.Handle("GET /ui/static/", http.StripPrefix("/ui/static/", http.FileServer(http.FS(h.staticSub))))
 }

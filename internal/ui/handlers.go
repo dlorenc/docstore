@@ -45,6 +45,7 @@ type branchesPage struct {
 	Abandoned []branchRow
 	Members   []model.OrgMember
 	Roles     []model.Role
+	Err       string
 }
 
 type branchRow struct {
@@ -68,6 +69,7 @@ type branchDetailPage struct {
 	PassedCheckCnt  int
 	PendingCheckCnt int
 	FailedCheckCnt  int
+	Err             string
 }
 
 type filePage struct {
@@ -313,7 +315,7 @@ func (h *Handler) handleBranches(w http.ResponseWriter, r *http.Request) {
 		roles = nil
 	}
 
-	page := branchesPage{Repo: *repo, Members: members, Roles: roles}
+	page := branchesPage{Repo: *repo, Members: members, Roles: roles, Err: r.URL.Query().Get("err")}
 	for _, b := range branches {
 		row := branchRow{
 			Name:         b.Name,
@@ -378,7 +380,7 @@ func (h *Handler) handleBranchDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	page := branchDetailPage{Repo: *repo, Ctx: actCtx}
+	page := branchDetailPage{Repo: *repo, Ctx: actCtx, Err: r.URL.Query().Get("err")}
 	for _, p := range actCtx.Policies {
 		if !p.Pass {
 			reason := p.Reason
@@ -1725,6 +1727,152 @@ func (h *Handler) handleAddIssueRef(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, issueURL(repoName, numberStr), http.StatusSeeOther)
+}
+
+// ---------------------------------------------------------------------------
+// Branch write handlers (POST-redirect-GET pattern)
+// ---------------------------------------------------------------------------
+
+// handleUICreateBranch processes the create-branch form on the branch list page.
+func (h *Handler) handleUICreateBranch(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	repoName := owner + "/" + name
+
+	if err := r.ParseForm(); err != nil {
+		http.Redirect(w, r, "/ui/r/"+repoName+"?err=invalid+form", http.StatusSeeOther)
+		return
+	}
+
+	branchName := strings.TrimSpace(r.FormValue("branch_name"))
+	if branchName == "" {
+		http.Redirect(w, r, "/ui/r/"+repoName+"?err=branch+name+is+required", http.StatusSeeOther)
+		return
+	}
+
+	draft := r.FormValue("draft") == "1"
+	_, err := h.write.CreateBranch(r.Context(), model.CreateBranchRequest{
+		Repo:  repoName,
+		Name:  branchName,
+		Draft: draft,
+	})
+	if err != nil {
+		slog.Error("ui create branch", "repo", repoName, "branch", branchName, "error", err)
+		errMsg := "create failed: " + err.Error()
+		http.Redirect(w, r, "/ui/r/"+repoName+"?err="+url.QueryEscape(errMsg), http.StatusSeeOther)
+		return
+	}
+
+	http.Redirect(w, r, "/ui/r/"+repoName, http.StatusSeeOther)
+}
+
+// handleUIDeleteBranch processes the delete-branch form on the branch list and detail pages.
+func (h *Handler) handleUIDeleteBranch(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	repoName := owner + "/" + name
+
+	if err := r.ParseForm(); err != nil {
+		http.Redirect(w, r, "/ui/r/"+repoName+"?err=invalid+form", http.StatusSeeOther)
+		return
+	}
+
+	branchName := strings.TrimSpace(r.FormValue("branch"))
+	if branchName == "" {
+		http.Redirect(w, r, "/ui/r/"+repoName+"?err=branch+name+is+required", http.StatusSeeOther)
+		return
+	}
+
+	if err := h.write.DeleteBranch(r.Context(), repoName, branchName); err != nil {
+		slog.Error("ui delete branch", "repo", repoName, "branch", branchName, "error", err)
+		errMsg := "delete failed: " + err.Error()
+		// Redirect to detail page if coming from there, otherwise branch list.
+		ref := r.FormValue("ref")
+		if ref == "detail" {
+			http.Redirect(w, r, "/ui/r/"+repoName+"/b/"+url.PathEscape(branchName)+"?err="+url.QueryEscape(errMsg), http.StatusSeeOther)
+		} else {
+			http.Redirect(w, r, "/ui/r/"+repoName+"?err="+url.QueryEscape(errMsg), http.StatusSeeOther)
+		}
+		return
+	}
+
+	http.Redirect(w, r, "/ui/r/"+repoName, http.StatusSeeOther)
+}
+
+// handleUIPromoteBranch promotes a draft branch to active (sets draft=false).
+func (h *Handler) handleUIPromoteBranch(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	repoName := owner + "/" + name
+
+	if err := r.ParseForm(); err != nil {
+		http.Redirect(w, r, "/ui/r/"+repoName+"?err=invalid+form", http.StatusSeeOther)
+		return
+	}
+
+	branchName := strings.TrimSpace(r.FormValue("branch"))
+	if branchName == "" {
+		http.Redirect(w, r, "/ui/r/"+repoName+"?err=branch+name+is+required", http.StatusSeeOther)
+		return
+	}
+
+	if err := h.write.UpdateBranchDraft(r.Context(), repoName, branchName, false); err != nil {
+		slog.Error("ui promote branch", "repo", repoName, "branch", branchName, "error", err)
+		errMsg := "promote failed: " + err.Error()
+		ref := r.FormValue("ref")
+		if ref == "detail" {
+			http.Redirect(w, r, "/ui/r/"+repoName+"/b/"+url.PathEscape(branchName)+"?err="+url.QueryEscape(errMsg), http.StatusSeeOther)
+		} else {
+			http.Redirect(w, r, "/ui/r/"+repoName+"?err="+url.QueryEscape(errMsg), http.StatusSeeOther)
+		}
+		return
+	}
+
+	ref := r.FormValue("ref")
+	if ref == "detail" {
+		http.Redirect(w, r, "/ui/r/"+repoName+"/b/"+url.PathEscape(branchName), http.StatusSeeOther)
+	} else {
+		http.Redirect(w, r, "/ui/r/"+repoName, http.StatusSeeOther)
+	}
+}
+
+// handleUISetAutoMerge enables or disables auto-merge on a branch.
+func (h *Handler) handleUISetAutoMerge(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	repoName := owner + "/" + name
+
+	if err := r.ParseForm(); err != nil {
+		http.Redirect(w, r, "/ui/r/"+repoName+"?err=invalid+form", http.StatusSeeOther)
+		return
+	}
+
+	branchName := strings.TrimSpace(r.FormValue("branch"))
+	if branchName == "" {
+		http.Redirect(w, r, "/ui/r/"+repoName+"?err=branch+name+is+required", http.StatusSeeOther)
+		return
+	}
+
+	enable := r.FormValue("enable") == "1"
+	if err := h.write.SetBranchAutoMerge(r.Context(), repoName, branchName, enable); err != nil {
+		slog.Error("ui set auto-merge", "repo", repoName, "branch", branchName, "enable", enable, "error", err)
+		errMsg := "auto-merge update failed: " + err.Error()
+		ref := r.FormValue("ref")
+		if ref == "detail" {
+			http.Redirect(w, r, "/ui/r/"+repoName+"/b/"+url.PathEscape(branchName)+"?err="+url.QueryEscape(errMsg), http.StatusSeeOther)
+		} else {
+			http.Redirect(w, r, "/ui/r/"+repoName+"?err="+url.QueryEscape(errMsg), http.StatusSeeOther)
+		}
+		return
+	}
+
+	ref := r.FormValue("ref")
+	if ref == "detail" {
+		http.Redirect(w, r, "/ui/r/"+repoName+"/b/"+url.PathEscape(branchName), http.StatusSeeOther)
+	} else {
+		http.Redirect(w, r, "/ui/r/"+repoName, http.StatusSeeOther)
+	}
+
 }
 
 // chainToLogRows filters and converts ChainEntries to commitLogRows.
