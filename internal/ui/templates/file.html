@@ -32,6 +32,25 @@
     {{else}}
     <div class="card empty">select a file from the tree</div>
     {{end}}
+
+    {{if and $page.Path $page.FileHistory}}
+    <h2>File history</h2>
+    <div class="card">
+      <table class="grid">
+        <thead><tr><th>seq</th><th>message</th><th>author</th><th>when</th></tr></thead>
+        <tbody>
+        {{range $page.FileHistory}}
+        <tr>
+          <td><a href="/ui/r/{{$page.Repo.Name}}/b/{{$page.Branch}}/c/{{.Sequence}}">{{.Sequence}}</a></td>
+          <td>{{.Message}}</td>
+          <td>{{.Author}}</td>
+          <td class="meta">{{relTime .CreatedAt}}</td>
+        </tr>
+        {{end}}
+        </tbody>
+      </table>
+    </div>
+    {{end}}
   </div>
 </div>
 {{end}}
