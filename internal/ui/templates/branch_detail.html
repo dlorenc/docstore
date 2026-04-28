@@ -54,9 +54,14 @@
           <span class="badge {{statusClass (printf "%s" .Status)}}">{{.Status}}</span>
           <div class="meta">@ seq {{.Sequence}} · {{relTime .CreatedAt}}</div>
         </div>
+        <button class="btn-link"
+          hx-get="/ui/_/r/{{$page.Repo.Name}}/b/{{$ctx.Branch.Name}}/comments"
+          hx-target="#review-comments-{{$ctx.Branch.Name}}"
+          hx-swap="innerHTML">inline comments ▾</button>
       </div>
       {{if .Body}}<div class="row-body">{{.Body}}</div>{{end}}
       {{end}}
+      <div id="review-comments-{{$ctx.Branch.Name}}"></div>
     </div>
   </div>
 </div>

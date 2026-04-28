@@ -1,0 +1,20 @@
+{{define "review_comments.html"}}
+{{if not .}}
+<div class="empty">no inline comments on this branch</div>
+{{else}}
+{{range .}}
+<div class="comment-file-group">
+  <div class="comment-file-path">{{.Path}}</div>
+  {{range .Comments}}
+  <div class="row">
+    <div>
+      <strong>{{.Author}}</strong>
+      <span class="meta">@ seq {{.Sequence}} · {{relTime .CreatedAt}}</span>
+    </div>
+    <div class="row-body">{{.Body}}</div>
+  </div>
+  {{end}}
+</div>
+{{end}}
+{{end}}
+{{end}}
