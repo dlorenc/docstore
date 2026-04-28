@@ -109,6 +109,13 @@ func (fakeWrite) ListOrgMembers(_ context.Context, _ string) ([]model.OrgMember,
 	}, nil
 }
 
+func (fakeWrite) ListOrgMemberships(_ context.Context, _ string) ([]model.OrgMember, error) {
+	t := time.Now()
+	return []model.OrgMember{
+		{Org: "acme", Identity: "ajay@acme", Role: api.OrgRoleOwner, InvitedBy: "system", CreatedAt: t.Add(-30 * 24 * time.Hour)},
+	}, nil
+}
+
 func (fakeWrite) ListRoles(_ context.Context, _ string) ([]model.Role, error) {
 	return []model.Role{
 		{Identity: "ajay@acme", Role: model.RoleAdmin},

@@ -37,6 +37,7 @@ type WriteStoreLite interface {
 	GetRepo(ctx context.Context, name string) (*model.Repo, error)
 	ListReviewComments(ctx context.Context, repo, branch string, path *string) ([]model.ReviewComment, error)
 	ListOrgMembers(ctx context.Context, org string) ([]model.OrgMember, error)
+	ListOrgMemberships(ctx context.Context, identity string) ([]model.OrgMember, error)
 	ListRoles(ctx context.Context, repo string) ([]model.Role, error)
 	ListCheckRuns(ctx context.Context, repo, branch string, atSeq *int64, history bool) ([]model.CheckRun, error)
 	ListIssues(ctx context.Context, repo, stateFilter, authorFilter string) ([]model.Issue, error)

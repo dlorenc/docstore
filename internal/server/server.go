@@ -54,6 +54,7 @@ type WriteStore interface {
 	AddOrgMember(ctx context.Context, org, identity string, role model.OrgRole, invitedBy string) error
 	RemoveOrgMember(ctx context.Context, org, identity string) error
 	ListOrgMembers(ctx context.Context, org string) ([]model.OrgMember, error)
+	ListOrgMemberships(ctx context.Context, identity string) ([]model.OrgMember, error)
 
 	// Org invitations
 	CreateInvite(ctx context.Context, org, email string, role model.OrgRole, invitedBy, token string, expiresAt time.Time) (*model.OrgInvite, error)
