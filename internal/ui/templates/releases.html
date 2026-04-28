@@ -1,0 +1,27 @@
+{{define "content"}}
+{{with .Body}}
+<div class="headline">
+  <h1>{{.Repo.Name}} / releases</h1>
+  <span class="meta">owner {{.Repo.Owner}}</span>
+</div>
+
+<div class="card">
+{{if not .Releases}}<div class="empty">no releases</div>{{else}}
+<table class="grid">
+  <thead><tr><th>name</th><th>seq</th><th>author</th><th>body</th><th>created</th></tr></thead>
+  <tbody>
+  {{range .Releases}}
+  <tr>
+    <td><a href="releases/{{.Name}}">{{.Name}}</a></td>
+    <td>{{.Sequence}}</td>
+    <td>{{.CreatedBy}}</td>
+    <td class="meta">{{if gt (len .Body) 80}}{{slice .Body 0 80}}…{{else}}{{.Body}}{{end}}</td>
+    <td class="meta">{{relTime .CreatedAt}}</td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}
+</div>
+{{end}}
+{{end}}

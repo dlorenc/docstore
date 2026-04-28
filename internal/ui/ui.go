@@ -37,6 +37,10 @@ type WriteStoreLite interface {
 	ListOrgMembers(ctx context.Context, org string) ([]model.OrgMember, error)
 	ListRoles(ctx context.Context, repo string) ([]model.Role, error)
 	ListCheckRuns(ctx context.Context, repo, branch string, atSeq *int64, history bool) ([]model.CheckRun, error)
+	ListProposals(ctx context.Context, repo string, state *model.ProposalState, branch *string) ([]*model.Proposal, error)
+	GetProposal(ctx context.Context, repo, proposalID string) (*model.Proposal, error)
+	ListReleases(ctx context.Context, repo string, limit int, afterID string) ([]model.Release, error)
+	GetRelease(ctx context.Context, repo, name string) (*model.Release, error)
 }
 
 // AssembleFn builds the full branch context snapshot used by the branch detail
@@ -115,5 +119,10 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /ui/r/{owner}/{name}/b/{branch}/c/{seq}", h.handleCommitDetail)
 	mux.HandleFunc("GET /ui/_/r/{owner}/{name}/b/{branch}/check-history", h.handleCheckHistoryPartial)
 	mux.HandleFunc("GET /ui/r/{owner}/{name}/f/{path...}", h.handleFile)
+	mux.HandleFunc("GET /ui/r/{owner}/{name}/proposals", h.handleProposals)
+	mux.HandleFunc("GET /ui/_/r/{owner}/{name}/proposals", h.handleProposalsPartial)
+	mux.HandleFunc("GET /ui/r/{owner}/{name}/proposals/{id}", h.handleProposalDetail)
+	mux.HandleFunc("GET /ui/r/{owner}/{name}/releases", h.handleReleases)
+	mux.HandleFunc("GET /ui/r/{owner}/{name}/releases/{rname}", h.handleReleaseDetail)
 	mux.Handle("GET /ui/static/", http.StripPrefix("/ui/static/", http.FileServer(http.FS(h.staticSub))))
 }

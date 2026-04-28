@@ -1,0 +1,35 @@
+{{define "content"}}
+{{with .Body}}
+<div class="headline">
+  <h1>{{.Release.Name}}</h1>
+  <span class="meta">seq {{.Release.Sequence}}</span>
+</div>
+
+<div class="meta" style="margin-bottom:14px">
+  by {{.Release.CreatedBy}} · {{relTime .Release.CreatedAt}}
+</div>
+
+<h2>Details</h2>
+<div class="card">
+  <div class="row">
+    <div><strong>name</strong></div>
+    <div>{{.Release.Name}}</div>
+  </div>
+  <div class="row">
+    <div><strong>sequence</strong></div>
+    <div>{{.Release.Sequence}}</div>
+  </div>
+  <div class="row">
+    <div><strong>id</strong></div>
+    <div class="meta">{{.Release.ID}}</div>
+  </div>
+</div>
+
+{{if .Release.Body}}
+<h2>Body</h2>
+<div class="card">
+  <div style="white-space:pre-wrap;color:var(--text);">{{.Release.Body}}</div>
+</div>
+{{end}}
+{{end}}
+{{end}}
