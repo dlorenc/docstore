@@ -52,6 +52,14 @@ func (fakeRead) GetFile(_ context.Context, _, _, path string, _ *int64) (*store.
 
 func (fakeRead) GetBranch(_ context.Context, _, _ string) (*store.BranchInfo, error) { return nil, nil }
 
+func (fakeRead) GetFileHistory(_ context.Context, _, _, _ string, _ int, _ *int64) ([]store.FileHistoryEntry, error) {
+	t := time.Now()
+	return []store.FileHistoryEntry{
+		{Sequence: 47, Message: "add onboarding guide", Author: "ajay@acme", CreatedAt: t.Add(-2 * time.Hour)},
+		{Sequence: 42, Message: "initial commit", Author: "sam@acme", CreatedAt: t.Add(-30 * 24 * time.Hour)},
+	}, nil
+}
+
 func (fakeRead) ListBranches(_ context.Context, repo, _ string, _, _ bool) ([]store.BranchInfo, error) {
 	if repo != "acme/platform" {
 		return []store.BranchInfo{{Name: "main", HeadSequence: 3, BaseSequence: 0, Status: "active"}}, nil
@@ -79,6 +87,29 @@ func (fakeWrite) ListRepos(_ context.Context) ([]model.Repo, error) {
 }
 
 func (fakeWrite) ListOrgs(_ context.Context) ([]model.Org, error) { return nil, nil }
+
+func (fakeWrite) ListReviewComments(_ context.Context, _, _ string, _ *string) ([]model.ReviewComment, error) {
+	t := time.Now()
+	return []model.ReviewComment{
+		{ID: "rc1", Branch: "add-onboarding-guide", Path: "docs/guides/onboarding.md", Body: "Step 3 should mention the role types.", Author: "sam@acme", Sequence: 47, CreatedAt: t.Add(-1 * time.Hour)},
+	}, nil
+}
+
+func (fakeWrite) ListOrgMembers(_ context.Context, _ string) ([]model.OrgMember, error) {
+	t := time.Now()
+	return []model.OrgMember{
+		{Org: "acme", Identity: "ajay@acme", Role: api.OrgRoleOwner, InvitedBy: "system", CreatedAt: t.Add(-30 * 24 * time.Hour)},
+		{Org: "acme", Identity: "sam@acme", Role: api.OrgRoleMember, InvitedBy: "ajay@acme", CreatedAt: t.Add(-14 * 24 * time.Hour)},
+	}, nil
+}
+
+func (fakeWrite) ListRoles(_ context.Context, _ string) ([]model.Role, error) {
+	return []model.Role{
+		{Identity: "ajay@acme", Role: model.RoleAdmin},
+		{Identity: "sam@acme", Role: model.RoleWriter},
+		{Identity: "lee@beta", Role: model.RoleReader},
+	}, nil
+}
 
 func (fakeWrite) GetRepo(_ context.Context, name string) (*model.Repo, error) {
 	all, _ := (fakeWrite{}).ListRepos(context.Background())
