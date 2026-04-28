@@ -21,6 +21,9 @@ type templateSet struct {
 	reviewComments *template.Template
 	fileView       *template.Template
 	errorPage      *template.Template
+	commitLog      *template.Template
+	logRows        *template.Template
+	commitDetail   *template.Template
 }
 
 func parseTemplates(root fs.FS) (*templateSet, error) {
@@ -71,6 +74,25 @@ func parseTemplates(root fs.FS) (*templateSet, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse error: %w", err)
 	}
+	// log.html pulls in log_rows.html so the initial render shows the first
+	// page of rows inline, matching the same pattern as branch_detail.
+	commitLog, err := template.New("layout.html").
+		Funcs(funcMap()).
+		ParseFS(root,
+			"templates/layout.html",
+			"templates/log.html",
+			"templates/log_rows.html")
+	if err != nil {
+		return nil, fmt.Errorf("parse log: %w", err)
+	}
+	logRows, err := loadFragment("log_rows.html")
+	if err != nil {
+		return nil, fmt.Errorf("parse log_rows: %w", err)
+	}
+	commitDetail, err := load("commit.html")
+	if err != nil {
+		return nil, fmt.Errorf("parse commit: %w", err)
+	}
 	return &templateSet{
 		repos:          repos,
 		branches:       branches,
@@ -79,6 +101,9 @@ func parseTemplates(root fs.FS) (*templateSet, error) {
 		reviewComments: reviewComments,
 		fileView:       fileView,
 		errorPage:      errorPage,
+		commitLog:      commitLog,
+		logRows:        logRows,
+		commitDetail:   commitDetail,
 	}, nil
 }
 
