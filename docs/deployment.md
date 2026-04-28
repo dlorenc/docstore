@@ -89,13 +89,107 @@ gcloud run deploy docstore \
   --service-account=docstore-server@dlorenc-chainguard.iam.gserviceaccount.com \
   --add-cloudsql-instances=dlorenc-chainguard:us-central1:docstore-mvp \
   --update-secrets=DATABASE_URL=docstore-db-url:latest \
-  --allow-unauthenticated \
+  --ingress=internal-and-cloud-load-balancing \
+  --args=--bootstrap-admin=dlorenc@chainguard.dev \
   --min-instances=1 \
   --no-cpu-throttling \
   --port=8080
 ```
 
-The compiled-in default remote URL for `ds` is `https://docstore-efuj4cj54a-uc.a.run.app` (set in `Makefile` as `DEFAULT_REMOTE`).
+The compiled-in default remote URL for `ds` is `https://docstore.dev` (set in `Makefile` as `DEFAULT_REMOTE`).
+
+## Authentication (Cloud IAP)
+
+Production traffic reaches the server exclusively through a Global HTTPS Load Balancer at `https://docstore.dev`. Google Cloud Identity-Aware Proxy (IAP) is enabled on the backend service — any Google account can sign in; no allowlist is required (`allAuthenticatedUsers` has `roles/iap.httpsResourceAccessor`).
+
+### How it works
+
+1. The client (browser or `ds` CLI) sends a request to `https://docstore.dev`.
+2. The Global HTTPS LB terminates TLS using the managed certificate `docstore-cert`.
+3. IAP validates the user's Google session and injects an `X-Goog-IAP-JWT-Assertion` header signed by Google.
+4. The request is forwarded to Cloud Run via the serverless NEG `docstore-neg`.
+5. The server's `IAPMiddleware` validates the JWT (RS256, keys from `https://www.gstatic.com/iap/verify/public_key-jwk`) and extracts the `email` claim as the caller's identity.
+
+Cloud Run ingress is set to `internal-and-cloud-load-balancing`, so direct requests to `*.run.app` are blocked. All traffic must go through the load balancer.
+
+`DEV_IDENTITY` / `--dev-identity` is **for local development only** and must never be set on the production Cloud Run service.
+
+### One-time infrastructure (already provisioned)
+
+The following resources were created once in project `dlorenc-chainguard` and do not need to be re-created on normal deploys. They are documented here so the setup can be reproduced in a new project.
+
+```bash
+# Static external IP
+gcloud compute addresses create docstore-ip \
+  --global --project=dlorenc-chainguard
+
+# Serverless NEG pointing at the Cloud Run service
+gcloud compute network-endpoint-groups create docstore-neg \
+  --region=us-central1 \
+  --network-endpoint-type=serverless \
+  --cloud-run-service=docstore \
+  --project=dlorenc-chainguard
+
+# Backend service with IAP enabled
+gcloud compute backend-services create docstore-backend \
+  --global \
+  --protocol=HTTPS \
+  --project=dlorenc-chainguard
+
+gcloud compute backend-services add-backend docstore-backend \
+  --global \
+  --network-endpoint-group=docstore-neg \
+  --network-endpoint-group-region=us-central1 \
+  --project=dlorenc-chainguard
+
+# Enable IAP on the backend service
+gcloud iap web enable --resource-type=backend-services \
+  --service=docstore-backend \
+  --project=dlorenc-chainguard
+
+# Grant all Google accounts access via IAP
+gcloud iap web add-iam-policy-binding \
+  --resource-type=backend-services \
+  --service=docstore-backend \
+  --member=allAuthenticatedUsers \
+  --role=roles/iap.httpsResourceAccessor \
+  --project=dlorenc-chainguard
+
+# URL map, managed SSL cert, HTTPS proxy, and forwarding rule
+gcloud compute url-maps create docstore-map \
+  --default-service=docstore-backend \
+  --global --project=dlorenc-chainguard
+
+gcloud compute ssl-certificates create docstore-cert \
+  --domains=docstore.dev \
+  --global --project=dlorenc-chainguard
+
+gcloud compute target-https-proxies create docstore-https-proxy \
+  --url-map=docstore-map \
+  --ssl-certificates=docstore-cert \
+  --global --project=dlorenc-chainguard
+
+gcloud compute forwarding-rules create docstore-https-rule \
+  --address=docstore-ip \
+  --target-https-proxy=docstore-https-proxy \
+  --ports=443 \
+  --global --project=dlorenc-chainguard
+
+# Cloud DNS zone and A record
+gcloud dns managed-zones create docstore-dev \
+  --dns-name=docstore.dev \
+  --description="docstore.dev" \
+  --project=dlorenc-chainguard
+
+gcloud dns record-sets create docstore.dev \
+  --zone=docstore-dev \
+  --type=A \
+  --ttl=300 \
+  --rrdatas=34.54.166.224 \
+  --project=dlorenc-chainguard
+```
+
+The domain `docstore.dev` is registered via Cloud Domains in project `dlorenc-chainguard` with its nameservers pointed at the Cloud DNS zone above.
 
 ## GKE deployment (CI system)
 
@@ -137,7 +231,7 @@ The manifest:
 
 Environment variables:
 - `DATABASE_URL` from Secret `ci-scheduler/database-url`
-- `DOCSTORE_URL` — hardcoded to `https://docstore-efuj4cj54a-uc.a.run.app`
+- `DOCSTORE_URL` — hardcoded to `https://docstore-efuj4cj54a-uc.a.run.app` (note: `deploy/k8s/ci-worker.yaml` should be updated to `https://docstore.dev` separately)
 - `POD_NAME` and `POD_IP` injected from the pod's downward API
 - `LOG_STORE=gcs` and `LOG_BUCKET=docstore-ci-logs` — enables GCS log upload
 
@@ -160,17 +254,17 @@ The deploy workflow (`deploy.yml`) also builds and deploys both CI binaries afte
    echo -n 'your-secret' | gcloud secrets versions add ci-runner-webhook-secret \
      --data-file=- --project=dlorenc-chainguard
    ```
-4. Push to `main` to trigger the deploy workflow.
-5. After deploy, verify with `curl https://docstore-efuj4cj54a-uc.a.run.app/healthz`.
-6. Create the first org and repo:
+4. Provision the Global HTTPS LB + IAP infrastructure (see "One-time infrastructure" commands in the Authentication section above). This only needs to be done once per project.
+5. Push to `main` to trigger the deploy workflow.
+6. After deploy, verify with `curl https://docstore.dev/healthz`.
+7. Create the first org and repo:
    ```bash
    ds orgs create myorg
    ds repos create myorg myrepo
    ```
-7. Assign a bootstrap admin:
+8. Assign a bootstrap admin (the `--bootstrap-admin` flag is already set on the Cloud Run service as `dlorenc@chainguard.dev`; update as needed):
    ```bash
-   # Set BOOTSTRAP_ADMIN env var on the Cloud Run service, then use ds:
-   ds roles set alice@example.com admin
+   ds roles set you@example.com admin
    ```
 
 ## Horizontal scaling

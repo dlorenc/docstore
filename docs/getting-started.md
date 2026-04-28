@@ -11,7 +11,7 @@ make build-ds
 # Produces bin/ds with the default server URL compiled in
 ```
 
-The build bakes in the default remote URL (`https://docstore-efuj4cj54a-uc.a.run.app`) via `-ldflags`. You can override it at build time:
+The build bakes in the default remote URL (`https://docstore.dev`) via `-ldflags`. You can override it at build time:
 
 ```bash
 DEFAULT_REMOTE=https://your-server.example.com make build-ds
@@ -27,14 +27,14 @@ To run a local server, you need PostgreSQL. The easiest path is:
 # Start Postgres (any method — docker, homebrew, etc.)
 export DATABASE_URL="postgres://localhost/docstore?sslmode=disable"
 
-# Run migrations and start the server with dev auth bypass
-go run ./cmd/docstore --dev-identity alice@example.com
+# Run migrations and start the server with dev auth bypass (local dev only)
+go run ./cmd/docstore --dev-identity you@example.com
 
 # Or with env vars instead of flags:
-DEV_IDENTITY=alice@example.com DATABASE_URL=... go run ./cmd/docstore
+DEV_IDENTITY=you@example.com DATABASE_URL=... go run ./cmd/docstore
 ```
 
-With `--dev-identity` set, the server skips IAP JWT validation and treats every request as that identity. Do not use this flag in production.
+With `--dev-identity` set, the server skips IAP JWT validation and treats every request as that identity. **This is for local development only** — do not set this flag in production. Production uses Google Cloud IAP at `https://docstore.dev`.
 
 The server listens on port 8080 by default (`PORT` env var overrides it).
 
