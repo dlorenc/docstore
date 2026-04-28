@@ -203,6 +203,23 @@ func (f *fakeWrite) SetBranchAutoMerge(_ context.Context, _, _ string, _ bool) e
 	return nil
 }
 
+func (f *fakeWrite) CreateReview(_ context.Context, _, _, _ string, _ model.ReviewStatus, _ string) (*model.Review, error) {
+	return &model.Review{}, nil
+}
+func (f *fakeWrite) CreateReviewComment(_ context.Context, _, _, _, _, _, _ string, _ *string) (*model.ReviewComment, error) {
+	return &model.ReviewComment{}, nil
+}
+func (f *fakeWrite) DeleteReviewComment(_ context.Context, _, _ string) error { return nil }
+func (f *fakeWrite) CreateProposal(_ context.Context, _, _, _, _, _, _ string) (*model.Proposal, error) {
+	return &model.Proposal{ID: "new-p"}, nil
+}
+func (f *fakeWrite) UpdateProposal(_ context.Context, _, _ string, _, _ *string) (*model.Proposal, error) {
+	if len(f.proposals) > 0 {
+		return f.proposals[0], nil
+	}
+	return &model.Proposal{ID: "updated-p", Title: "updated"}, nil
+}
+func (f *fakeWrite) CloseProposal(_ context.Context, _, _ string) error { return nil }
 func newFakeAssembler(branchName string) AssembleFn {
 	return func(_ context.Context, _, branch string) (*model.AgentContextResponse, error) {
 		if branch != branchName {
@@ -786,4 +803,140 @@ func TestHandleRepos_ShowsNewButtons(t *testing.T) {
 			t.Errorf("body missing link %q", want)
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Write handler tests
+// ---------------------------------------------------------------------------
+
+func TestHandleSubmitReview_RedirectsOnSuccess(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now()}}
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, newFakeAssembler("feat-x"))
+
+	code, _, _ := postForm(t, h, "/ui/r/acme/a/b/feat-x/review", url.Values{
+		"status": {"approved"},
+		"body": {"looks good"},
+	})
+	if code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303 (redirect)", code)
+	}
+}
+
+func TestHandleSubmitReview_MissingStatus_RerendersPage(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now()}}
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, newFakeAssembler("feat-x"))
+
+	code, body, _ := postForm(t, h, "/ui/r/acme/a/b/feat-x/review", url.Values{})
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+	if !strings.Contains(body, "status is required") {
+		t.Errorf("expected error message in body, got: %s", body)
+	}
+}
+
+func TestHandlePostComment_RedirectsOnSuccess(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now()}}
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, newFakeAssembler("feat-x"))
+
+	code, _, _ := postForm(t, h, "/ui/r/acme/a/b/feat-x/comment", url.Values{
+		"path": {"docs/hello.md"},
+		"version_id": {"v-abc"},
+		"body": {"nice file"},
+	})
+	if code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303 (redirect)", code)
+	}
+}
+
+func TestHandlePostComment_MissingFields_RerendersPage(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now()}}
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, newFakeAssembler("feat-x"))
+
+	code, body, _ := postForm(t, h, "/ui/r/acme/a/b/feat-x/comment", url.Values{
+		"path": {"docs/hello.md"},
+		// missing version_id and body
+	})
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+	if !strings.Contains(body, "path, version_id, and body are required") {
+		t.Errorf("expected error message in body, got: %s", body)
+	}
+}
+
+func TestHandleDeleteComment_RedirectsOnSuccess(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now()}}
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, newFakeAssembler("feat-x"))
+
+	code, _, _ := postForm(t, h, "/ui/r/acme/a/b/feat-x/comment/cmt-1/delete", nil)
+	if code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303 (redirect)", code)
+	}
+}
+
+func TestHandleCreateProposalUI_RedirectsOnSuccess(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now()}}
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, nil)
+
+	code, _, _ := postForm(t, h, "/ui/r/acme/a/proposals", url.Values{
+		"branch": {"feat-x"},
+		"base_branch": {"main"},
+		"title": {"My proposal"},
+	})
+	if code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303 (redirect)", code)
+	}
+}
+
+func TestHandleCreateProposalUI_MissingFields_RerendersPage(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now()}}
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, nil)
+
+	code, body, _ := postForm(t, h, "/ui/r/acme/a/proposals", url.Values{
+		"branch": {"feat-x"},
+		// missing base_branch and title
+	})
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+	if !strings.Contains(body, "branch, base_branch, and title are required") {
+		t.Errorf("expected error message in body, got: %s", body)
+	}
+}
+
+func TestHandleEditProposal_RedirectsOnSuccess(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now()}}
+	ps := model.ProposalOpen
+	w := &fakeWrite{
+		repos: repos,
+		proposals: []*model.Proposal{
+			{ID: "p-1", Repo: "acme/a", Branch: "feat-x", BaseBranch: "main", Title: "Old title", Author: "alice", State: ps, CreatedAt: time.Now()},
+		},
+	}
+	h := newTestHandler(t, &fakeRead{}, w, nil)
+
+	code, _, _ := postForm(t, h, "/ui/r/acme/a/proposals/p-1/edit", url.Values{
+		"title": {"New title"},
+		"description": {"updated description"},
+	})
+	if code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303 (redirect)", code)
+	}
+}
+
+func TestHandleCloseProposalUI_RedirectsOnSuccess(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now()}}
+	ps := model.ProposalOpen
+	w := &fakeWrite{
+		repos: repos,
+		proposals: []*model.Proposal{
+			{ID: "p-1", Repo: "acme/a", Branch: "feat-x", BaseBranch: "main", Title: "My proposal", Author: "alice", State: ps, CreatedAt: time.Now()},
+		},
+	}
+	h := newTestHandler(t, &fakeRead{}, w, nil)
+
+	code, _, _ := postForm(t, h, "/ui/r/acme/a/proposals/p-1/close", nil)
+	if code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303 (redirect)", code)	}
 }
