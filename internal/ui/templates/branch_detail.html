@@ -12,6 +12,82 @@
 </div>
 <div class="meta" style="margin-bottom:14px">head {{$ctx.Branch.HeadSequence}} · base {{$ctx.Branch.BaseSequence}}</div>
 
+{{if $page.Err}}
+<div class="card" style="border-left: 3px solid var(--bad); margin-bottom:14px">
+  <div class="row"><span class="badge bad">error</span> <span>{{$page.Err}}</span></div>
+</div>
+{{end}}
+
+{{if eq (printf "%s" $ctx.Branch.Status) "active"}}
+<div class="card" style="margin-bottom:14px">
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:4px 0">
+    {{if $ctx.Branch.Draft}}
+    <form method="POST" action="/ui/r/{{$page.Repo.Name}}/-/promote-branch" style="display:inline">
+      <input type="hidden" name="branch" value="{{$ctx.Branch.Name}}">
+      <input type="hidden" name="ref" value="detail">
+      <button type="submit">promote to active</button>
+    </form>
+    {{else}}
+    <button id="merge-btn" onclick="(function(){
+      var btn = document.getElementById('merge-btn');
+      var errDiv = document.getElementById('action-err');
+      btn.disabled = true; btn.textContent = 'merging…';
+      fetch('/repos/{{$page.Repo.Name}}/-/merge', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({branch: '{{$ctx.Branch.Name}}'})
+      }).then(function(r){
+        if(r.ok){ location.reload(); }
+        else { r.json().then(function(j){
+          errDiv.textContent = j.error || JSON.stringify(j);
+          errDiv.style.display = '';
+          btn.disabled = false; btn.textContent = 'merge';
+        }).catch(function(){ errDiv.textContent = 'merge failed (status ' + r.status + ')'; errDiv.style.display = ''; btn.disabled = false; btn.textContent = 'merge'; }); }
+      }).catch(function(e){ errDiv.textContent = String(e); errDiv.style.display = ''; btn.disabled = false; btn.textContent = 'merge'; });
+    })()">merge</button>
+    {{end}}
+    <button id="rebase-btn" onclick="(function(){
+      var btn = document.getElementById('rebase-btn');
+      var errDiv = document.getElementById('action-err');
+      btn.disabled = true; btn.textContent = 'rebasing…';
+      fetch('/repos/{{$page.Repo.Name}}/-/rebase', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({branch: '{{$ctx.Branch.Name}}'})
+      }).then(function(r){
+        if(r.ok){ location.reload(); }
+        else { r.json().then(function(j){
+          errDiv.textContent = j.error || JSON.stringify(j);
+          errDiv.style.display = '';
+          btn.disabled = false; btn.textContent = 'rebase';
+        }).catch(function(){ errDiv.textContent = 'rebase failed (status ' + r.status + ')'; errDiv.style.display = ''; btn.disabled = false; btn.textContent = 'rebase'; }); }
+      }).catch(function(e){ errDiv.textContent = String(e); errDiv.style.display = ''; btn.disabled = false; btn.textContent = 'rebase'; });
+    })()">rebase</button>
+    {{if $ctx.Branch.AutoMerge}}
+    <form method="POST" action="/ui/r/{{$page.Repo.Name}}/-/set-auto-merge" style="display:inline">
+      <input type="hidden" name="branch" value="{{$ctx.Branch.Name}}">
+      <input type="hidden" name="enable" value="0">
+      <input type="hidden" name="ref" value="detail">
+      <button type="submit">disable auto-merge</button>
+    </form>
+    {{else}}
+    <form method="POST" action="/ui/r/{{$page.Repo.Name}}/-/set-auto-merge" style="display:inline">
+      <input type="hidden" name="branch" value="{{$ctx.Branch.Name}}">
+      <input type="hidden" name="enable" value="1">
+      <input type="hidden" name="ref" value="detail">
+      <button type="submit">enable auto-merge</button>
+    </form>
+    {{end}}
+    <form method="POST" action="/ui/r/{{$page.Repo.Name}}/-/delete-branch" style="display:inline">
+      <input type="hidden" name="branch" value="{{$ctx.Branch.Name}}">
+      <input type="hidden" name="ref" value="detail">
+      <button type="submit" style="color:var(--bad)" onclick="return confirm('Abandon branch {{$ctx.Branch.Name}}?')">delete</button>
+    </form>
+  </div>
+  <div id="action-err" style="display:none;color:var(--bad);font-size:12px;margin-top:6px"></div>
+</div>
+{{end}}
+
 {{if $ctx.Mergeable}}
 <div class="summary-hero ok">
   <span class="verdict">✓ Mergeable</span>
