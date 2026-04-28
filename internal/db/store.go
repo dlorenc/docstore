@@ -1868,6 +1868,26 @@ func (s *Store) ListInvites(ctx context.Context, org string) ([]model.OrgInvite,
 	return invites, rows.Err()
 }
 
+// GetInviteByToken looks up a pending invite by org and token.
+// Returns ErrInviteNotFound if no matching invite exists.
+func (s *Store) GetInviteByToken(ctx context.Context, org, token string) (*model.OrgInvite, error) {
+	var inv model.OrgInvite
+	var roleStr string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, org, email, role, invited_by, expires_at, created_at
+		 FROM org_invites WHERE org = $1 AND token = $2`,
+		org, token,
+	).Scan(&inv.ID, &inv.Org, &inv.Email, &roleStr, &inv.InvitedBy, &inv.ExpiresAt, &inv.CreatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrInviteNotFound
+		}
+		return nil, fmt.Errorf("get invite by token: %w", err)
+	}
+	inv.Role = model.OrgRole(roleStr)
+	return &inv, nil
+}
+
 // AcceptInvite accepts a pending invite: verifies the token, checks expiry and email match,
 // sets accepted_at, and upserts the identity into org_members — all in one transaction.
 func (s *Store) AcceptInvite(ctx context.Context, org, token, identity string) error {

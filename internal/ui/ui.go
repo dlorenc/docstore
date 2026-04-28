@@ -28,7 +28,7 @@ type ReadStore interface {
 }
 
 // WriteStoreLite is the subset of server.WriteStore that the UI needs for
-// listing repos and orgs. The UI never calls mutating methods.
+// listing repos and orgs, and for org invite acceptance.
 type WriteStoreLite interface {
 	ListRepos(ctx context.Context) ([]model.Repo, error)
 	ListOrgs(ctx context.Context) ([]model.Org, error)
@@ -40,12 +40,19 @@ type WriteStoreLite interface {
 	ListIssues(ctx context.Context, repo, stateFilter, authorFilter string) ([]model.Issue, error)
 	GetIssue(ctx context.Context, repo string, number int64) (*model.Issue, error)
 	ListIssueComments(ctx context.Context, repo string, number int64) ([]model.IssueComment, error)
+	GetInviteByToken(ctx context.Context, org, token string) (*model.OrgInvite, error)
+	AcceptInvite(ctx context.Context, org, token, identity string) error
 }
 
 // AssembleFn builds the full branch context snapshot used by the branch detail
 // page. The server wraps *server.AssembleAgentContext with an identity lookup
 // and injects the result, so the UI never sees identity directly.
 type AssembleFn func(ctx context.Context, repo, branch string) (*model.AgentContextResponse, error)
+
+// IdentityFn extracts the authenticated caller identity from a request context.
+// It is provided by the server at Handler construction time so the UI never
+// needs to import the server package (which would create a circular dependency).
+type IdentityFn func(ctx context.Context) string
 
 //go:embed templates/*.html
 var templatesFS embed.FS
@@ -58,12 +65,13 @@ type Handler struct {
 	read      ReadStore
 	write     WriteStoreLite
 	assemble  AssembleFn
+	identity  IdentityFn
 	tmpl      *templateSet
 	staticSub fs.FS
 }
 
 // NewHandler constructs a UI handler wired to the given data sources.
-func NewHandler(read ReadStore, write WriteStoreLite, assemble AssembleFn) (*Handler, error) {
+func NewHandler(read ReadStore, write WriteStoreLite, assemble AssembleFn, identity IdentityFn) (*Handler, error) {
 	t, err := parseTemplates(templatesFS)
 	if err != nil {
 		return nil, err
@@ -76,6 +84,7 @@ func NewHandler(read ReadStore, write WriteStoreLite, assemble AssembleFn) (*Han
 		read:      read,
 		write:     write,
 		assemble:  assemble,
+		identity:  identity,
 		tmpl:      t,
 		staticSub: sub,
 	}, nil
@@ -86,7 +95,7 @@ func NewHandler(read ReadStore, write WriteStoreLite, assemble AssembleFn) (*Han
 // during development so template edits take effect on the next request without
 // recompiling. The server must be run from the repository root so that the
 // path "internal/ui" resolves correctly.
-func NewHandlerDev(read ReadStore, write WriteStoreLite, assemble AssembleFn) (*Handler, error) {
+func NewHandlerDev(read ReadStore, write WriteStoreLite, assemble AssembleFn, identity IdentityFn) (*Handler, error) {
 	root := os.DirFS("internal/ui")
 	t, err := parseTemplates(root)
 	if err != nil {
@@ -100,6 +109,7 @@ func NewHandlerDev(read ReadStore, write WriteStoreLite, assemble AssembleFn) (*
 		read:      read,
 		write:     write,
 		assemble:  assemble,
+		identity:  identity,
 		tmpl:      t,
 		staticSub: static,
 	}, nil
@@ -121,5 +131,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /ui/r/{owner}/{name}/issues", h.handleIssues)
 	mux.HandleFunc("GET /ui/r/{owner}/{name}/issues/{number}", h.handleIssueDetail)
 	mux.HandleFunc("GET /ui/_/r/{owner}/{name}/issues", h.handleIssuesPartial)
+	mux.HandleFunc("GET /ui/o/{org}/invites/{token}/accept", h.handleAcceptInvite)
+	mux.HandleFunc("POST /ui/o/{org}/invites/{token}/accept", h.handleAcceptInvite)
 	mux.Handle("GET /ui/static/", http.StripPrefix("/ui/static/", http.FileServer(http.FS(h.staticSub))))
 }
