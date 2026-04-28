@@ -325,6 +325,9 @@ func (fakeWrite) CreateInvite(_ context.Context, _, _ string, _ model.OrgRole, _
 	return &model.OrgInvite{}, nil
 }
 func (fakeWrite) RevokeInvite(_ context.Context, _, _ string) error { return nil }
+func (fakeWrite) GetRole(_ context.Context, _, _ string) (*model.Role, error) {
+	return &model.Role{Role: model.RoleAdmin}, nil
+}
 func (fakeWrite) SetRole(_ context.Context, _, _ string, _ model.RoleType) error {
 	return nil
 }
@@ -418,7 +421,7 @@ func (e *notFoundErr) Error() string { return "branch not found" }
 // ---------------------------------------------------------------------------
 
 func main() {
-	h, err := ui.NewHandler(fakeRead{}, fakeWrite{}, fakeAssemble, nil)
+	h, err := ui.NewHandler(fakeRead{}, fakeWrite{}, nil, fakeAssemble, nil)
 	if err != nil {
 		log.Fatalf("ui init: %v", err)
 	}

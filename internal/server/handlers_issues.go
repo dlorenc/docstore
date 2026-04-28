@@ -1,70 +1,26 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
-	"regexp"
 	"strconv"
 
 	"github.com/dlorenc/docstore/internal/db"
-	evtypes "github.com/dlorenc/docstore/internal/events/types"
 	"github.com/dlorenc/docstore/internal/model"
+	"github.com/dlorenc/docstore/internal/service"
 )
 
 // ---------------------------------------------------------------------------
 // Issue handlers
 // ---------------------------------------------------------------------------
 
-var (
-	reMentionProposal = regexp.MustCompile(`\bproposal:([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\b`)
-	reMentionCommit   = regexp.MustCompile(`\bcommit:(\d+)\b`)
-	reMentionIssue    = regexp.MustCompile(`(?:^|[^&\w])#(\d+)`)
-)
-
 // parseMentions extracts cross-reference mentions from a text body.
 // Returns proposal UUIDs, commit sequence numbers, and issue numbers.
-func parseMentions(body string) (proposalIDs []string, commitSeqs []int64, issueNums []int64) {
-	for _, m := range reMentionProposal.FindAllStringSubmatch(body, -1) {
-		proposalIDs = append(proposalIDs, m[1])
-	}
-	for _, m := range reMentionCommit.FindAllStringSubmatch(body, -1) {
-		if n, err := strconv.ParseInt(m[1], 10, 64); err == nil {
-			commitSeqs = append(commitSeqs, n)
-		}
-	}
-	for _, m := range reMentionIssue.FindAllStringSubmatch(body, -1) {
-		// Skip 6-digit sequences that look like CSS hex colors (#rrggbb).
-		if len(m[1]) == 6 {
-			continue
-		}
-		if n, err := strconv.ParseInt(m[1], 10, 64); err == nil {
-			issueNums = append(issueNums, n)
-		}
-	}
-	return
-}
-
-// upsertIssueBodyRefs creates issue_refs on issueNum for proposal and commit
-// mentions found in body, ignoring duplicate and not-found errors.
-func (s *server) upsertIssueBodyRefs(ctx context.Context, repo string, issueNum int64, body string) {
-	proposalIDs, commitSeqs, _ := parseMentions(body)
-	for _, pid := range proposalIDs {
-		_, err := s.commitStore.CreateIssueRef(ctx, repo, issueNum, model.IssueRefTypeProposal, pid)
-		if err != nil && !errors.Is(err, db.ErrIssueRefExists) && !errors.Is(err, db.ErrIssueNotFound) {
-			slog.Warn("upsert issue ref", "repo", repo, "issue", issueNum, "ref_type", "proposal", "ref_id", pid, "error", err)
-		}
-	}
-	for _, seq := range commitSeqs {
-		refID := strconv.FormatInt(seq, 10)
-		_, err := s.commitStore.CreateIssueRef(ctx, repo, issueNum, model.IssueRefTypeCommit, refID)
-		if err != nil && !errors.Is(err, db.ErrIssueRefExists) && !errors.Is(err, db.ErrIssueNotFound) {
-			slog.Warn("upsert issue ref", "repo", repo, "issue", issueNum, "ref_type", "commit", "ref_id", refID, "error", err)
-		}
-	}
+func parseMentions(body string) ([]string, []int64, []int64) {
+	return service.ParseMentions(body)
 }
 
 // parseIssueNumber parses the "number" path value into an int64.
@@ -128,17 +84,14 @@ func (s *server) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	author := IdentityFromContext(r.Context())
-	iss, err := s.commitStore.CreateIssue(r.Context(), repo, req.Title, req.Body, author, req.Labels)
+	identity := IdentityFromContext(r.Context())
+	iss, err := s.svc.CreateIssue(r.Context(), identity, repo, req.Title, req.Body, req.Labels)
 	if err != nil {
 		slog.Error("internal error", "op", "create_issue", "repo", repo, "error", err)
 		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
-	s.upsertIssueBodyRefs(r.Context(), repo, iss.Number, req.Body)
-	s.emit(r.Context(), evtypes.IssueOpened{Repo: repo, IssueID: iss.ID, Number: iss.Number, Author: author})
-	slog.Info("issue opened", "repo", repo, "number", iss.Number, "author", author)
 	writeJSON(w, http.StatusCreated, model.CreateIssueResponse{ID: iss.ID, Number: iss.Number})
 }
 
@@ -182,22 +135,6 @@ func (s *server) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
 	identity := IdentityFromContext(r.Context())
 	role := RoleFromContext(r.Context())
 
-	existing, err := s.commitStore.GetIssue(r.Context(), repo, number)
-	if err != nil {
-		if errors.Is(err, db.ErrIssueNotFound) {
-			writeError(w, http.StatusNotFound, "issue not found")
-		} else {
-			slog.Error("internal error", "op", "update_issue", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
-		}
-		return
-	}
-
-	if existing.Author != identity && role != model.RoleMaintainer && role != model.RoleAdmin {
-		writeError(w, http.StatusForbidden, "forbidden: must be issue author or maintainer")
-		return
-	}
-
 	var req model.UpdateIssueRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -208,21 +145,20 @@ func (s *server) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if req.Labels != nil {
 		labelsPtr = &req.Labels
 	}
-	iss, err := s.commitStore.UpdateIssue(r.Context(), repo, number, req.Title, req.Body, labelsPtr)
+	iss, err := s.svc.UpdateIssue(r.Context(), identity, role, repo, number, req.Title, req.Body, labelsPtr)
 	if err != nil {
-		if errors.Is(err, db.ErrIssueNotFound) {
-			writeError(w, http.StatusNotFound, "issue not found")
-		} else {
+		switch {
+		case errors.Is(err, service.ErrForbidden):
+			writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, err.Error())
+		case errors.Is(err, db.ErrIssueNotFound):
+			writeAPIError(w, ErrCodeIssueNotFound, http.StatusNotFound, "issue not found")
+		default:
 			slog.Error("internal error", "op", "update_issue", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
 
-	if req.Body != nil {
-		s.upsertIssueBodyRefs(r.Context(), repo, number, *req.Body)
-	}
-	s.emit(r.Context(), evtypes.IssueUpdated{Repo: repo, IssueID: iss.ID, Number: iss.Number})
 	writeJSON(w, http.StatusOK, iss)
 }
 
@@ -240,27 +176,6 @@ func (s *server) handleCloseIssue(w http.ResponseWriter, r *http.Request) {
 
 	identity := IdentityFromContext(r.Context())
 	role := RoleFromContext(r.Context())
-
-	existing, err := s.commitStore.GetIssue(r.Context(), repo, number)
-	if err != nil {
-		if errors.Is(err, db.ErrIssueNotFound) {
-			writeError(w, http.StatusNotFound, "issue not found")
-		} else {
-			slog.Error("internal error", "op", "close_issue", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
-		}
-		return
-	}
-
-	if existing.Author != identity && role != model.RoleMaintainer && role != model.RoleAdmin {
-		writeError(w, http.StatusForbidden, "forbidden: must be issue author or maintainer")
-		return
-	}
-
-	if existing.State == model.IssueStateClosed {
-		writeError(w, http.StatusConflict, "issue is already closed")
-		return
-	}
 
 	var req model.CloseIssueRequest
 	if r.Body != nil {
@@ -280,19 +195,22 @@ func (s *server) handleCloseIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	iss, err := s.commitStore.CloseIssue(r.Context(), repo, number, reason, identity)
+	iss, err := s.svc.CloseIssue(r.Context(), identity, role, repo, number, reason)
 	if err != nil {
-		if errors.Is(err, db.ErrIssueNotFound) {
-			writeError(w, http.StatusNotFound, "issue not found")
-		} else {
+		switch {
+		case errors.Is(err, service.ErrForbidden):
+			writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, err.Error())
+		case errors.Is(err, service.ErrConflict):
+			writeAPIError(w, ErrCodeConflict, http.StatusConflict, err.Error())
+		case errors.Is(err, db.ErrIssueNotFound):
+			writeAPIError(w, ErrCodeIssueNotFound, http.StatusNotFound, "issue not found")
+		default:
 			slog.Error("internal error", "op", "close_issue", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
 
-	s.emit(r.Context(), evtypes.IssueClosed{Repo: repo, IssueID: iss.ID, Number: iss.Number, Reason: string(reason), ClosedBy: identity})
-	slog.Info("issue closed", "repo", repo, "number", number, "by", identity)
 	writeJSON(w, http.StatusOK, iss)
 }
 
@@ -311,40 +229,22 @@ func (s *server) handleReopenIssue(w http.ResponseWriter, r *http.Request) {
 	identity := IdentityFromContext(r.Context())
 	role := RoleFromContext(r.Context())
 
-	existing, err := s.commitStore.GetIssue(r.Context(), repo, number)
+	iss, err := s.svc.ReopenIssue(r.Context(), identity, role, repo, number)
 	if err != nil {
-		if errors.Is(err, db.ErrIssueNotFound) {
-			writeError(w, http.StatusNotFound, "issue not found")
-		} else {
+		switch {
+		case errors.Is(err, service.ErrForbidden):
+			writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, err.Error())
+		case errors.Is(err, service.ErrConflict):
+			writeAPIError(w, ErrCodeConflict, http.StatusConflict, err.Error())
+		case errors.Is(err, db.ErrIssueNotFound):
+			writeAPIError(w, ErrCodeIssueNotFound, http.StatusNotFound, "issue not found")
+		default:
 			slog.Error("internal error", "op", "reopen_issue", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
 
-	if existing.Author != identity && role != model.RoleMaintainer && role != model.RoleAdmin {
-		writeError(w, http.StatusForbidden, "forbidden: must be issue author or maintainer")
-		return
-	}
-
-	if existing.State == model.IssueStateOpen {
-		writeError(w, http.StatusConflict, "issue is already open")
-		return
-	}
-
-	iss, err := s.commitStore.ReopenIssue(r.Context(), repo, number)
-	if err != nil {
-		if errors.Is(err, db.ErrIssueNotFound) {
-			writeError(w, http.StatusNotFound, "issue not found")
-		} else {
-			slog.Error("internal error", "op", "reopen_issue", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
-		}
-		return
-	}
-
-	s.emit(r.Context(), evtypes.IssueReopened{Repo: repo, IssueID: iss.ID, Number: iss.Number})
-	slog.Info("issue reopened", "repo", repo, "number", number)
 	writeJSON(w, http.StatusOK, iss)
 }
 
@@ -391,21 +291,18 @@ func (s *server) handleCreateIssueComment(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	author := IdentityFromContext(r.Context())
-	c, err := s.commitStore.CreateIssueComment(r.Context(), repo, number, req.Body, author)
+	identity := IdentityFromContext(r.Context())
+	c, err := s.svc.CreateIssueComment(r.Context(), identity, repo, number, req.Body)
 	if err != nil {
 		if errors.Is(err, db.ErrIssueNotFound) {
-			writeError(w, http.StatusNotFound, "issue not found")
+			writeAPIError(w, ErrCodeIssueNotFound, http.StatusNotFound, "issue not found")
 		} else {
 			slog.Error("internal error", "op", "create_issue_comment", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
 
-	s.upsertIssueBodyRefs(r.Context(), repo, number, req.Body)
-	s.emit(r.Context(), evtypes.IssueCommentCreated{Repo: repo, IssueID: c.IssueID, Number: number, CommentID: c.ID, Author: author})
-	slog.Info("issue comment created", "repo", repo, "issue", number, "comment", c.ID, "author", author)
 	writeJSON(w, http.StatusCreated, model.CreateIssueCommentResponse{ID: c.ID})
 }
 
@@ -425,37 +322,6 @@ func (s *server) handleUpdateIssueComment(w http.ResponseWriter, r *http.Request
 	identity := IdentityFromContext(r.Context())
 	role := RoleFromContext(r.Context())
 
-	existing, err := s.commitStore.GetIssueComment(r.Context(), repo, commentID)
-	if err != nil {
-		if errors.Is(err, db.ErrIssueCommentNotFound) {
-			writeError(w, http.StatusNotFound, "comment not found")
-		} else {
-			slog.Error("internal error", "op", "update_issue_comment", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
-		}
-		return
-	}
-
-	issue, err := s.commitStore.GetIssue(r.Context(), repo, number)
-	if err != nil {
-		if errors.Is(err, db.ErrIssueNotFound) {
-			writeError(w, http.StatusNotFound, "comment not found")
-		} else {
-			slog.Error("internal error", "op", "update_issue_comment", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
-		}
-		return
-	}
-	if existing.IssueID != issue.ID {
-		writeError(w, http.StatusNotFound, "comment not found")
-		return
-	}
-
-	if existing.Author != identity && role != model.RoleMaintainer && role != model.RoleAdmin {
-		writeError(w, http.StatusForbidden, "forbidden: must be comment author or maintainer")
-		return
-	}
-
 	var req model.UpdateIssueCommentRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -466,19 +332,20 @@ func (s *server) handleUpdateIssueComment(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	c, err := s.commitStore.UpdateIssueComment(r.Context(), repo, commentID, req.Body)
+	c, err := s.svc.UpdateIssueComment(r.Context(), identity, role, repo, number, commentID, req.Body)
 	if err != nil {
-		if errors.Is(err, db.ErrIssueCommentNotFound) {
-			writeError(w, http.StatusNotFound, "comment not found")
-		} else {
+		switch {
+		case errors.Is(err, service.ErrForbidden):
+			writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, err.Error())
+		case errors.Is(err, db.ErrIssueCommentNotFound):
+			writeAPIError(w, ErrCodeCommentNotFound, http.StatusNotFound, "comment not found")
+		default:
 			slog.Error("internal error", "op", "update_issue_comment", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}
 
-	s.upsertIssueBodyRefs(r.Context(), repo, number, req.Body)
-	s.emit(r.Context(), evtypes.IssueCommentUpdated{Repo: repo, IssueID: c.IssueID, Number: number, CommentID: c.ID})
 	writeJSON(w, http.StatusOK, c)
 }
 
@@ -489,7 +356,7 @@ func (s *server) handleDeleteIssueComment(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	number, ok := parseIssueNumber(w, r)
+	_, ok := parseIssueNumber(w, r)
 	if !ok {
 		return
 	}
@@ -498,43 +365,15 @@ func (s *server) handleDeleteIssueComment(w http.ResponseWriter, r *http.Request
 	identity := IdentityFromContext(r.Context())
 	role := RoleFromContext(r.Context())
 
-	existing, err := s.commitStore.GetIssueComment(r.Context(), repo, commentID)
-	if err != nil {
-		if errors.Is(err, db.ErrIssueCommentNotFound) {
-			writeError(w, http.StatusNotFound, "comment not found")
-		} else {
+	if err := s.svc.DeleteIssueComment(r.Context(), identity, role, repo, commentID); err != nil {
+		switch {
+		case errors.Is(err, service.ErrForbidden):
+			writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, err.Error())
+		case errors.Is(err, db.ErrIssueCommentNotFound):
+			writeAPIError(w, ErrCodeCommentNotFound, http.StatusNotFound, "comment not found")
+		default:
 			slog.Error("internal error", "op", "delete_issue_comment", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
-		}
-		return
-	}
-
-	issue, err := s.commitStore.GetIssue(r.Context(), repo, number)
-	if err != nil {
-		if errors.Is(err, db.ErrIssueNotFound) {
-			writeError(w, http.StatusNotFound, "comment not found")
-		} else {
-			slog.Error("internal error", "op", "delete_issue_comment", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
-		}
-		return
-	}
-	if existing.IssueID != issue.ID {
-		writeError(w, http.StatusNotFound, "comment not found")
-		return
-	}
-
-	if existing.Author != identity && role != model.RoleMaintainer && role != model.RoleAdmin {
-		writeError(w, http.StatusForbidden, "forbidden: must be comment author or maintainer")
-		return
-	}
-
-	if err := s.commitStore.DeleteIssueComment(r.Context(), repo, commentID); err != nil {
-		if errors.Is(err, db.ErrIssueCommentNotFound) {
-			writeError(w, http.StatusNotFound, "comment not found")
-		} else {
-			slog.Error("internal error", "op", "delete_issue_comment", "repo", repo, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		}
 		return
 	}

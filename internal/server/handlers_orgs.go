@@ -36,7 +36,7 @@ func (s *server) handleCreateOrg(w http.ResponseWriter, r *http.Request) {
 	}
 
 	identity := IdentityFromContext(r.Context())
-	org, err := s.commitStore.CreateOrg(r.Context(), req.Name, identity)
+	org, err := s.svc.CreateOrg(r.Context(), identity, req.Name)
 	if err != nil {
 		switch {
 		case errors.Is(err, db.ErrOrgExists):
@@ -47,10 +47,6 @@ func (s *server) handleCreateOrg(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if err := s.commitStore.AddOrgMember(r.Context(), org.Name, identity, model.OrgRoleOwner, identity); err != nil {
-		slog.Error("failed to add org creator as owner", "org", org.Name, "identity", identity, "error", err)
-	}
-	s.emit(r.Context(), evtypes.OrgCreated{Org: org.Name, CreatedBy: identity})
 	writeJSON(w, http.StatusCreated, org)
 }
 
