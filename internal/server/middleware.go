@@ -252,6 +252,11 @@ func roleAllows(role model.RoleType, method, subPath string, r *http.Request) bo
 		return true
 	}
 
+	// POST /review — writer+.
+	if method == http.MethodPost && subPath == "review" {
+		return role == model.RoleWriter || role == model.RoleMaintainer || role == model.RoleAdmin
+	}
+
 	// POST /comment — writer+.
 	if method == http.MethodPost && subPath == "comment" {
 		return role == model.RoleWriter || role == model.RoleMaintainer || role == model.RoleAdmin

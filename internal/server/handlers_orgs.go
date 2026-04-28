@@ -47,6 +47,9 @@ func (s *server) handleCreateOrg(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	if err := s.commitStore.AddOrgMember(r.Context(), org.Name, identity, model.OrgRoleOwner, identity); err != nil {
+		slog.Error("failed to add org creator as owner", "org", org.Name, "identity", identity, "error", err)
+	}
 	s.emit(r.Context(), evtypes.OrgCreated{Org: org.Name, CreatedBy: identity})
 	writeJSON(w, http.StatusCreated, org)
 }
