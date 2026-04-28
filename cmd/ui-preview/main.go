@@ -322,6 +322,9 @@ func (fakeWrite) CreateRelease(_ context.Context, _, _ string, _ int64, _, _ str
 	return &model.Release{}, nil
 }
 func (fakeWrite) DeleteRelease(_ context.Context, _, _ string) error { return nil }
+func (fakeWrite) Commit(_ context.Context, _ model.CommitRequest) (*model.CommitResponse, error) {
+	return &model.CommitResponse{Sequence: 999}, nil
+}
 
 func fakeAssemble(_ context.Context, _, branch string) (*model.AgentContextResponse, error) {
 	t := time.Now()

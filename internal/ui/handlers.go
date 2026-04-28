@@ -213,6 +213,15 @@ type createRepoPage struct {
 	Err   string
 }
 
+type commitFormPage struct {
+	Repo            model.Repo
+	Branch          string
+	FormMessage     string
+	FormFilePath    string
+	FormFileContent string
+	Err             string
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -2408,6 +2417,92 @@ func (h *Handler) handleCloseProposalUI(w http.ResponseWriter, r *http.Request) 
 	http.Redirect(w, r, "/ui/r/"+repoName+"/proposals/"+id, http.StatusSeeOther)}
 
 // chainToLogRows filters and converts ChainEntries to commitLogRows.
+// handleNewCommit renders the commit form (GET) and submits a commit (POST).
+func (h *Handler) handleNewCommit(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	branch := r.PathValue("branch")
+	repoName := owner + "/" + name
+	ctx := r.Context()
+
+	repo, err := h.write.GetRepo(ctx, repoName)
+	if err != nil {
+		if errors.Is(err, db.ErrRepoNotFound) {
+			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
+			return
+		}
+		slog.Error("ui get repo", "repo", repoName, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load repo")
+		return
+	}
+
+	renderForm := func(formMessage, formFilePath, formFileContent, errMsg string) {
+		h.render(w, h.tmpl.newCommit, "layout.html", pageData{
+			Title: repoName + " / " + branch + " / commit",
+			Breadcrumbs: []crumb{
+				{Label: "repos", Href: "/ui/"},
+				{Label: repoName, Href: "/ui/r/" + repoName},
+				{Label: branch, Href: "/ui/r/" + repoName + "/b/" + url.PathEscape(branch)},
+				{Label: "commit", Href: ""},
+			},
+			Body: commitFormPage{
+				Repo:            *repo,
+				Branch:          branch,
+				FormMessage:     formMessage,
+				FormFilePath:    formFilePath,
+				FormFileContent: formFileContent,
+				Err:             errMsg,
+			},
+		})
+	}
+
+	if r.Method == http.MethodGet {
+		renderForm("", "", "", "")
+		return
+	}
+
+	// POST: submit the commit.
+	if err := r.ParseForm(); err != nil {
+		renderForm("", "", "", "invalid form data")
+		return
+	}
+
+	message := strings.TrimSpace(r.FormValue("message"))
+	filePath := strings.TrimSpace(r.FormValue("file_path"))
+	fileContent := r.FormValue("file_content")
+
+	if message == "" {
+		renderForm(message, filePath, fileContent, "message is required")
+		return
+	}
+	if filePath == "" {
+		renderForm(message, filePath, fileContent, "file path is required")
+		return
+	}
+
+	var identity string
+	if h.identity != nil {
+		identity = h.identity(ctx)
+	}
+
+	req := model.CommitRequest{
+		Repo:    repoName,
+		Branch:  branch,
+		Message: message,
+		Author:  identity,
+		Files: []model.FileChange{
+			{Path: filePath, Content: []byte(fileContent)},
+		},
+	}
+	if _, err := h.write.Commit(ctx, req); err != nil {
+		slog.Error("ui commit", "repo", repoName, "branch", branch, "error", err)
+		renderForm(message, filePath, fileContent, "could not commit: "+err.Error())
+		return
+	}
+
+	http.Redirect(w, r, "/ui/r/"+repoName+"/b/"+url.PathEscape(branch), http.StatusSeeOther)
+}
+
 // Only entries for the named branch are included.
 func chainToLogRows(entries []store.ChainEntry, branch string) []commitLogRow {
 	rows := make([]commitLogRow, 0, len(entries))

@@ -218,6 +218,9 @@ func (f *fakeWrite) CreateRelease(_ context.Context, _, _ string, _ int64, _, _ 
 	return &model.Release{}, nil
 }
 func (f *fakeWrite) DeleteRelease(_ context.Context, _, _ string) error { return nil }
+func (f *fakeWrite) Commit(_ context.Context, _ model.CommitRequest) (*model.CommitResponse, error) {
+	return &model.CommitResponse{Sequence: 1}, nil
+}
 
 // Compile-time check that fakeWrite satisfies WriteStoreLite.
 var _ WriteStoreLite = (*fakeWrite)(nil)
@@ -958,4 +961,78 @@ func TestHandleCloseProposalUI_RedirectsOnSuccess(t *testing.T) {
 	code, _, _ := postForm(t, h, "/ui/r/acme/a/proposals/p-1/close", nil)
 	if code != http.StatusSeeOther {
 		t.Fatalf("status = %d, want 303 (redirect)", code)	}
+}
+
+func TestHandleNewCommit_GET_RendersForm(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now(), CreatedBy: "me"}}
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, nil)
+
+	code, body := getStatusAndBody(t, h, "/ui/r/acme/a/b/feat-x/commit")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", code, body)
+	}
+	for _, want := range []string{"feat-x", "Commit message", `name="file_path"`, `name="file_content"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q", want)
+		}
+	}
+}
+
+func TestHandleNewCommit_POST_RedirectsOnSuccess(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now()}}
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, nil)
+
+	code, _, loc := postForm(t, h, "/ui/r/acme/a/b/feat-x/commit", url.Values{
+		"message":      {"add a file"},
+		"file_path":    {"docs/hello.md"},
+		"file_content": {"hello world"},
+	})
+	if code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303 (redirect)", code)
+	}
+	if loc != "/ui/r/acme/a/b/feat-x" {
+		t.Errorf("location = %q, want /ui/r/acme/a/b/feat-x", loc)
+	}
+}
+
+func TestHandleNewCommit_POST_MissingMessage_RerendersForm(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now()}}
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, nil)
+
+	code, body, _ := postForm(t, h, "/ui/r/acme/a/b/feat-x/commit", url.Values{
+		"file_path":    {"docs/hello.md"},
+		"file_content": {"content"},
+		// message omitted
+	})
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 with error", code)
+	}
+	if !strings.Contains(body, "message is required") {
+		t.Errorf("expected error in body, got: %s", body)
+	}
+}
+
+func TestHandleNewCommit_POST_MissingFilePath_RerendersForm(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now()}}
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, nil)
+
+	code, body, _ := postForm(t, h, "/ui/r/acme/a/b/feat-x/commit", url.Values{
+		"message":      {"add something"},
+		"file_content": {"content"},
+		// file_path omitted
+	})
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 with error", code)
+	}
+	if !strings.Contains(body, "file path is required") {
+		t.Errorf("expected error in body, got: %s", body)
+	}
+}
+
+func TestHandleNewCommit_UnknownRepo_Returns404(t *testing.T) {
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{miss: true}, nil)
+	code, _ := getStatusAndBody(t, h, "/ui/r/unknown/repo/b/feat-x/commit")
+	if code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", code)
+	}
 }
