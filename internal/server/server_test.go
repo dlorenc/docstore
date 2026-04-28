@@ -299,6 +299,10 @@ func (m *mockStore) ListOrgMembers(ctx context.Context, org string) ([]model.Org
 	return []model.OrgMember{}, nil
 }
 
+func (m *mockStore) ListOrgMemberships(_ context.Context, _ string) ([]model.OrgMember, error) {
+	return []model.OrgMember{}, nil
+}
+
 func (m *mockStore) CreateInvite(ctx context.Context, org, email string, role model.OrgRole, invitedBy, token string, expiresAt time.Time) (*model.OrgInvite, error) {
 	if m.createInviteFn != nil {
 		return m.createInviteFn(ctx, org, email, role, invitedBy, token, expiresAt)
