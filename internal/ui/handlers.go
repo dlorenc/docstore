@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/dlorenc/docstore/internal/db"
+	evtypes "github.com/dlorenc/docstore/internal/events/types"
 	"github.com/dlorenc/docstore/internal/model"
 	"github.com/dlorenc/docstore/internal/store"
 )
@@ -1300,6 +1301,12 @@ func (h *Handler) handleAddOrgMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.emit(ctx, evtypes.OrgMemberAdded{
+		Org:      org,
+		Identity: identity,
+		Role:     string(role),
+		AddedBy:  invitedBy,
+	})
 	http.Redirect(w, r, "/ui/o/"+org, http.StatusSeeOther)
 }
 
@@ -1320,6 +1327,15 @@ func (h *Handler) handleRemoveOrgMember(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	var removedBy string
+	if h.identity != nil {
+		removedBy = h.identity(ctx)
+	}
+	h.emit(ctx, evtypes.OrgMemberRemoved{
+		Org:       org,
+		Identity:  identity,
+		RemovedBy: removedBy,
+	})
 	http.Redirect(w, r, "/ui/o/"+org, http.StatusSeeOther)
 }
 
@@ -1535,6 +1551,16 @@ func (h *Handler) handleSetRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var changedBy string
+	if h.identity != nil {
+		changedBy = h.identity(ctx)
+	}
+	h.emit(ctx, evtypes.RoleChanged{
+		Repo:      repoName,
+		Identity:  identity,
+		Role:      string(role),
+		ChangedBy: changedBy,
+	})
 	http.Redirect(w, r, "/ui/r/"+repoName+"/settings", http.StatusSeeOther)
 }
 
@@ -1557,6 +1583,16 @@ func (h *Handler) handleDeleteRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var changedBy string
+	if h.identity != nil {
+		changedBy = h.identity(ctx)
+	}
+	h.emit(ctx, evtypes.RoleChanged{
+		Repo:      repoName,
+		Identity:  identity,
+		Role:      "", // empty means removed
+		ChangedBy: changedBy,
+	})
 	http.Redirect(w, r, "/ui/r/"+repoName+"/settings", http.StatusSeeOther)
 }
 
@@ -1644,6 +1680,12 @@ func (h *Handler) handleCreateRelease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.emit(ctx, evtypes.ReleaseCreated{
+		Repo:      repoName,
+		Name:      relName,
+		Sequence:  sequence,
+		CreatedBy: createdBy,
+	})
 	http.Redirect(w, r, "/ui/r/"+repoName+"/releases", http.StatusSeeOther)
 }
 
@@ -1666,6 +1708,15 @@ func (h *Handler) handleDeleteRelease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var deletedBy string
+	if h.identity != nil {
+		deletedBy = h.identity(ctx)
+	}
+	h.emit(ctx, evtypes.ReleaseDeleted{
+		Repo:      repoName,
+		Name:      rname,
+		DeletedBy: deletedBy,
+	})
 	http.Redirect(w, r, "/ui/r/"+repoName+"/releases", http.StatusSeeOther)
 }
 
@@ -2123,7 +2174,7 @@ func (h *Handler) handleUICreateBranch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	draft := r.FormValue("draft") == "1"
-	_, err := h.write.CreateBranch(r.Context(), model.CreateBranchRequest{
+	resp, err := h.write.CreateBranch(r.Context(), model.CreateBranchRequest{
 		Repo:  repoName,
 		Name:  branchName,
 		Draft: draft,
@@ -2135,6 +2186,16 @@ func (h *Handler) handleUICreateBranch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var identity string
+	if h.identity != nil {
+		identity = h.identity(r.Context())
+	}
+	h.emit(r.Context(), evtypes.BranchCreated{
+		Repo:         repoName,
+		Branch:       branchName,
+		BaseSequence: resp.BaseSequence,
+		CreatedBy:    identity,
+	})
 	http.Redirect(w, r, "/ui/r/"+repoName, http.StatusSeeOther)
 }
 
@@ -2168,6 +2229,15 @@ func (h *Handler) handleUIDeleteBranch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var identity string
+	if h.identity != nil {
+		identity = h.identity(r.Context())
+	}
+	h.emit(r.Context(), evtypes.BranchAbandoned{
+		Repo:        repoName,
+		Branch:      branchName,
+		AbandonedBy: identity,
+	})
 	http.Redirect(w, r, "/ui/r/"+repoName, http.StatusSeeOther)
 }
 
@@ -2200,6 +2270,16 @@ func (h *Handler) handleUIPromoteBranch(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	var identity string
+	if h.identity != nil {
+		identity = h.identity(r.Context())
+	}
+	h.emit(r.Context(), evtypes.BranchDraftUpdated{
+		Repo:      repoName,
+		Branch:    branchName,
+		Draft:     false,
+		UpdatedBy: identity,
+	})
 	ref := r.FormValue("ref")
 	if ref == "detail" {
 		http.Redirect(w, r, "/ui/r/"+repoName+"/b/"+url.PathEscape(branchName), http.StatusSeeOther)
@@ -2582,6 +2662,11 @@ func (h *Handler) handleUIDeleteOrg(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var deletedBy string
+	if h.identity != nil {
+		deletedBy = h.identity(ctx)
+	}
+	h.emit(ctx, evtypes.OrgDeleted{Org: org, DeletedBy: deletedBy})
 	http.Redirect(w, r, "/ui/", http.StatusSeeOther)
 }
 
@@ -2614,6 +2699,11 @@ func (h *Handler) handleUIDeleteRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var deletedBy string
+	if h.identity != nil {
+		deletedBy = h.identity(ctx)
+	}
+	h.emit(ctx, evtypes.RepoDeleted{Repo: repoName, DeletedBy: deletedBy})
 	http.Redirect(w, r, "/ui/", http.StatusSeeOther)
 }
 

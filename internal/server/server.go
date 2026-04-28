@@ -268,6 +268,13 @@ func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore Wri
 		if err != nil {
 			slog.Error("ui init failed", "error", err)
 		} else {
+			if s.broker != nil {
+				uiHandler.Emit = func(ctx context.Context, event any) {
+					if e, ok := event.(events.Event); ok {
+						s.broker.Emit(ctx, e)
+					}
+				}
+			}
 			uiHandler.Register(inner)
 		}
 	}

@@ -52,3 +52,15 @@ type BranchAbandoned struct {
 func (e BranchAbandoned) Type() string   { return "com.docstore.branch.abandoned" }
 func (e BranchAbandoned) Source() string { return "/repos/" + e.Repo }
 func (e BranchAbandoned) Data() any      { return e }
+
+// BranchDraftUpdated is emitted when a branch's draft status is changed.
+type BranchDraftUpdated struct {
+	Repo      string `json:"repo"`
+	Branch    string `json:"branch"`
+	Draft     bool   `json:"draft"`
+	UpdatedBy string `json:"updated_by"`
+}
+
+func (e BranchDraftUpdated) Type() string   { return "com.docstore.branch.draft.updated" }
+func (e BranchDraftUpdated) Source() string { return "/repos/" + e.Repo }
+func (e BranchDraftUpdated) Data() any      { return e }
