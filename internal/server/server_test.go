@@ -313,6 +313,10 @@ func (m *mockStore) ListInvites(ctx context.Context, org string) ([]model.OrgInv
 	return []model.OrgInvite{}, nil
 }
 
+func (m *mockStore) GetInviteByToken(ctx context.Context, org, token string) (*model.OrgInvite, error) {
+	return nil, db.ErrInviteNotFound
+}
+
 func (m *mockStore) AcceptInvite(ctx context.Context, org, token, identity string) error {
 	if m.acceptInviteFn != nil {
 		return m.acceptInviteFn(ctx, org, token, identity)
