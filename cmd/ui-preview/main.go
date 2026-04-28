@@ -306,6 +306,23 @@ func (fakeWrite) UpdateProposal(_ context.Context, _, _ string, _, _ *string) (*
 	return &model.Proposal{ID: "updated-p", Title: "updated"}, nil
 }
 func (fakeWrite) CloseProposal(_ context.Context, _, _ string) error { return nil }
+func (fakeWrite) AddOrgMember(_ context.Context, _, _ string, _ model.OrgRole, _ string) error {
+	return nil
+}
+func (fakeWrite) RemoveOrgMember(_ context.Context, _, _ string) error { return nil }
+func (fakeWrite) CreateInvite(_ context.Context, _, _ string, _ model.OrgRole, _, _ string, _ time.Time) (*model.OrgInvite, error) {
+	return &model.OrgInvite{}, nil
+}
+func (fakeWrite) RevokeInvite(_ context.Context, _, _ string) error { return nil }
+func (fakeWrite) SetRole(_ context.Context, _, _ string, _ model.RoleType) error {
+	return nil
+}
+func (fakeWrite) DeleteRole(_ context.Context, _, _ string) error { return nil }
+func (fakeWrite) CreateRelease(_ context.Context, _, _ string, _ int64, _, _ string) (*model.Release, error) {
+	return &model.Release{}, nil
+}
+func (fakeWrite) DeleteRelease(_ context.Context, _, _ string) error { return nil }
+
 func fakeAssemble(_ context.Context, _, branch string) (*model.AgentContextResponse, error) {
 	t := time.Now()
 	vid := func(s string) *string { return &s }

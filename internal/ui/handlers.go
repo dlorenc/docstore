@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -36,6 +38,7 @@ type orgPage struct {
 	Repos   []model.Repo
 	Members []model.OrgMember
 	Invites []model.OrgInvite
+	Err     string
 }
 
 type branchesPage struct {
@@ -179,6 +182,7 @@ type proposalDetailPage struct {
 type releasesPage struct {
 	Repo     model.Repo
 	Releases []model.Release
+	Err      string
 }
 
 type releaseDetailPage struct {
@@ -242,115 +246,12 @@ func (h *Handler) handleRepos(w http.ResponseWriter, r *http.Request) {
 
 // handleOrg renders the org overview page: repos, members, and pending invites.
 func (h *Handler) handleOrg(w http.ResponseWriter, r *http.Request) {
-	org := r.PathValue("org")
-	ctx := r.Context()
-
-	repos, err := h.write.ListOrgRepos(ctx, org)
-	if err != nil {
-		slog.Error("ui list org repos", "org", org, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load repos")
-		return
-	}
-	members, err := h.write.ListOrgMembers(ctx, org)
-	if err != nil {
-		slog.Error("ui list org members", "org", org, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load members")
-		return
-	}
-	invites, err := h.write.ListInvites(ctx, org)
-	if err != nil {
-		slog.Error("ui list invites", "org", org, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load invites")
-		return
-	}
-	var pending []model.OrgInvite
-	for _, inv := range invites {
-		if inv.AcceptedAt == nil {
-			pending = append(pending, inv)
-		}
-	}
-
-	h.render(w, h.tmpl.org, "layout.html", pageData{
-		Title: org,
-		Breadcrumbs: []crumb{
-			{Label: "repos", Href: "/ui/"},
-			{Label: org, Href: ""},
-		},
-		Body: orgPage{
-			Org:     org,
-			Repos:   repos,
-			Members: members,
-			Invites: pending,
-		},
-	})
+	h.renderOrgPage(w, r, r.PathValue("org"), "")
 }
 
 // handleBranches renders the branch list for a single repo.
 func (h *Handler) handleBranches(w http.ResponseWriter, r *http.Request) {
-	owner := r.PathValue("owner")
-	name := r.PathValue("name")
-	repoName := owner + "/" + name
-	ctx := r.Context()
-
-	repo, err := h.write.GetRepo(ctx, repoName)
-	if err != nil {
-		if errors.Is(err, db.ErrRepoNotFound) {
-			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
-			return
-		}
-		slog.Error("ui get repo", "repo", repoName, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load repo")
-		return
-	}
-
-	branches, err := h.read.ListBranches(ctx, repoName, "", true, false)
-	if err != nil {
-		slog.Error("ui list branches", "repo", repoName, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load branches")
-		return
-	}
-
-	members, err := h.write.ListOrgMembers(ctx, repo.Owner)
-	if err != nil {
-		slog.Error("ui list org members", "org", repo.Owner, "error", err)
-		// Non-fatal: render page without members.
-		members = nil
-	}
-	roles, err := h.write.ListRoles(ctx, repoName)
-	if err != nil {
-		slog.Error("ui list roles", "repo", repoName, "error", err)
-		// Non-fatal: render page without roles.
-		roles = nil
-	}
-
-	page := branchesPage{Repo: *repo, Members: members, Roles: roles, Err: r.URL.Query().Get("err")}
-	for _, b := range branches {
-		row := branchRow{
-			Name:         b.Name,
-			HeadSequence: b.HeadSequence,
-			BaseSequence: b.BaseSequence,
-			Draft:        b.Draft,
-			AutoMerge:    b.AutoMerge,
-			Status:       b.Status,
-		}
-		switch b.Status {
-		case "merged":
-			page.Merged = append(page.Merged, row)
-		case "abandoned":
-			page.Abandoned = append(page.Abandoned, row)
-		default:
-			page.Active = append(page.Active, row)
-		}
-	}
-
-	h.render(w, h.tmpl.branches, "layout.html", pageData{
-		Title: repoName + " / branches",
-		Breadcrumbs: []crumb{
-			{Label: "repos", Href: "/ui/"},
-			{Label: repoName, Href: "/ui/r/" + repoName},
-		},
-		Body: page,
-	})
+	h.renderBranchesPage(w, r, r.PathValue("owner"), r.PathValue("name"), "")
 }
 
 // handleBranchDetail renders the diff + reviews + checks + policy view.
@@ -812,38 +713,7 @@ func (h *Handler) handleProposalDetail(w http.ResponseWriter, r *http.Request) {
 
 // handleReleases renders the releases list for a repo.
 func (h *Handler) handleReleases(w http.ResponseWriter, r *http.Request) {
-	owner := r.PathValue("owner")
-	name := r.PathValue("name")
-	repoName := owner + "/" + name
-	ctx := r.Context()
-
-	repo, err := h.write.GetRepo(ctx, repoName)
-	if err != nil {
-		if errors.Is(err, db.ErrRepoNotFound) {
-			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
-			return
-		}
-		slog.Error("ui get repo", "repo", repoName, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load repo")
-		return
-	}
-
-	releases, err := h.write.ListReleases(ctx, repoName, 100, "")
-	if err != nil {
-		slog.Error("ui list releases", "repo", repoName, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load releases")
-		return
-	}
-
-	h.render(w, h.tmpl.releases, "layout.html", pageData{
-		Title: repoName + " / releases",
-		Breadcrumbs: []crumb{
-			{Label: "repos", Href: "/ui/"},
-			{Label: repoName, Href: "/ui/r/" + repoName},
-			{Label: "releases", Href: ""},
-		},
-		Body: releasesPage{Repo: *repo, Releases: releases},
-	})
+	h.renderReleasesPage(w, r, r.PathValue("owner"), r.PathValue("name"), "")
 }
 
 // handleReleaseDetail renders the detail view for a single release.
@@ -1254,6 +1124,411 @@ func (h *Handler) handleAcceptInvite(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, "/ui/o/"+org, http.StatusSeeOther)
+}
+
+// generateInviteToken returns a 32-byte random hex string for use as an invite token.
+func generateInviteToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+// renderOrgPage loads org data and renders the org page, optionally with an error message.
+func (h *Handler) renderOrgPage(w http.ResponseWriter, r *http.Request, org, errMsg string) {
+	ctx := r.Context()
+
+	repos, err := h.write.ListOrgRepos(ctx, org)
+	if err != nil {
+		slog.Error("ui list org repos", "org", org, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load repos")
+		return
+	}
+	members, err := h.write.ListOrgMembers(ctx, org)
+	if err != nil {
+		slog.Error("ui list org members", "org", org, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load members")
+		return
+	}
+	invites, err := h.write.ListInvites(ctx, org)
+	if err != nil {
+		slog.Error("ui list invites", "org", org, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load invites")
+		return
+	}
+	var pending []model.OrgInvite
+	for _, inv := range invites {
+		if inv.AcceptedAt == nil {
+			pending = append(pending, inv)
+		}
+	}
+
+	h.render(w, h.tmpl.org, "layout.html", pageData{
+		Title: org,
+		Breadcrumbs: []crumb{
+			{Label: "repos", Href: "/ui/"},
+			{Label: org, Href: ""},
+		},
+		Body: orgPage{
+			Org:     org,
+			Repos:   repos,
+			Members: members,
+			Invites: pending,
+			Err:     errMsg,
+		},
+	})
+}
+
+// handleAddOrgMember processes POST /ui/o/{org}/members to add an org member.
+func (h *Handler) handleAddOrgMember(w http.ResponseWriter, r *http.Request) {
+	org := r.PathValue("org")
+	ctx := r.Context()
+
+	if err := r.ParseForm(); err != nil {
+		h.renderOrgPage(w, r, org, "invalid form data")
+		return
+	}
+	identity := strings.TrimSpace(r.FormValue("identity"))
+	role := model.OrgRole(r.FormValue("role"))
+
+	if identity == "" {
+		h.renderOrgPage(w, r, org, "identity is required")
+		return
+	}
+	switch role {
+	case model.OrgRoleOwner, model.OrgRoleMember:
+	default:
+		h.renderOrgPage(w, r, org, "invalid role; must be 'owner' or 'member'")
+		return
+	}
+
+	var invitedBy string
+	if h.identity != nil {
+		invitedBy = h.identity(ctx)
+	}
+
+	if err := h.write.AddOrgMember(ctx, org, identity, role, invitedBy); err != nil {
+		slog.Error("ui add org member", "org", org, "identity", identity, "error", err)
+		h.renderOrgPage(w, r, org, "could not add member: "+err.Error())
+		return
+	}
+
+	http.Redirect(w, r, "/ui/o/"+org, http.StatusSeeOther)
+}
+
+// handleRemoveOrgMember processes POST /ui/o/{org}/members/{identity}/remove.
+func (h *Handler) handleRemoveOrgMember(w http.ResponseWriter, r *http.Request) {
+	org := r.PathValue("org")
+	identity := r.PathValue("identity")
+	ctx := r.Context()
+
+	if err := h.write.RemoveOrgMember(ctx, org, identity); err != nil {
+		switch {
+		case errors.Is(err, db.ErrOrgMemberNotFound):
+			h.renderOrgPage(w, r, org, "member not found")
+		default:
+			slog.Error("ui remove org member", "org", org, "identity", identity, "error", err)
+			h.renderOrgPage(w, r, org, "could not remove member")
+		}
+		return
+	}
+
+	http.Redirect(w, r, "/ui/o/"+org, http.StatusSeeOther)
+}
+
+// handleCreateInvite processes POST /ui/o/{org}/invites to create an org invite.
+func (h *Handler) handleCreateInvite(w http.ResponseWriter, r *http.Request) {
+	org := r.PathValue("org")
+	ctx := r.Context()
+
+	if err := r.ParseForm(); err != nil {
+		h.renderOrgPage(w, r, org, "invalid form data")
+		return
+	}
+	email := strings.TrimSpace(r.FormValue("email"))
+	role := model.OrgRole(r.FormValue("role"))
+
+	if email == "" {
+		h.renderOrgPage(w, r, org, "email is required")
+		return
+	}
+	switch role {
+	case model.OrgRoleOwner, model.OrgRoleMember:
+	default:
+		h.renderOrgPage(w, r, org, "invalid role; must be 'owner' or 'member'")
+		return
+	}
+
+	token, err := generateInviteToken()
+	if err != nil {
+		slog.Error("ui generate invite token", "org", org, "error", err)
+		h.renderOrgPage(w, r, org, "could not generate invite token")
+		return
+	}
+
+	var invitedBy string
+	if h.identity != nil {
+		invitedBy = h.identity(ctx)
+	}
+	expiresAt := time.Now().Add(7 * 24 * time.Hour)
+
+	if _, err := h.write.CreateInvite(ctx, org, email, role, invitedBy, token, expiresAt); err != nil {
+		slog.Error("ui create invite", "org", org, "email", email, "error", err)
+		h.renderOrgPage(w, r, org, "could not create invite: "+err.Error())
+		return
+	}
+
+	http.Redirect(w, r, "/ui/o/"+org, http.StatusSeeOther)
+}
+
+// handleRevokeInvite processes POST /ui/o/{org}/invites/{id}/revoke.
+func (h *Handler) handleRevokeInvite(w http.ResponseWriter, r *http.Request) {
+	org := r.PathValue("org")
+	inviteID := r.PathValue("id")
+	ctx := r.Context()
+
+	if err := h.write.RevokeInvite(ctx, org, inviteID); err != nil {
+		switch {
+		case errors.Is(err, db.ErrInviteNotFound):
+			h.renderOrgPage(w, r, org, "invite not found")
+		default:
+			slog.Error("ui revoke invite", "org", org, "invite_id", inviteID, "error", err)
+			h.renderOrgPage(w, r, org, "could not revoke invite")
+		}
+		return
+	}
+
+	http.Redirect(w, r, "/ui/o/"+org, http.StatusSeeOther)
+}
+
+// renderBranchesPage loads repo/branch/member/role data and renders the branches page with an optional error.
+func (h *Handler) renderBranchesPage(w http.ResponseWriter, r *http.Request, owner, name, errMsg string) {
+	repoName := owner + "/" + name
+	ctx := r.Context()
+
+	repo, err := h.write.GetRepo(ctx, repoName)
+	if err != nil {
+		if errors.Is(err, db.ErrRepoNotFound) {
+			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
+			return
+		}
+		slog.Error("ui get repo", "repo", repoName, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load repo")
+		return
+	}
+
+	branches, err := h.read.ListBranches(ctx, repoName, "", true, false)
+	if err != nil {
+		slog.Error("ui list branches", "repo", repoName, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load branches")
+		return
+	}
+
+	members, err := h.write.ListOrgMembers(ctx, repo.Owner)
+	if err != nil {
+		slog.Error("ui list org members", "org", repo.Owner, "error", err)
+		members = nil
+	}
+	roles, err := h.write.ListRoles(ctx, repoName)
+	if err != nil {
+		slog.Error("ui list roles", "repo", repoName, "error", err)
+		roles = nil
+	}
+
+	page := branchesPage{Repo: *repo, Members: members, Roles: roles, Err: errMsg}
+	for _, b := range branches {
+		row := branchRow{
+			Name:         b.Name,
+			HeadSequence: b.HeadSequence,
+			BaseSequence: b.BaseSequence,
+			Draft:        b.Draft,
+			AutoMerge:    b.AutoMerge,
+			Status:       b.Status,
+		}
+		switch b.Status {
+		case "merged":
+			page.Merged = append(page.Merged, row)
+		case "abandoned":
+			page.Abandoned = append(page.Abandoned, row)
+		default:
+			page.Active = append(page.Active, row)
+		}
+	}
+
+	h.render(w, h.tmpl.branches, "layout.html", pageData{
+		Title: repoName + " / branches",
+		Breadcrumbs: []crumb{
+			{Label: "repos", Href: "/ui/"},
+			{Label: repoName, Href: "/ui/r/" + repoName},
+		},
+		Body: page,
+	})
+}
+
+// handleSetRole processes POST /ui/r/{owner}/{name}/roles to grant or update a repo role.
+func (h *Handler) handleSetRole(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	repoName := owner + "/" + name
+	ctx := r.Context()
+
+	if err := r.ParseForm(); err != nil {
+		h.renderBranchesPage(w, r, owner, name, "invalid form data")
+		return
+	}
+	identity := strings.TrimSpace(r.FormValue("identity"))
+	role := model.RoleType(r.FormValue("role"))
+
+	if identity == "" {
+		h.renderBranchesPage(w, r, owner, name, "identity is required")
+		return
+	}
+	switch role {
+	case model.RoleReader, model.RoleWriter, model.RoleMaintainer, model.RoleAdmin:
+	default:
+		h.renderBranchesPage(w, r, owner, name, "invalid role; must be reader, writer, maintainer, or admin")
+		return
+	}
+
+	if err := h.write.SetRole(ctx, repoName, identity, role); err != nil {
+		slog.Error("ui set role", "repo", repoName, "identity", identity, "error", err)
+		h.renderBranchesPage(w, r, owner, name, "could not set role: "+err.Error())
+		return
+	}
+
+	http.Redirect(w, r, "/ui/r/"+repoName, http.StatusSeeOther)
+}
+
+// handleDeleteRole processes POST /ui/r/{owner}/{name}/roles/{identity}/delete.
+func (h *Handler) handleDeleteRole(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	identity := r.PathValue("identity")
+	repoName := owner + "/" + name
+	ctx := r.Context()
+
+	if err := h.write.DeleteRole(ctx, repoName, identity); err != nil {
+		switch {
+		case errors.Is(err, db.ErrRoleNotFound):
+			h.renderBranchesPage(w, r, owner, name, "role not found")
+		default:
+			slog.Error("ui delete role", "repo", repoName, "identity", identity, "error", err)
+			h.renderBranchesPage(w, r, owner, name, "could not delete role")
+		}
+		return
+	}
+
+	http.Redirect(w, r, "/ui/r/"+repoName, http.StatusSeeOther)
+}
+
+// renderReleasesPage loads releases for a repo and renders the releases page with an optional error.
+func (h *Handler) renderReleasesPage(w http.ResponseWriter, r *http.Request, owner, name, errMsg string) {
+	repoName := owner + "/" + name
+	ctx := r.Context()
+
+	repo, err := h.write.GetRepo(ctx, repoName)
+	if err != nil {
+		if errors.Is(err, db.ErrRepoNotFound) {
+			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
+			return
+		}
+		slog.Error("ui get repo", "repo", repoName, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load repo")
+		return
+	}
+
+	releases, err := h.write.ListReleases(ctx, repoName, 100, "")
+	if err != nil {
+		slog.Error("ui list releases", "repo", repoName, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load releases")
+		return
+	}
+
+	h.render(w, h.tmpl.releases, "layout.html", pageData{
+		Title: repoName + " / releases",
+		Breadcrumbs: []crumb{
+			{Label: "repos", Href: "/ui/"},
+			{Label: repoName, Href: "/ui/r/" + repoName},
+			{Label: "releases", Href: ""},
+		},
+		Body: releasesPage{Repo: *repo, Releases: releases, Err: errMsg},
+	})
+}
+
+// handleCreateRelease processes POST /ui/r/{owner}/{name}/releases to create a release.
+func (h *Handler) handleCreateRelease(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	repoName := owner + "/" + name
+	ctx := r.Context()
+
+	if err := r.ParseForm(); err != nil {
+		h.renderReleasesPage(w, r, owner, name, "invalid form data")
+		return
+	}
+	relName := strings.TrimSpace(r.FormValue("name"))
+	body := r.FormValue("body")
+	seqStr := strings.TrimSpace(r.FormValue("sequence"))
+
+	if relName == "" {
+		h.renderReleasesPage(w, r, owner, name, "release name is required")
+		return
+	}
+
+	var sequence int64
+	if seqStr != "" {
+		n, err := strconv.ParseInt(seqStr, 10, 64)
+		if err != nil || n < 1 {
+			h.renderReleasesPage(w, r, owner, name, "invalid sequence number")
+			return
+		}
+		sequence = n
+	} else {
+		// Default to main branch head.
+		bi, err := h.read.GetBranch(ctx, repoName, "main")
+		if err != nil || bi == nil {
+			slog.Error("ui create release get main head", "repo", repoName, "error", err)
+			h.renderReleasesPage(w, r, owner, name, "could not resolve main branch head")
+			return
+		}
+		sequence = bi.HeadSequence
+	}
+
+	var createdBy string
+	if h.identity != nil {
+		createdBy = h.identity(ctx)
+	}
+
+	if _, err := h.write.CreateRelease(ctx, repoName, relName, sequence, body, createdBy); err != nil {
+		slog.Error("ui create release", "repo", repoName, "release", relName, "error", err)
+		h.renderReleasesPage(w, r, owner, name, "could not create release: "+err.Error())
+		return
+	}
+
+	http.Redirect(w, r, "/ui/r/"+repoName+"/releases", http.StatusSeeOther)
+}
+
+// handleDeleteRelease processes POST /ui/r/{owner}/{name}/releases/{rname}/delete.
+func (h *Handler) handleDeleteRelease(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	rname := r.PathValue("rname")
+	repoName := owner + "/" + name
+	ctx := r.Context()
+
+	if err := h.write.DeleteRelease(ctx, repoName, rname); err != nil {
+		switch {
+		case errors.Is(err, db.ErrReleaseNotFound):
+			h.renderError(w, http.StatusNotFound, "release not found")
+		default:
+			slog.Error("ui delete release", "repo", repoName, "release", rname, "error", err)
+			h.renderError(w, http.StatusInternalServerError, "could not delete release")
+		}
+		return
+	}
+
+	http.Redirect(w, r, "/ui/r/"+repoName+"/releases", http.StatusSeeOther)
 }
 
 // handleCreateOrg renders the new-org form (GET) and creates the org (POST).
