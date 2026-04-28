@@ -18,6 +18,12 @@
   </a>
   {{end}}
 </div>
+{{else}}
+<div class="card" style="text-align:center; padding:32px; margin-bottom:24px">
+  <h2 style="margin-top:0">Get started</h2>
+  <p style="color:var(--text-dim)">You don't belong to any orgs yet. Create one to start hosting repos.</p>
+  <a href="/ui/orgs/new"><button>Create your first org</button></a>
+</div>
 {{end}}
 {{if .Orgs}}
 <h2>All orgs</h2>
