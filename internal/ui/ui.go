@@ -10,6 +10,7 @@ import (
 	"embed"
 	"io/fs"
 	"net/http"
+	"os"
 
 	"github.com/dlorenc/docstore/internal/model"
 	"github.com/dlorenc/docstore/internal/store"
@@ -67,6 +68,30 @@ func NewHandler(read ReadStore, write WriteStoreLite, assemble AssembleFn) (*Han
 		assemble:  assemble,
 		tmpl:      t,
 		staticSub: sub,
+	}, nil
+}
+
+// NewHandlerDev is like NewHandler but reads templates and static files from
+// the local filesystem at runtime instead of the embedded copies. Use this
+// during development so template edits take effect on the next request without
+// recompiling. The server must be run from the repository root so that the
+// path "internal/ui" resolves correctly.
+func NewHandlerDev(read ReadStore, write WriteStoreLite, assemble AssembleFn) (*Handler, error) {
+	root := os.DirFS("internal/ui")
+	t, err := parseTemplates(root)
+	if err != nil {
+		return nil, err
+	}
+	static, err := fs.Sub(root, "static")
+	if err != nil {
+		return nil, err
+	}
+	return &Handler{
+		read:      read,
+		write:     write,
+		assemble:  assemble,
+		tmpl:      t,
+		staticSub: static,
 	}, nil
 }
 
