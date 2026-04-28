@@ -6,7 +6,7 @@
 {{else}}
   {{range .Orgs}}
   <div class="card">
-    <h2>{{.Name}}</h2>
+    <h2><a href="/ui/o/{{.Name}}">{{.Name}}</a></h2>
     <div class="row-list">
       {{range .Repos}}
       <a href="/ui/r/{{.Name}}">
