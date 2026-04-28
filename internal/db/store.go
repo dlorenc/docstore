@@ -1841,6 +1841,29 @@ func (s *Store) ListOrgMembers(ctx context.Context, org string) ([]model.OrgMemb
 	return members, rows.Err()
 }
 
+// ListOrgMemberships returns all org memberships for the given identity, ordered by org.
+func (s *Store) ListOrgMemberships(ctx context.Context, identity string) ([]model.OrgMember, error) {
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT org, identity, role, invited_by, created_at FROM org_members WHERE identity = $1 ORDER BY org",
+		identity,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var members []model.OrgMember
+	for rows.Next() {
+		var m model.OrgMember
+		var roleStr string
+		if err := rows.Scan(&m.Org, &m.Identity, &roleStr, &m.InvitedBy, &m.CreatedAt); err != nil {
+			return nil, err
+		}
+		m.Role = model.OrgRole(roleStr)
+		members = append(members, m)
+	}
+	return members, rows.Err()
+}
+
 // ---------------------------------------------------------------------------
 // Org invitations
 // ---------------------------------------------------------------------------

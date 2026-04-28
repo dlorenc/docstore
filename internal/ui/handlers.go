@@ -24,8 +24,15 @@ import (
 
 const logPageSize = 25
 
+type myOrgEntry struct {
+	Name      string
+	Role      model.OrgRole
+	RepoCount int
+}
+
 type reposPage struct {
-	Orgs []orgGroup
+	MyOrgs []myOrgEntry
+	Orgs   []orgGroup
 }
 
 type orgGroup struct {
@@ -246,10 +253,30 @@ func (h *Handler) handleRepos(w http.ResponseWriter, r *http.Request) {
 	}
 	slices.SortFunc(orgs, func(a, b orgGroup) int { return strings.Compare(a.Name, b.Name) })
 
+	var myOrgs []myOrgEntry
+	if h.identity != nil {
+		identity := h.identity(ctx)
+		if identity != "" {
+			memberships, merr := h.write.ListOrgMemberships(ctx, identity)
+			if merr != nil {
+				slog.Error("ui list org memberships", "error", merr)
+				// non-fatal: render page without personalised section
+			} else {
+				for _, m := range memberships {
+					myOrgs = append(myOrgs, myOrgEntry{
+						Name:      m.Org,
+						Role:      m.Role,
+						RepoCount: len(byOrg[m.Org]),
+					})
+				}
+			}
+		}
+	}
+
 	h.render(w, h.tmpl.repos, "layout.html", pageData{
 		Title:       "Repos",
 		Breadcrumbs: []crumb{{Label: "repos", Href: "/ui/"}},
-		Body:        reposPage{Orgs: orgs},
+		Body:        reposPage{MyOrgs: myOrgs, Orgs: orgs},
 	})
 }
 
