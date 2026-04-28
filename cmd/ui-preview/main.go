@@ -126,6 +126,10 @@ func (fakeWrite) GetRepo(_ context.Context, name string) (*model.Repo, error) {
 	}
 	return nil, db.ErrRepoNotFound
 }
+func (fakeWrite) GetInviteByToken(_ context.Context, _, _ string) (*model.OrgInvite, error) {
+	return nil, db.ErrInviteNotFound
+}
+func (fakeWrite) AcceptInvite(_ context.Context, _, _, _ string) error { return nil }
 
 func fakeAssemble(_ context.Context, _, branch string) (*model.AgentContextResponse, error) {
 	t := time.Now()
@@ -206,7 +210,7 @@ func (e *notFoundErr) Error() string { return "branch not found" }
 // ---------------------------------------------------------------------------
 
 func main() {
-	h, err := ui.NewHandler(fakeRead{}, fakeWrite{}, fakeAssemble)
+	h, err := ui.NewHandler(fakeRead{}, fakeWrite{}, fakeAssemble, nil)
 	if err != nil {
 		log.Fatalf("ui init: %v", err)
 	}

@@ -428,6 +428,75 @@ func (h *Handler) handleReviewCommentsPartial(w http.ResponseWriter, r *http.Req
 	h.render(w, h.tmpl.reviewComments, "review_comments.html", groups)
 }
 
+// ---------------------------------------------------------------------------
+// Accept invite page
+// ---------------------------------------------------------------------------
+
+type acceptInvitePage struct {
+	Org   string
+	Token string
+	Role  string
+	Error string
+}
+
+// handleAcceptInvite handles both GET and POST for the invite acceptance page.
+//
+// GET  /ui/o/{org}/invites/{token}/accept — show confirmation card.
+// POST /ui/o/{org}/invites/{token}/accept — accept the invite, redirect to org.
+func (h *Handler) handleAcceptInvite(w http.ResponseWriter, r *http.Request) {
+	org := r.PathValue("org")
+	token := r.PathValue("token")
+	ctx := r.Context()
+
+	if r.Method == http.MethodPost {
+		identity := ""
+		if h.identity != nil {
+			identity = h.identity(ctx)
+		}
+		if err := h.write.AcceptInvite(ctx, org, token, identity); err != nil {
+			errMsg := "could not accept invite"
+			switch {
+			case errors.Is(err, db.ErrInviteNotFound):
+				errMsg = "invite not found or already expired"
+			case errors.Is(err, db.ErrInviteExpired):
+				errMsg = "this invite has expired"
+			case errors.Is(err, db.ErrInviteAlreadyAccepted):
+				errMsg = "this invite has already been accepted"
+			case errors.Is(err, db.ErrEmailMismatch):
+				errMsg = "this invite was sent to a different email address"
+			default:
+				slog.Error("ui accept invite", "org", org, "error", err)
+			}
+			h.render(w, h.tmpl.acceptInvite, "layout.html", pageData{
+				Title:       "Accept Invitation",
+				Breadcrumbs: []crumb{{Label: "accept invitation", Href: ""}},
+				Body:        acceptInvitePage{Org: org, Token: token, Error: errMsg},
+			})
+			return
+		}
+		http.Redirect(w, r, "/ui/o/"+org, http.StatusSeeOther)
+		return
+	}
+
+	// GET: look up invite to show org name and role.
+	invite, err := h.write.GetInviteByToken(ctx, org, token)
+	if err != nil {
+		if errors.Is(err, db.ErrInviteNotFound) {
+			h.renderError(w, http.StatusNotFound, "invite not found")
+			return
+		}
+		slog.Error("ui get invite by token", "org", org, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load invite")
+		return
+	}
+
+	h.render(w, h.tmpl.acceptInvite, "layout.html", pageData{
+		Title:       "Accept Invitation",
+		Breadcrumbs: []crumb{{Label: "accept invitation", Href: ""}},
+		Body:        acceptInvitePage{Org: org, Token: token, Role: string(invite.Role)},
+	})
+}
+
 // siblingTreeRows returns the immediate children of dir within entries, with
 // synthesized directory rows for paths that have a deeper subtree.
 func siblingTreeRows(entries []store.TreeEntry, dir string) []treeRow {

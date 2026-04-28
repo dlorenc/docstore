@@ -327,6 +327,10 @@ func (m *mockStore) RevokeInvite(ctx context.Context, org, inviteID string) erro
 	return nil
 }
 
+func (m *mockStore) GetInviteByToken(_ context.Context, _, _ string) (*model.OrgInvite, error) {
+	return nil, db.ErrInviteNotFound
+}
+
 func (m *mockStore) CreateRelease(ctx context.Context, repo, name string, sequence int64, body, createdBy string) (*model.Release, error) {
 	if m.createReleaseFn != nil {
 		return m.createReleaseFn(ctx, repo, name, sequence, body, createdBy)

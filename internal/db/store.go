@@ -1920,6 +1920,29 @@ func (s *Store) AcceptInvite(ctx context.Context, org, token, identity string) e
 	})
 }
 
+// GetInviteByToken returns the invite matching org and token, or ErrInviteNotFound.
+func (s *Store) GetInviteByToken(ctx context.Context, org, token string) (*model.OrgInvite, error) {
+	var inv model.OrgInvite
+	var roleStr string
+	var acceptedAt sql.NullTime
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, org, email, role, invited_by, expires_at, created_at, accepted_at
+		 FROM org_invites WHERE org = $1 AND token = $2`,
+		org, token,
+	).Scan(&inv.ID, &inv.Org, &inv.Email, &roleStr, &inv.InvitedBy, &inv.ExpiresAt, &inv.CreatedAt, &acceptedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrInviteNotFound
+		}
+		return nil, fmt.Errorf("get invite by token: %w", err)
+	}
+	inv.Role = model.OrgRole(roleStr)
+	if acceptedAt.Valid {
+		inv.AcceptedAt = &acceptedAt.Time
+	}
+	return &inv, nil
+}
+
 // RevokeInvite deletes a pending invite by ID. Returns ErrInviteNotFound if not found.
 func (s *Store) RevokeInvite(ctx context.Context, org, inviteID string) error {
 	result, err := s.db.ExecContext(ctx,

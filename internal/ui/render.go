@@ -24,6 +24,7 @@ type templateSet struct {
 	commitLog      *template.Template
 	logRows        *template.Template
 	commitDetail   *template.Template
+	acceptInvite   *template.Template
 }
 
 func parseTemplates(root fs.FS) (*templateSet, error) {
@@ -93,6 +94,10 @@ func parseTemplates(root fs.FS) (*templateSet, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse commit: %w", err)
 	}
+	acceptInvite, err := load("accept_invite.html")
+	if err != nil {
+		return nil, fmt.Errorf("parse accept_invite: %w", err)
+	}
 	return &templateSet{
 		repos:          repos,
 		branches:       branches,
@@ -104,6 +109,7 @@ func parseTemplates(root fs.FS) (*templateSet, error) {
 		commitLog:      commitLog,
 		logRows:        logRows,
 		commitDetail:   commitDetail,
+		acceptInvite:   acceptInvite,
 	}, nil
 }
 

@@ -73,6 +73,10 @@ func (f *fakeWrite) ListOrgMembers(_ context.Context, _ string) ([]model.OrgMemb
 func (f *fakeWrite) ListRoles(_ context.Context, _ string) ([]model.Role, error) {
 	return nil, nil
 }
+func (f *fakeWrite) GetInviteByToken(_ context.Context, _, _ string) (*model.OrgInvite, error) {
+	return nil, db.ErrInviteNotFound
+}
+func (f *fakeWrite) AcceptInvite(_ context.Context, _, _, _ string) error { return nil }
 
 func newFakeAssembler(branchName string) AssembleFn {
 	return func(_ context.Context, _, branch string) (*model.AgentContextResponse, error) {
@@ -105,7 +109,7 @@ func strPtr(s string) *string { return &s }
 
 func newTestHandler(t *testing.T, r ReadStore, w WriteStoreLite, a AssembleFn) http.Handler {
 	t.Helper()
-	h, err := NewHandler(r, w, a)
+	h, err := NewHandler(r, w, a, nil)
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
