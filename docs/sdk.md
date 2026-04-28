@@ -15,7 +15,7 @@ While the server module is untagged (monorepo development), the SDK's `go.mod` u
 ```go
 import "github.com/dlorenc/docstore/sdk/go/docstore"
 
-client, err := docstore.NewClient("https://docstore-efuj4cj54a-uc.a.run.app",
+client, err := docstore.NewClient("https://docstore.dev",
     docstore.WithBearerToken("your-token"),
 )
 if err != nil {
@@ -250,7 +250,7 @@ import (
 )
 
 func main() {
-    client, err := docstore.NewClient("https://docstore-efuj4cj54a-uc.a.run.app",
+    client, err := docstore.NewClient("https://docstore.dev",
         docstore.WithBearerToken("your-token"),
     )
     if err != nil {
