@@ -50,6 +50,7 @@
 <h2>Edit proposal</h2>
 <div class="card">
   <form method="POST" action="/ui/r/{{.Repo.Name}}/proposals/{{.Proposal.ID}}/edit" style="padding:8px 4px 4px">
+    {{csrfField $.CSRFToken}}
     <div style="margin-bottom:10px">
       <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em">Title</label>
       <input type="text" name="title" value="{{.Proposal.Title}}" required class="form-input">
@@ -66,6 +67,7 @@
 <h2>Close proposal</h2>
 <div class="card">
   <form method="POST" action="/ui/r/{{.Repo.Name}}/proposals/{{.Proposal.ID}}/close" style="padding:8px 4px 4px">
+    {{csrfField $.CSRFToken}}
     <p style="margin:0 0 10px;color:var(--text-dim);font-size:12px">Closing this proposal marks it as closed and removes it from the open list.</p>
     <button type="submit" class="btn">Close proposal</button>
   </form>

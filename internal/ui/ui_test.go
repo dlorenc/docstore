@@ -712,13 +712,41 @@ func TestHandleReleaseDetail_NotFound_Returns404(t *testing.T) {
 	}
 }
 
+// getCSRFToken makes a GET request to /ui/ and extracts the __Host-csrf cookie
+// value set by the CSRF middleware.
+func getCSRFToken(t *testing.T, h http.Handler) string {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/ui/", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == csrfCookieName {
+			return c.Value
+		}
+	}
+	t.Fatal("no CSRF cookie set by handler")
+	return ""
+}
+
 // postForm issues a POST with application/x-www-form-urlencoded body.
-// It does not follow redirects; the raw response is returned.
+// It automatically obtains the CSRF token from the handler and includes it as
+// both a cookie and a form field. It does not follow redirects; the raw
+// response is returned.
 func postForm(t *testing.T, h http.Handler, target string, vals url.Values) (int, string, string) {
 	t.Helper()
-	body := vals.Encode()
+	tok := getCSRFToken(t, h)
+
+	// Clone vals so we don't mutate the caller's map.
+	v := make(url.Values)
+	for k, vs := range vals {
+		v[k] = vs
+	}
+	v.Set("csrf", tok)
+
+	body := v.Encode()
 	req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: csrfCookieName, Value: tok})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec.Code, rec.Body.String(), rec.Header().Get("Location")
@@ -1036,5 +1064,84 @@ func TestHandleNewCommit_UnknownRepo_Returns404(t *testing.T) {
 	code, _ := getStatusAndBody(t, h, "/ui/r/unknown/repo/b/feat-x/commit")
 	if code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CSRF tests
+// ---------------------------------------------------------------------------
+
+func TestCSRFMiddleware_SetsCookieOnGET(t *testing.T) {
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{}, nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui/", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var csrfCookie *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == csrfCookieName {
+			csrfCookie = c
+			break
+		}
+	}
+	if csrfCookie == nil {
+		t.Fatal("expected __Host-csrf cookie to be set")
+	}
+	if csrfCookie.Value == "" {
+		t.Error("CSRF cookie value should not be empty")
+	}
+}
+
+func TestCSRFMiddleware_RejectsPOSTWithoutToken(t *testing.T) {
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{}, nil)
+	// POST with no CSRF cookie or form field.
+	req := httptest.NewRequest(http.MethodPost, "/ui/orgs/new", strings.NewReader("name=acme"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+}
+
+func TestCSRFMiddleware_RejectsPOSTWithWrongToken(t *testing.T) {
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{}, nil)
+	// POST with cookie value but wrong form field.
+	req := httptest.NewRequest(http.MethodPost, "/ui/orgs/new",
+		strings.NewReader("name=acme&csrf=wrongtoken"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: csrfCookieName, Value: "correcttoken"})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+}
+
+func TestCSRFMiddleware_AcceptsPOSTWithMatchingToken(t *testing.T) {
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{}, nil)
+	tok := getCSRFToken(t, h)
+	req := httptest.NewRequest(http.MethodPost, "/ui/orgs/new",
+		strings.NewReader("name=acme&csrf="+tok))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: csrfCookieName, Value: tok})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	// Should get 303 redirect (successful org creation) or 200 (validation error), not 403.
+	if rec.Code == http.StatusForbidden {
+		t.Fatalf("CSRF should pass with matching token, got 403")
+	}
+}
+
+func TestCSRF_FormContainsHiddenInput(t *testing.T) {
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{}, nil)
+	code, body := getStatusAndBody(t, h, "/ui/orgs/new")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+	if !strings.Contains(body, `name="csrf"`) {
+		t.Errorf("expected csrf hidden input in form, got body: %s", body)
 	}
 }

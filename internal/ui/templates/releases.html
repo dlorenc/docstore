@@ -42,6 +42,7 @@
 <h2>Create release</h2>
 <div class="card">
   <form method="POST" action="/ui/r/{{.Repo.Name}}/releases" style="padding:8px 4px 4px">
+    {{csrfField $.CSRFToken}}
     <div style="margin-bottom:10px">
       <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em">Name <span style="text-transform:none;letter-spacing:normal">(required)</span></label>
       <input type="text" name="name" placeholder="e.g. v1.0.0" required class="form-input" style="max-width:320px">

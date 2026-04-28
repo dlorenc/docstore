@@ -66,9 +66,10 @@ type reviewCommentGroup struct {
 }
 
 type reviewCommentsData struct {
-	RepoName string
-	Branch   string
-	Groups   []reviewCommentGroup
+	RepoName  string
+	Branch    string
+	Groups    []reviewCommentGroup
+	CSRFToken string
 }
 
 type branchDetailPage struct {
@@ -246,7 +247,7 @@ func (h *Handler) handleRepos(w http.ResponseWriter, r *http.Request) {
 	}
 	slices.SortFunc(orgs, func(a, b orgGroup) int { return strings.Compare(a.Name, b.Name) })
 
-	h.render(w, h.tmpl.repos, "layout.html", pageData{
+	h.render(w, r, h.tmpl.repos, "layout.html", pageData{
 		Title:       "Repos",
 		Breadcrumbs: []crumb{{Label: "repos", Href: "/ui/"}},
 		Body:        reposPage{Orgs: orgs},
@@ -288,7 +289,7 @@ func (h *Handler) handleChecksPartial(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "query failed", http.StatusInternalServerError)
 		return
 	}
-	h.render(w, h.tmpl.branchChecks, "branch_checks.html", actCtx)
+	h.render(w, r, h.tmpl.branchChecks, "branch_checks.html", actCtx)
 }
 
 // handleCheckHistoryPartial returns the attempt history for a single named
@@ -319,7 +320,7 @@ func (h *Handler) handleCheckHistoryPartial(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	h.render(w, h.tmpl.checkHistory, "check_history.html", filtered)
+	h.render(w, r, h.tmpl.checkHistory, "check_history.html", filtered)
 }
 
 // handleFile renders a file viewer with a sibling tree pane.
@@ -414,7 +415,7 @@ func (h *Handler) handleFile(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	h.render(w, h.tmpl.fileView, "layout.html", pageData{
+	h.render(w, r, h.tmpl.fileView, "layout.html", pageData{
 		Title: repoName + " / " + path,
 		Breadcrumbs: []crumb{
 			{Label: "repos", Href: "/ui/"},
@@ -456,7 +457,7 @@ func (h *Handler) handleIssues(w http.ResponseWriter, r *http.Request) {
 	}
 
 	page := issuesPage{Repo: *repo, Issues: issues, State: state}
-	h.render(w, h.tmpl.issues, "layout.html", pageData{
+	h.render(w, r, h.tmpl.issues, "layout.html", pageData{
 		Title: repoName + " / issues",
 		Breadcrumbs: []crumb{
 			{Label: "repos", Href: "/ui/"},
@@ -493,7 +494,7 @@ func (h *Handler) handleIssuesPartial(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.render(w, h.tmpl.issuesRows, "issues_rows.html", issuesPage{Repo: *repo, Issues: issues, State: state})
+	h.render(w, r, h.tmpl.issuesRows, "issues_rows.html", issuesPage{Repo: *repo, Issues: issues, State: state})
 }
 
 // handleReviewCommentsPartial returns the inline review comments for a branch,
@@ -525,10 +526,11 @@ func (h *Handler) handleReviewCommentsPartial(w http.ResponseWriter, r *http.Req
 		groups = append(groups, reviewCommentGroup{Path: p, Comments: byPath[p]})
 	}
 
-	h.render(w, h.tmpl.reviewComments, "review_comments.html", reviewCommentsData{
-		RepoName: repoName,
-		Branch:   branch,
-		Groups:   groups,
+	h.render(w, r, h.tmpl.reviewComments, "review_comments.html", reviewCommentsData{
+		RepoName:  repoName,
+		Branch:    branch,
+		Groups:    groups,
+		CSRFToken: csrfToken(r),
 	})
 }
 
@@ -586,7 +588,7 @@ func (h *Handler) handleIssueDetail(w http.ResponseWriter, r *http.Request) {
 	if errMsg := r.URL.Query().Get("error"); errMsg != "" {
 		page.Err = errMsg
 	}
-	h.render(w, h.tmpl.issueDetail, "layout.html", pageData{
+	h.render(w, r, h.tmpl.issueDetail, "layout.html", pageData{
 		Title: repoName + " / issue #" + numberStr,
 		Breadcrumbs: []crumb{
 			{Label: "repos", Href: "/ui/"},
@@ -645,7 +647,7 @@ func (h *Handler) handleProposals(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.render(w, h.tmpl.proposals, "layout.html", pageData{
+	h.render(w, r, h.tmpl.proposals, "layout.html", pageData{
 		Title: repoName + " / proposals",
 		Breadcrumbs: []crumb{
 			{Label: "repos", Href: "/ui/"},
@@ -675,7 +677,7 @@ func (h *Handler) handleProposalsPartial(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "query failed", http.StatusInternalServerError)
 		return
 	}
-	h.render(w, h.tmpl.proposalsRows, "proposals_rows.html", proposals)
+	h.render(w, r, h.tmpl.proposalsRows, "proposals_rows.html", proposals)
 }
 
 // handleProposalDetail renders the detail view for a single proposal.
@@ -708,7 +710,7 @@ func (h *Handler) handleProposalDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.render(w, h.tmpl.proposalDetail, "layout.html", pageData{
+	h.render(w, r, h.tmpl.proposalDetail, "layout.html", pageData{
 		Title: repoName + " / proposals / " + id,
 		Breadcrumbs: []crumb{
 			{Label: "repos", Href: "/ui/"},
@@ -755,7 +757,7 @@ func (h *Handler) handleReleaseDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.render(w, h.tmpl.releaseDetail, "layout.html", pageData{
+	h.render(w, r, h.tmpl.releaseDetail, "layout.html", pageData{
 		Title: repoName + " / releases / " + rname,
 		Breadcrumbs: []crumb{
 			{Label: "repos", Href: "/ui/"},
@@ -799,7 +801,7 @@ func (h *Handler) handleCIJobs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.render(w, h.tmpl.ciJobs, "layout.html", pageData{
+	h.render(w, r, h.tmpl.ciJobs, "layout.html", pageData{
 		Title: repoName + " / ci-jobs",
 		Breadcrumbs: []crumb{
 			{Label: "repos", Href: "/ui/"},
@@ -840,7 +842,7 @@ func (h *Handler) handleCIJobDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.render(w, h.tmpl.ciJobDetail, "layout.html", pageData{
+	h.render(w, r, h.tmpl.ciJobDetail, "layout.html", pageData{
 		Title: repoName + " / ci-jobs / " + id,
 		Breadcrumbs: []crumb{
 			{Label: "repos", Href: "/ui/"},
@@ -944,7 +946,7 @@ func (h *Handler) handleCommitLog(w http.ResponseWriter, r *http.Request) {
 		nextAfter = from
 	}
 
-	h.render(w, h.tmpl.commitLog, "layout.html", pageData{
+	h.render(w, r, h.tmpl.commitLog, "layout.html", pageData{
 		Title: repoName + " / " + branch + " / log",
 		Breadcrumbs: []crumb{
 			{Label: "repos", Href: "/ui/"},
@@ -982,7 +984,7 @@ func (h *Handler) handleLogRowsPartial(w http.ResponseWriter, r *http.Request) {
 
 	to := after - 1
 	if to < 1 {
-		h.render(w, h.tmpl.logRows, "log_rows.html", logRowsData{})
+		h.render(w, r, h.tmpl.logRows, "log_rows.html", logRowsData{})
 		return
 	}
 
@@ -1008,7 +1010,7 @@ func (h *Handler) handleLogRowsPartial(w http.ResponseWriter, r *http.Request) {
 	}
 
 	repo := &model.Repo{Name: repoName, Owner: owner}
-	h.render(w, h.tmpl.logRows, "log_rows.html", logRowsData{
+	h.render(w, r, h.tmpl.logRows, "log_rows.html", logRowsData{
 		Repo:      *repo,
 		Branch:    branch,
 		Rows:      rows,
@@ -1053,7 +1055,7 @@ func (h *Handler) handleCommitDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.render(w, h.tmpl.commitDetail, "layout.html", pageData{
+	h.render(w, r, h.tmpl.commitDetail, "layout.html", pageData{
 		Title: fmt.Sprintf("%s / %s / commit %d", repoName, branch, seq),
 		Breadcrumbs: []crumb{
 			{Label: "repos", Href: "/ui/"},
@@ -1078,7 +1080,7 @@ func (h *Handler) handleAcceptInvite(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	renderPage := func(role model.OrgRole, errMsg string) {
-		h.render(w, h.tmpl.acceptInvite, "layout.html", pageData{
+		h.render(w, r, h.tmpl.acceptInvite, "layout.html", pageData{
 			Title: "Accept invitation · " + org,
 			Breadcrumbs: []crumb{
 				{Label: "repos", Href: "/ui/"},
@@ -1173,7 +1175,7 @@ func (h *Handler) renderOrgPage(w http.ResponseWriter, r *http.Request, org, err
 		}
 	}
 
-	h.render(w, h.tmpl.org, "layout.html", pageData{
+	h.render(w, r, h.tmpl.org, "layout.html", pageData{
 		Title: org,
 		Breadcrumbs: []crumb{
 			{Label: "repos", Href: "/ui/"},
@@ -1365,7 +1367,7 @@ func (h *Handler) renderBranchesPage(w http.ResponseWriter, r *http.Request, own
 		}
 	}
 
-	h.render(w, h.tmpl.branches, "layout.html", pageData{
+	h.render(w, r, h.tmpl.branches, "layout.html", pageData{
 		Title: repoName + " / branches",
 		Breadcrumbs: []crumb{
 			{Label: "repos", Href: "/ui/"},
@@ -1454,7 +1456,7 @@ func (h *Handler) renderReleasesPage(w http.ResponseWriter, r *http.Request, own
 		return
 	}
 
-	h.render(w, h.tmpl.releases, "layout.html", pageData{
+	h.render(w, r, h.tmpl.releases, "layout.html", pageData{
 		Title: repoName + " / releases",
 		Breadcrumbs: []crumb{
 			{Label: "repos", Href: "/ui/"},
@@ -1545,7 +1547,7 @@ func (h *Handler) handleCreateOrg(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	renderPage := func(name, errMsg string) {
-		h.render(w, h.tmpl.createOrg, "layout.html", pageData{
+		h.render(w, r, h.tmpl.createOrg, "layout.html", pageData{
 			Title: "New organisation",
 			Breadcrumbs: []crumb{
 				{Label: "repos", Href: "/ui/"},
@@ -1598,7 +1600,7 @@ func (h *Handler) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	renderPage := func(owner, name, errMsg string) {
-		h.render(w, h.tmpl.createRepo, "layout.html", pageData{
+		h.render(w, r, h.tmpl.createRepo, "layout.html", pageData{
 			Title: "New repository",
 			Breadcrumbs: []crumb{
 				{Label: "repos", Href: "/ui/"},
@@ -1668,7 +1670,7 @@ func (h *Handler) handleNewIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	renderForm := func(formTitle, formBody, formLabels, errMsg string) {
-		h.render(w, h.tmpl.newIssue, "layout.html", pageData{
+		h.render(w, r, h.tmpl.newIssue, "layout.html", pageData{
 			Title: repoName + " / new issue",
 			Breadcrumbs: []crumb{
 				{Label: "repos", Href: "/ui/"},
@@ -2166,7 +2168,7 @@ func (h *Handler) renderBranchDetail(w http.ResponseWriter, r *http.Request, rep
 		}
 	}
 
-	h.render(w, h.tmpl.branchDetail, "layout.html", pageData{
+	h.render(w, r, h.tmpl.branchDetail, "layout.html", pageData{
 		Title: repoName + " / " + branch,
 		Breadcrumbs: []crumb{
 			{Label: "repos", Href: "/ui/"},
@@ -2292,7 +2294,7 @@ func (h *Handler) handleCreateProposalUI(w http.ResponseWriter, r *http.Request)
 		if err != nil {
 			proposals = nil
 		}
-		h.render(w, h.tmpl.proposals, "layout.html", pageData{
+		h.render(w, r, h.tmpl.proposals, "layout.html", pageData{
 			Title: repoName + " / proposals",
 			Breadcrumbs: []crumb{
 				{Label: "repos", Href: "/ui/"},
@@ -2345,7 +2347,7 @@ func (h *Handler) handleEditProposal(w http.ResponseWriter, r *http.Request) {
 			h.renderError(w, http.StatusInternalServerError, "could not load repo")
 			return
 		}
-		h.render(w, h.tmpl.proposalDetail, "layout.html", pageData{
+		h.render(w, r, h.tmpl.proposalDetail, "layout.html", pageData{
 			Title: repoName + " / proposals / " + id,
 			Breadcrumbs: []crumb{
 				{Label: "repos", Href: "/ui/"},
@@ -2401,7 +2403,7 @@ func (h *Handler) handleCloseProposalUI(w http.ResponseWriter, r *http.Request) 
 			h.renderError(w, http.StatusInternalServerError, "could not load repo")
 			return
 		}
-		h.render(w, h.tmpl.proposalDetail, "layout.html", pageData{
+		h.render(w, r, h.tmpl.proposalDetail, "layout.html", pageData{
 			Title: repoName + " / proposals / " + id,
 			Breadcrumbs: []crumb{
 				{Label: "repos", Href: "/ui/"},
@@ -2501,7 +2503,7 @@ func (h *Handler) handleNewCommit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	renderForm := func(formMessage, formFilePath, formFileContent, errMsg string) {
-		h.render(w, h.tmpl.newCommit, "layout.html", pageData{
+		h.render(w, r, h.tmpl.newCommit, "layout.html", pageData{
 			Title: repoName + " / " + branch + " / commit",
 			Breadcrumbs: []crumb{
 				{Label: "repos", Href: "/ui/"},

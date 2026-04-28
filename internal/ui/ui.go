@@ -121,6 +121,7 @@ type Handler struct {
 	identity  IdentityFn
 	tmpl      *templateSet
 	staticSub fs.FS
+	devMode   bool
 }
 
 // NewHandler constructs a UI handler wired to the given data sources.
@@ -140,6 +141,7 @@ func NewHandler(read ReadStore, write WriteStoreLite, assemble AssembleFn, ident
 		identity:  identity,
 		tmpl:      t,
 		staticSub: sub,
+		devMode:   false,
 	}, nil
 }
 
@@ -165,12 +167,22 @@ func NewHandlerDev(read ReadStore, write WriteStoreLite, assemble AssembleFn, id
 		identity:  identity,
 		tmpl:      t,
 		staticSub: static,
+		devMode:   true,
 	}, nil
 }
 
 // Register wires UI routes onto the provided mux. Caller is responsible for
 // placing this mux behind the same middleware chain used by the JSON API.
+// All UI routes are wrapped with CSRF middleware automatically.
 func (h *Handler) Register(mux *http.ServeMux) {
+	inner := http.NewServeMux()
+	h.registerRoutes(inner)
+	mux.Handle("/ui/", h.csrfMiddleware(inner))
+}
+
+// registerRoutes registers all UI routes onto inner. Called by Register after
+// wrapping with CSRF middleware.
+func (h *Handler) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /ui/{$}", h.handleRepos)
 	mux.HandleFunc("GET /ui/o/{org}", h.handleOrg)
 	mux.HandleFunc("GET /ui/r/{owner}/{name}", h.handleBranches)

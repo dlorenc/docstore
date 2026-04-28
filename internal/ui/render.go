@@ -224,7 +224,13 @@ func parseTemplates(root fs.FS) (*templateSet, error) {
 
 // render executes the named template against data and writes it to w as HTML.
 // On execution error it logs and emits a 500; templates must not panic.
-func (h *Handler) render(w http.ResponseWriter, t *template.Template, name string, data any) {
+// If data is a pageData value, the CSRF token is injected automatically from
+// the request context (set by csrfMiddleware).
+func (h *Handler) render(w http.ResponseWriter, r *http.Request, t *template.Template, name string, data any) {
+	if pd, ok := data.(pageData); ok {
+		pd.CSRFToken = csrfToken(r)
+		data = pd
+	}
 	var buf bytes.Buffer
 	if err := t.ExecuteTemplate(&buf, name, data); err != nil {
 		slog.Error("ui render error", "template", name, "error", err)
@@ -263,6 +269,7 @@ type pageData struct {
 	Breadcrumbs []crumb
 	Body        any
 	Err         errorInfo
+	CSRFToken   string
 }
 
 type crumb struct {
@@ -295,6 +302,7 @@ func funcMap() template.FuncMap {
 		"urlPathEscape":  url.PathEscape,
 		"joinStrings":    strings.Join,
 		"repoShortName":  repoShortName,
+		"csrfField":      csrfField,
 	}
 }
 

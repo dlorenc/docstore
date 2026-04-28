@@ -40,6 +40,7 @@
       <td>{{relTime .CreatedAt}}</td>
       <td>
         <form method="POST" action="/ui/o/{{$.Org}}/members/{{.Identity}}/remove" style="display:inline">
+          {{csrfField $.CSRFToken}}
           <button type="submit" class="btn-danger-small">remove</button>
         </form>
       </td>
@@ -51,6 +52,7 @@
   <details style="margin-top:12px">
     <summary style="cursor:pointer;font-size:12px;color:var(--accent)">Add member</summary>
     <form method="POST" action="/ui/o/{{.Org}}/members" style="padding:10px 0 4px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+      {{csrfField $.CSRFToken}}
       <input type="text" name="identity" placeholder="identity (email)" required class="form-input" style="flex:1;min-width:180px">
       <select name="role" class="form-input" style="width:auto">
         <option value="member">member</option>
@@ -77,6 +79,7 @@
       <td>{{relTime .ExpiresAt}}</td>
       <td>
         <form method="POST" action="/ui/o/{{$.Org}}/invites/{{.ID}}/revoke" style="display:inline">
+          {{csrfField $.CSRFToken}}
           <button type="submit" class="btn-danger-small">revoke</button>
         </form>
       </td>
@@ -88,6 +91,7 @@
   <details style="margin-top:12px">
     <summary style="cursor:pointer;font-size:12px;color:var(--accent)">Create invite</summary>
     <form method="POST" action="/ui/o/{{.Org}}/invites" style="padding:10px 0 4px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+      {{csrfField $.CSRFToken}}
       <input type="email" name="email" placeholder="email address" required class="form-input" style="flex:1;min-width:180px">
       <select name="role" class="form-input" style="width:auto">
         <option value="member">member</option>
@@ -104,6 +108,7 @@
     <summary style="cursor:pointer;font-size:0.9em;color:var(--bad)">Delete this organisation</summary>
     <p style="font-size:0.85em;color:var(--text-dim);margin:8px 0">This permanently deletes the org and cannot be undone. The org must have no repos.</p>
     <form method="POST" action="/ui/o/{{.Org}}/delete" style="padding:4px 0">
+      {{csrfField $.CSRFToken}}
       <label style="font-size:0.85em;display:block;margin-bottom:4px">Type <strong>{{.Org}}</strong> to confirm:</label>
       <input type="text" name="confirm" placeholder="{{.Org}}" required
              style="background:var(--bg-3);color:var(--text);border:1px solid var(--bad);border-radius:4px;padding:6px 10px;font-family:var(--mono);font-size:12px;margin-right:6px"
