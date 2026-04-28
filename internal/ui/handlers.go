@@ -177,6 +177,18 @@ type ciJobDetailPage struct {
 	Job  *model.CIJob
 }
 
+type createOrgPage struct {
+	Name string
+	Err  string
+}
+
+type createRepoPage struct {
+	Owner string
+	Name  string
+	Orgs  []model.Org
+	Err   string
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -1276,6 +1288,110 @@ func (h *Handler) handleAcceptInvite(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, "/ui/o/"+org, http.StatusSeeOther)
+}
+
+// handleCreateOrg renders the new-org form (GET) and creates the org (POST).
+func (h *Handler) handleCreateOrg(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	renderPage := func(name, errMsg string) {
+		h.render(w, h.tmpl.createOrg, "layout.html", pageData{
+			Title: "New organisation",
+			Breadcrumbs: []crumb{
+				{Label: "repos", Href: "/ui/"},
+				{Label: "new org", Href: ""},
+			},
+			Body: createOrgPage{Name: name, Err: errMsg},
+		})
+	}
+
+	if r.Method == http.MethodGet {
+		renderPage("", "")
+		return
+	}
+
+	// POST: create the org.
+	name := strings.TrimSpace(r.FormValue("name"))
+	if name == "" {
+		renderPage("", "Organisation name is required.")
+		return
+	}
+
+	var identity string
+	if h.identity != nil {
+		identity = h.identity(ctx)
+	}
+
+	if _, err := h.write.CreateOrg(ctx, name, identity); err != nil {
+		switch {
+		case errors.Is(err, db.ErrOrgExists):
+			renderPage(name, "An organisation with that name already exists.")
+		default:
+			slog.Error("ui create org", "name", name, "error", err)
+			renderPage(name, "Could not create organisation: "+err.Error())
+		}
+		return
+	}
+
+	http.Redirect(w, r, "/ui/o/"+name, http.StatusSeeOther)
+}
+
+// handleCreateRepo renders the new-repo form (GET) and creates the repo (POST).
+func (h *Handler) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	orgs, err := h.write.ListOrgs(ctx)
+	if err != nil {
+		slog.Error("ui create repo list orgs", "error", err)
+		h.renderError(w, http.StatusInternalServerError, "could not load organisations")
+		return
+	}
+
+	renderPage := func(owner, name, errMsg string) {
+		h.render(w, h.tmpl.createRepo, "layout.html", pageData{
+			Title: "New repository",
+			Breadcrumbs: []crumb{
+				{Label: "repos", Href: "/ui/"},
+				{Label: "new repo", Href: ""},
+			},
+			Body: createRepoPage{Owner: owner, Name: name, Orgs: orgs, Err: errMsg},
+		})
+	}
+
+	if r.Method == http.MethodGet {
+		renderPage("", "", "")
+		return
+	}
+
+	// POST: create the repo.
+	owner := strings.TrimSpace(r.FormValue("owner"))
+	name := strings.TrimSpace(r.FormValue("name"))
+
+	if owner == "" || name == "" {
+		renderPage(owner, name, "Organisation and repository name are both required.")
+		return
+	}
+
+	var identity string
+	if h.identity != nil {
+		identity = h.identity(ctx)
+	}
+
+	req := model.CreateRepoRequest{Owner: owner, Name: name, CreatedBy: identity}
+	if _, err := h.write.CreateRepo(ctx, req); err != nil {
+		switch {
+		case errors.Is(err, db.ErrRepoExists):
+			renderPage(owner, name, "A repository with that name already exists in this organisation.")
+		case errors.Is(err, db.ErrOrgNotFound):
+			renderPage(owner, name, "Organisation not found.")
+		default:
+			slog.Error("ui create repo", "owner", owner, "name", name, "error", err)
+			renderPage(owner, name, "Could not create repository: "+err.Error())
+		}
+		return
+	}
+
+	http.Redirect(w, r, "/ui/r/"+owner+"/"+name, http.StatusSeeOther)
 }
 
 // chainToLogRows filters and converts ChainEntries to commitLogRows.
