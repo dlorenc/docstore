@@ -239,7 +239,7 @@ func (h *Handler) handleRepos(w http.ResponseWriter, r *http.Request) {
 	repos, err := h.write.ListRepos(ctx)
 	if err != nil {
 		slog.Error("ui list repos", "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load repos")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load repos")
 		return
 	}
 	byOrg := map[string][]model.Repo{}
@@ -273,7 +273,7 @@ func (h *Handler) handleRepos(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	h.render(w, h.tmpl.repos, "layout.html", pageData{
+	h.render(w, r, h.tmpl.repos, "layout.html", pageData{
 		Title:       "Repos",
 		Breadcrumbs: []crumb{{Label: "repos", Href: "/ui/"}},
 		Body:        reposPage{MyOrgs: myOrgs, Orgs: orgs},
@@ -315,7 +315,7 @@ func (h *Handler) handleChecksPartial(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "query failed", http.StatusInternalServerError)
 		return
 	}
-	h.render(w, h.tmpl.branchChecks, "branch_checks.html", actCtx)
+	h.render(w, r, h.tmpl.branchChecks, "branch_checks.html", actCtx)
 }
 
 // handleCheckHistoryPartial returns the attempt history for a single named
@@ -346,7 +346,7 @@ func (h *Handler) handleCheckHistoryPartial(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	h.render(w, h.tmpl.checkHistory, "check_history.html", filtered)
+	h.render(w, r, h.tmpl.checkHistory, "check_history.html", filtered)
 }
 
 // handleFile renders a file viewer with a sibling tree pane.
@@ -364,7 +364,7 @@ func (h *Handler) handleFile(w http.ResponseWriter, r *http.Request) {
 	if v := r.URL.Query().Get("at"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
 		if err != nil {
-			h.renderError(w, http.StatusBadRequest, "invalid 'at' parameter")
+			h.renderError(w, r, http.StatusBadRequest, "invalid 'at' parameter")
 			return
 		}
 		atSeq = &n
@@ -373,11 +373,11 @@ func (h *Handler) handleFile(w http.ResponseWriter, r *http.Request) {
 	repo, err := h.write.GetRepo(r.Context(), repoName)
 	if err != nil {
 		if errors.Is(err, db.ErrRepoNotFound) {
-			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
+			h.renderError(w, r, http.StatusNotFound, "repo not found: "+repoName)
 			return
 		}
 		slog.Error("ui get repo", "repo", repoName, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load repo")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load repo")
 		return
 	}
 
@@ -389,7 +389,7 @@ func (h *Handler) handleFile(w http.ResponseWriter, r *http.Request) {
 	entries, err := h.read.MaterializeTree(r.Context(), repoName, branch, atSeq, 500, "")
 	if err != nil {
 		slog.Error("ui materialize tree", "repo", repoName, "branch", branch, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load tree")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load tree")
 		return
 	}
 	tree := siblingTreeRows(entries, parentDir)
@@ -397,7 +397,7 @@ func (h *Handler) handleFile(w http.ResponseWriter, r *http.Request) {
 	branchList, err := h.read.ListBranches(r.Context(), repoName, "", true, false)
 	if err != nil {
 		slog.Error("ui list branches for file page", "repo", repoName, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load branches")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load branches")
 		return
 	}
 	branchNames := make([]string, 0, len(branchList))
@@ -419,7 +419,7 @@ func (h *Handler) handleFile(w http.ResponseWriter, r *http.Request) {
 		fc, err := h.read.GetFile(r.Context(), repoName, branch, path, atSeq)
 		if err != nil {
 			slog.Error("ui get file", "repo", repoName, "path", path, "error", err)
-			h.renderError(w, http.StatusInternalServerError, "could not load file")
+			h.renderError(w, r, http.StatusInternalServerError, "could not load file")
 			return
 		}
 		if fc != nil {
@@ -441,7 +441,7 @@ func (h *Handler) handleFile(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	h.render(w, h.tmpl.fileView, "layout.html", pageData{
+	h.render(w, r, h.tmpl.fileView, "layout.html", pageData{
 		Title: repoName + " / " + path,
 		Breadcrumbs: []crumb{
 			{Label: "repos", Href: "/ui/"},
@@ -467,23 +467,23 @@ func (h *Handler) handleIssues(w http.ResponseWriter, r *http.Request) {
 	repo, err := h.write.GetRepo(ctx, repoName)
 	if err != nil {
 		if errors.Is(err, db.ErrRepoNotFound) {
-			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
+			h.renderError(w, r, http.StatusNotFound, "repo not found: "+repoName)
 			return
 		}
 		slog.Error("ui get repo", "repo", repoName, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load repo")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load repo")
 		return
 	}
 
 	issues, err := h.write.ListIssues(ctx, repoName, state, "")
 	if err != nil {
 		slog.Error("ui list issues", "repo", repoName, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load issues")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load issues")
 		return
 	}
 
 	page := issuesPage{Repo: *repo, Issues: issues, State: state}
-	h.render(w, h.tmpl.issues, "layout.html", pageData{
+	h.render(w, r, h.tmpl.issues, "layout.html", pageData{
 		Title: repoName + " / issues",
 		Breadcrumbs: []crumb{
 			{Label: "repos", Href: "/ui/"},
@@ -520,7 +520,7 @@ func (h *Handler) handleIssuesPartial(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.render(w, h.tmpl.issuesRows, "issues_rows.html", issuesPage{Repo: *repo, Issues: issues, State: state})
+	h.render(w, r, h.tmpl.issuesRows, "issues_rows.html", issuesPage{Repo: *repo, Issues: issues, State: state})
 }
 
 // handleReviewCommentsPartial returns the inline review comments for a branch,
@@ -552,7 +552,7 @@ func (h *Handler) handleReviewCommentsPartial(w http.ResponseWriter, r *http.Req
 		groups = append(groups, reviewCommentGroup{Path: p, Comments: byPath[p]})
 	}
 
-	h.render(w, h.tmpl.reviewComments, "review_comments.html", reviewCommentsData{
+	h.render(w, r, h.tmpl.reviewComments, "review_comments.html", reviewCommentsData{
 		RepoName: repoName,
 		Branch:   branch,
 		Groups:   groups,
@@ -569,36 +569,36 @@ func (h *Handler) handleIssueDetail(w http.ResponseWriter, r *http.Request) {
 
 	number, err := strconv.ParseInt(numberStr, 10, 64)
 	if err != nil {
-		h.renderError(w, http.StatusBadRequest, "invalid issue number")
+		h.renderError(w, r, http.StatusBadRequest, "invalid issue number")
 		return
 	}
 
 	repo, err := h.write.GetRepo(ctx, repoName)
 	if err != nil {
 		if errors.Is(err, db.ErrRepoNotFound) {
-			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
+			h.renderError(w, r, http.StatusNotFound, "repo not found: "+repoName)
 			return
 		}
 		slog.Error("ui get repo", "repo", repoName, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load repo")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load repo")
 		return
 	}
 
 	issue, err := h.write.GetIssue(ctx, repoName, number)
 	if err != nil {
 		if errors.Is(err, db.ErrIssueNotFound) {
-			h.renderError(w, http.StatusNotFound, "issue not found")
+			h.renderError(w, r, http.StatusNotFound, "issue not found")
 			return
 		}
 		slog.Error("ui get issue", "repo", repoName, "number", number, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load issue")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load issue")
 		return
 	}
 
 	comments, err := h.write.ListIssueComments(ctx, repoName, number)
 	if err != nil {
 		slog.Error("ui list issue comments", "repo", repoName, "number", number, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load comments")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load comments")
 		return
 	}
 
@@ -613,7 +613,7 @@ func (h *Handler) handleIssueDetail(w http.ResponseWriter, r *http.Request) {
 	if errMsg := r.URL.Query().Get("error"); errMsg != "" {
 		page.Err = errMsg
 	}
-	h.render(w, h.tmpl.issueDetail, "layout.html", pageData{
+	h.render(w, r, h.tmpl.issueDetail, "layout.html", pageData{
 		Title: repoName + " / issue #" + numberStr,
 		Breadcrumbs: []crumb{
 			{Label: "repos", Href: "/ui/"},
@@ -651,11 +651,11 @@ func (h *Handler) handleProposals(w http.ResponseWriter, r *http.Request) {
 	repo, err := h.write.GetRepo(ctx, repoName)
 	if err != nil {
 		if errors.Is(err, db.ErrRepoNotFound) {
-			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
+			h.renderError(w, r, http.StatusNotFound, "repo not found: "+repoName)
 			return
 		}
 		slog.Error("ui get repo", "repo", repoName, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load repo")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load repo")
 		return
 	}
 
@@ -668,11 +668,11 @@ func (h *Handler) handleProposals(w http.ResponseWriter, r *http.Request) {
 	proposals, err := h.write.ListProposals(ctx, repoName, ps, nil)
 	if err != nil {
 		slog.Error("ui list proposals", "repo", repoName, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load proposals")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load proposals")
 		return
 	}
 
-	h.render(w, h.tmpl.proposals, "layout.html", pageData{
+	h.render(w, r, h.tmpl.proposals, "layout.html", pageData{
 		Title: repoName + " / proposals",
 		Breadcrumbs: []crumb{
 			{Label: "repos", Href: "/ui/"},
@@ -702,7 +702,7 @@ func (h *Handler) handleProposalsPartial(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "query failed", http.StatusInternalServerError)
 		return
 	}
-	h.render(w, h.tmpl.proposalsRows, "proposals_rows.html", proposals)
+	h.render(w, r, h.tmpl.proposalsRows, "proposals_rows.html", proposals)
 }
 
 // handleProposalDetail renders the detail view for a single proposal.
@@ -716,26 +716,26 @@ func (h *Handler) handleProposalDetail(w http.ResponseWriter, r *http.Request) {
 	repo, err := h.write.GetRepo(ctx, repoName)
 	if err != nil {
 		if errors.Is(err, db.ErrRepoNotFound) {
-			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
+			h.renderError(w, r, http.StatusNotFound, "repo not found: "+repoName)
 			return
 		}
 		slog.Error("ui get repo", "repo", repoName, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load repo")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load repo")
 		return
 	}
 
 	proposal, err := h.write.GetProposal(ctx, repoName, id)
 	if err != nil {
 		slog.Error("ui get proposal", "repo", repoName, "id", id, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load proposal")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load proposal")
 		return
 	}
 	if proposal == nil {
-		h.renderError(w, http.StatusNotFound, "proposal not found")
+		h.renderError(w, r, http.StatusNotFound, "proposal not found")
 		return
 	}
 
-	h.render(w, h.tmpl.proposalDetail, "layout.html", pageData{
+	h.render(w, r, h.tmpl.proposalDetail, "layout.html", pageData{
 		Title: repoName + " / proposals / " + id,
 		Breadcrumbs: []crumb{
 			{Label: "repos", Href: "/ui/"},
@@ -763,26 +763,26 @@ func (h *Handler) handleReleaseDetail(w http.ResponseWriter, r *http.Request) {
 	repo, err := h.write.GetRepo(ctx, repoName)
 	if err != nil {
 		if errors.Is(err, db.ErrRepoNotFound) {
-			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
+			h.renderError(w, r, http.StatusNotFound, "repo not found: "+repoName)
 			return
 		}
 		slog.Error("ui get repo", "repo", repoName, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load repo")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load repo")
 		return
 	}
 
 	release, err := h.write.GetRelease(ctx, repoName, rname)
 	if err != nil {
 		slog.Error("ui get release", "repo", repoName, "name", rname, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load release")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load release")
 		return
 	}
 	if release == nil {
-		h.renderError(w, http.StatusNotFound, "release not found")
+		h.renderError(w, r, http.StatusNotFound, "release not found")
 		return
 	}
 
-	h.render(w, h.tmpl.releaseDetail, "layout.html", pageData{
+	h.render(w, r, h.tmpl.releaseDetail, "layout.html", pageData{
 		Title: repoName + " / releases / " + rname,
 		Breadcrumbs: []crumb{
 			{Label: "repos", Href: "/ui/"},
@@ -806,11 +806,11 @@ func (h *Handler) handleCIJobs(w http.ResponseWriter, r *http.Request) {
 	repo, err := h.write.GetRepo(ctx, repoName)
 	if err != nil {
 		if errors.Is(err, db.ErrRepoNotFound) {
-			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
+			h.renderError(w, r, http.StatusNotFound, "repo not found: "+repoName)
 			return
 		}
 		slog.Error("ui get repo", "repo", repoName, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load repo")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load repo")
 		return
 	}
 
@@ -822,11 +822,11 @@ func (h *Handler) handleCIJobs(w http.ResponseWriter, r *http.Request) {
 	jobs, err := h.write.ListCIJobs(ctx, repoName, nil, statusPtr, 100)
 	if err != nil {
 		slog.Error("ui list ci jobs", "repo", repoName, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load ci jobs")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load ci jobs")
 		return
 	}
 
-	h.render(w, h.tmpl.ciJobs, "layout.html", pageData{
+	h.render(w, r, h.tmpl.ciJobs, "layout.html", pageData{
 		Title: repoName + " / ci-jobs",
 		Breadcrumbs: []crumb{
 			{Label: "repos", Href: "/ui/"},
@@ -848,26 +848,26 @@ func (h *Handler) handleCIJobDetail(w http.ResponseWriter, r *http.Request) {
 	repo, err := h.write.GetRepo(ctx, repoName)
 	if err != nil {
 		if errors.Is(err, db.ErrRepoNotFound) {
-			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
+			h.renderError(w, r, http.StatusNotFound, "repo not found: "+repoName)
 			return
 		}
 		slog.Error("ui get repo", "repo", repoName, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load repo")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load repo")
 		return
 	}
 
 	job, err := h.write.GetCIJob(ctx, id)
 	if err != nil {
 		slog.Error("ui get ci job", "id", id, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load ci job")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load ci job")
 		return
 	}
 	if job == nil {
-		h.renderError(w, http.StatusNotFound, "ci job not found")
+		h.renderError(w, r, http.StatusNotFound, "ci job not found")
 		return
 	}
 
-	h.render(w, h.tmpl.ciJobDetail, "layout.html", pageData{
+	h.render(w, r, h.tmpl.ciJobDetail, "layout.html", pageData{
 		Title: repoName + " / ci-jobs / " + id,
 		Breadcrumbs: []crumb{
 			{Label: "repos", Href: "/ui/"},
@@ -930,22 +930,22 @@ func (h *Handler) handleCommitLog(w http.ResponseWriter, r *http.Request) {
 	repo, err := h.write.GetRepo(r.Context(), repoName)
 	if err != nil {
 		if errors.Is(err, db.ErrRepoNotFound) {
-			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
+			h.renderError(w, r, http.StatusNotFound, "repo not found: "+repoName)
 			return
 		}
 		slog.Error("ui get repo", "repo", repoName, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load repo")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load repo")
 		return
 	}
 
 	bi, err := h.read.GetBranch(r.Context(), repoName, branch)
 	if err != nil {
 		slog.Error("ui get branch", "repo", repoName, "branch", branch, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load branch")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load branch")
 		return
 	}
 	if bi == nil {
-		h.renderError(w, http.StatusNotFound, "branch not found: "+branch)
+		h.renderError(w, r, http.StatusNotFound, "branch not found: "+branch)
 		return
 	}
 
@@ -958,7 +958,7 @@ func (h *Handler) handleCommitLog(w http.ResponseWriter, r *http.Request) {
 	entries, err := h.read.GetChain(r.Context(), repoName, from, headSeq)
 	if err != nil {
 		slog.Error("ui get chain", "repo", repoName, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load commits")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load commits")
 		return
 	}
 
@@ -971,7 +971,7 @@ func (h *Handler) handleCommitLog(w http.ResponseWriter, r *http.Request) {
 		nextAfter = from
 	}
 
-	h.render(w, h.tmpl.commitLog, "layout.html", pageData{
+	h.render(w, r, h.tmpl.commitLog, "layout.html", pageData{
 		Title: repoName + " / " + branch + " / log",
 		Breadcrumbs: []crumb{
 			{Label: "repos", Href: "/ui/"},
@@ -1009,7 +1009,7 @@ func (h *Handler) handleLogRowsPartial(w http.ResponseWriter, r *http.Request) {
 
 	to := after - 1
 	if to < 1 {
-		h.render(w, h.tmpl.logRows, "log_rows.html", logRowsData{})
+		h.render(w, r, h.tmpl.logRows, "log_rows.html", logRowsData{})
 		return
 	}
 
@@ -1035,7 +1035,7 @@ func (h *Handler) handleLogRowsPartial(w http.ResponseWriter, r *http.Request) {
 	}
 
 	repo := &model.Repo{Name: repoName, Owner: owner}
-	h.render(w, h.tmpl.logRows, "log_rows.html", logRowsData{
+	h.render(w, r, h.tmpl.logRows, "log_rows.html", logRowsData{
 		Repo:      *repo,
 		Branch:    branch,
 		Rows:      rows,
@@ -1054,33 +1054,33 @@ func (h *Handler) handleCommitDetail(w http.ResponseWriter, r *http.Request) {
 
 	seq, err := strconv.ParseInt(seqStr, 10, 64)
 	if err != nil || seq < 1 {
-		h.renderError(w, http.StatusBadRequest, "invalid seq")
+		h.renderError(w, r, http.StatusBadRequest, "invalid seq")
 		return
 	}
 
 	repo, err := h.write.GetRepo(r.Context(), repoName)
 	if err != nil {
 		if errors.Is(err, db.ErrRepoNotFound) {
-			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
+			h.renderError(w, r, http.StatusNotFound, "repo not found: "+repoName)
 			return
 		}
 		slog.Error("ui get repo", "repo", repoName, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load repo")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load repo")
 		return
 	}
 
 	commit, err := h.read.GetCommit(r.Context(), repoName, seq)
 	if err != nil {
 		slog.Error("ui get commit", "repo", repoName, "seq", seq, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load commit")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load commit")
 		return
 	}
 	if commit == nil {
-		h.renderError(w, http.StatusNotFound, fmt.Sprintf("commit %d not found", seq))
+		h.renderError(w, r, http.StatusNotFound, fmt.Sprintf("commit %d not found", seq))
 		return
 	}
 
-	h.render(w, h.tmpl.commitDetail, "layout.html", pageData{
+	h.render(w, r, h.tmpl.commitDetail, "layout.html", pageData{
 		Title: fmt.Sprintf("%s / %s / commit %d", repoName, branch, seq),
 		Breadcrumbs: []crumb{
 			{Label: "repos", Href: "/ui/"},
@@ -1105,7 +1105,7 @@ func (h *Handler) handleAcceptInvite(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	renderPage := func(role model.OrgRole, errMsg string) {
-		h.render(w, h.tmpl.acceptInvite, "layout.html", pageData{
+		h.render(w, r, h.tmpl.acceptInvite, "layout.html", pageData{
 			Title: "Accept invitation · " + org,
 			Breadcrumbs: []crumb{
 				{Label: "repos", Href: "/ui/"},
@@ -1123,11 +1123,11 @@ func (h *Handler) handleAcceptInvite(w http.ResponseWriter, r *http.Request) {
 	invite, err := h.write.GetInviteByToken(ctx, org, token)
 	if err != nil {
 		if errors.Is(err, db.ErrInviteNotFound) {
-			h.renderError(w, http.StatusNotFound, "invite not found")
+			h.renderError(w, r, http.StatusNotFound, "invite not found")
 			return
 		}
 		slog.Error("ui get invite by token", "org", org, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load invite")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load invite")
 		return
 	}
 
@@ -1145,7 +1145,7 @@ func (h *Handler) handleAcceptInvite(w http.ResponseWriter, r *http.Request) {
 	if err := h.write.AcceptInvite(ctx, org, token, identity); err != nil {
 		switch {
 		case errors.Is(err, db.ErrInviteNotFound):
-			h.renderError(w, http.StatusNotFound, "invite not found")
+			h.renderError(w, r, http.StatusNotFound, "invite not found")
 		case errors.Is(err, db.ErrInviteExpired):
 			renderPage(invite.Role, "This invitation has expired.")
 		case errors.Is(err, db.ErrInviteAlreadyAccepted):
@@ -1154,7 +1154,7 @@ func (h *Handler) handleAcceptInvite(w http.ResponseWriter, r *http.Request) {
 			renderPage(invite.Role, "This invitation was sent to a different email address.")
 		default:
 			slog.Error("ui accept invite", "org", org, "error", err)
-			h.renderError(w, http.StatusInternalServerError, "could not accept invite")
+			h.renderError(w, r, http.StatusInternalServerError, "could not accept invite")
 		}
 		return
 	}
@@ -1178,19 +1178,19 @@ func (h *Handler) renderOrgPage(w http.ResponseWriter, r *http.Request, org, err
 	repos, err := h.write.ListOrgRepos(ctx, org)
 	if err != nil {
 		slog.Error("ui list org repos", "org", org, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load repos")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load repos")
 		return
 	}
 	members, err := h.write.ListOrgMembers(ctx, org)
 	if err != nil {
 		slog.Error("ui list org members", "org", org, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load members")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load members")
 		return
 	}
 	invites, err := h.write.ListInvites(ctx, org)
 	if err != nil {
 		slog.Error("ui list invites", "org", org, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load invites")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load invites")
 		return
 	}
 	var pending []model.OrgInvite
@@ -1200,7 +1200,7 @@ func (h *Handler) renderOrgPage(w http.ResponseWriter, r *http.Request, org, err
 		}
 	}
 
-	h.render(w, h.tmpl.org, "layout.html", pageData{
+	h.render(w, r, h.tmpl.org, "layout.html", pageData{
 		Title: org,
 		Breadcrumbs: []crumb{
 			{Label: "repos", Href: "/ui/"},
@@ -1346,18 +1346,18 @@ func (h *Handler) renderBranchesPage(w http.ResponseWriter, r *http.Request, own
 	repo, err := h.write.GetRepo(ctx, repoName)
 	if err != nil {
 		if errors.Is(err, db.ErrRepoNotFound) {
-			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
+			h.renderError(w, r, http.StatusNotFound, "repo not found: "+repoName)
 			return
 		}
 		slog.Error("ui get repo", "repo", repoName, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load repo")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load repo")
 		return
 	}
 
 	branches, err := h.read.ListBranches(ctx, repoName, "", true, false)
 	if err != nil {
 		slog.Error("ui list branches", "repo", repoName, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load branches")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load branches")
 		return
 	}
 
@@ -1392,7 +1392,7 @@ func (h *Handler) renderBranchesPage(w http.ResponseWriter, r *http.Request, own
 		}
 	}
 
-	h.render(w, h.tmpl.branches, "layout.html", pageData{
+	h.render(w, r, h.tmpl.branches, "layout.html", pageData{
 		Title: repoName + " / branches",
 		Breadcrumbs: []crumb{
 			{Label: "repos", Href: "/ui/"},
@@ -1466,22 +1466,22 @@ func (h *Handler) renderReleasesPage(w http.ResponseWriter, r *http.Request, own
 	repo, err := h.write.GetRepo(ctx, repoName)
 	if err != nil {
 		if errors.Is(err, db.ErrRepoNotFound) {
-			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
+			h.renderError(w, r, http.StatusNotFound, "repo not found: "+repoName)
 			return
 		}
 		slog.Error("ui get repo", "repo", repoName, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load repo")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load repo")
 		return
 	}
 
 	releases, err := h.write.ListReleases(ctx, repoName, 100, "")
 	if err != nil {
 		slog.Error("ui list releases", "repo", repoName, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load releases")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load releases")
 		return
 	}
 
-	h.render(w, h.tmpl.releases, "layout.html", pageData{
+	h.render(w, r, h.tmpl.releases, "layout.html", pageData{
 		Title: repoName + " / releases",
 		Breadcrumbs: []crumb{
 			{Label: "repos", Href: "/ui/"},
@@ -1556,10 +1556,10 @@ func (h *Handler) handleDeleteRelease(w http.ResponseWriter, r *http.Request) {
 	if err := h.write.DeleteRelease(ctx, repoName, rname); err != nil {
 		switch {
 		case errors.Is(err, db.ErrReleaseNotFound):
-			h.renderError(w, http.StatusNotFound, "release not found")
+			h.renderError(w, r, http.StatusNotFound, "release not found")
 		default:
 			slog.Error("ui delete release", "repo", repoName, "release", rname, "error", err)
-			h.renderError(w, http.StatusInternalServerError, "could not delete release")
+			h.renderError(w, r, http.StatusInternalServerError, "could not delete release")
 		}
 		return
 	}
@@ -1572,7 +1572,7 @@ func (h *Handler) handleCreateOrg(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	renderPage := func(name, errMsg string) {
-		h.render(w, h.tmpl.createOrg, "layout.html", pageData{
+		h.render(w, r, h.tmpl.createOrg, "layout.html", pageData{
 			Title: "New organisation",
 			Breadcrumbs: []crumb{
 				{Label: "repos", Href: "/ui/"},
@@ -1620,12 +1620,12 @@ func (h *Handler) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 	orgs, err := h.write.ListOrgs(ctx)
 	if err != nil {
 		slog.Error("ui create repo list orgs", "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load organisations")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load organisations")
 		return
 	}
 
 	renderPage := func(owner, name, errMsg string) {
-		h.render(w, h.tmpl.createRepo, "layout.html", pageData{
+		h.render(w, r, h.tmpl.createRepo, "layout.html", pageData{
 			Title: "New repository",
 			Breadcrumbs: []crumb{
 				{Label: "repos", Href: "/ui/"},
@@ -1686,16 +1686,16 @@ func (h *Handler) handleNewIssue(w http.ResponseWriter, r *http.Request) {
 	repo, err := h.write.GetRepo(ctx, repoName)
 	if err != nil {
 		if errors.Is(err, db.ErrRepoNotFound) {
-			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
+			h.renderError(w, r, http.StatusNotFound, "repo not found: "+repoName)
 			return
 		}
 		slog.Error("ui get repo", "repo", repoName, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load repo")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load repo")
 		return
 	}
 
 	renderForm := func(formTitle, formBody, formLabels, errMsg string) {
-		h.render(w, h.tmpl.newIssue, "layout.html", pageData{
+		h.render(w, r, h.tmpl.newIssue, "layout.html", pageData{
 			Title: repoName + " / new issue",
 			Breadcrumbs: []crumb{
 				{Label: "repos", Href: "/ui/"},
@@ -1764,7 +1764,7 @@ func (h *Handler) handleEditIssue(w http.ResponseWriter, r *http.Request) {
 
 	number, err := strconv.ParseInt(numberStr, 10, 64)
 	if err != nil {
-		h.renderError(w, http.StatusBadRequest, "invalid issue number")
+		h.renderError(w, r, http.StatusBadRequest, "invalid issue number")
 		return
 	}
 
@@ -1808,7 +1808,7 @@ func (h *Handler) handleIssueClose(w http.ResponseWriter, r *http.Request) {
 
 	number, err := strconv.ParseInt(numberStr, 10, 64)
 	if err != nil {
-		h.renderError(w, http.StatusBadRequest, "invalid issue number")
+		h.renderError(w, r, http.StatusBadRequest, "invalid issue number")
 		return
 	}
 
@@ -1849,7 +1849,7 @@ func (h *Handler) handleIssueReopen(w http.ResponseWriter, r *http.Request) {
 
 	number, err := strconv.ParseInt(numberStr, 10, 64)
 	if err != nil {
-		h.renderError(w, http.StatusBadRequest, "invalid issue number")
+		h.renderError(w, r, http.StatusBadRequest, "invalid issue number")
 		return
 	}
 
@@ -1872,7 +1872,7 @@ func (h *Handler) handleCreateIssueComment(w http.ResponseWriter, r *http.Reques
 
 	number, err := strconv.ParseInt(numberStr, 10, 64)
 	if err != nil {
-		h.renderError(w, http.StatusBadRequest, "invalid issue number")
+		h.renderError(w, r, http.StatusBadRequest, "invalid issue number")
 		return
 	}
 
@@ -1958,7 +1958,7 @@ func (h *Handler) handleAddIssueRef(w http.ResponseWriter, r *http.Request) {
 
 	number, err := strconv.ParseInt(numberStr, 10, 64)
 	if err != nil {
-		h.renderError(w, http.StatusBadRequest, "invalid issue number")
+		h.renderError(w, r, http.StatusBadRequest, "invalid issue number")
 		return
 	}
 
@@ -2147,26 +2147,26 @@ func (h *Handler) renderBranchDetail(w http.ResponseWriter, r *http.Request, rep
 	repo, err := h.write.GetRepo(r.Context(), repoName)
 	if err != nil {
 		if errors.Is(err, db.ErrRepoNotFound) {
-			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
+			h.renderError(w, r, http.StatusNotFound, "repo not found: "+repoName)
 			return
 		}
 		slog.Error("ui get repo", "repo", repoName, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load repo")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load repo")
 		return
 	}
 
 	if h.assemble == nil {
-		h.renderError(w, http.StatusServiceUnavailable, "agent context assembler not configured")
+		h.renderError(w, r, http.StatusServiceUnavailable, "agent context assembler not configured")
 		return
 	}
 	actCtx, err := h.assemble(r.Context(), repoName, branch)
 	if err != nil {
 		if strings.Contains(err.Error(), "branch not found") {
-			h.renderError(w, http.StatusNotFound, "branch not found: "+branch)
+			h.renderError(w, r, http.StatusNotFound, "branch not found: "+branch)
 			return
 		}
 		slog.Error("ui assemble agent context", "repo", repoName, "branch", branch, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load branch")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load branch")
 		return
 	}
 
@@ -2193,7 +2193,7 @@ func (h *Handler) renderBranchDetail(w http.ResponseWriter, r *http.Request, rep
 		}
 	}
 
-	h.render(w, h.tmpl.branchDetail, "layout.html", pageData{
+	h.render(w, r, h.tmpl.branchDetail, "layout.html", pageData{
 		Title: repoName + " / " + branch,
 		Breadcrumbs: []crumb{
 			{Label: "repos", Href: "/ui/"},
@@ -2212,7 +2212,7 @@ func (h *Handler) handleSubmitReview(w http.ResponseWriter, r *http.Request) {
 	repoName := owner + "/" + name
 
 	if err := r.ParseForm(); err != nil {
-		h.renderError(w, http.StatusBadRequest, "invalid form data")
+		h.renderError(w, r, http.StatusBadRequest, "invalid form data")
 		return
 	}
 
@@ -2246,7 +2246,7 @@ func (h *Handler) handlePostComment(w http.ResponseWriter, r *http.Request) {
 	repoName := owner + "/" + name
 
 	if err := r.ParseForm(); err != nil {
-		h.renderError(w, http.StatusBadRequest, "invalid form data")
+		h.renderError(w, r, http.StatusBadRequest, "invalid form data")
 		return
 	}
 
@@ -2298,7 +2298,7 @@ func (h *Handler) handleCreateProposalUI(w http.ResponseWriter, r *http.Request)
 	ctx := r.Context()
 
 	if err := r.ParseForm(); err != nil {
-		h.renderError(w, http.StatusBadRequest, "invalid form data")
+		h.renderError(w, r, http.StatusBadRequest, "invalid form data")
 		return
 	}
 
@@ -2310,7 +2310,7 @@ func (h *Handler) handleCreateProposalUI(w http.ResponseWriter, r *http.Request)
 	renderWithErr := func(errMsg string) {
 		repo, err := h.write.GetRepo(ctx, repoName)
 		if err != nil {
-			h.renderError(w, http.StatusInternalServerError, "could not load repo")
+			h.renderError(w, r, http.StatusInternalServerError, "could not load repo")
 			return
 		}
 		stateStr := "open"
@@ -2319,7 +2319,7 @@ func (h *Handler) handleCreateProposalUI(w http.ResponseWriter, r *http.Request)
 		if err != nil {
 			proposals = nil
 		}
-		h.render(w, h.tmpl.proposals, "layout.html", pageData{
+		h.render(w, r, h.tmpl.proposals, "layout.html", pageData{
 			Title: repoName + " / proposals",
 			Breadcrumbs: []crumb{
 				{Label: "repos", Href: "/ui/"},
@@ -2359,7 +2359,7 @@ func (h *Handler) handleEditProposal(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	if err := r.ParseForm(); err != nil {
-		h.renderError(w, http.StatusBadRequest, "invalid form data")
+		h.renderError(w, r, http.StatusBadRequest, "invalid form data")
 		return
 	}
 
@@ -2369,10 +2369,10 @@ func (h *Handler) handleEditProposal(w http.ResponseWriter, r *http.Request) {
 	renderWithErr := func(proposal *model.Proposal, errMsg string) {
 		repo, err := h.write.GetRepo(ctx, repoName)
 		if err != nil {
-			h.renderError(w, http.StatusInternalServerError, "could not load repo")
+			h.renderError(w, r, http.StatusInternalServerError, "could not load repo")
 			return
 		}
-		h.render(w, h.tmpl.proposalDetail, "layout.html", pageData{
+		h.render(w, r, h.tmpl.proposalDetail, "layout.html", pageData{
 			Title: repoName + " / proposals / " + id,
 			Breadcrumbs: []crumb{
 				{Label: "repos", Href: "/ui/"},
@@ -2387,7 +2387,7 @@ func (h *Handler) handleEditProposal(w http.ResponseWriter, r *http.Request) {
 	// Load current proposal for error re-render.
 	proposal, err := h.write.GetProposal(ctx, repoName, id)
 	if err != nil || proposal == nil {
-		h.renderError(w, http.StatusNotFound, "proposal not found")
+		h.renderError(w, r, http.StatusNotFound, "proposal not found")
 		return
 	}
 
@@ -2420,15 +2420,15 @@ func (h *Handler) handleCloseProposalUI(w http.ResponseWriter, r *http.Request) 
 		// Re-render proposal detail with error.
 		proposal, getErr := h.write.GetProposal(ctx, repoName, id)
 		if getErr != nil || proposal == nil {
-			h.renderError(w, http.StatusInternalServerError, "could not close proposal")
+			h.renderError(w, r, http.StatusInternalServerError, "could not close proposal")
 			return
 		}
 		repo, getErr := h.write.GetRepo(ctx, repoName)
 		if getErr != nil {
-			h.renderError(w, http.StatusInternalServerError, "could not load repo")
+			h.renderError(w, r, http.StatusInternalServerError, "could not load repo")
 			return
 		}
-		h.render(w, h.tmpl.proposalDetail, "layout.html", pageData{
+		h.render(w, r, h.tmpl.proposalDetail, "layout.html", pageData{
 			Title: repoName + " / proposals / " + id,
 			Breadcrumbs: []crumb{
 				{Label: "repos", Href: "/ui/"},
@@ -2462,7 +2462,7 @@ func (h *Handler) handleUIDeleteOrg(w http.ResponseWriter, r *http.Request) {
 	if err := h.write.DeleteOrg(ctx, org); err != nil {
 		switch {
 		case errors.Is(err, db.ErrOrgNotFound):
-			h.renderError(w, http.StatusNotFound, "org not found: "+org)
+			h.renderError(w, r, http.StatusNotFound, "org not found: "+org)
 		case errors.Is(err, db.ErrOrgHasRepos):
 			h.renderOrgPage(w, r, org, "cannot delete org: org still has repos; delete them first")
 		default:
@@ -2496,7 +2496,7 @@ func (h *Handler) handleUIDeleteRepo(w http.ResponseWriter, r *http.Request) {
 	if err := h.write.DeleteRepo(ctx, repoName); err != nil {
 		switch {
 		case errors.Is(err, db.ErrRepoNotFound):
-			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
+			h.renderError(w, r, http.StatusNotFound, "repo not found: "+repoName)
 		default:
 			slog.Error("ui delete repo", "repo", repoName, "error", err)
 			h.renderBranchesPage(w, r, owner, name, "could not delete repo: "+err.Error())
@@ -2519,16 +2519,16 @@ func (h *Handler) handleNewCommit(w http.ResponseWriter, r *http.Request) {
 	repo, err := h.write.GetRepo(ctx, repoName)
 	if err != nil {
 		if errors.Is(err, db.ErrRepoNotFound) {
-			h.renderError(w, http.StatusNotFound, "repo not found: "+repoName)
+			h.renderError(w, r, http.StatusNotFound, "repo not found: "+repoName)
 			return
 		}
 		slog.Error("ui get repo", "repo", repoName, "error", err)
-		h.renderError(w, http.StatusInternalServerError, "could not load repo")
+		h.renderError(w, r, http.StatusInternalServerError, "could not load repo")
 		return
 	}
 
 	renderForm := func(formMessage, formFilePath, formFileContent, errMsg string) {
-		h.render(w, h.tmpl.newCommit, "layout.html", pageData{
+		h.render(w, r, h.tmpl.newCommit, "layout.html", pageData{
 			Title: repoName + " / " + branch + " / commit",
 			Breadcrumbs: []crumb{
 				{Label: "repos", Href: "/ui/"},
