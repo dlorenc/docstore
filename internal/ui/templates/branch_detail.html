@@ -156,7 +156,48 @@
       {{end}}
       <div id="review-comments"></div>
     </div>
+
+    <h2>Submit review</h2>
+    <div class="card">
+      <form method="POST" action="/ui/r/{{$page.Repo.Name}}/b/{{urlPathEscape $ctx.Branch.Name}}/review" style="padding:14px 12px 4px">
+        <div style="margin-bottom:10px">
+          <label style="display:block;margin-bottom:4px;font-size:0.85em;color:var(--text-muted)">Status</label>
+          <select name="status" style="width:100%;padding:6px 8px;background:var(--bg-input,var(--bg2));border:1px solid var(--border);border-radius:4px;color:var(--text)">
+            <option value="approved">approved</option>
+            <option value="rejected">rejected</option>
+            <option value="dismissed">dismissed</option>
+          </select>
+        </div>
+        <div style="margin-bottom:10px">
+          <label style="display:block;margin-bottom:4px;font-size:0.85em;color:var(--text-muted)">Comment (optional)</label>
+          <textarea name="body" rows="3" style="width:100%;padding:6px 8px;background:var(--bg-input,var(--bg2));border:1px solid var(--border);border-radius:4px;color:var(--text);resize:vertical;box-sizing:border-box"></textarea>
+        </div>
+        <button type="submit">Submit review</button>
+      </form>
+    </div>
   </div>
+</div>
+
+<h2>Add comment</h2>
+<div class="card">
+  <form method="POST" action="/ui/r/{{$page.Repo.Name}}/b/{{urlPathEscape $ctx.Branch.Name}}/comment" style="padding:14px 12px 4px">
+    <div style="margin-bottom:10px">
+      <label style="display:block;margin-bottom:4px;font-size:0.85em;color:var(--text-muted)">File path</label>
+      <input type="text" name="path" list="diff-paths" placeholder="e.g. docs/hello.md" style="width:100%;padding:6px 8px;background:var(--bg-input,var(--bg2));border:1px solid var(--border);border-radius:4px;color:var(--text);box-sizing:border-box">
+      <datalist id="diff-paths">
+        {{range $ctx.Diff.BranchChanges}}{{if .VersionID}}<option value="{{.Path}}">{{end}}{{end}}
+      </datalist>
+    </div>
+    <div style="margin-bottom:10px">
+      <label style="display:block;margin-bottom:4px;font-size:0.85em;color:var(--text-muted)">Version ID</label>
+      <input type="text" name="version_id" placeholder="e.g. v-abc123" style="width:100%;padding:6px 8px;background:var(--bg-input,var(--bg2));border:1px solid var(--border);border-radius:4px;color:var(--text);box-sizing:border-box">
+    </div>
+    <div style="margin-bottom:10px">
+      <label style="display:block;margin-bottom:4px;font-size:0.85em;color:var(--text-muted)">Comment</label>
+      <textarea name="body" rows="3" style="width:100%;padding:6px 8px;background:var(--bg-input,var(--bg2));border:1px solid var(--border);border-radius:4px;color:var(--text);resize:vertical;box-sizing:border-box"></textarea>
+    </div>
+    <button type="submit">Post comment</button>
+  </form>
 </div>
 
 <h2>Diff</h2>
