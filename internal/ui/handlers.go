@@ -16,6 +16,7 @@ import (
 	"github.com/dlorenc/docstore/internal/db"
 	evtypes "github.com/dlorenc/docstore/internal/events/types"
 	"github.com/dlorenc/docstore/internal/model"
+	"github.com/dlorenc/docstore/internal/service"
 	"github.com/dlorenc/docstore/internal/store"
 )
 
@@ -1752,7 +1753,7 @@ func (h *Handler) handleCreateOrg(w http.ResponseWriter, r *http.Request) {
 		identity = h.identity(ctx)
 	}
 
-	if _, err := h.write.CreateOrg(ctx, name, identity); err != nil {
+	if _, err := h.svc.CreateOrg(ctx, identity, name); err != nil {
 		switch {
 		case errors.Is(err, db.ErrOrgExists):
 			renderPage(name, "An organisation with that name already exists.")
@@ -1761,10 +1762,6 @@ func (h *Handler) handleCreateOrg(w http.ResponseWriter, r *http.Request) {
 			renderPage(name, "Could not create organisation: "+err.Error())
 		}
 		return
-	}
-
-	if err := h.write.AddOrgMember(ctx, name, identity, model.OrgRoleOwner, identity); err != nil {
-		slog.Error("ui create org: add owner", "name", name, "identity", identity, "error", err)
 	}
 
 	http.Redirect(w, r, "/ui/o/"+name, http.StatusSeeOther)
@@ -1812,7 +1809,7 @@ func (h *Handler) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req := model.CreateRepoRequest{Owner: owner, Name: name, CreatedBy: identity}
-	if _, err := h.write.CreateRepo(ctx, req); err != nil {
+	if _, err := h.svc.CreateRepo(ctx, identity, req); err != nil {
 		switch {
 		case errors.Is(err, db.ErrRepoExists):
 			renderPage(owner, name, "A repository with that name already exists in this organisation.")
@@ -1823,10 +1820,6 @@ func (h *Handler) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 			renderPage(owner, name, "Could not create repository: "+err.Error())
 		}
 		return
-	}
-
-	if err := h.write.SetRole(ctx, owner+"/"+name, identity, model.RoleAdmin); err != nil {
-		slog.Error("ui create repo: set admin role", "repo", owner+"/"+name, "identity", identity, "error", err)
 	}
 
 	http.Redirect(w, r, "/ui/r/"+owner+"/"+name, http.StatusSeeOther)
@@ -1905,7 +1898,7 @@ func (h *Handler) handleNewIssue(w http.ResponseWriter, r *http.Request) {
 		identity = h.identity(ctx)
 	}
 
-	iss, err := h.write.CreateIssue(ctx, repoName, title, body, identity, labels)
+	iss, err := h.svc.CreateIssue(ctx, identity, repoName, title, body, labels)
 	if err != nil {
 		slog.Error("ui create issue", "repo", repoName, "error", err)
 		renderForm(title, body, labelsStr, "could not create issue")
@@ -1950,7 +1943,16 @@ func (h *Handler) handleEditIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	labelsPtr := &labels
 
-	if _, err := h.write.UpdateIssue(ctx, repoName, number, &title, &body, labelsPtr); err != nil {
+	var identity string
+	if h.identity != nil {
+		identity = h.identity(ctx)
+	}
+	role := h.svc.GetRole(ctx, repoName, identity)
+	if _, err := h.svc.UpdateIssue(ctx, identity, role, repoName, number, &title, &body, labelsPtr); err != nil {
+		if errors.Is(err, service.ErrForbidden) {
+			http.Redirect(w, r, issueURL(repoName, numberStr)+"?error=forbidden", http.StatusSeeOther)
+			return
+		}
 		slog.Error("ui edit issue", "repo", repoName, "number", number, "error", err)
 		http.Redirect(w, r, issueURL(repoName, numberStr)+"?error="+url.QueryEscape("could not update issue"), http.StatusSeeOther)
 		return
@@ -1991,7 +1993,12 @@ func (h *Handler) handleIssueClose(w http.ResponseWriter, r *http.Request) {
 		identity = h.identity(ctx)
 	}
 
-	if _, err := h.write.CloseIssue(ctx, repoName, number, reason, identity); err != nil {
+	role := h.svc.GetRole(ctx, repoName, identity)
+	if _, err := h.svc.CloseIssue(ctx, identity, role, repoName, number, reason); err != nil {
+		if errors.Is(err, service.ErrForbidden) {
+			http.Redirect(w, r, issueURL(repoName, numberStr)+"?error=forbidden", http.StatusSeeOther)
+			return
+		}
 		slog.Error("ui close issue", "repo", repoName, "number", number, "error", err)
 		http.Redirect(w, r, issueURL(repoName, numberStr)+"?error="+url.QueryEscape("could not close issue"), http.StatusSeeOther)
 		return
@@ -2006,7 +2013,6 @@ func (h *Handler) handleIssueReopen(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	numberStr := r.PathValue("number")
 	repoName := owner + "/" + name
-	ctx := r.Context()
 
 	number, err := strconv.ParseInt(numberStr, 10, 64)
 	if err != nil {
@@ -2014,7 +2020,16 @@ func (h *Handler) handleIssueReopen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := h.write.ReopenIssue(ctx, repoName, number); err != nil {
+	var identity string
+	if h.identity != nil {
+		identity = h.identity(r.Context())
+	}
+	role := h.svc.GetRole(r.Context(), repoName, identity)
+	if _, err := h.svc.ReopenIssue(r.Context(), identity, role, repoName, number); err != nil {
+		if errors.Is(err, service.ErrForbidden) {
+			http.Redirect(w, r, issueURL(repoName, numberStr)+"?error=forbidden", http.StatusSeeOther)
+			return
+		}
 		slog.Error("ui reopen issue", "repo", repoName, "number", number, "error", err)
 		http.Redirect(w, r, issueURL(repoName, numberStr)+"?error="+url.QueryEscape("could not reopen issue"), http.StatusSeeOther)
 		return
@@ -2053,7 +2068,7 @@ func (h *Handler) handleCreateIssueComment(w http.ResponseWriter, r *http.Reques
 		identity = h.identity(ctx)
 	}
 
-	if _, err := h.write.CreateIssueComment(ctx, repoName, number, body, identity); err != nil {
+	if _, err := h.svc.CreateIssueComment(ctx, identity, repoName, number, body); err != nil {
 		slog.Error("ui create issue comment", "repo", repoName, "number", number, "error", err)
 		http.Redirect(w, r, issueURL(repoName, numberStr)+"?error="+url.QueryEscape("could not post comment"), http.StatusSeeOther)
 		return
@@ -2071,6 +2086,12 @@ func (h *Handler) handleEditIssueComment(w http.ResponseWriter, r *http.Request)
 	repoName := owner + "/" + name
 	ctx := r.Context()
 
+	number, err := strconv.ParseInt(numberStr, 10, 64)
+	if err != nil {
+		h.renderError(w, r, http.StatusBadRequest, "invalid issue number")
+		return
+	}
+
 	if err := r.ParseForm(); err != nil {
 		http.Redirect(w, r, issueURL(repoName, numberStr)+"?error=invalid+form", http.StatusSeeOther)
 		return
@@ -2082,7 +2103,16 @@ func (h *Handler) handleEditIssueComment(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if _, err := h.write.UpdateIssueComment(ctx, repoName, commentID, body); err != nil {
+	var identity string
+	if h.identity != nil {
+		identity = h.identity(ctx)
+	}
+	role := h.svc.GetRole(ctx, repoName, identity)
+	if _, err := h.svc.UpdateIssueComment(ctx, identity, role, repoName, number, commentID, body); err != nil {
+		if errors.Is(err, service.ErrForbidden) {
+			http.Redirect(w, r, issueURL(repoName, numberStr)+"?error=forbidden", http.StatusSeeOther)
+			return
+		}
 		slog.Error("ui edit issue comment", "repo", repoName, "comment", commentID, "error", err)
 		http.Redirect(w, r, issueURL(repoName, numberStr)+"?error="+url.QueryEscape("could not update comment"), http.StatusSeeOther)
 		return
@@ -2100,7 +2130,16 @@ func (h *Handler) handleDeleteIssueComment(w http.ResponseWriter, r *http.Reques
 	repoName := owner + "/" + name
 	ctx := r.Context()
 
-	if err := h.write.DeleteIssueComment(ctx, repoName, commentID); err != nil {
+	var identity string
+	if h.identity != nil {
+		identity = h.identity(ctx)
+	}
+	role := h.svc.GetRole(ctx, repoName, identity)
+	if err := h.svc.DeleteIssueComment(ctx, identity, role, repoName, commentID); err != nil {
+		if errors.Is(err, service.ErrForbidden) {
+			http.Redirect(w, r, issueURL(repoName, numberStr)+"?error=forbidden", http.StatusSeeOther)
+			return
+		}
 		slog.Error("ui delete issue comment", "repo", repoName, "comment", commentID, "error", err)
 		http.Redirect(w, r, issueURL(repoName, numberStr)+"?error="+url.QueryEscape("could not delete comment"), http.StatusSeeOther)
 		return
@@ -2419,7 +2458,7 @@ func (h *Handler) handleSubmitReview(w http.ResponseWriter, r *http.Request) {
 		identity = h.identity(r.Context())
 	}
 
-	if _, err := h.write.CreateReview(r.Context(), repoName, branch, identity, status, body); err != nil {
+	if _, err := h.svc.CreateReview(r.Context(), identity, repoName, branch, status, body); err != nil {
 		slog.Error("ui create review", "repo", repoName, "branch", branch, "error", err)
 		h.renderBranchDetail(w, r, repoName, branch, "could not submit review: "+err.Error())
 		return
@@ -2471,7 +2510,16 @@ func (h *Handler) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	repoName := owner + "/" + name
 
-	if err := h.write.DeleteReviewComment(r.Context(), repoName, id); err != nil {
+	var identity string
+	if h.identity != nil {
+		identity = h.identity(r.Context())
+	}
+	role := h.svc.GetRole(r.Context(), repoName, identity)
+	if err := h.svc.DeleteReviewComment(r.Context(), identity, role, repoName, id); err != nil {
+		if errors.Is(err, service.ErrForbidden) {
+			http.Redirect(w, r, "/ui/r/"+repoName+"/b/"+url.PathEscape(branch)+"?err=forbidden", http.StatusSeeOther)
+			return
+		}
 		slog.Error("ui delete review comment", "repo", repoName, "id", id, "error", err)
 		h.renderBranchDetail(w, r, repoName, branch, "could not delete comment: "+err.Error())
 		return
@@ -2530,7 +2578,7 @@ func (h *Handler) handleCreateProposalUI(w http.ResponseWriter, r *http.Request)
 		identity = h.identity(ctx)
 	}
 
-	proposal, err := h.write.CreateProposal(ctx, repoName, branch, baseBranch, title, description, identity)
+	proposal, err := h.svc.CreateProposal(ctx, identity, repoName, branch, baseBranch, title, description)
 	if err != nil {
 		slog.Error("ui create proposal", "repo", repoName, "error", err)
 		renderWithErr("could not create proposal: " + err.Error())
@@ -2586,8 +2634,21 @@ func (h *Handler) handleEditProposal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updated, err := h.write.UpdateProposal(ctx, repoName, id, &titleVal, &descVal)
+	var identity string
+	if h.identity != nil {
+		identity = h.identity(ctx)
+	}
+	role := h.svc.GetRole(ctx, repoName, identity)
+	updated, err := h.svc.UpdateProposal(ctx, identity, role, repoName, id, &titleVal, &descVal)
 	if err != nil {
+		if errors.Is(err, service.ErrForbidden) {
+			p2, _ := h.write.GetProposal(ctx, repoName, id)
+			if p2 == nil {
+				p2 = proposal
+			}
+			renderWithErr(p2, "forbidden: must be proposal author or maintainer")
+			return
+		}
 		slog.Error("ui update proposal", "repo", repoName, "id", id, "error", err)
 		renderWithErr(proposal, "could not update proposal: "+err.Error())
 		return
@@ -2604,7 +2665,31 @@ func (h *Handler) handleCloseProposalUI(w http.ResponseWriter, r *http.Request) 
 	repoName := owner + "/" + name
 	ctx := r.Context()
 
-	if err := h.write.CloseProposal(ctx, repoName, id); err != nil {
+	var identity string
+	if h.identity != nil {
+		identity = h.identity(ctx)
+	}
+	role := h.svc.GetRole(ctx, repoName, identity)
+	if err := h.svc.CloseProposal(ctx, identity, role, repoName, id); err != nil {
+		if errors.Is(err, service.ErrForbidden) {
+			proposal, _ := h.write.GetProposal(ctx, repoName, id)
+			repo, _ := h.write.GetRepo(ctx, repoName)
+			if proposal != nil && repo != nil {
+				h.render(w, r, h.tmpl.proposalDetail, "layout.html", pageData{
+					Title: repoName + " / proposals / " + id,
+					Breadcrumbs: []crumb{
+						{Label: "repos", Href: "/ui/"},
+						{Label: repoName, Href: "/ui/r/" + repoName},
+						{Label: "proposals", Href: "/ui/r/" + repoName + "/proposals"},
+						{Label: proposal.Title, Href: ""},
+					},
+					Body: proposalDetailPage{Repo: *repo, Proposal: proposal, Err: "forbidden: must be proposal author or maintainer"},
+				})
+				return
+			}
+			h.renderError(w, r, http.StatusForbidden, "forbidden")
+			return
+		}
 		slog.Error("ui close proposal", "repo", repoName, "id", id, "error", err)
 
 		// Re-render proposal detail with error.
@@ -2631,7 +2716,8 @@ func (h *Handler) handleCloseProposalUI(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	http.Redirect(w, r, "/ui/r/"+repoName+"/proposals/"+id, http.StatusSeeOther)}
+	http.Redirect(w, r, "/ui/r/"+repoName+"/proposals/"+id, http.StatusSeeOther)
+}
 
 // handleUIDeleteOrg processes POST /ui/o/{org}/delete to delete an org.
 // The form must include a "confirm" field matching the org name.
@@ -2777,15 +2863,14 @@ func (h *Handler) handleNewCommit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req := model.CommitRequest{
-		Repo:    repoName,
-		Branch:  branch,
+		Repo:   repoName,
+		Branch: branch,
 		Message: message,
-		Author:  identity,
 		Files: []model.FileChange{
 			{Path: filePath, Content: []byte(fileContent)},
 		},
 	}
-	if _, err := h.write.Commit(ctx, req); err != nil {
+	if _, err := h.svc.Commit(ctx, identity, req); err != nil {
 		slog.Error("ui commit", "repo", repoName, "branch", branch, "error", err)
 		renderForm(message, filePath, fileContent, "could not commit: "+err.Error())
 		return

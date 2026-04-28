@@ -12,6 +12,7 @@ import (
 
 	"github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/model"
+	"github.com/dlorenc/docstore/internal/service"
 	"github.com/dlorenc/docstore/internal/store"
 )
 
@@ -169,6 +170,14 @@ func (f *fakeWrite) ReopenIssue(_ context.Context, _ string, _ int64) (*model.Is
 func (f *fakeWrite) CreateIssueComment(_ context.Context, _ string, _ int64, _, _ string) (*model.IssueComment, error) {
 	return &model.IssueComment{ID: "c-new"}, nil
 }
+func (f *fakeWrite) GetIssueComment(_ context.Context, _, id string) (*model.IssueComment, error) {
+	for _, c := range f.issueComments {
+		if c.ID == id {
+			return &c, nil
+		}
+	}
+	return nil, db.ErrIssueCommentNotFound
+}
 func (f *fakeWrite) UpdateIssueComment(_ context.Context, _, _, _ string) (*model.IssueComment, error) {
 	return nil, nil
 }
@@ -216,6 +225,9 @@ func (f *fakeWrite) CreateInvite(_ context.Context, _, _ string, _ model.OrgRole
 	return &model.OrgInvite{}, nil
 }
 func (f *fakeWrite) RevokeInvite(_ context.Context, _, _ string) error { return nil }
+func (f *fakeWrite) GetRole(_ context.Context, _, _ string) (*model.Role, error) {
+	return nil, nil
+}
 func (f *fakeWrite) SetRole(_ context.Context, _, _ string, _ model.RoleType) error {
 	return nil
 }
@@ -240,6 +252,9 @@ func (f *fakeWrite) CreateReviewComment(_ context.Context, _, _, _, _, _, _ stri
 	return &model.ReviewComment{}, nil
 }
 func (f *fakeWrite) DeleteReviewComment(_ context.Context, _, _ string) error { return nil }
+func (f *fakeWrite) GetReviewComment(_ context.Context, _, id string) (*model.ReviewComment, error) {
+	return &model.ReviewComment{ID: id, Author: ""}, nil
+}
 func (f *fakeWrite) CreateProposal(_ context.Context, _, _, _, _, _, _ string) (*model.Proposal, error) {
 	return &model.Proposal{ID: "new-p"}, nil
 }
@@ -279,9 +294,10 @@ func strPtr(s string) *string { return &s }
 // helpers
 // ---------------------------------------------------------------------------
 
-func newTestHandler(t *testing.T, r ReadStore, w WriteStoreLite, a AssembleFn) http.Handler {
+func newTestHandler(t *testing.T, r ReadStore, w *fakeWrite, a AssembleFn) http.Handler {
 	t.Helper()
-	h, err := NewHandler(r, w, a, nil)
+	svc := service.New(w, nil, nil)
+	h, err := NewHandler(r, w, svc, a, nil)
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
@@ -949,7 +965,7 @@ func TestHandleEditProposal_RedirectsOnSuccess(t *testing.T) {
 	w := &fakeWrite{
 		repos: repos,
 		proposals: []*model.Proposal{
-			{ID: "p-1", Repo: "acme/a", Branch: "feat-x", BaseBranch: "main", Title: "Old title", Author: "alice", State: ps, CreatedAt: time.Now()},
+			{ID: "p-1", Repo: "acme/a", Branch: "feat-x", BaseBranch: "main", Title: "Old title", Author: "", State: ps, CreatedAt: time.Now()},
 		},
 	}
 	h := newTestHandler(t, &fakeRead{}, w, nil)
@@ -969,14 +985,15 @@ func TestHandleCloseProposalUI_RedirectsOnSuccess(t *testing.T) {
 	w := &fakeWrite{
 		repos: repos,
 		proposals: []*model.Proposal{
-			{ID: "p-1", Repo: "acme/a", Branch: "feat-x", BaseBranch: "main", Title: "My proposal", Author: "alice", State: ps, CreatedAt: time.Now()},
+			{ID: "p-1", Repo: "acme/a", Branch: "feat-x", BaseBranch: "main", Title: "My proposal", Author: "", State: ps, CreatedAt: time.Now()},
 		},
 	}
 	h := newTestHandler(t, &fakeRead{}, w, nil)
 
 	code, _, _ := postForm(t, h, "/ui/r/acme/a/proposals/p-1/close", nil)
 	if code != http.StatusSeeOther {
-		t.Fatalf("status = %d, want 303 (redirect)", code)	}
+		t.Fatalf("status = %d, want 303 (redirect)", code)
+	}
 }
 
 func TestHandleNewCommit_GET_RendersForm(t *testing.T) {
