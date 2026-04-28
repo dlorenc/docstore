@@ -1,0 +1,32 @@
+{{define "content"}}
+<h1>New repository</h1>
+{{with .Body}}
+<div class="card">
+  {{if .Err}}
+  <div class="row"><span class="badge bad">{{.Err}}</span></div>
+  {{end}}
+  <form method="POST" action="/ui/repos/new" style="padding:14px 12px 4px">
+    <div class="row">
+      <label for="owner">Organisation</label>
+      {{if .Orgs}}
+      <select id="owner" name="owner" style="margin-left:8px" required>
+        <option value="">— select —</option>
+        {{range .Orgs}}
+        <option value="{{.Name}}"{{if eq $.Body.Owner .Name}} selected{{end}}>{{.Name}}</option>
+        {{end}}
+      </select>
+      {{else}}
+      <input id="owner" name="owner" type="text" value="{{.Owner}}" placeholder="my-org" required style="margin-left:8px">
+      {{end}}
+    </div>
+    <div class="row" style="padding-top:8px">
+      <label for="name">Name</label>
+      <input id="name" name="name" type="text" value="{{.Name}}" placeholder="my-repo" required autofocus style="margin-left:8px">
+    </div>
+    <div class="row" style="padding-top:8px">
+      <button type="submit">Create repository</button>
+    </div>
+  </form>
+</div>
+{{end}}
+{{end}}

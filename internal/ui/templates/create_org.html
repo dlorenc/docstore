@@ -1,0 +1,19 @@
+{{define "content"}}
+<h1>New organisation</h1>
+{{with .Body}}
+<div class="card">
+  {{if .Err}}
+  <div class="row"><span class="badge bad">{{.Err}}</span></div>
+  {{end}}
+  <form method="POST" action="/ui/orgs/new" style="padding:14px 12px 4px">
+    <div class="row">
+      <label for="name">Name</label>
+      <input id="name" name="name" type="text" value="{{.Name}}" placeholder="my-org" required autofocus style="margin-left:8px">
+    </div>
+    <div class="row" style="padding-top:8px">
+      <button type="submit">Create organisation</button>
+    </div>
+  </form>
+</div>
+{{end}}
+{{end}}
