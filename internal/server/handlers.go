@@ -396,6 +396,13 @@ func (s *server) handleReposPrefix(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "not found")
 		}
 
+	case endpoint == "ci-jobs":
+		if r.Method == http.MethodGet {
+			s.handleListCIJobs(w, r)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+
 	default:
 		writeError(w, http.StatusNotFound, "not found")
 	}
