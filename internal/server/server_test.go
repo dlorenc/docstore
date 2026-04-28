@@ -486,7 +486,7 @@ func (m *mockStore) CreateIssue(_ context.Context, _, _, _, _ string, _ []string
 func (m *mockStore) GetIssue(_ context.Context, _ string, _ int64) (*model.Issue, error) {
 	return nil, db.ErrIssueNotFound
 }
-func (m *mockStore) ListIssues(_ context.Context, _, _, _ string) ([]model.Issue, error) {
+func (m *mockStore) ListIssues(_ context.Context, _, _, _, _ string) ([]model.Issue, error) {
 	return []model.Issue{}, nil
 }
 func (m *mockStore) UpdateIssue(_ context.Context, _ string, _ int64, _, _ *string, _ *[]string) (*model.Issue, error) {

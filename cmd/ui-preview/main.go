@@ -160,7 +160,7 @@ func (fakeWrite) GetRepo(_ context.Context, name string) (*model.Repo, error) {
 	return nil, db.ErrRepoNotFound
 }
 
-func (fakeWrite) ListIssues(_ context.Context, repo, state, _ string) ([]model.Issue, error) {
+func (fakeWrite) ListIssues(_ context.Context, repo, state, _, _ string) ([]model.Issue, error) {
 	t := time.Now()
 	if state == "closed" {
 		return []model.Issue{
@@ -177,13 +177,13 @@ func (fakeWrite) ListIssues(_ context.Context, repo, state, _ string) ([]model.I
 }
 
 func (fakeWrite) GetIssue(_ context.Context, repo string, number int64) (*model.Issue, error) {
-	all, _ := (fakeWrite{}).ListIssues(context.Background(), repo, "open", "")
+	all, _ := (fakeWrite{}).ListIssues(context.Background(), repo, "open", "", "")
 	for _, iss := range all {
 		if iss.Number == number {
 			return &iss, nil
 		}
 	}
-	closed, _ := (fakeWrite{}).ListIssues(context.Background(), repo, "closed", "")
+	closed, _ := (fakeWrite{}).ListIssues(context.Background(), repo, "closed", "", "")
 	for _, iss := range closed {
 		if iss.Number == number {
 			return &iss, nil

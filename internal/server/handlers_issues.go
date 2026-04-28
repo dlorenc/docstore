@@ -100,8 +100,9 @@ func (s *server) handleListIssues(w http.ResponseWriter, r *http.Request) {
 		stateFilter = ""
 	}
 	authorFilter := r.URL.Query().Get("author")
+	labelFilter := r.URL.Query().Get("label")
 
-	issues, err := s.commitStore.ListIssues(r.Context(), repo, stateFilter, authorFilter)
+	issues, err := s.commitStore.ListIssues(r.Context(), repo, stateFilter, authorFilter, labelFilter)
 	if err != nil {
 		slog.Error("internal error", "op", "list_issues", "repo", repo, "error", err)
 		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")

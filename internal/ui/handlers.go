@@ -155,6 +155,7 @@ type issuesPage struct {
 	Repo   model.Repo
 	Issues []model.Issue
 	State  string
+	Label  string
 }
 
 type issueDetailPage struct {
@@ -509,6 +510,7 @@ func (h *Handler) handleIssues(w http.ResponseWriter, r *http.Request) {
 	if state != "open" && state != "closed" {
 		state = "open"
 	}
+	label := r.URL.Query().Get("label")
 
 	repo, err := h.write.GetRepo(ctx, repoName)
 	if err != nil {
@@ -521,14 +523,14 @@ func (h *Handler) handleIssues(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	issues, err := h.write.ListIssues(ctx, repoName, state, "")
+	issues, err := h.write.ListIssues(ctx, repoName, state, "", label)
 	if err != nil {
 		slog.Error("ui list issues", "repo", repoName, "error", err)
 		h.renderError(w, r, http.StatusInternalServerError, "could not load issues")
 		return
 	}
 
-	page := issuesPage{Repo: *repo, Issues: issues, State: state}
+	page := issuesPage{Repo: *repo, Issues: issues, State: state, Label: label}
 	h.render(w, r, h.tmpl.issues, "layout.html", pageData{
 		Title: repoName + " / issues",
 		Breadcrumbs: []crumb{
@@ -551,6 +553,7 @@ func (h *Handler) handleIssuesPartial(w http.ResponseWriter, r *http.Request) {
 	if state != "open" && state != "closed" {
 		state = "open"
 	}
+	label := r.URL.Query().Get("label")
 
 	repo, err := h.write.GetRepo(ctx, repoName)
 	if err != nil {
@@ -559,14 +562,14 @@ func (h *Handler) handleIssuesPartial(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	issues, err := h.write.ListIssues(ctx, repoName, state, "")
+	issues, err := h.write.ListIssues(ctx, repoName, state, "", label)
 	if err != nil {
 		slog.Error("ui issues partial list", "repo", repoName, "error", err)
 		http.Error(w, "query failed", http.StatusInternalServerError)
 		return
 	}
 
-	h.render(w, r, h.tmpl.issuesRows, "issues_rows.html", issuesPage{Repo: *repo, Issues: issues, State: state})
+	h.render(w, r, h.tmpl.issuesRows, "issues_rows.html", issuesPage{Repo: *repo, Issues: issues, State: state, Label: label})
 }
 
 // handleReviewCommentsPartial returns the inline review comments for a branch,
