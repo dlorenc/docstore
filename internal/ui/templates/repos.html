@@ -1,8 +1,12 @@
 {{define "content"}}
 <h1>Repos</h1>
 {{with .Body}}
+<div style="margin-bottom:12px">
+  <a href="/ui/orgs/new"><button>New org</button></a>
+  <a href="/ui/repos/new" style="margin-left:8px"><button>New repo</button></a>
+</div>
 {{if not .Orgs}}
-  <div class="card empty">No repos yet. Use <code>ds repos create</code> to add one.</div>
+  <div class="card empty">No repos yet.</div>
 {{else}}
   {{range .Orgs}}
   <div class="card">
