@@ -48,14 +48,15 @@ jobs:
             --service-account=docstore-server@dlorenc-chainguard.iam.gserviceaccount.com \
             --add-cloudsql-instances=dlorenc-chainguard:us-central1:docstore-mvp \
             --update-secrets=DATABASE_URL=docstore-db-url:latest \
-            --allow-unauthenticated \
+            --ingress=internal-and-cloud-load-balancing \
             --min-instances=1 \
             --max-instances=1 \
             --no-cpu-throttling \
             --port=8080 \
             --network=default \
             --subnet=default \
-            --vpc-egress=private-ranges-only
+            --vpc-egress=private-ranges-only \
+            --args=--bootstrap-admin=dlorenc@chainguard.dev
 
   build-and-deploy-ci-scheduler:
     runs-on: ubuntu-latest
