@@ -143,6 +143,15 @@ func (f *fakeWrite) GetRelease(_ context.Context, _, name string) (*model.Releas
 	}
 	return nil, nil
 }
+func (f *fakeWrite) ListIssueRefs(_ context.Context, _ string, _ int64) ([]model.IssueRef, error) {
+	return nil, nil
+}
+func (f *fakeWrite) ListCIJobs(_ context.Context, _ string, _, _ *string, _ int) ([]model.CIJob, error) {
+	return nil, nil
+}
+func (f *fakeWrite) GetCIJob(_ context.Context, _ string) (*model.CIJob, error) {
+	return nil, nil
+}
 
 func newFakeAssembler(branchName string) AssembleFn {
 	return func(_ context.Context, _, branch string) (*model.AgentContextResponse, error) {
