@@ -38,24 +38,27 @@
     }
   });
 
-  // Tab navigation. Clicks on [data-tab-url] fetch the URL and replace the
-  // innerHTML of the element with id matching [data-tab-target].
+  // Tab switching. Clicking [data-tab-url] fetches the URL and swaps the
+  // innerHTML of the element matching [data-tab-target] on the same tab link.
   document.addEventListener('click', function (e) {
     var el = e.target.closest('[data-tab-url]');
     if (!el) return;
-    e.preventDefault();
     var url = el.getAttribute('data-tab-url');
-    var targetId = el.getAttribute('data-tab-target');
-    if (!url || !targetId) return;
-    var siblings = el.parentElement ? el.parentElement.querySelectorAll('[data-tab-url]') : [];
-    for (var i = 0; i < siblings.length; i++) siblings[i].classList.remove('active');
+    var targetSel = el.getAttribute('data-tab-target');
+    if (!url || !targetSel) return;
+    e.preventDefault();
+    var target = document.querySelector(targetSel);
+    if (!target) return;
+    // Update active class on siblings within [data-tab-group].
+    var group = el.closest('[data-tab-group]');
+    if (group) {
+      var tabs = group.querySelectorAll('[data-tab-url]');
+      for (var i = 0; i < tabs.length; i++) tabs[i].classList.remove('active');
+    }
     el.classList.add('active');
     fetch(url, { credentials: 'same-origin' }).then(function (r) {
       if (!r.ok) return;
-      return r.text().then(function (t) {
-        var target = document.getElementById(targetId);
-        if (target) target.innerHTML = t;
-      });
+      return r.text().then(function (t) { target.innerHTML = t; });
     }).catch(function () {});
   });
 

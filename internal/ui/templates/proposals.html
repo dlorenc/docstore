@@ -1,0 +1,27 @@
+{{define "content"}}
+{{with .Body}}
+<div class="headline">
+  <h1>{{.Repo.Name}} / proposals</h1>
+  <span class="meta">owner {{.Repo.Owner}}</span>
+</div>
+
+<div class="tab-bar" data-tab-group>
+  <a class="tab{{if eq .State "open"}} active{{end}}"
+     href="?state=open"
+     data-tab-url="/ui/_/r/{{.Repo.Name}}/proposals?state=open"
+     data-tab-target="#proposals-list">open</a>
+  <a class="tab{{if eq .State "closed"}} active{{end}}"
+     href="?state=closed"
+     data-tab-url="/ui/_/r/{{.Repo.Name}}/proposals?state=closed"
+     data-tab-target="#proposals-list">closed</a>
+  <a class="tab{{if eq .State "merged"}} active{{end}}"
+     href="?state=merged"
+     data-tab-url="/ui/_/r/{{.Repo.Name}}/proposals?state=merged"
+     data-tab-target="#proposals-list">merged</a>
+</div>
+
+<div class="card" id="proposals-list">
+{{template "proposals_rows.html" .Proposals}}
+</div>
+{{end}}
+{{end}}
