@@ -1,0 +1,37 @@
+{{define "content"}}
+{{with .Body}}
+<div class="headline">
+  <h1>New commit — {{.Branch}}</h1>
+  <span class="meta">{{.Repo.Name}}</span>
+</div>
+
+{{if .Err}}
+<div class="card" style="border-color:var(--bad);margin-bottom:14px">
+  <div class="row"><span class="badge bad">{{.Err}}</span></div>
+</div>
+{{end}}
+
+<div class="card">
+  <form method="POST" action="/ui/r/{{.Repo.Name}}/b/{{urlPathEscape .Branch}}/commit" style="padding:8px 4px 4px">
+    <div style="margin-bottom:12px">
+      <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em">Branch</label>
+      <input name="branch" type="text" value="{{.Branch}}" readonly class="form-input" style="opacity:0.6">
+    </div>
+    <div style="margin-bottom:12px">
+      <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em">Commit message</label>
+      <input name="message" type="text" required value="{{.FormMessage}}" placeholder="describe your change" class="form-input">
+    </div>
+    <div style="margin-bottom:6px">
+      <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em">File path</label>
+      <input name="file_path" type="text" required value="{{.FormFilePath}}" placeholder="e.g. docs/hello.md" class="form-input">
+    </div>
+    <div style="margin-bottom:14px">
+      <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em">File content</label>
+      <textarea name="file_content" rows="10" class="form-input" style="font-family:var(--font-mono,monospace)">{{.FormFileContent}}</textarea>
+    </div>
+    <button type="submit" class="btn">Commit</button>
+    <a href="/ui/r/{{.Repo.Name}}/b/{{urlPathEscape .Branch}}" style="margin-left:12px;font-size:12px">cancel</a>
+  </form>
+</div>
+{{end}}
+{{end}}
