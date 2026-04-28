@@ -1,0 +1,16 @@
+{{define "content"}}
+<h1>Accept invitation</h1>
+{{with .Body}}
+<div class="card">
+  <div class="row"><strong>Organisation</strong> {{.Org}}</div>
+  <div class="row"><strong>Role</strong> <span class="badge neutral">{{.Role}}</span></div>
+  {{if .Err}}
+  <div class="row"><span class="badge bad">{{.Err}}</span></div>
+  {{else}}
+  <form method="POST" action="/ui/o/{{.Org}}/invites/{{.Token}}/accept" style="padding:14px 12px 4px">
+    <button type="submit">Accept invitation</button>
+  </form>
+  {{end}}
+</div>
+{{end}}
+{{end}}
