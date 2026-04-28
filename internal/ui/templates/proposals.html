@@ -15,7 +15,9 @@
 </nav>
 
 {{if .Err}}
-<div class="card" style="margin-bottom:14px"><span class="badge bad">{{.Err}}</span></div>
+<div class="card" style="border-color:var(--bad);margin-bottom:14px">
+  <div class="row"><span class="badge bad">error</span> <span>{{.Err}}</span></div>
+</div>
 {{end}}
 
 <div class="tab-bar" data-tab-group>
@@ -39,24 +41,24 @@
 
 <h2>New proposal</h2>
 <div class="card">
-  <form method="POST" action="/ui/r/{{.Repo.Name}}/proposals" style="padding:14px 12px 4px">
+  <form method="POST" action="/ui/r/{{.Repo.Name}}/proposals" style="padding:8px 4px 4px">
     <div style="margin-bottom:10px">
-      <label style="display:block;margin-bottom:4px;font-size:0.85em;color:var(--text-muted)">Branch</label>
-      <input type="text" name="branch" required placeholder="e.g. feature-x" style="width:100%;padding:6px 8px;background:var(--bg-input,var(--bg2));border:1px solid var(--border);border-radius:4px;color:var(--text);box-sizing:border-box">
+      <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em">Branch</label>
+      <input type="text" name="branch" required placeholder="e.g. feature-x" class="form-input">
     </div>
     <div style="margin-bottom:10px">
-      <label style="display:block;margin-bottom:4px;font-size:0.85em;color:var(--text-muted)">Base branch</label>
-      <input type="text" name="base_branch" value="main" required style="width:100%;padding:6px 8px;background:var(--bg-input,var(--bg2));border:1px solid var(--border);border-radius:4px;color:var(--text);box-sizing:border-box">
+      <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em">Base branch</label>
+      <input type="text" name="base_branch" value="main" required class="form-input">
     </div>
     <div style="margin-bottom:10px">
-      <label style="display:block;margin-bottom:4px;font-size:0.85em;color:var(--text-muted)">Title</label>
-      <input type="text" name="title" required placeholder="Proposal title" style="width:100%;padding:6px 8px;background:var(--bg-input,var(--bg2));border:1px solid var(--border);border-radius:4px;color:var(--text);box-sizing:border-box">
+      <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em">Title</label>
+      <input type="text" name="title" required placeholder="Proposal title" class="form-input">
     </div>
     <div style="margin-bottom:10px">
-      <label style="display:block;margin-bottom:4px;font-size:0.85em;color:var(--text-muted)">Description (optional)</label>
-      <textarea name="description" rows="4" style="width:100%;padding:6px 8px;background:var(--bg-input,var(--bg2));border:1px solid var(--border);border-radius:4px;color:var(--text);resize:vertical;box-sizing:border-box"></textarea>
+      <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em">Description <span style="text-transform:none;letter-spacing:normal">(optional)</span></label>
+      <textarea name="description" rows="4" class="form-input"></textarea>
     </div>
-    <button type="submit">Create proposal</button>
+    <button type="submit" class="btn">Create proposal</button>
   </form>
 </div>
 {{end}}
