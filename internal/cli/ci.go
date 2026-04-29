@@ -97,7 +97,7 @@ func (a *App) CIRun(checkFilter, trigger, baseBranch, buildkitAddr string) error
 	defer exec.Close()
 
 	// 8. Run all checks. executor.Run blocks until all checks complete.
-	results, err := exec.Run(context.Background(), a.Dir, cfg, triggerCtx)
+	results, err := exec.Run(context.Background(), a.Dir, cfg, triggerCtx, nil)
 	if err != nil {
 		return fmt.Errorf("executor: %w", err)
 	}
