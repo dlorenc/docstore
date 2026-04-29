@@ -30,7 +30,7 @@ func newEventTestServer(t *testing.T, db *sql.DB) (*httptest.Server, *events.Bro
 	t.Helper()
 	store := dbpkg.NewStore(db)
 	broker := events.NewBroker(db)
-	handler := server.NewWithBroker(store, db, nil, broker, "test@example.com", "test@example.com")
+	handler := server.NewWithBroker(store, db, nil, broker, "test@example.com", "test@example.com", "", "")
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 	return srv, broker
@@ -425,7 +425,7 @@ func TestSSE_CurrentSeqFailure_Returns503(t *testing.T) {
 
 	st := dbpkg.NewStore(db)
 	broker := events.NewBroker(brokenDB)
-	handler := server.NewWithBroker(st, db, nil, broker, "test@example.com", "test@example.com")
+	handler := server.NewWithBroker(st, db, nil, broker, "test@example.com", "test@example.com", "", "")
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
@@ -448,7 +448,7 @@ func TestSubscription_AdminOnly(t *testing.T) {
 	// Create server with no global admin (empty bootstrapAdmin).
 	store := dbpkg.NewStore(db)
 	broker := events.NewBroker(db)
-	handler := server.NewWithBroker(store, db, nil, broker, "test@example.com", "")
+	handler := server.NewWithBroker(store, db, nil, broker, "test@example.com", "", "", "")
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
