@@ -281,11 +281,6 @@ func runOAuthDesktopFlow(clientID, clientSecret string) (*oauth2.Token, error) {
 	}
 	state := hex.EncodeToString(stateBytes)
 
-	authURL := conf.AuthCodeURL(state, oauth2.AccessTypeOffline)
-	fmt.Printf("Opening browser for authentication...\n")
-	fmt.Printf("If the browser does not open, visit:\n  %s\n", authURL)
-	openBrowser(authURL)
-
 	codeCh := make(chan string, 1)
 	errCh := make(chan error, 1)
 
@@ -306,8 +301,15 @@ func runOAuthDesktopFlow(clientID, clientSecret string) (*oauth2.Token, error) {
 		codeCh <- code
 	})
 
+	// Start the callback server before opening the browser so it is ready
+	// to accept the redirect the moment the user completes sign-in.
 	cbSrv := &http.Server{Handler: mux}
 	go cbSrv.Serve(ln) //nolint:errcheck
+
+	authURL := conf.AuthCodeURL(state, oauth2.AccessTypeOffline)
+	fmt.Printf("Opening browser for authentication...\n")
+	fmt.Printf("If the browser does not open, visit:\n  %s\n", authURL)
+	openBrowser(authURL)
 
 	var code string
 	select {
