@@ -1,5 +1,5 @@
 {{define "content"}}
-{{with .Body}}
+{{- $org := .Org -}}
 <div class="headline"><h1>{{.Org}}</h1></div>
 
 {{if .Err}}
@@ -39,7 +39,7 @@
       <td>{{.InvitedBy}}</td>
       <td>{{relTime .CreatedAt}}</td>
       <td>
-        <form method="POST" action="/ui/o/{{$.Org}}/members/{{.Identity}}/remove" style="display:inline">
+        <form method="POST" action="/ui/o/{{$org}}/members/{{.Identity}}/remove" style="display:inline">
           {{csrfField}}
           <button type="submit" class="btn-danger-small">remove</button>
         </form>
@@ -78,7 +78,7 @@
       <td>{{.InvitedBy}}</td>
       <td>{{relTime .ExpiresAt}}</td>
       <td>
-        <form method="POST" action="/ui/o/{{$.Org}}/invites/{{.ID}}/revoke" style="display:inline">
+        <form method="POST" action="/ui/o/{{$org}}/invites/{{.ID}}/revoke" style="display:inline">
           {{csrfField}}
           <button type="submit" class="btn-danger-small">revoke</button>
         </form>
@@ -117,5 +117,4 @@
     </form>
   </details>
 </div>
-{{end}}
 {{end}}

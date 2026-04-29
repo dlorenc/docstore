@@ -1,5 +1,4 @@
 {{define "content"}}
-{{with .Body}}
 <div class="headline"><h1>{{.Repo.Name}}</h1><span class="meta">owner {{.Repo.Owner}} · {{relTime .Repo.CreatedAt}} · <a href="/repos/{{.Repo.Name}}/-/archive">download archive</a></span></div>
 
 <nav class="repo-tabs">
@@ -56,8 +55,6 @@
   {{end}}
 </div>
 {{end}}
-{{end}}
-
 {{define "branchSection"}}
 <h2>{{.Title}} ({{len .Rows}})</h2>
 <div class="card">

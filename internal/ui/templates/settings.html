@@ -1,5 +1,4 @@
 {{define "content"}}
-{{with .Body}}
 <div class="headline"><h1>{{.Repo.Name}}</h1><span class="meta">owner {{.Repo.Owner}} · {{relTime .Repo.CreatedAt}}</span></div>
 
 <nav class="repo-tabs">
@@ -71,5 +70,4 @@
     </form>
   </details>
 </div>
-{{end}}
 {{end}}

@@ -1,5 +1,4 @@
 {{define "content"}}
-{{with .Body}}
 {{$page := .}}
 <div class="headline">
   <h1>commit {{.Commit.Sequence}}</h1>
@@ -33,5 +32,4 @@
   </table>
   {{end}}
 </div>
-{{end}}
 {{end}}
