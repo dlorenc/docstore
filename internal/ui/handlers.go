@@ -972,6 +972,13 @@ func siblingTreeRows(entries []store.TreeEntry, dir string) []treeRow {
 	return rows
 }
 
+// handleRepoLog redirects /ui/r/{owner}/{name}/log to the main branch log.
+func (h *Handler) handleRepoLog(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	http.Redirect(w, r, "/ui/r/"+owner+"/"+name+"/b/main/log", http.StatusFound)
+}
+
 // handleCommitLog renders the paginated commit log for a branch.
 func (h *Handler) handleCommitLog(w http.ResponseWriter, r *http.Request) {
 	owner := r.PathValue("owner")
