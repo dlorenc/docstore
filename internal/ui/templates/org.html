@@ -35,7 +35,17 @@
     {{range .Members}}
     <tr>
       <td>{{.Identity}}</td>
-      <td><span class="badge {{statusClass .Role}}">{{.Role}}</span></td>
+      <td>
+        <form method="POST" action="/ui/o/{{$org}}/members" style="display:flex;gap:4px;align-items:center">
+          {{csrfField}}
+          <input type="hidden" name="identity" value="{{.Identity}}">
+          <select name="role" class="form-input" style="width:auto;padding:2px 6px;font-size:12px">
+            <option value="member"{{if eq (print .Role) "member"}} selected{{end}}>member</option>
+            <option value="owner"{{if eq (print .Role) "owner"}} selected{{end}}>owner</option>
+          </select>
+          <button type="submit" class="btn" style="padding:2px 8px;font-size:12px">Change</button>
+        </form>
+      </td>
       <td>{{.InvitedBy}}</td>
       <td>{{relTime .CreatedAt}}</td>
       <td>
