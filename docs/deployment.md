@@ -270,3 +270,23 @@ The deploy workflow (`deploy.yml`) also builds and deploys both CI binaries afte
 ## Horizontal scaling
 
 The event broker persists all events to the `event_log` PostgreSQL table and uses `pg_notify` for real-time wake-ups. SSE streams (`GET /events`, `GET /repos/{name}/-/events`) poll `event_log` directly, so every instance sees every event regardless of which instance processed the original mutation. Multiple Cloud Run instances are fully supported.
+
+### CLI authentication (ds login)
+
+After enabling IAP, add the Desktop app OAuth client to IAP's programmatic access allowlist so `ds login` works:
+
+```bash
+cat > /tmp/iap-settings.yaml << 'YAML'
+access_settings:
+  oauth_settings:
+    programmatic_clients:
+      - <DESKTOP_APP_CLIENT_ID>
+YAML
+
+gcloud iap settings set /tmp/iap-settings.yaml \
+  --project=<PROJECT> \
+  --resource-type=backend-services \
+  --service=<BACKEND_SERVICE_NAME>
+```
+
+This allows ID tokens with the Desktop app client's audience to pass through IAP. Without this step, IAP rejects CLI tokens with "Invalid JWT audience".

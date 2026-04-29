@@ -22,8 +22,10 @@ import (
 )
 
 // Token holds OAuth2 credentials cached for a server URL.
+// IAP requires an OIDC ID token (IDToken), not the OAuth access token.
 type Token struct {
-	AccessToken  string    `json:"access_token"`
+	IDToken      string    `json:"id_token"`      // OIDC JWT — what IAP validates
+	AccessToken  string    `json:"access_token"`  // kept for reference / future use
 	RefreshToken string    `json:"refresh_token"`
 	Expiry       time.Time `json:"expiry"`
 	ClientID     string    `json:"client_id"`
@@ -143,8 +145,13 @@ func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		t.mu.Unlock()
 	}
 
+	// IAP requires the OIDC ID token, not the OAuth access token.
+	bearer := tok.IDToken
+	if bearer == "" {
+		bearer = tok.AccessToken // fallback for non-IAP servers
+	}
 	reqCopy := req.Clone(req.Context())
-	reqCopy.Header.Set("Authorization", "Bearer "+tok.AccessToken)
+	reqCopy.Header.Set("Authorization", "Bearer "+bearer)
 	return t.base.RoundTrip(reqCopy)
 }
 
@@ -164,7 +171,9 @@ func refreshOAuthToken(tok *Token) (*Token, error) {
 	if err != nil {
 		return nil, err
 	}
+	idToken, _ := newTok.Extra("id_token").(string)
 	return &Token{
+		IDToken:      idToken,
 		AccessToken:  newTok.AccessToken,
 		RefreshToken: newTok.RefreshToken,
 		Expiry:       newTok.Expiry,
@@ -223,13 +232,15 @@ func (a *App) Login(serverURL, fallbackClientID, fallbackClientSecret string) er
 		return fmt.Errorf("oauth flow: %w", err)
 	}
 
-	// Extract email from ID token JWT (Google always returns one for openid scope).
+	// Extract the OIDC ID token — this is what IAP requires as the Bearer token.
 	email := ""
-	if idToken, ok := oauthTok.Extra("id_token").(string); ok && idToken != "" {
+	idToken, _ := oauthTok.Extra("id_token").(string)
+	if idToken != "" {
 		email, _ = jwtEmail(idToken)
 	}
 
 	tok := &Token{
+		IDToken:      idToken,
 		AccessToken:  oauthTok.AccessToken,
 		RefreshToken: oauthTok.RefreshToken,
 		Expiry:       oauthTok.Expiry,
