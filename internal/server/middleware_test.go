@@ -631,6 +631,188 @@ func TestIAPMiddleware_FutureIatIsAccepted(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// JobTokenMiddleware tests
+// ---------------------------------------------------------------------------
+
+// makeJobJWT returns a signed RS256 JWT with the given job claims.
+func makeJobJWT(t *testing.T, key *rsa.PrivateKey, kid, issuer, audience, jobID string, exp time.Time) string {
+	t.Helper()
+	headerJSON, _ := json.Marshal(map[string]string{"alg": "RS256", "kid": kid, "typ": "JWT"})
+	payloadJSON, _ := json.Marshal(map[string]any{
+		"iss":    issuer,
+		"sub":    "repo:testrepo:branch:main:check:",
+		"aud":    audience,
+		"exp":    exp.Unix(),
+		"iat":    time.Now().Unix(),
+		"job_id": jobID,
+		"repo":   "testrepo",
+		"branch": "main",
+	})
+	headerB64 := base64.RawURLEncoding.EncodeToString(headerJSON)
+	payloadB64 := base64.RawURLEncoding.EncodeToString(payloadJSON)
+	signingInput := headerB64 + "." + payloadB64
+	digest := sha256.Sum256([]byte(signingInput))
+	sig, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, digest[:])
+	if err != nil {
+		t.Fatalf("sign job JWT: %v", err)
+	}
+	return signingInput + "." + base64.RawURLEncoding.EncodeToString(sig)
+}
+
+func TestJobTokenMiddleware_ValidToken(t *testing.T) {
+	key := generateTestKey(t)
+	kid := "job-key-1"
+	const issuer = "https://oidc.docstore.dev"
+	const audience = "docstore"
+	const jobID = "job-abc-123"
+
+	fetcher := staticKeyFetcher(kid, &key.PublicKey)
+	mw := newJobTokenMiddlewareWithKeyFetcher(fetcher, audience, issuer)
+
+	var capturedJobID *JobIdentity
+	var capturedIdentity string
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedJobID = JobIdentityFromContext(r.Context())
+		capturedIdentity = IdentityFromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	token := makeJobJWT(t, key, kid, issuer, audience, jobID, time.Now().Add(time.Hour))
+	req := httptest.NewRequest(http.MethodPost, "/repos/testrepo/-/check", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	if capturedJobID == nil {
+		t.Fatal("expected JobIdentity in context, got nil")
+	}
+	if capturedJobID.JobID != jobID {
+		t.Errorf("expected job_id %q, got %q", jobID, capturedJobID.JobID)
+	}
+	if capturedIdentity != "ci-job:"+jobID {
+		t.Errorf("expected identity %q, got %q", "ci-job:"+jobID, capturedIdentity)
+	}
+}
+
+func TestJobTokenMiddleware_InvalidToken(t *testing.T) {
+	signingKey := generateTestKey(t)
+	verifyKey := generateTestKey(t) // different key
+	kid := "job-key-1"
+	const issuer = "https://oidc.docstore.dev"
+
+	fetcher := staticKeyFetcher(kid, &verifyKey.PublicKey) // verifyKey ≠ signingKey
+	mw := newJobTokenMiddlewareWithKeyFetcher(fetcher, "docstore", issuer)
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	token := makeJobJWT(t, signingKey, kid, issuer, "docstore", "job-1", time.Now().Add(time.Hour))
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for tampered token, got %d", rec.Code)
+	}
+}
+
+func TestJobTokenMiddleware_NoToken(t *testing.T) {
+	// No Authorization header → middleware must fall through (call next).
+	mw := newJobTokenMiddlewareWithKeyFetcher(func(kid string) (crypto.PublicKey, error) {
+		t.Error("fetchKey should not be called with no token")
+		return nil, fmt.Errorf("should not be called")
+	}, "docstore", "https://oidc.docstore.dev")
+
+	called := false
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/repos/testrepo/-/file/ci.yaml", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 (fall through), got %d", rec.Code)
+	}
+	if !called {
+		t.Error("expected next handler to be called when no Authorization header")
+	}
+}
+
+func TestJobTokenMiddleware_WrongAudience(t *testing.T) {
+	key := generateTestKey(t)
+	kid := "job-key-1"
+	const issuer = "https://oidc.docstore.dev"
+
+	fetcher := staticKeyFetcher(kid, &key.PublicKey)
+	mw := newJobTokenMiddlewareWithKeyFetcher(fetcher, "docstore", issuer)
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Token issued for wrong audience.
+	token := makeJobJWT(t, key, kid, issuer, "wrong-audience", "job-1", time.Now().Add(time.Hour))
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for wrong audience, got %d", rec.Code)
+	}
+}
+
+func TestJobTokenMiddleware_ExpiredToken(t *testing.T) {
+	key := generateTestKey(t)
+	kid := "job-key-1"
+	const issuer = "https://oidc.docstore.dev"
+
+	fetcher := staticKeyFetcher(kid, &key.PublicKey)
+	mw := newJobTokenMiddlewareWithKeyFetcher(fetcher, "docstore", issuer)
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	token := makeJobJWT(t, key, kid, issuer, "docstore", "job-1", time.Now().Add(-time.Hour))
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for expired token, got %d", rec.Code)
+	}
+}
+
+func TestJobTokenMiddleware_WrongIssuer(t *testing.T) {
+	key := generateTestKey(t)
+	kid := "job-key-1"
+	const issuer = "https://oidc.docstore.dev"
+
+	fetcher := staticKeyFetcher(kid, &key.PublicKey)
+	mw := newJobTokenMiddlewareWithKeyFetcher(fetcher, "docstore", issuer)
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	token := makeJobJWT(t, key, kid, "https://evil.example.com", "docstore", "job-1", time.Now().Add(time.Hour))
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for wrong issuer, got %d", rec.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // commitTargetsMain tests
 // ---------------------------------------------------------------------------
 

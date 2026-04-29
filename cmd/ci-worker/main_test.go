@@ -229,7 +229,7 @@ func TestFetchConfig_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg, err := fetchConfig(context.Background(), srv.Client(), srv.URL, "repo", "main", 1)
+	cfg, err := fetchConfig(context.Background(), srv.Client(), srv.URL, "repo", "main", 1, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +247,7 @@ func TestFetchConfig_NotFound_ReturnsNil(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg, err := fetchConfig(context.Background(), srv.Client(), srv.URL, "repo", "main", 1)
+	cfg, err := fetchConfig(context.Background(), srv.Client(), srv.URL, "repo", "main", 1, "")
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -262,7 +262,7 @@ func TestFetchConfig_ServerError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := fetchConfig(context.Background(), srv.Client(), srv.URL, "repo", "main", 1)
+	_, err := fetchConfig(context.Background(), srv.Client(), srv.URL, "repo", "main", 1, "")
 	if err == nil {
 		t.Fatal("expected error for 500, got nil")
 	}
@@ -274,7 +274,7 @@ func TestFetchConfig_InvalidJSON(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := fetchConfig(context.Background(), srv.Client(), srv.URL, "repo", "main", 1)
+	_, err := fetchConfig(context.Background(), srv.Client(), srv.URL, "repo", "main", 1, "")
 	if err == nil {
 		t.Fatal("expected error for invalid JSON, got nil")
 	}
@@ -289,7 +289,7 @@ func TestFetchConfig_URLContainsBranchAndSeq(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, _ = fetchConfig(context.Background(), srv.Client(), srv.URL, "myrepo", "feat/x", 99)
+	_, _ = fetchConfig(context.Background(), srv.Client(), srv.URL, "myrepo", "feat/x", 99, "")
 	if !strings.Contains(gotURL, "feat%2Fx") {
 		t.Errorf("branch not URL-encoded in request: %s", gotURL)
 	}
@@ -319,7 +319,7 @@ func TestPostCheckRun_Success(t *testing.T) {
 		Status:    model.CheckRunPassed,
 		Sequence:  &seq,
 	}
-	if err := postCheckRun(context.Background(), srv.Client(), srv.URL, "myrepo", req); err != nil {
+	if err := postCheckRun(context.Background(), srv.Client(), srv.URL, "myrepo", "", req); err != nil {
 		t.Fatal(err)
 	}
 	if received.CheckName != "lint" {
@@ -337,7 +337,7 @@ func TestPostCheckRun_UnexpectedStatus(t *testing.T) {
 	defer srv.Close()
 
 	seq := int64(1)
-	err := postCheckRun(context.Background(), srv.Client(), srv.URL, "myrepo", model.CreateCheckRunRequest{
+	err := postCheckRun(context.Background(), srv.Client(), srv.URL, "myrepo", "", model.CreateCheckRunRequest{
 		Branch:    "b",
 		CheckName: "c",
 		Status:    model.CheckRunFailed,
@@ -361,7 +361,7 @@ func TestPostCheckRun_WithLogURL(t *testing.T) {
 
 	logURL := "file:///tmp/test.log"
 	seq := int64(3)
-	_ = postCheckRun(context.Background(), srv.Client(), srv.URL, "r", model.CreateCheckRunRequest{
+	_ = postCheckRun(context.Background(), srv.Client(), srv.URL, "r", "", model.CreateCheckRunRequest{
 		Branch:    "b",
 		CheckName: "c",
 		Status:    model.CheckRunPassed,
@@ -508,7 +508,7 @@ func TestRunJob_NoCIYAML_ReturnsPassed(t *testing.T) {
 
 	status, logURL, errMsg := runJob(
 		context.Background(), srv.Client(), &mockRunner{}, nil,
-		srv.URL, testJob(), "", t.TempDir(), ciconfig.TriggerContext{Type: "push"}, nil,
+		srv.URL, testJob(), "", "", t.TempDir(), ciconfig.TriggerContext{Type: "push"}, nil,
 	)
 	if status != "passed" {
 		t.Errorf("expected passed, got %q", status)
@@ -531,7 +531,7 @@ func TestRunJob_FetchConfigError_ReturnsFailed(t *testing.T) {
 
 	status, _, errMsg := runJob(
 		context.Background(), srv.Client(), &mockRunner{}, nil,
-		srv.URL, testJob(), "", t.TempDir(), ciconfig.TriggerContext{}, nil,
+		srv.URL, testJob(), "", "", t.TempDir(), ciconfig.TriggerContext{}, nil,
 	)
 	if status != "failed" {
 		t.Errorf("expected failed, got %q", status)
@@ -551,7 +551,7 @@ func TestRunJob_ExecutorError_ReturnsFailed(t *testing.T) {
 	mockExec := &mockRunner{err: fmt.Errorf("buildkit unavailable")}
 	status, _, errMsg := runJob(
 		context.Background(), srv.Client(), mockExec, nil,
-		srv.URL, testJob(), "", t.TempDir(), ciconfig.TriggerContext{}, nil,
+		srv.URL, testJob(), "", "", t.TempDir(), ciconfig.TriggerContext{}, nil,
 	)
 	if status != "failed" {
 		t.Errorf("expected failed, got %q", status)
@@ -582,7 +582,7 @@ func TestRunJob_AllChecksPassed(t *testing.T) {
 
 	status, logURL, errMsg := runJob(
 		context.Background(), srv.Client(), mockExec, ls,
-		srv.URL, testJob(), "", t.TempDir(), ciconfig.TriggerContext{Type: "push"}, nil,
+		srv.URL, testJob(), "", "", t.TempDir(), ciconfig.TriggerContext{Type: "push"}, nil,
 	)
 	if status != "passed" {
 		t.Errorf("expected passed, got %q", status)
@@ -618,7 +618,7 @@ func TestRunJob_OneCheckFailed_OverallFailed(t *testing.T) {
 
 	status, _, errMsg := runJob(
 		context.Background(), srv.Client(), mockExec, nil,
-		srv.URL, testJob(), "", t.TempDir(), ciconfig.TriggerContext{}, nil,
+		srv.URL, testJob(), "", "", t.TempDir(), ciconfig.TriggerContext{}, nil,
 	)
 	if status != "failed" {
 		t.Errorf("expected failed, got %q", status)
@@ -657,7 +657,7 @@ func TestRunJob_NilLogStore_StillPosts(t *testing.T) {
 
 	status, logURL, _ := runJob(
 		context.Background(), srv.Client(), mockExec, nil, // nil log store
-		srv.URL, testJob(), "", t.TempDir(), ciconfig.TriggerContext{}, nil,
+		srv.URL, testJob(), "", "", t.TempDir(), ciconfig.TriggerContext{}, nil,
 	)
 	if status != "passed" {
 		t.Errorf("expected passed, got %q", status)
@@ -683,7 +683,7 @@ func TestRunJob_LogsWrittenToDir(t *testing.T) {
 	}}
 
 	logDir := t.TempDir()
-	runJob(context.Background(), srv.Client(), mockExec, nil, srv.URL, testJob(), "", logDir, ciconfig.TriggerContext{}, nil) //nolint:errcheck
+	runJob(context.Background(), srv.Client(), mockExec, nil, srv.URL, testJob(), "", "", logDir, ciconfig.TriggerContext{}, nil) //nolint:errcheck
 
 	data, err := os.ReadFile(filepath.Join(logDir, "test.log"))
 	if err != nil {
@@ -691,5 +691,133 @@ func TestRunJob_LogsWrittenToDir(t *testing.T) {
 	}
 	if string(data) != logOutput {
 		t.Errorf("unexpected log content: %q", string(data))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// getDocstoreOIDCToken
+// ---------------------------------------------------------------------------
+
+func TestGetDocstoreOIDCToken_Success(t *testing.T) {
+	const fakeToken = "eyJhbGciOiJSUzI1NiJ9.fake.token"
+	var gotAuth, gotContentType string
+	var gotBody map[string]string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotContentType = r.Header.Get("Content-Type")
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"token": fakeToken}) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	tok, err := getDocstoreOIDCToken(context.Background(), srv.URL, "my-request-token")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if tok != fakeToken {
+		t.Errorf("expected token %q, got %q", fakeToken, tok)
+	}
+	if gotAuth != "Bearer my-request-token" {
+		t.Errorf("expected Authorization header %q, got %q", "Bearer my-request-token", gotAuth)
+	}
+	if gotContentType != "application/json" {
+		t.Errorf("expected Content-Type application/json, got %q", gotContentType)
+	}
+	if gotBody["audience"] != "docstore" {
+		t.Errorf("expected audience=docstore in body, got %q", gotBody["audience"])
+	}
+}
+
+func TestGetDocstoreOIDCToken_EmptyURL_ReturnsEmpty(t *testing.T) {
+	tok, err := getDocstoreOIDCToken(context.Background(), "", "my-request-token")
+	if err != nil {
+		t.Fatalf("expected no error for empty URL, got %v", err)
+	}
+	if tok != "" {
+		t.Errorf("expected empty token for empty URL, got %q", tok)
+	}
+}
+
+func TestGetDocstoreOIDCToken_ServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	_, err := getDocstoreOIDCToken(context.Background(), srv.URL, "bad-token")
+	if err == nil {
+		t.Fatal("expected error for 401, got nil")
+	}
+	if !strings.Contains(err.Error(), "401") {
+		t.Errorf("expected 401 in error, got: %v", err)
+	}
+}
+
+func TestGetDocstoreOIDCToken_MissingTokenField(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	_, err := getDocstoreOIDCToken(context.Background(), srv.URL, "tok")
+	if err == nil {
+		t.Fatal("expected error for missing token field, got nil")
+	}
+}
+
+func TestFetchConfig_SendsAuthHeader(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(fileResponseJSON(t, "checks: []")) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	_, _ = fetchConfig(context.Background(), srv.Client(), srv.URL, "myrepo", "main", 1, "my-jwt")
+	if gotAuth != "Bearer my-jwt" {
+		t.Errorf("expected Authorization: Bearer my-jwt, got %q", gotAuth)
+	}
+}
+
+func TestFetchConfig_NoAuthHeaderWhenJWTEmpty(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(fileResponseJSON(t, "checks: []")) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	_, _ = fetchConfig(context.Background(), srv.Client(), srv.URL, "myrepo", "main", 1, "")
+	if gotAuth != "" {
+		t.Errorf("expected no Authorization header for empty JWT, got %q", gotAuth)
+	}
+}
+
+func TestPostCheckRun_SendsAuthHeader(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+
+	seq := int64(1)
+	_ = postCheckRun(context.Background(), srv.Client(), srv.URL, "r", "my-jwt", model.CreateCheckRunRequest{
+		Branch:    "b",
+		CheckName: "c",
+		Status:    model.CheckRunPassed,
+		Sequence:  &seq,
+	})
+	if gotAuth != "Bearer my-jwt" {
+		t.Errorf("expected Authorization: Bearer my-jwt, got %q", gotAuth)
 	}
 }

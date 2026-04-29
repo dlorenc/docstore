@@ -63,6 +63,11 @@ func (s *server) handleReview(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleCheck(w http.ResponseWriter, r *http.Request) {
 	repo := r.PathValue("name")
 	reporter := IdentityFromContext(r.Context())
+	// If the request was authenticated via a job OIDC token, prefer the job
+	// subject as the reporter so check runs record the precise job identity.
+	if jobID := JobIdentityFromContext(r.Context()); jobID != nil {
+		reporter = jobID.Subject
+	}
 
 	var req model.CreateCheckRunRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
