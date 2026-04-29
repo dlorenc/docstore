@@ -12,6 +12,14 @@ import (
 	"github.com/lestrrat-go/jwx/v3/jwt"
 )
 
+// TestNewKMSSigner_Compile verifies that *KMSSigner satisfies the Signer interface
+// at compile time. No network calls are made; the constructor would fail at runtime
+// without real KMS credentials.
+func TestNewKMSSigner_Compile(t *testing.T) {
+	t.Parallel()
+	var _ citoken.Signer = (*citoken.KMSSigner)(nil)
+}
+
 func TestIssueJWT(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
