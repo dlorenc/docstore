@@ -120,6 +120,17 @@ func (s *server) handleFileContent(w http.ResponseWriter, r *http.Request, repo,
 		return
 	}
 
+	if r.URL.Query().Get("format") == "raw" {
+		ct := fc.ContentType
+		if ct == "" {
+			ct = "application/octet-stream"
+		}
+		w.Header().Set("Content-Type", ct)
+		w.WriteHeader(http.StatusOK)
+		w.Write(fc.Content) //nolint:errcheck
+		return
+	}
+
 	writeJSON(w, http.StatusOK, fc)
 }
 
