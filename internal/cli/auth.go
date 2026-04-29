@@ -22,8 +22,10 @@ import (
 )
 
 // Token holds OAuth2 credentials cached for a server URL.
+// IAP requires an OIDC ID token (IDToken), not the OAuth access token.
 type Token struct {
-	AccessToken  string    `json:"access_token"`
+	IDToken      string    `json:"id_token"`      // OIDC JWT — what IAP validates
+	AccessToken  string    `json:"access_token"`  // kept for reference / future use
 	RefreshToken string    `json:"refresh_token"`
 	Expiry       time.Time `json:"expiry"`
 	ClientID     string    `json:"client_id"`
@@ -143,8 +145,13 @@ func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		t.mu.Unlock()
 	}
 
+	// IAP requires the OIDC ID token, not the OAuth access token.
+	bearer := tok.IDToken
+	if bearer == "" {
+		bearer = tok.AccessToken // fallback for non-IAP servers
+	}
 	reqCopy := req.Clone(req.Context())
-	reqCopy.Header.Set("Authorization", "Bearer "+tok.AccessToken)
+	reqCopy.Header.Set("Authorization", "Bearer "+bearer)
 	return t.base.RoundTrip(reqCopy)
 }
 
@@ -164,7 +171,9 @@ func refreshOAuthToken(tok *Token) (*Token, error) {
 	if err != nil {
 		return nil, err
 	}
+	idToken, _ := newTok.Extra("id_token").(string)
 	return &Token{
+		IDToken:      idToken,
 		AccessToken:  newTok.AccessToken,
 		RefreshToken: newTok.RefreshToken,
 		Expiry:       newTok.Expiry,
@@ -185,53 +194,58 @@ type dsServerConfig struct {
 	Auth dsAuthConfig `json:"auth"`
 }
 
-// Login authenticates with the given server using the OAuth flow advertised
-// by the server's /.well-known/ds-config endpoint and stores the credentials.
-func (a *App) Login(serverURL string) error {
+// Login authenticates with the given server and stores the credentials.
+// It first tries to discover OAuth client credentials via /.well-known/ds-config.
+// If that fails (e.g. the endpoint is behind IAP itself), it falls back to the
+// compiled-in fallbackClientID and fallbackClientSecret.
+func (a *App) Login(serverURL, fallbackClientID, fallbackClientSecret string) error {
 	serverURL = strings.TrimRight(serverURL, "/")
 
+	clientID, clientSecret := fallbackClientID, fallbackClientSecret
+
+	// Attempt discovery via well-known endpoint; failure is non-fatal if we
+	// have compiled-in fallback credentials.
 	resp, err := a.HTTP.Get(serverURL + "/.well-known/ds-config")
-	if err != nil {
-		return fmt.Errorf("fetch server config: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("server returned status %d for /.well-known/ds-config", resp.StatusCode)
-	}
-
-	var cfg dsServerConfig
-	if err := json.NewDecoder(resp.Body).Decode(&cfg); err != nil {
-		return fmt.Errorf("parse server config: %w", err)
-	}
-
-	if cfg.Auth.Type == "none" || cfg.Auth.Type == "" {
-		fmt.Fprintln(a.Out, "Server does not require authentication")
-		return nil
-	}
-	if cfg.Auth.Type != "iap" {
-		return fmt.Errorf("unsupported auth type: %s", cfg.Auth.Type)
-	}
-	if cfg.Auth.ClientID == "" {
-		return fmt.Errorf("server did not provide client_id in auth config")
+	if err == nil && resp.StatusCode == http.StatusOK {
+		defer resp.Body.Close()
+		var cfg dsServerConfig
+		if jsonErr := json.NewDecoder(resp.Body).Decode(&cfg); jsonErr == nil {
+			if cfg.Auth.Type == "none" || cfg.Auth.Type == "" {
+				fmt.Fprintln(a.Out, "Server does not require authentication")
+				return nil
+			}
+			if cfg.Auth.Type == "iap" && cfg.Auth.ClientID != "" {
+				clientID = cfg.Auth.ClientID
+				clientSecret = cfg.Auth.ClientSecret
+			}
+		}
+	} else if resp != nil {
+		resp.Body.Close()
 	}
 
-	oauthTok, err := runOAuthDesktopFlow(cfg.Auth.ClientID, cfg.Auth.ClientSecret)
+	if clientID == "" {
+		return fmt.Errorf("could not determine OAuth client ID: server did not provide one via /.well-known/ds-config and no default is compiled in")
+	}
+
+	oauthTok, err := runOAuthDesktopFlow(clientID, clientSecret)
 	if err != nil {
 		return fmt.Errorf("oauth flow: %w", err)
 	}
 
-	// Extract email from ID token JWT (Google always returns one for openid scope).
+	// Extract the OIDC ID token — this is what IAP requires as the Bearer token.
 	email := ""
-	if idToken, ok := oauthTok.Extra("id_token").(string); ok && idToken != "" {
+	idToken, _ := oauthTok.Extra("id_token").(string)
+	if idToken != "" {
 		email, _ = jwtEmail(idToken)
 	}
 
 	tok := &Token{
+		IDToken:      idToken,
 		AccessToken:  oauthTok.AccessToken,
 		RefreshToken: oauthTok.RefreshToken,
 		Expiry:       oauthTok.Expiry,
-		ClientID:     cfg.Auth.ClientID,
-		ClientSecret: cfg.Auth.ClientSecret,
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
 	}
 	if err := saveCreds(serverURL, tok); err != nil {
 		return fmt.Errorf("save credentials: %w", err)
@@ -278,11 +292,6 @@ func runOAuthDesktopFlow(clientID, clientSecret string) (*oauth2.Token, error) {
 	}
 	state := hex.EncodeToString(stateBytes)
 
-	authURL := conf.AuthCodeURL(state, oauth2.AccessTypeOffline)
-	fmt.Printf("Opening browser for authentication...\n")
-	fmt.Printf("If the browser does not open, visit:\n  %s\n", authURL)
-	openBrowser(authURL)
-
 	codeCh := make(chan string, 1)
 	errCh := make(chan error, 1)
 
@@ -300,23 +309,39 @@ func runOAuthDesktopFlow(clientID, clientSecret string) (*oauth2.Token, error) {
 			return
 		}
 		fmt.Fprintln(w, "Authentication successful! You can close this tab.")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
 		codeCh <- code
 	})
 
+	// Start the callback server before opening the browser so it is ready
+	// to accept the redirect the moment the user completes sign-in.
 	cbSrv := &http.Server{Handler: mux}
 	go cbSrv.Serve(ln) //nolint:errcheck
+
+	authURL := conf.AuthCodeURL(state, oauth2.AccessTypeOffline)
+	fmt.Printf("Opening browser for authentication...\n")
+	fmt.Printf("If the browser does not open, visit:\n  %s\n", authURL)
+	openBrowser(authURL)
+
+	shutdownSrv := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		cbSrv.Shutdown(ctx) //nolint:errcheck
+	}
 
 	var code string
 	select {
 	case code = <-codeCh:
 	case err = <-errCh:
-		cbSrv.Close()
+		shutdownSrv()
 		return nil, err
 	case <-time.After(5 * time.Minute):
-		cbSrv.Close()
+		shutdownSrv()
 		return nil, fmt.Errorf("timed out waiting for browser authentication")
 	}
-	cbSrv.Close()
+	shutdownSrv()
 
 	tok, err := conf.Exchange(context.Background(), code)
 	if err != nil {
