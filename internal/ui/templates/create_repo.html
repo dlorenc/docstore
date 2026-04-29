@@ -1,6 +1,5 @@
 {{define "content"}}
 <h1>New repository</h1>
-{{with .Body}}
 <div class="card">
   {{if .Err}}
   <div class="row"><span class="badge bad">{{.Err}}</span></div>
@@ -13,7 +12,7 @@
       <select id="owner" name="owner" style="margin-left:8px" required>
         <option value="">— select —</option>
         {{range .Orgs}}
-        <option value="{{.Name}}"{{if eq $.Body.Owner .Name}} selected{{end}}>{{.Name}}</option>
+        <option value="{{.Name}}"{{if eq $.Owner .Name}} selected{{end}}>{{.Name}}</option>
         {{end}}
       </select>
       {{else}}
@@ -29,5 +28,4 @@
     </div>
   </form>
 </div>
-{{end}}
 {{end}}

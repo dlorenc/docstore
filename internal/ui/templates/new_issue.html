@@ -1,5 +1,4 @@
 {{define "content"}}
-{{with .Body}}
 <nav class="repo-tabs">
   <a href="/ui/r/{{.Repo.Name}}">branches</a>
   <a href="/ui/r/{{.Repo.Name}}/issues" class="active">issues</a>
@@ -37,5 +36,4 @@
     <a href="/ui/r/{{.Repo.Name}}/issues" style="margin-left:12px;font-size:12px">cancel</a>
   </form>
 </div>
-{{end}}
 {{end}}

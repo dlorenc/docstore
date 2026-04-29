@@ -1,5 +1,4 @@
 {{define "content"}}
-{{with .Body}}
 <div class="headline">
   <h1>{{.Repo.Name}} / issues</h1>
   <a href="/ui/r/{{.Repo.Name}}/issues/new" class="btn">New Issue</a>
@@ -35,5 +34,4 @@
 <div id="issues-table">
   {{template "issues_rows.html" .}}
 </div>
-{{end}}
 {{end}}

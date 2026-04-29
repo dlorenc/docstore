@@ -1,7 +1,9 @@
 {{define "content"}}
+{{if .}}
 <div class="err-box">
   <h1>{{.Title}}</h1>
-  <p>{{.Err.Message}}</p>
+  <p>{{.Message}}</p>
   <p><a href="/ui/">back to repos</a></p>
 </div>
+{{end}}
 {{end}}
