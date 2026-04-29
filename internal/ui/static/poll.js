@@ -93,6 +93,22 @@
     }).catch(function () {});
   });
 
+  // Lazy-load file diffs inside <details data-diff-url> blocks.
+  // The toggle event fires on the <details> element and does not bubble, so we
+  // use capture-phase (true) to intercept it from the document root.
+  document.addEventListener('toggle', function (e) {
+    var details = e.target;
+    if (!details || details.tagName !== 'DETAILS' || !details.open) return;
+    var body = details.querySelector('[data-diff-url]');
+    if (!body || body.getAttribute('data-diff-loaded')) return;
+    body.setAttribute('data-diff-loaded', '1');
+    var url = body.getAttribute('data-diff-url');
+    fetch(url, { credentials: 'same-origin' }).then(function (r) {
+      if (!r.ok) return;
+      return r.text().then(function (html) { body.innerHTML = html; });
+    }).catch(function () {});
+  }, true);
+
   // Branch-list filter. Hides tbody rows whose first cell text doesn't match.
   document.addEventListener('DOMContentLoaded', function () {
     var inputs = document.querySelectorAll('[data-branch-filter]');

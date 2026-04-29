@@ -1,0 +1,10 @@
+{{define "_commit_file_diff.html"}}
+{{if .Binary}}<div class="empty">binary file — diff not shown</div>
+{{else if not .Lines}}<div class="empty">no textual changes</div>
+{{else}}<div class="cdiff">
+{{- range .Lines}}
+<div class="cdiff-line cdiff-{{.Kind}}"><span class="cdiff-text">{{.Content}}</span></div>
+{{- end}}
+</div>
+{{end}}
+{{end}}

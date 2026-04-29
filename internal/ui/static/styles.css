@@ -495,3 +495,34 @@ details.form-section > summary::-webkit-details-marker { display: none; }
   line-height: 1;
 }
 .chip-clear:hover { color: var(--bad); }
+
+/* Commit detail: expandable per-file diff blocks. */
+details.file-diff { padding: 0; margin-bottom: 8px; }
+details.file-diff summary.file-diff-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+details.file-diff summary.file-diff-summary::-webkit-details-marker { display: none; }
+details.file-diff summary.file-diff-summary::before {
+  content: "▸";
+  color: var(--text-dim);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+details.file-diff[open] summary.file-diff-summary::before { content: "▾"; }
+details.file-diff summary.file-diff-summary:hover { background: var(--bg-3); border-radius: 4px 4px 0 0; }
+.file-diff-path { flex: 1; }
+.file-diff-body { border-top: 1px solid var(--border); overflow-x: auto; }
+
+/* Inline code diff rendered by the commit file diff partial. */
+.cdiff { font-family: var(--mono); font-size: 12px; }
+.cdiff-line { padding: 1px 8px; white-space: pre; line-height: 1.5; }
+.cdiff-add { background: var(--ok-bg); color: var(--ok); }
+.cdiff-del { background: var(--bad-bg); color: var(--bad); }
+.cdiff-hunk { background: var(--bg-2); color: var(--text-dim); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); margin: 2px 0; }
+.cdiff-ctx { color: var(--text); }
