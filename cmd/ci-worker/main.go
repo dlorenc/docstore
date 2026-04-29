@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"cmp"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -12,33 +11,23 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	exec2 "os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
-	_ "github.com/lib/pq"
 	"gopkg.in/yaml.v3"
 
 	"github.com/dlorenc/docstore/internal/ciconfig"
-	"github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/executor"
 	"github.com/dlorenc/docstore/internal/logstore"
 	"github.com/dlorenc/docstore/internal/model"
 )
 
-
 // runner executes CI checks against a source directory.
 // *executor.Executor satisfies this interface.
 type runner interface {
-	Run(ctx context.Context, sourceDir string, cfg executor.Config, triggerCtx ciconfig.TriggerContext) ([]executor.CheckResult, error)
-}
-
-// heartbeater updates a CI job's heartbeat timestamp.
-// *db.Store satisfies this interface.
-type heartbeater interface {
-	HeartbeatCIJob(ctx context.Context, id string) error
+	Run(ctx context.Context, sourceDir string, cfg executor.Config, triggerCtx ciconfig.TriggerContext, extraEnv []string) ([]executor.CheckResult, error)
 }
 
 // heartbeatInterval is the delay between heartbeat updates.
@@ -97,8 +86,119 @@ func waitDockerdReady(ctx context.Context) error {
 	return waitServiceReady(ctx, "dockerd", "tcp://localhost:2375")
 }
 
+// ---------------------------------------------------------------------------
+// Scheduler API helpers
+// ---------------------------------------------------------------------------
+
+// claimResponse is the JSON body returned by POST /claim on success.
+type claimResponse struct {
+	Job          model.CIJob `json:"job"`
+	RequestToken string      `json:"request_token"`
+	OIDCTokenURL string      `json:"oidc_token_url"`
+}
+
+// readSAToken reads the Kubernetes projected service account token from the
+// default mount path. Returns empty string if the file does not exist
+// (local dev mode without a real K8s cluster).
+func readSAToken() string {
+	data, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/token")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// claimJob calls POST /claim on ci-scheduler using the pod's SA token.
+// Returns nil if no job is available (204 response).
+func claimJob(ctx context.Context, schedulerURL string) (*claimResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		strings.TrimRight(schedulerURL, "/")+"/claim", nil)
+	if err != nil {
+		return nil, fmt.Errorf("build claim request: %w", err)
+	}
+	if token := readSAToken(); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("claim request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNoContent {
+		return nil, nil // no job available
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("claim: unexpected status %d", resp.StatusCode)
+	}
+
+	var cr claimResponse
+	if err := json.NewDecoder(resp.Body).Decode(&cr); err != nil {
+		return nil, fmt.Errorf("decode claim response: %w", err)
+	}
+	return &cr, nil
+}
+
+// heartbeatHTTP sends a heartbeat for the given job via the scheduler API.
+func heartbeatHTTP(ctx context.Context, schedulerURL, jobID, requestToken string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		fmt.Sprintf("%s/jobs/%s/heartbeat", strings.TrimRight(schedulerURL, "/"), jobID), nil)
+	if err != nil {
+		return fmt.Errorf("build heartbeat request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+requestToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("heartbeat request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("heartbeat: unexpected status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// completeJob reports job completion to the scheduler API.
+func completeJob(ctx context.Context, schedulerURL, jobID, requestToken, status string, logURL, errMsg *string) error {
+	body := struct {
+		Status       string  `json:"status"`
+		LogURL       *string `json:"log_url,omitempty"`
+		ErrorMessage *string `json:"error_message,omitempty"`
+	}{
+		Status:       status,
+		LogURL:       logURL,
+		ErrorMessage: errMsg,
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("marshal complete body: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		fmt.Sprintf("%s/jobs/%s/complete", strings.TrimRight(schedulerURL, "/"), jobID),
+		bytes.NewReader(encoded))
+	if err != nil {
+		return fmt.Errorf("build complete request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+requestToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("complete request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("complete: unexpected status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Heartbeat goroutine
+// ---------------------------------------------------------------------------
+
 // heartbeat sends periodic last_heartbeat_at updates until done is closed.
-func heartbeat(ctx context.Context, store heartbeater, jobID string, done <-chan struct{}) {
+func heartbeat(ctx context.Context, schedulerURL, jobID, requestToken string, done <-chan struct{}) {
 	ticker := time.NewTicker(heartbeatInterval)
 	defer ticker.Stop()
 	for {
@@ -108,7 +208,7 @@ func heartbeat(ctx context.Context, store heartbeater, jobID string, done <-chan
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := store.HeartbeatCIJob(ctx, jobID); err != nil {
+			if err := heartbeatHTTP(ctx, schedulerURL, jobID, requestToken); err != nil {
 				slog.Warn("heartbeat failed", "job_id", jobID, "error", err)
 			}
 		}
@@ -116,7 +216,7 @@ func heartbeat(ctx context.Context, store heartbeater, jobID string, done <-chan
 }
 
 // ---------------------------------------------------------------------------
-// Docstore API helpers (same as ci-runner)
+// Docstore API helpers
 // ---------------------------------------------------------------------------
 
 func fetchConfig(ctx context.Context, client *http.Client, docstoreURL, repo, branch string, headSeq int64) (*executor.Config, error) {
@@ -133,7 +233,6 @@ func fetchConfig(ctx context.Context, client *http.Client, docstoreURL, repo, br
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
-		// No ci.yaml on this branch — CI is not configured; skip silently.
 		return nil, nil
 	}
 	if resp.StatusCode != http.StatusOK {
@@ -149,7 +248,6 @@ func fetchConfig(ctx context.Context, client *http.Client, docstoreURL, repo, br
 	}
 	return &cfg, nil
 }
-
 
 func postCheckRun(ctx context.Context, client *http.Client, docstoreURL, repo string, req model.CreateCheckRunRequest) error {
 	body, err := json.Marshal(req)
@@ -232,6 +330,7 @@ func runJob(
 	job *model.CIJob,
 	logDir string,
 	triggerCtx ciconfig.TriggerContext,
+	extraEnv []string,
 ) (status string, logURL *string, errMsg *string) {
 	fail := func(msg string) (string, *string, *string) {
 		slog.Error("job failed", "job_id", job.ID, "reason", msg)
@@ -250,14 +349,11 @@ func runJob(
 		return fail(err.Error())
 	}
 	if cfg == nil {
-		// No .docstore/ci.yaml on this branch — CI not configured; skip.
 		slog.Info("no ci.yaml on branch, skipping CI", "job_id", job.ID, "branch", job.Branch)
 		return "passed", nil, nil
 	}
 
-	// 2. Construct the archive URL; BuildKit fetches it directly via llb.HTTP.
-	// The sequence parameter makes the URL content-addressed, so BuildKit's
-	// HTTP cache deduplicates fetches across parallel checks at the same commit.
+	// 2. Construct the archive URL.
 	archiveURL := fmt.Sprintf("%s/repos/%s/-/archive?branch=%s&at=%d",
 		docstoreURL, job.Repo, url.QueryEscape(job.Branch), job.Sequence)
 
@@ -280,7 +376,7 @@ func runJob(
 	pendingWg.Wait()
 
 	// 4. Execute all checks.
-	results, err := exec.Run(ctx, archiveURL, *cfg, triggerCtx)
+	results, err := exec.Run(ctx, archiveURL, *cfg, triggerCtx, extraEnv)
 	if err != nil {
 		return fail(fmt.Sprintf("executor: %v", err))
 	}
@@ -289,11 +385,9 @@ func runJob(
 	overallStatus := "passed"
 	var firstLogURL *string
 	for _, result := range results {
-		// Write log to temp dir so the log HTTP endpoint can serve it.
 		safeName := strings.ReplaceAll(result.Name, "/", "_")
 		_ = os.WriteFile(filepath.Join(logDir, safeName+".log"), []byte(result.Logs), 0o644)
 
-		// Upload to persistent log store.
 		var checkLogURL *string
 		if ls != nil {
 			u, err := ls.Write(ctx, job.Repo, job.Branch, job.Sequence, result.Name, result.Logs)
@@ -307,7 +401,6 @@ func runJob(
 			}
 		}
 
-		// Post check run result.
 		if err := postCheckRun(ctx, httpClient, docstoreURL, job.Repo, model.CreateCheckRunRequest{
 			Branch:    job.Branch,
 			CheckName: result.Name,
@@ -332,10 +425,8 @@ func runJob(
 
 func main() {
 	buildkitAddr := envOrDefault("BUILDKIT_ADDR", "tcp://localhost:1234")
-	dbURL := mustEnv("DATABASE_URL")
+	schedulerURL := mustEnv("CI_SCHEDULER_URL")
 	docstoreURL := mustEnv("DOCSTORE_URL")
-	podName := mustEnv("POD_NAME")
-	podIP := mustEnv("POD_IP")
 
 	// Structured logging.
 	var logLevel slog.LevelVar
@@ -364,29 +455,6 @@ func main() {
 	}
 	waitCancel()
 
-	// Connect to Postgres — retry to allow cloud-sql-proxy sidecar time to start.
-	sqlDB, err := sql.Open("postgres", dbURL)
-	if err != nil {
-		slog.Error("open db", "error", err)
-		os.Exit(1)
-	}
-	{
-		dbCtx, dbCancel := context.WithTimeout(ctx, 2*time.Minute)
-		for {
-			if err := sqlDB.PingContext(dbCtx); err == nil {
-				break
-			} else if dbCtx.Err() != nil {
-				slog.Error("ping db: timed out waiting for cloud-sql-proxy", "error", err)
-				os.Exit(1)
-			}
-			slog.Info("waiting for db", "error", err)
-			time.Sleep(2 * time.Second)
-		}
-		dbCancel()
-	}
-	defer sqlDB.Close()
-	store := db.NewStore(sqlDB)
-
 	// Build executor.
 	exec, err := executor.New(buildkitAddr)
 	if err != nil {
@@ -402,9 +470,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// HTTP client for docstore requests. The 5-minute timeout covers the
-	// worst-case archive download; fetchConfig wraps its context with a
-	// tighter 30-second deadline for the lightweight config fetch.
+	// HTTP client for docstore requests.
 	httpClient := &http.Client{Timeout: 5 * time.Minute}
 
 	// Start log HTTP server on :8081.
@@ -419,26 +485,29 @@ func main() {
 		}
 	}()
 
-	slog.Info("ci-worker started", "pod", podName, "pod_ip", podIP, "buildkit_addr", buildkitAddr)
+	slog.Info("ci-worker started", "scheduler", schedulerURL, "buildkit_addr", buildkitAddr)
 
-	// Poll for a job to claim.
+	// Poll for a job to claim via the scheduler API.
 	for {
-		job, err := store.ClaimCIJob(ctx, podName, podIP)
+		cr, err := claimJob(ctx, schedulerURL)
 		if err != nil {
 			slog.Error("claim job failed", "error", err)
 			time.Sleep(1 * time.Second)
 			continue
 		}
-		if job == nil {
+		if cr == nil {
 			time.Sleep(1 * time.Second)
 			continue
 		}
+
+		job := &cr.Job
+		requestToken := cr.RequestToken
 
 		slog.Info("claimed job", "job_id", job.ID, "repo", job.Repo, "branch", job.Branch, "sequence", job.Sequence)
 
 		// Start heartbeat goroutine.
 		hbDone := make(chan struct{})
-		go heartbeat(ctx, store, job.ID, hbDone)
+		go heartbeat(ctx, schedulerURL, job.ID, requestToken, hbDone)
 
 		// Create a temp dir for in-progress check logs.
 		logDir, err := os.MkdirTemp("", "ci-worker-logs-*")
@@ -446,7 +515,7 @@ func main() {
 			close(hbDone)
 			slog.Error("create log dir", "error", err)
 			msg := err.Error()
-			_ = store.CompleteCIJob(ctx, job.ID, "failed", nil, &msg)
+			_ = completeJob(ctx, schedulerURL, job.ID, requestToken, "failed", nil, &msg)
 			break
 		}
 		defer os.RemoveAll(logDir)
@@ -462,30 +531,30 @@ func main() {
 			triggerCtx.ProposalID = *job.TriggerProposalID
 		}
 
+		// Build OIDC env vars to inject into job steps.
+		extraEnv := []string{
+			"DOCSTORE_OIDC_REQUEST_TOKEN=" + requestToken,
+			"DOCSTORE_OIDC_REQUEST_URL=" + cr.OIDCTokenURL,
+		}
+
 		// Execute the job.
-		jobStatus, jobLogURL, jobErrMsg := runJob(ctx, httpClient, exec, ls, docstoreURL, job, logDir, triggerCtx)
+		jobStatus, jobLogURL, jobErrMsg := runJob(ctx, httpClient, exec, ls, docstoreURL, job, logDir, triggerCtx, extraEnv)
 
 		// Stop heartbeat and clear log dir.
 		close(hbDone)
 		logSrv.setDir("")
 
-		// Persist final status to DB.
-		if err := store.CompleteCIJob(ctx, job.ID, jobStatus, jobLogURL, jobErrMsg); err != nil {
+		// Report final status via scheduler API.
+		if err := completeJob(ctx, schedulerURL, job.ID, requestToken, jobStatus, jobLogURL, jobErrMsg); err != nil {
 			slog.Error("complete job failed", "job_id", job.ID, "error", err)
 		}
 		slog.Info("job complete", "job_id", job.ID, "status", jobStatus)
 
-		// Exit — the Deployment controller will schedule a fresh pod for the next job.
+		// Exit — KEDA creates a fresh pod for the next job.
 		break
 	}
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer shutdownCancel()
 	_ = logHTTP.Shutdown(shutdownCtx)
-
-	// Signal cloud-sql-proxy sidecar to exit so the Job pod reaches Succeeded.
-	// Requires shareProcessNamespace: true on the pod spec.
-	if out, err := exec2.Command("pkill", "-TERM", "cloud-sql-proxy").CombinedOutput(); err != nil {
-		slog.Info("cloud-sql-proxy not signalled (not running?)", "output", string(out))
-	}
 }

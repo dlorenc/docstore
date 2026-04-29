@@ -68,9 +68,12 @@ func New(buildkitAddr string) (*Executor, error) {
 //   - a local filesystem path — BuildKit uploads it via llb.Local (used by ds ci run)
 //   - "" — uses an empty scratch state (useful in tests that do not read source files)
 //
+// extraEnv is an optional list of additional KEY=VALUE environment variables to
+// inject into every check step (e.g. DOCSTORE_OIDC_REQUEST_TOKEN=...).
+//
 // Checks whose if: condition evaluates to false are skipped (omitted from results).
 // It returns once all checks have resolved.
-func (e *Executor) Run(ctx context.Context, source string, cfg Config, triggerCtx ciconfig.TriggerContext) ([]CheckResult, error) {
+func (e *Executor) Run(ctx context.Context, source string, cfg Config, triggerCtx ciconfig.TriggerContext, extraEnv []string) ([]CheckResult, error) {
 	// Pre-filter: evaluate if: conditions before launching goroutines.
 	type indexedCheck struct {
 		idx   int
@@ -110,7 +113,7 @@ func (e *Executor) Run(ctx context.Context, source string, cfg Config, triggerCt
 					}
 				}
 			}()
-			results[j] = e.runCheck(ctx, source, check)
+			results[j] = e.runCheck(ctx, source, check, extraEnv)
 		})
 	}
 	wg.Wait()
@@ -123,7 +126,8 @@ func (e *Executor) Close() error {
 }
 
 // runCheck executes a single check and returns its result.
-func (e *Executor) runCheck(ctx context.Context, source string, check Check) CheckResult {
+// extraEnv is injected as additional environment variables into every step.
+func (e *Executor) runCheck(ctx context.Context, source string, check Check, extraEnv []string) CheckResult {
 	isHTTP := strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://")
 	isLocal := source != "" && !isHTTP
 
@@ -212,6 +216,14 @@ func (e *Executor) runCheck(ctx context.Context, source string, check Check) Che
 		// in the Kata VM. Build containers run with --oci-worker-net=host so they
 		// share the host network namespace and can reach dockerd via TCP.
 		envOpts = append(envOpts, llb.AddEnv("DOCKER_HOST", "tcp://localhost:2375"))
+
+		// Inject caller-supplied extra environment variables (e.g. OIDC tokens).
+		for _, kv := range extraEnv {
+			k, v, _ := strings.Cut(kv, "=")
+			if k != "" {
+				envOpts = append(envOpts, llb.AddEnv(k, v))
+			}
+		}
 
 		// Build the source mount based on the source type:
 		//   HTTP(S) URL → BuildKit fetches the tar directly; busybox extracts it to /src.

@@ -12,7 +12,6 @@
 #   - GKE node pool with Kata 3.28.0, RuntimeClass kata-clh registered
 #   - Nodes labelled runtime=kata
 #   - ci-worker GCP SA bound to the k8s SA below
-#   - docstore-ci/ci-scheduler k8s Secret with database-url
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -31,8 +30,8 @@ spec:
   jobTargetRef:
     template:
       spec:
+        activeDeadlineSeconds: 3600
         restartPolicy: Never
-        shareProcessNamespace: true
         serviceAccountName: ci-worker
         runtimeClassName: kata-clh
         nodeSelector:
@@ -50,19 +49,8 @@ spec:
           env:
           - name: DOCSTORE_URL
             value: https://docstore-efuj4cj54a-uc.a.run.app
-          - name: POD_NAME
-            valueFrom:
-              fieldRef:
-                fieldPath: metadata.name
-          - name: POD_IP
-            valueFrom:
-              fieldRef:
-                fieldPath: status.podIP
-          - name: DATABASE_URL
-            valueFrom:
-              secretKeyRef:
-                name: ci-scheduler
-                key: database-url
+          - name: CI_SCHEDULER_URL
+            value: http://ci-scheduler.docstore-ci.svc.cluster.local:8080
           - name: LOG_STORE
             value: gcs
           - name: LOG_BUCKET
@@ -76,20 +64,6 @@ spec:
             limits:
               cpu: "2000m"
               memory: "8Gi"
-        - name: cloud-sql-proxy
-          image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2
-          args:
-            - dlorenc-chainguard:us-central1:docstore-mvp
-            - --port=5432
-          securityContext:
-            runAsNonRoot: true
-          resources:
-            requests:
-              cpu: 100m
-              memory: 128Mi
-            limits:
-              cpu: 100m
-              memory: 128Mi
   minReplicaCount: 3
   maxReplicaCount: 10
   pollingInterval: 10

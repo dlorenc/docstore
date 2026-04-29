@@ -53,6 +53,26 @@ func (s *stubStore) GetCIJob(_ context.Context, id string) (*model.CIJob, error)
 	return s.getJob, s.getErr
 }
 
+func (s *stubStore) ClaimCIJob(_ context.Context, podName, podIP string) (*model.CIJob, error) {
+	return nil, nil
+}
+
+func (s *stubStore) StoreRequestToken(_ context.Context, jobID string, hashedToken string, exp time.Time) error {
+	return nil
+}
+
+func (s *stubStore) LookupRequestToken(_ context.Context, hashedToken string) (*model.CIJob, error) {
+	return nil, nil
+}
+
+func (s *stubStore) HeartbeatCIJob(_ context.Context, id string) error {
+	return nil
+}
+
+func (s *stubStore) CompleteCIJob(_ context.Context, id, status string, logURL, errorMessage *string) error {
+	return nil
+}
+
 func (s *stubStore) ReapStaleCIJobs(_ context.Context) ([]model.CIJob, error) {
 	return s.reapJobs, s.reapErr
 }
@@ -798,6 +818,26 @@ func (s *countingStore) ReapStaleCIJobs(_ context.Context) ([]model.CIJob, error
 	defer s.mu.Unlock()
 	s.reapCalls++
 	return s.reapJobs, s.reapErr
+}
+
+func (s *countingStore) ClaimCIJob(_ context.Context, podName, podIP string) (*model.CIJob, error) {
+	return nil, nil
+}
+
+func (s *countingStore) StoreRequestToken(_ context.Context, jobID string, hashedToken string, exp time.Time) error {
+	return nil
+}
+
+func (s *countingStore) LookupRequestToken(_ context.Context, hashedToken string) (*model.CIJob, error) {
+	return nil, nil
+}
+
+func (s *countingStore) HeartbeatCIJob(_ context.Context, id string) error {
+	return nil
+}
+
+func (s *countingStore) CompleteCIJob(_ context.Context, id, status string, logURL, errorMessage *string) error {
+	return nil
 }
 
 func (s *countingStore) CountQueuedCIJobs(_ context.Context) (int64, error) {
