@@ -90,7 +90,7 @@ func (a *App) CIRun(checkFilter, trigger, baseBranch, buildkitAddr string) error
 	fmt.Fprintln(a.Out)
 
 	// 7. Connect to buildkitd.
-	exec, err := executor.New(buildkitAddr, "")
+	exec, err := executor.New(buildkitAddr)
 	if err != nil {
 		return fmt.Errorf("could not connect to buildkitd at %s — is buildkitd running? (%w)", buildkitAddr, err)
 	}
