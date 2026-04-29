@@ -209,14 +209,12 @@ func (h *Handler) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /ui/o/{org}", h.handleOrg)
 	mux.HandleFunc("GET /ui/r/{owner}/{name}", h.handleBranches)
 	mux.HandleFunc("GET /ui/r/{owner}/{name}/settings", h.handleRepoSettings)
-	mux.HandleFunc("GET /ui/r/{owner}/{name}/b/{branch}", h.handleBranchDetail)
-	mux.HandleFunc("GET /ui/_/r/{owner}/{name}/b/{branch}/checks", h.handleChecksPartial)
-	mux.HandleFunc("GET /ui/_/r/{owner}/{name}/b/{branch}/comments", h.handleReviewCommentsPartial)
 	mux.HandleFunc("GET /ui/r/{owner}/{name}/log", h.handleRepoLog)
-	mux.HandleFunc("GET /ui/r/{owner}/{name}/b/{branch}/log", h.handleCommitLog)
-	mux.HandleFunc("GET /ui/_/r/{owner}/{name}/b/{branch}/log", h.handleLogRowsPartial)
-	mux.HandleFunc("GET /ui/r/{owner}/{name}/b/{branch}/c/{seq}", h.handleCommitDetail)
-	mux.HandleFunc("GET /ui/_/r/{owner}/{name}/b/{branch}/check-history", h.handleCheckHistoryPartial)
+	// Branch routes use {branch...} to support multi-segment branch names like
+	// "feature/auth". The dispatch handlers parse the trailing suffix to route
+	// to the appropriate sub-handler.
+	mux.HandleFunc("GET /ui/r/{owner}/{name}/b/{branch...}", h.handleBranchGetDispatch)
+	mux.HandleFunc("GET /ui/_/r/{owner}/{name}/b/{branch...}", h.handleBranchPartialGetDispatch)
 	mux.HandleFunc("GET /ui/r/{owner}/{name}/f/{path...}", h.handleFile)
 	mux.HandleFunc("GET /ui/r/{owner}/{name}/issues", h.handleIssues)
 	mux.HandleFunc("GET /ui/r/{owner}/{name}/issues/new", h.handleNewIssue)
@@ -251,9 +249,7 @@ func (h *Handler) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /ui/r/{owner}/{name}/-/set-auto-merge", h.handleUISetAutoMerge)
 
 	// Write operations — POST forms from branch detail and proposals pages.
-	mux.HandleFunc("POST /ui/r/{owner}/{name}/b/{branch}/review", h.handleSubmitReview)
-	mux.HandleFunc("POST /ui/r/{owner}/{name}/b/{branch}/comment", h.handlePostComment)
-	mux.HandleFunc("POST /ui/r/{owner}/{name}/b/{branch}/comment/{id}/delete", h.handleDeleteComment)
+	mux.HandleFunc("POST /ui/r/{owner}/{name}/b/{branch...}", h.handleBranchPostDispatch)
 	mux.HandleFunc("POST /ui/r/{owner}/{name}/proposals", h.handleCreateProposalUI)
 	mux.HandleFunc("POST /ui/r/{owner}/{name}/proposals/{id}/edit", h.handleEditProposal)
 	mux.HandleFunc("POST /ui/r/{owner}/{name}/proposals/{id}/close", h.handleCloseProposalUI)
@@ -272,9 +268,7 @@ func (h *Handler) registerRoutes(mux *http.ServeMux) {
 	// Write operations: delete org/repo.
 	mux.HandleFunc("POST /ui/o/{org}/delete", h.handleUIDeleteOrg)
 	mux.HandleFunc("POST /ui/r/{owner}/{name}/-/delete-repo", h.handleUIDeleteRepo)
-	// Commit form.
-	mux.HandleFunc("GET /ui/r/{owner}/{name}/b/{branch}/commit", h.handleNewCommit)
-	mux.HandleFunc("POST /ui/r/{owner}/{name}/b/{branch}/commit", h.handleNewCommit)
+	// (commit form is handled by handleBranchGetDispatch / handleBranchPostDispatch above)
 
 	mux.Handle("GET /ui/static/", http.StripPrefix("/ui/static/", http.FileServer(http.FS(h.staticSub))))
 }
