@@ -47,6 +47,22 @@
 </div>
 {{end}}
 
+<h2>Linked issues</h2>
+<div class="card">
+  {{if not .Issues}}
+  <div class="empty">no linked issues</div>
+  {{else}}
+  {{range .Issues}}
+  <div class="row">
+    <div>
+      <a href="/ui/r/{{$.Repo.Name}}/issues/{{.Number}}">#{{.Number}} {{.Title}}</a>
+    </div>
+    <span class="badge {{statusClass (printf "%s" .State)}}">{{.State}}</span>
+  </div>
+  {{end}}
+  {{end}}
+</div>
+
 <h2>Edit proposal</h2>
 <div class="card">
   <form method="POST" action="/ui/r/{{.Repo.Name}}/proposals/{{.Proposal.ID}}/edit" style="padding:8px 4px 4px">
