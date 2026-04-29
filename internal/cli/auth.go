@@ -298,6 +298,9 @@ func runOAuthDesktopFlow(clientID, clientSecret string) (*oauth2.Token, error) {
 			return
 		}
 		fmt.Fprintln(w, "Authentication successful! You can close this tab.")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
 		codeCh <- code
 	})
 
@@ -311,17 +314,23 @@ func runOAuthDesktopFlow(clientID, clientSecret string) (*oauth2.Token, error) {
 	fmt.Printf("If the browser does not open, visit:\n  %s\n", authURL)
 	openBrowser(authURL)
 
+	shutdownSrv := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		cbSrv.Shutdown(ctx) //nolint:errcheck
+	}
+
 	var code string
 	select {
 	case code = <-codeCh:
 	case err = <-errCh:
-		cbSrv.Close()
+		shutdownSrv()
 		return nil, err
 	case <-time.After(5 * time.Minute):
-		cbSrv.Close()
+		shutdownSrv()
 		return nil, fmt.Errorf("timed out waiting for browser authentication")
 	}
-	cbSrv.Close()
+	shutdownSrv()
 
 	tok, err := conf.Exchange(context.Background(), code)
 	if err != nil {
