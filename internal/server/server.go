@@ -346,9 +346,11 @@ func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore Wri
 	}
 	iapHandler := IAPMiddleware(devIdentity)(routed)
 
-	// /repos/ prefix handler on outer: intercepts presign requests and
-	// HMAC-verified archive downloads; everything else passes through IAP.
-	outer.Handle("/repos/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Wrap the IAP handler: intercept presign and HMAC-signed archive requests
+	// before IAP validation. Everything else falls through to iapHandler.
+	// Using "/" (not "/repos/") avoids the Go mux trailing-slash redirect that
+	// would turn POST /repos into a 307 → POST /repos/.
+	outer.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		repoName, endpoint, ok := parseRepoPath(r.URL.Path)
 		if ok && repoName != "" {
 			// Presign request (worker → get presigned URL): auth via request_token.
@@ -366,7 +368,6 @@ func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore Wri
 		}
 		iapHandler.ServeHTTP(w, r)
 	}))
-	outer.Handle("/", iapHandler)
 	return RequestLogger(outer)
 }
 
