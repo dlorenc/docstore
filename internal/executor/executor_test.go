@@ -31,7 +31,7 @@ func TestMain(m *testing.M) {
 // newExecutor creates an Executor for tests using the package-level buildkitd address.
 func newExecutor(t *testing.T) *executor.Executor {
 	t.Helper()
-	exec, err := executor.New(pkgBuildkitAddr, "")
+	exec, err := executor.New(pkgBuildkitAddr)
 	if err != nil {
 		t.Fatalf("cannot connect to buildkitd at %s: %v", pkgBuildkitAddr, err)
 	}
