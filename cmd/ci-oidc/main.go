@@ -212,11 +212,22 @@ func triggerToRefType(triggerType string) string {
 }
 
 // ---------------------------------------------------------------------------
+// GET /healthz
+// ---------------------------------------------------------------------------
+
+func handleHealth(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status":"ok"}`)) //nolint:errcheck
+}
+
+// ---------------------------------------------------------------------------
 // HTTP mux
 // ---------------------------------------------------------------------------
 
 func newMux(s *server) *http.ServeMux {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", handleHealth)
 	mux.HandleFunc("GET /.well-known/openid-configuration", s.handleDiscovery)
 	mux.HandleFunc("GET /.well-known/jwks.json", s.handleJWKS)
 	mux.HandleFunc("POST /ci/token", s.handleToken)

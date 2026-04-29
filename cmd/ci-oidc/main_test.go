@@ -351,6 +351,23 @@ func TestHandleToken_RefTypeMapping(t *testing.T) {
 	}
 }
 
+func TestHandleHealth(t *testing.T) {
+	t.Parallel()
+	r := newRequest(t, http.MethodGet, "/healthz", nil)
+	w := httptest.NewRecorder()
+	handleHealth(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	if body := w.Body.String(); body != `{"status":"ok"}` {
+		t.Errorf("body = %q, want {\"status\":\"ok\"}", body)
+	}
+}
+
 // Verify that triggerToRefType is exercised (also tested indirectly above).
 func TestTriggerToRefType(t *testing.T) {
 	t.Parallel()
