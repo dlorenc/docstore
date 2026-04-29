@@ -1153,6 +1153,88 @@ func TestHandleBranches_NoRolesOrDangerZone(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Multi-segment branch name routing tests
+// ---------------------------------------------------------------------------
+
+// TestBranchRoutingSlashes verifies that branch names containing forward
+// slashes (e.g. "feature/auth") work with literal slashes in the URL.
+func TestBranchRoutingSlashes_BranchDetail(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now(), CreatedBy: "me"}}
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, newFakeAssembler("feature/auth"))
+
+	code, body := getStatusAndBody(t, h, "/ui/r/acme/a/b/feature/auth")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", code, body)
+	}
+	if !strings.Contains(body, "feature/auth") {
+		t.Errorf("body missing branch name %q", "feature/auth")
+	}
+}
+
+func TestBranchRoutingSlashes_CommitLog(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now(), CreatedBy: "me"}}
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, nil)
+
+	// /b/feature/auth/log should route to the commit log for branch "feature/auth".
+	// fakeRead.GetBranch returns nil (branch not found) so we expect 404, not 405.
+	code, _ := getStatusAndBody(t, h, "/ui/r/acme/a/b/feature/auth/log")
+	// 404 means the handler ran and did not find the branch — correct routing.
+	if code == http.StatusMethodNotAllowed || code == http.StatusMovedPermanently {
+		t.Fatalf("routing failed: status = %d", code)
+	}
+}
+
+func TestBranchRoutingSlashes_ChecksPartial(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme"}}
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, newFakeAssembler("feature/auth"))
+
+	code, body := getStatusAndBody(t, h, "/ui/_/r/acme/a/b/feature/auth/checks")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d", code)
+	}
+	if strings.Contains(body, "<!doctype html>") {
+		t.Errorf("expected fragment, got full layout")
+	}
+}
+
+func TestBranchRoutingSlashes_CommitForm(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now(), CreatedBy: "me"}}
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, nil)
+
+	code, body := getStatusAndBody(t, h, "/ui/r/acme/a/b/feature/auth/commit")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", code, body)
+	}
+	// The rendered form should mention the branch name.
+	if !strings.Contains(body, "feature/auth") {
+		t.Errorf("body missing branch name %q", "feature/auth")
+	}
+}
+
+func TestBranchRoutingSlashes_PostReview(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now()}}
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, newFakeAssembler("feature/auth"))
+
+	code, _, _ := postForm(t, h, "/ui/r/acme/a/b/feature/auth/review", url.Values{
+		"status": {"approved"},
+		"body":   {"looks good"},
+	})
+	if code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303 (redirect)", code)
+	}
+}
+
+func TestBranchRoutingSlashes_DeleteComment(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now()}}
+	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, newFakeAssembler("feature/auth"))
+
+	code, _, _ := postForm(t, h, "/ui/r/acme/a/b/feature/auth/comment/cmt-1/delete", nil)
+	if code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303 (redirect)", code)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // CSRF middleware tests
 // ---------------------------------------------------------------------------
 

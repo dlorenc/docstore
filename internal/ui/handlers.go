@@ -339,6 +339,134 @@ func (h *Handler) handleBranches(w http.ResponseWriter, r *http.Request) {
 	h.renderBranchesPage(w, r, r.PathValue("owner"), r.PathValue("name"), "")
 }
 
+// branchURLPath builds a URL path segment for a branch name that preserves
+// forward slashes (which are structural in multi-segment branch names like
+// "feature/auth") while still percent-encoding other special characters.
+func branchURLPath(branch string) string {
+	parts := strings.Split(branch, "/")
+	for i, p := range parts {
+		parts[i] = url.PathEscape(p)
+	}
+	return strings.Join(parts, "/")
+}
+
+// handleBranchGetDispatch routes GET requests under /b/{branch...} to the
+// appropriate handler by inspecting the trailing suffix of the branch path
+// value. This allows branch names that contain forward slashes (e.g.
+// "feature/auth") to appear literally in URLs while still supporting the
+// existing sub-page routes (/log, /c/{seq}, /commit).
+//
+// Disambiguation: suffixes are checked from most-specific to least-specific.
+// The /c/{seq} case requires the trailing segment to parse as a positive
+// integer, so accidental matches against branch names are unlikely.
+func (h *Handler) handleBranchGetDispatch(w http.ResponseWriter, r *http.Request) {
+	raw := strings.TrimSuffix(r.PathValue("branch"), "/")
+
+	// /b/{branch}/commit → commit form (GET)
+	if strings.HasSuffix(raw, "/commit") {
+		r.SetPathValue("branch", strings.TrimSuffix(raw, "/commit"))
+		h.handleNewCommit(w, r)
+		return
+	}
+
+	// /b/{branch}/log → commit log
+	if strings.HasSuffix(raw, "/log") {
+		r.SetPathValue("branch", strings.TrimSuffix(raw, "/log"))
+		h.handleCommitLog(w, r)
+		return
+	}
+
+	// /b/{branch}/c/{seq} → commit detail; only matches when trailing segment
+	// is a valid positive integer so branch names containing "/c/" are safe.
+	if idx := strings.LastIndex(raw, "/c/"); idx >= 0 {
+		seqStr := raw[idx+3:]
+		if seq, err := strconv.ParseInt(seqStr, 10, 64); err == nil && seq > 0 {
+			r.SetPathValue("branch", raw[:idx])
+			r.SetPathValue("seq", seqStr)
+			h.handleCommitDetail(w, r)
+			return
+		}
+	}
+
+	// Default: branch detail page.
+	r.SetPathValue("branch", raw)
+	h.handleBranchDetail(w, r)
+}
+
+// handleBranchPartialGetDispatch routes GET requests under /_/…/b/{branch...}
+// to the appropriate HTMX partial handler by inspecting the trailing suffix.
+func (h *Handler) handleBranchPartialGetDispatch(w http.ResponseWriter, r *http.Request) {
+	raw := strings.TrimSuffix(r.PathValue("branch"), "/")
+
+	if strings.HasSuffix(raw, "/checks") {
+		r.SetPathValue("branch", strings.TrimSuffix(raw, "/checks"))
+		h.handleChecksPartial(w, r)
+		return
+	}
+	if strings.HasSuffix(raw, "/comments") {
+		r.SetPathValue("branch", strings.TrimSuffix(raw, "/comments"))
+		h.handleReviewCommentsPartial(w, r)
+		return
+	}
+	if strings.HasSuffix(raw, "/log") {
+		r.SetPathValue("branch", strings.TrimSuffix(raw, "/log"))
+		h.handleLogRowsPartial(w, r)
+		return
+	}
+	if strings.HasSuffix(raw, "/check-history") {
+		r.SetPathValue("branch", strings.TrimSuffix(raw, "/check-history"))
+		h.handleCheckHistoryPartial(w, r)
+		return
+	}
+
+	http.NotFound(w, r)
+}
+
+// handleBranchPostDispatch routes POST requests under /b/{branch...} to the
+// appropriate write handler by inspecting the trailing suffix.
+func (h *Handler) handleBranchPostDispatch(w http.ResponseWriter, r *http.Request) {
+	raw := strings.TrimSuffix(r.PathValue("branch"), "/")
+
+	// /b/{branch}/review
+	if strings.HasSuffix(raw, "/review") {
+		r.SetPathValue("branch", strings.TrimSuffix(raw, "/review"))
+		h.handleSubmitReview(w, r)
+		return
+	}
+
+	// /b/{branch}/comment/{id}/delete — checked before /comment to avoid
+	// ambiguity: strip /delete, extract id, confirm segment before id is "comment".
+	if strings.HasSuffix(raw, "/delete") {
+		trimmed := strings.TrimSuffix(raw, "/delete")
+		if slash := strings.LastIndex(trimmed, "/"); slash >= 0 {
+			id := trimmed[slash+1:]
+			rest := trimmed[:slash]
+			if strings.HasSuffix(rest, "/comment") {
+				r.SetPathValue("branch", strings.TrimSuffix(rest, "/comment"))
+				r.SetPathValue("id", id)
+				h.handleDeleteComment(w, r)
+				return
+			}
+		}
+	}
+
+	// /b/{branch}/comment
+	if strings.HasSuffix(raw, "/comment") {
+		r.SetPathValue("branch", strings.TrimSuffix(raw, "/comment"))
+		h.handlePostComment(w, r)
+		return
+	}
+
+	// /b/{branch}/commit → commit form (POST)
+	if strings.HasSuffix(raw, "/commit") {
+		r.SetPathValue("branch", strings.TrimSuffix(raw, "/commit"))
+		h.handleNewCommit(w, r)
+		return
+	}
+
+	http.NotFound(w, r)
+}
+
 // handleBranchDetail renders the diff + reviews + checks + policy view.
 func (h *Handler) handleBranchDetail(w http.ResponseWriter, r *http.Request) {
 	owner := r.PathValue("owner")
@@ -2464,7 +2592,7 @@ func (h *Handler) handleSubmitReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, "/ui/r/"+repoName+"/b/"+url.PathEscape(branch), http.StatusSeeOther)
+	http.Redirect(w, r, "/ui/r/"+repoName+"/b/"+branchURLPath(branch), http.StatusSeeOther)
 }
 
 // handlePostComment processes a POST form to add an inline review comment.
@@ -2499,7 +2627,7 @@ func (h *Handler) handlePostComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, "/ui/r/"+repoName+"/b/"+url.PathEscape(branch), http.StatusSeeOther)
+	http.Redirect(w, r, "/ui/r/"+repoName+"/b/"+branchURLPath(branch), http.StatusSeeOther)
 }
 
 // handleDeleteComment processes a POST form to delete an inline review comment.
@@ -2517,7 +2645,7 @@ func (h *Handler) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
 	role := h.svc.GetRole(r.Context(), repoName, identity)
 	if err := h.svc.DeleteReviewComment(r.Context(), identity, role, repoName, id); err != nil {
 		if errors.Is(err, service.ErrForbidden) {
-			http.Redirect(w, r, "/ui/r/"+repoName+"/b/"+url.PathEscape(branch)+"?err=forbidden", http.StatusSeeOther)
+			http.Redirect(w, r, "/ui/r/"+repoName+"/b/"+branchURLPath(branch)+"?err=forbidden", http.StatusSeeOther)
 			return
 		}
 		slog.Error("ui delete review comment", "repo", repoName, "id", id, "error", err)
@@ -2525,7 +2653,7 @@ func (h *Handler) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, "/ui/r/"+repoName+"/b/"+url.PathEscape(branch), http.StatusSeeOther)
+	http.Redirect(w, r, "/ui/r/"+repoName+"/b/"+branchURLPath(branch), http.StatusSeeOther)
 }
 
 // handleCreateProposalUI processes a POST form to create a new proposal.
@@ -2819,7 +2947,7 @@ func (h *Handler) handleNewCommit(w http.ResponseWriter, r *http.Request) {
 			Breadcrumbs: []crumb{
 				{Label: "repos", Href: "/ui/"},
 				{Label: repoName, Href: "/ui/r/" + repoName},
-				{Label: branch, Href: "/ui/r/" + repoName + "/b/" + url.PathEscape(branch)},
+				{Label: branch, Href: "/ui/r/" + repoName + "/b/" + branchURLPath(branch)},
 				{Label: "commit", Href: ""},
 			},
 			Body: commitFormPage{
@@ -2876,7 +3004,7 @@ func (h *Handler) handleNewCommit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, "/ui/r/"+repoName+"/b/"+url.PathEscape(branch), http.StatusSeeOther)
+	http.Redirect(w, r, "/ui/r/"+repoName+"/b/"+branchURLPath(branch), http.StatusSeeOther)
 }
 
 // Only entries for the named branch are included.
