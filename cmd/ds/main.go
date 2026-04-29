@@ -105,7 +105,10 @@ commands:
   issues comment edit <number> <comment-id> --body <markdown>  Edit an issue comment
   issues refs <number>                                       List cross-refs for an issue
   issues tie <number> --proposal <uuid>                      Tie a proposal to an issue
-  issues tie <number> --commit <seq>                         Tie a commit to an issue`
+  issues tie <number> --commit <seq>                         Tie a commit to an issue
+
+  login [server-url]                                         Authenticate with the server (defaults to compiled-in remote)
+  logout [server-url]                                        Remove stored credentials for the server`
 
 func main() {
 	if len(os.Args) < 2 {
@@ -122,7 +125,7 @@ func main() {
 	app := &cli.App{
 		Dir:           dir,
 		Out:           os.Stdout,
-		HTTP:          http.DefaultClient,
+		HTTP:          &http.Client{Transport: cli.NewAuthTransport()},
 		DefaultRemote: defaultRemote,
 	}
 
@@ -1216,6 +1219,30 @@ func main() {
 				os.Exit(1)
 			}
 		}
+
+	case "login":
+		serverURL := defaultRemote
+		if len(args) >= 2 && !strings.HasPrefix(args[1], "--") {
+			serverURL = args[1]
+		}
+		if serverURL == "" {
+			fmt.Fprintln(os.Stderr, "usage: ds login [server-url]")
+			fmt.Fprintln(os.Stderr, "error: no server URL provided and no default compiled in")
+			os.Exit(1)
+		}
+		err = app.Login(serverURL)
+
+	case "logout":
+		serverURL := defaultRemote
+		if len(args) >= 2 && !strings.HasPrefix(args[1], "--") {
+			serverURL = args[1]
+		}
+		if serverURL == "" {
+			fmt.Fprintln(os.Stderr, "usage: ds logout [server-url]")
+			fmt.Fprintln(os.Stderr, "error: no server URL provided and no default compiled in")
+			os.Exit(1)
+		}
+		err = app.Logout(serverURL)
 
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
