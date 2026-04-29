@@ -151,6 +151,7 @@ type commitDetailPage struct {
 	Repo   model.Repo
 	Branch string
 	Commit *store.CommitDetail
+	Issues []model.Issue
 }
 
 type issuesPage struct {
@@ -193,6 +194,7 @@ type proposalsPage struct {
 type proposalDetailPage struct {
 	Repo     model.Repo
 	Proposal *model.Proposal
+	Issues   []model.Issue
 	Err      string
 }
 
@@ -937,6 +939,13 @@ func (h *Handler) handleProposalDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	linkedIssues, err := h.write.ListIssuesByRef(ctx, repoName, model.IssueRefTypeProposal, id)
+	if err != nil {
+		slog.Error("ui list proposal issues", "repo", repoName, "id", id, "error", err)
+		h.renderError(w, r, http.StatusInternalServerError, "could not load linked issues")
+		return
+	}
+
 	h.render(w, r, h.tmpl.proposalDetail, "layout.html", pageData{
 		Title: repoName + " / proposals / " + id,
 		Breadcrumbs: []crumb{
@@ -945,7 +954,7 @@ func (h *Handler) handleProposalDetail(w http.ResponseWriter, r *http.Request) {
 			{Label: "proposals", Href: "/ui/r/" + repoName + "/proposals"},
 			{Label: proposal.Title, Href: ""},
 		},
-		Body: proposalDetailPage{Repo: *repo, Proposal: proposal},
+		Body: proposalDetailPage{Repo: *repo, Proposal: proposal, Issues: linkedIssues},
 	})
 }
 
@@ -1289,6 +1298,13 @@ func (h *Handler) handleCommitDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	linkedIssues, err := h.write.ListIssuesByRef(r.Context(), repoName, model.IssueRefTypeCommit, seqStr)
+	if err != nil {
+		slog.Error("ui list commit issues", "repo", repoName, "seq", seq, "error", err)
+		h.renderError(w, r, http.StatusInternalServerError, "could not load linked issues")
+		return
+	}
+
 	h.render(w, r, h.tmpl.commitDetail, "layout.html", pageData{
 		Title: fmt.Sprintf("%s / %s / commit %d", repoName, branch, seq),
 		Breadcrumbs: []crumb{
@@ -1302,6 +1318,7 @@ func (h *Handler) handleCommitDetail(w http.ResponseWriter, r *http.Request) {
 			Repo:   *repo,
 			Branch: branch,
 			Commit: commit,
+			Issues: linkedIssues,
 		},
 	})
 }
