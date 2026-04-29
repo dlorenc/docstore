@@ -176,34 +176,39 @@ func NewWithReadStore(ws WriteStore, rs ReadStore, devIdentity, bootstrapAdmin s
 	return s.buildHandler(devIdentity, bootstrapAdmin, ws)
 }
 
+
 // New returns an http.Handler with all routes registered.
 // devIdentity, if non-empty, bypasses IAP JWT validation (for local dev/testing).
 // bootstrapAdmin, if non-empty, has admin access to any repo with no existing admin.
 // writeStore provides write operations; pass nil if only read/health endpoints are needed.
 // database provides read operations; pass nil if only write/health endpoints are needed.
 func New(writeStore WriteStore, database *sql.DB, devIdentity, bootstrapAdmin string) http.Handler {
-	return newServer(writeStore, database, nil, nil, devIdentity, bootstrapAdmin)
+	return newServer(writeStore, database, nil, nil, devIdentity, bootstrapAdmin, "", "")
 }
 
 // NewWithBlobStore is like New but also wires a BlobStore into the read store
 // so that files stored externally can be fetched by the file endpoint.
 func NewWithBlobStore(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, devIdentity, bootstrapAdmin string) http.Handler {
-	return newServer(writeStore, database, bs, nil, devIdentity, bootstrapAdmin)
+	return newServer(writeStore, database, bs, nil, devIdentity, bootstrapAdmin, "", "")
 }
 
 // NewWithBroker is like NewWithBlobStore but also wires an event Broker.
 // Use this in production so mutation handlers can emit events.
-func NewWithBroker(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, broker *events.Broker, devIdentity, bootstrapAdmin string) http.Handler {
-	return newServer(writeStore, database, bs, broker, devIdentity, bootstrapAdmin)
+// iapClientID and iapClientSecret are optional; when set they are advertised
+// via the /.well-known/ds-config endpoint so the CLI can perform the OAuth flow.
+func NewWithBroker(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, broker *events.Broker, devIdentity, bootstrapAdmin, iapClientID, iapClientSecret string) http.Handler {
+	return newServer(writeStore, database, bs, broker, devIdentity, bootstrapAdmin, iapClientID, iapClientSecret)
 }
 
-func newServer(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, broker *events.Broker, devIdentity, bootstrapAdmin string) http.Handler {
+func newServer(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, broker *events.Broker, devIdentity, bootstrapAdmin, iapClientID, iapClientSecret string) http.Handler {
 	pc := policy.NewCache()
 	s := &server{
-		commitStore: writeStore,
-		policyCache: pc,
-		broker:      broker,
-		globalAdmin: bootstrapAdmin,
+		commitStore:     writeStore,
+		policyCache:     pc,
+		broker:          broker,
+		globalAdmin:     bootstrapAdmin,
+		iapClientID:     iapClientID,
+		iapClientSecret: iapClientSecret,
 	}
 	if writeStore != nil {
 		var emitter service.EventEmitter
@@ -226,9 +231,10 @@ func newServer(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, broke
 // Extracted so tests can construct a server with injected dependencies and still
 // get the full middleware stack.
 func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore WriteStore) http.Handler {
-	// Health check is exempt from auth — load balancers and probes call it.
+	// Health check and well-known config are exempt from auth.
 	outer := http.NewServeMux()
 	outer.HandleFunc("GET /healthz", handleHealth)
+	outer.HandleFunc("GET /.well-known/ds-config", s.handleDSConfig)
 
 	// All other routes require IAP authentication.
 	inner := http.NewServeMux()
@@ -315,6 +321,28 @@ type server struct {
 	// globalAdmin is the identity that may manage global resources like
 	// event subscriptions. Corresponds to the --bootstrap-admin flag.
 	globalAdmin string
+	// iapClientID and iapClientSecret are advertised via /.well-known/ds-config
+	// so CLI tools can perform the IAP OAuth flow.
+	iapClientID     string
+	iapClientSecret string
+}
+
+// handleDSConfig serves GET /.well-known/ds-config — unauthenticated.
+// It advertises the server's authentication configuration so CLI tools can
+// perform the appropriate OAuth flow.
+func (s *server) handleDSConfig(w http.ResponseWriter, r *http.Request) {
+	if s.iapClientID == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"auth": map[string]string{"type": "none"}})
+		return
+	}
+	auth := map[string]any{
+		"type":      "iap",
+		"client_id": s.iapClientID,
+	}
+	if s.iapClientSecret != "" {
+		auth["client_secret"] = s.iapClientSecret
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"auth": auth})
 }
 
 func (s *server) handleCommit(w http.ResponseWriter, r *http.Request) {
