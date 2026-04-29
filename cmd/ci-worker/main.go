@@ -388,8 +388,7 @@ func main() {
 	store := db.NewStore(sqlDB)
 
 	// Build executor.
-	cacheBucket := os.Getenv("CACHE_REF")
-	exec, err := executor.New(buildkitAddr, cacheBucket)
+	exec, err := executor.New(buildkitAddr)
 	if err != nil {
 		slog.Error("connect to buildkitd", "error", err)
 		os.Exit(1)

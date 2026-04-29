@@ -50,19 +50,16 @@ type CheckResult struct {
 
 // Executor translates a Config into an LLB DAG and dispatches it to buildkitd.
 type Executor struct {
-	client    *client.Client
-	cacheRef  string // registry image ref for BuildKit cache; empty = no cache
+	client *client.Client
 }
 
 // New creates an Executor connected to the buildkitd at buildkitAddr.
-// cacheRef is an optional registry image reference used for BuildKit registry cache;
-// pass "" to disable. Example: "us-central1-docker.pkg.dev/myproject/images/buildcache".
-func New(buildkitAddr, cacheRef string) (*Executor, error) {
+func New(buildkitAddr string) (*Executor, error) {
 	c, err := client.New(context.Background(), buildkitAddr)
 	if err != nil {
 		return nil, fmt.Errorf("connect to buildkitd at %s: %w", buildkitAddr, err)
 	}
-	return &Executor{client: c, cacheRef: cacheRef}, nil
+	return &Executor{client: c}, nil
 }
 
 // Run executes all checks in cfg in parallel against the given source.
@@ -179,9 +176,6 @@ func (e *Executor) runCheck(ctx context.Context, source string, check Check) Che
 	}
 
 	solveOpt := client.SolveOpt{
-		// FrontendAttrs must be non-nil: BuildKit v0.29 calls maps.Clone(opt.FrontendAttrs)
-		// then maps.Copy(result, cacheOpt.frontendAttrs), which panics when CacheImports/
-		// CacheExports are set and FrontendAttrs is nil.
 		FrontendAttrs: map[string]string{},
 		Session: []session.Attachable{
 			authprovider.NewDockerAuthProvider(ap),
@@ -190,19 +184,6 @@ func (e *Executor) runCheck(ctx context.Context, source string, check Check) Che
 	if isLocal {
 		solveOpt.LocalDirs = map[string]string{
 			"src": source,
-		}
-	}
-	if e.cacheRef != "" {
-		solveOpt.CacheImports = []client.CacheOptionsEntry{
-			{Type: "registry", Attrs: map[string]string{
-				"ref": e.cacheRef,
-			}},
-		}
-		solveOpt.CacheExports = []client.CacheOptionsEntry{
-			{Type: "registry", Attrs: map[string]string{
-				"ref":  e.cacheRef,
-				"mode": "max",
-			}},
 		}
 	}
 
