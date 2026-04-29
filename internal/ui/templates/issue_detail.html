@@ -40,7 +40,7 @@
 </div>
 
 <div class="meta" style="margin-bottom:14px">
-  by {{.Issue.Author}} · opened {{relTime .Issue.CreatedAt}}{{if .Issue.ClosedAt}} · closed {{relTimep .Issue.ClosedAt}}{{end}}
+  by <a href="/ui/u/{{.Issue.Author}}">{{.Issue.Author}}</a> · opened {{relTime .Issue.CreatedAt}}{{if .Issue.ClosedAt}} · closed {{relTimep .Issue.ClosedAt}}{{end}}
 </div>
 
 {{if .Issue.Labels}}
@@ -83,7 +83,7 @@
   {{range .Comments}}
   <div class="row">
     <div>
-      <strong>{{.Author}}</strong>
+      <strong><a href="/ui/u/{{.Author}}">{{.Author}}</a></strong>
       <span class="meta">{{relTime .CreatedAt}}{{if .EditedAt}} · edited{{end}}</span>
     </div>
     <form method="POST" action="/ui/r/{{$d.Repo.Name}}/issues/{{$d.Issue.Number}}/comments/{{.ID}}/delete">
