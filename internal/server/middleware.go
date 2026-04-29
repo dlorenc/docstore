@@ -360,6 +360,173 @@ func commitTargetsMain(r *http.Request) bool {
 	return req.Branch == "main"
 }
 
+// --- Job OIDC token middleware ---
+
+const jobIdentityKey contextKey = "jobIdentity"
+
+// JobIdentity holds the identity of a CI job extracted from a validated OIDC token.
+type JobIdentity struct {
+	JobID   string
+	Repo    string
+	Branch  string
+	Subject string
+}
+
+// JobIdentityFromContext returns the job identity stored in the context by
+// JobTokenMiddleware. Returns nil if the request was not authenticated via
+// a job OIDC token.
+func JobIdentityFromContext(ctx context.Context) *JobIdentity {
+	v, _ := ctx.Value(jobIdentityKey).(*JobIdentity)
+	return v
+}
+
+// JobTokenMiddleware validates a CI job OIDC JWT (issued by oidc.docstore.dev)
+// and extracts the job context. If the token is valid, it sets the identity
+// in context so the request proceeds. If invalid, returns 401.
+// If no Authorization header is present, falls through (allows IAP to handle it).
+func JobTokenMiddleware(jwksURL, audience, issuer string) func(http.Handler) http.Handler {
+	cache := newKeyCacheForURL(jwksURL)
+	return newJobTokenMiddlewareWithKeyFetcher(cache.get, audience, issuer)
+}
+
+// newJobTokenMiddlewareWithKeyFetcher is the testable core of JobTokenMiddleware.
+func newJobTokenMiddlewareWithKeyFetcher(fetchKey func(kid string) (crypto.PublicKey, error), audience, issuer string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			auth := r.Header.Get("Authorization")
+			tokenStr := strings.TrimPrefix(auth, "Bearer ")
+			if tokenStr == "" || tokenStr == auth {
+				// No Bearer token — fall through to next handler.
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			jobID, err := validateJobOIDCToken(tokenStr, fetchKey, audience, issuer)
+			if err != nil {
+				slog.Warn("job token auth failed", "reason", err, "path", r.URL.Path)
+				writeAPIError(w, ErrCodeUnauthorized, http.StatusUnauthorized, "unauthenticated")
+				return
+			}
+
+			identity := "ci-job:" + jobID.JobID
+			if rl := requestLogFromContext(r.Context()); rl != nil {
+				rl.identity = identity
+			}
+			ctx := context.WithValue(r.Context(), jobIdentityKey, jobID)
+			ctx = context.WithValue(ctx, identityKey, identity)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+// validateJobOIDCToken parses and validates an RS256 job OIDC JWT, returning the JobIdentity.
+func validateJobOIDCToken(tokenString string, fetchKey func(kid string) (crypto.PublicKey, error), audience, issuer string) (*JobIdentity, error) {
+	parts := strings.SplitN(tokenString, ".", 3)
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("invalid JWT format")
+	}
+
+	// Parse header to get algorithm and key ID.
+	headerJSON, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return nil, fmt.Errorf("decode header: %w", err)
+	}
+	var header struct {
+		Alg string `json:"alg"`
+		Kid string `json:"kid"`
+	}
+	if err := json.Unmarshal(headerJSON, &header); err != nil {
+		return nil, fmt.Errorf("parse header: %w", err)
+	}
+	if header.Alg != "RS256" {
+		return nil, fmt.Errorf("unsupported algorithm: %s", header.Alg)
+	}
+	if header.Kid == "" {
+		return nil, fmt.Errorf("missing kid")
+	}
+
+	// Fetch the public key for this key ID.
+	key, err := fetchKey(header.Kid)
+	if err != nil {
+		return nil, fmt.Errorf("fetch key: %w", err)
+	}
+	rsaKey, ok := key.(*rsa.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("expected RSA key for RS256")
+	}
+
+	// Verify the signature over header.payload.
+	sigBytes, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return nil, fmt.Errorf("decode signature: %w", err)
+	}
+	signingInput := parts[0] + "." + parts[1]
+	digest := sha256.Sum256([]byte(signingInput))
+	if err := rsa.VerifyPKCS1v15(rsaKey, crypto.SHA256, digest[:], sigBytes); err != nil {
+		return nil, fmt.Errorf("invalid signature: %w", err)
+	}
+
+	// Parse payload claims.
+	payloadJSON, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, fmt.Errorf("decode payload: %w", err)
+	}
+	var claims struct {
+		Iss    string  `json:"iss"`
+		Sub    string  `json:"sub"`
+		Aud    any     `json:"aud"` // string or []interface{}
+		Exp    float64 `json:"exp"`
+		JobID  string  `json:"job_id"`
+		Repo   string  `json:"repo"`
+		Branch string  `json:"branch"`
+	}
+	if err := json.Unmarshal(payloadJSON, &claims); err != nil {
+		return nil, fmt.Errorf("parse payload: %w", err)
+	}
+
+	// Check expiry.
+	if time.Now().Unix() > int64(claims.Exp) {
+		return nil, fmt.Errorf("token expired")
+	}
+
+	// Check issuer.
+	if claims.Iss != issuer {
+		return nil, fmt.Errorf("invalid issuer: %q", claims.Iss)
+	}
+
+	// Check audience.
+	if !jwtAudienceContains(claims.Aud, audience) {
+		return nil, fmt.Errorf("invalid audience")
+	}
+
+	if claims.JobID == "" {
+		return nil, fmt.Errorf("missing job_id claim")
+	}
+
+	return &JobIdentity{
+		JobID:   claims.JobID,
+		Repo:    claims.Repo,
+		Branch:  claims.Branch,
+		Subject: claims.Sub,
+	}, nil
+}
+
+// jwtAudienceContains checks whether target is present in the JWT aud claim,
+// which may be a single string or a JSON array.
+func jwtAudienceContains(aud any, target string) bool {
+	switch v := aud.(type) {
+	case string:
+		return v == target
+	case []any:
+		for _, a := range v {
+			if s, ok := a.(string); ok && s == target {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // IAPMiddleware returns an HTTP middleware that validates GCP IAP JWTs from the
 // X-Goog-IAP-JWT-Assertion header. If devIdentity is non-empty, JWT validation is
 // skipped and devIdentity is used directly (for local dev/testing).
@@ -500,6 +667,7 @@ func validateIAPJWT(tokenString string, fetchKey func(kid string) (crypto.Public
 const iapJWKURL = "https://www.gstatic.com/iap/verify/public_key-jwk"
 
 type keyCache struct {
+	url       string // JWKS URL to fetch; defaults to iapJWKURL if empty
 	mu        sync.RWMutex
 	keys      map[string]crypto.PublicKey
 	fetchedAt time.Time
@@ -508,6 +676,15 @@ type keyCache struct {
 
 func newKeyCache() *keyCache {
 	return &keyCache{
+		url: iapJWKURL,
+		ttl: time.Hour,
+	}
+}
+
+// newKeyCacheForURL returns a keyCache that fetches JWKS from the given URL.
+func newKeyCacheForURL(url string) *keyCache {
+	return &keyCache{
+		url: url,
 		ttl: time.Hour,
 	}
 }
@@ -545,7 +722,11 @@ func (c *keyCache) get(kid string) (crypto.PublicKey, error) {
 }
 
 func (c *keyCache) refresh() error {
-	resp, err := http.Get(iapJWKURL) //nolint:noctx
+	url := c.url
+	if url == "" {
+		url = iapJWKURL
+	}
+	resp, err := http.Get(url) //nolint:noctx
 	if err != nil {
 		return err
 	}
