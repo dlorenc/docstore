@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/model"
 )
 
@@ -23,12 +25,18 @@ import (
 // ---------------------------------------------------------------------------
 
 type stubStore struct {
-	insertedJobs []*model.CIJob
-	getJob       *model.CIJob
-	getErr       error
-	reapJobs     []model.CIJob
-	reapErr      error
-	queueDepth   int64
+	insertedJobs  []*model.CIJob
+	getJob        *model.CIJob
+	getErr        error
+	reapJobs      []model.CIJob
+	reapErr       error
+	queueDepth    int64
+	claimJob      *model.CIJob
+	claimErr      error
+	lookupJob     *model.CIJob
+	lookupErr     error
+	tokenStored   bool
+	storeTokenErr error
 }
 
 func (s *stubStore) InsertCIJob(_ context.Context, repo, branch string, sequence int64, triggerType, triggerBranch, triggerBaseBranch, triggerProposalID string) (*model.CIJob, error) {
@@ -54,15 +62,16 @@ func (s *stubStore) GetCIJob(_ context.Context, id string) (*model.CIJob, error)
 }
 
 func (s *stubStore) ClaimCIJob(_ context.Context, podName, podIP string) (*model.CIJob, error) {
-	return nil, nil
+	return s.claimJob, s.claimErr
 }
 
 func (s *stubStore) StoreRequestToken(_ context.Context, jobID string, hashedToken string, exp time.Time) error {
-	return nil
+	s.tokenStored = true
+	return s.storeTokenErr
 }
 
 func (s *stubStore) LookupRequestToken(_ context.Context, hashedToken string) (*model.CIJob, error) {
-	return nil, nil
+	return s.lookupJob, s.lookupErr
 }
 
 func (s *stubStore) HeartbeatCIJob(_ context.Context, id string) error {
@@ -1313,5 +1322,283 @@ func TestHandleQueueDepth_ZeroDepth(t *testing.T) {
 	want := `{"queue_depth":0}`
 	if got := strings.TrimSpace(w.Body.String()); got != want {
 		t.Errorf("body = %q, want %q", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// stubClaimer — test double for claimValidator
+// ---------------------------------------------------------------------------
+
+type stubClaimer struct {
+	podName string
+	podIP   string
+	err     error
+}
+
+func (s *stubClaimer) ValidateToken(_ context.Context, _ string) (string, string, error) {
+	return s.podName, s.podIP, s.err
+}
+
+// ---------------------------------------------------------------------------
+// Tests: POST /claim
+// ---------------------------------------------------------------------------
+
+func TestHandleClaim_NoClaimer_NoJobs(t *testing.T) {
+	stub := &stubStore{claimJob: nil, claimErr: nil}
+	sched := &scheduler{store: stub}
+
+	req := httptest.NewRequest(http.MethodPost, "/claim", nil)
+	w := httptest.NewRecorder()
+
+	sched.handleClaim(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", w.Code)
+	}
+}
+
+func TestHandleClaim_NoClaimer_ClaimsJob(t *testing.T) {
+	job := &model.CIJob{ID: "job-1", Repo: "org/repo", Branch: "main", Status: "claimed"}
+	stub := &stubStore{claimJob: job}
+	sched := &scheduler{store: stub, oidcTokenURL: "https://example.com/oidc"}
+
+	req := httptest.NewRequest(http.MethodPost, "/claim", nil)
+	w := httptest.NewRecorder()
+
+	sched.handleClaim(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp claimResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.RequestToken == "" {
+		t.Error("expected non-empty RequestToken")
+	}
+	if resp.OIDCTokenURL == "" {
+		t.Error("expected non-empty OIDCTokenURL")
+	}
+	if !stub.tokenStored {
+		t.Error("expected StoreRequestToken to have been called")
+	}
+}
+
+func TestHandleClaim_NoClaimer_StoreError(t *testing.T) {
+	job := &model.CIJob{ID: "job-1", Status: "claimed"}
+	stub := &stubStore{claimJob: job, storeTokenErr: errors.New("db error")}
+	sched := &scheduler{store: stub}
+
+	req := httptest.NewRequest(http.MethodPost, "/claim", nil)
+	w := httptest.NewRecorder()
+
+	sched.handleClaim(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", w.Code)
+	}
+}
+
+func TestHandleClaim_WithClaimer_ValidToken(t *testing.T) {
+	job := &model.CIJob{ID: "job-2", Status: "claimed"}
+	stub := &stubStore{claimJob: job}
+	claimer := &stubClaimer{podName: "pod-1", podIP: "10.0.0.1"}
+	sched := &scheduler{store: stub, claimer: claimer, oidcTokenURL: "https://example.com/oidc"}
+
+	req := httptest.NewRequest(http.MethodPost, "/claim", nil)
+	req.Header.Set("Authorization", "Bearer some-sa-token")
+	w := httptest.NewRecorder()
+
+	sched.handleClaim(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp claimResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.RequestToken == "" {
+		t.Error("expected non-empty RequestToken")
+	}
+}
+
+func TestHandleClaim_WithClaimer_InvalidToken(t *testing.T) {
+	stub := &stubStore{}
+	claimer := &stubClaimer{err: errors.New("token rejected")}
+	sched := &scheduler{store: stub, claimer: claimer}
+
+	req := httptest.NewRequest(http.MethodPost, "/claim", nil)
+	req.Header.Set("Authorization", "Bearer bad-token")
+	w := httptest.NewRecorder()
+
+	sched.handleClaim(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests: POST /jobs/{id}/heartbeat
+// ---------------------------------------------------------------------------
+
+func TestHandleHeartbeat_ValidToken(t *testing.T) {
+	job := &model.CIJob{ID: "job-hb", Status: "claimed"}
+	stub := &stubStore{lookupJob: job}
+	sched := &scheduler{store: stub}
+
+	req := httptest.NewRequest(http.MethodPost, "/jobs/job-hb/heartbeat", nil)
+	req.SetPathValue("id", "job-hb")
+	req.Header.Set("Authorization", "Bearer valid-token")
+	w := httptest.NewRecorder()
+
+	sched.handleHeartbeat(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleHeartbeat_InvalidToken(t *testing.T) {
+	stub := &stubStore{lookupErr: db.ErrTokenInvalid}
+	sched := &scheduler{store: stub}
+
+	req := httptest.NewRequest(http.MethodPost, "/jobs/job-hb/heartbeat", nil)
+	req.SetPathValue("id", "job-hb")
+	req.Header.Set("Authorization", "Bearer expired-token")
+	w := httptest.NewRecorder()
+
+	sched.handleHeartbeat(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", w.Code)
+	}
+}
+
+func TestHandleHeartbeat_TokenJobMismatch(t *testing.T) {
+	// Token is valid but belongs to a different job.
+	job := &model.CIJob{ID: "other-job", Status: "claimed"}
+	stub := &stubStore{lookupJob: job}
+	sched := &scheduler{store: stub}
+
+	req := httptest.NewRequest(http.MethodPost, "/jobs/job-hb/heartbeat", nil)
+	req.SetPathValue("id", "job-hb")
+	req.Header.Set("Authorization", "Bearer valid-token")
+	w := httptest.NewRecorder()
+
+	sched.handleHeartbeat(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", w.Code)
+	}
+}
+
+func TestHandleHeartbeat_MissingToken(t *testing.T) {
+	stub := &stubStore{}
+	sched := &scheduler{store: stub}
+
+	req := httptest.NewRequest(http.MethodPost, "/jobs/job-hb/heartbeat", nil)
+	req.SetPathValue("id", "job-hb")
+	// No Authorization header.
+	w := httptest.NewRecorder()
+
+	sched.handleHeartbeat(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests: POST /jobs/{id}/complete
+// ---------------------------------------------------------------------------
+
+func TestHandleComplete_ValidToken(t *testing.T) {
+	job := &model.CIJob{ID: "job-c", Status: "claimed"}
+	stub := &stubStore{lookupJob: job}
+	sched := &scheduler{store: stub}
+
+	body, _ := json.Marshal(map[string]string{"status": "passed"})
+	req := httptest.NewRequest(http.MethodPost, "/jobs/job-c/complete", bytes.NewReader(body))
+	req.SetPathValue("id", "job-c")
+	req.Header.Set("Authorization", "Bearer valid-token")
+	w := httptest.NewRecorder()
+
+	sched.handleComplete(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleComplete_InvalidToken(t *testing.T) {
+	stub := &stubStore{lookupErr: db.ErrTokenInvalid}
+	sched := &scheduler{store: stub}
+
+	body, _ := json.Marshal(map[string]string{"status": "passed"})
+	req := httptest.NewRequest(http.MethodPost, "/jobs/job-c/complete", bytes.NewReader(body))
+	req.SetPathValue("id", "job-c")
+	req.Header.Set("Authorization", "Bearer bad-token")
+	w := httptest.NewRecorder()
+
+	sched.handleComplete(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", w.Code)
+	}
+}
+
+func TestHandleComplete_TokenJobMismatch(t *testing.T) {
+	job := &model.CIJob{ID: "other-job", Status: "claimed"}
+	stub := &stubStore{lookupJob: job}
+	sched := &scheduler{store: stub}
+
+	body, _ := json.Marshal(map[string]string{"status": "passed"})
+	req := httptest.NewRequest(http.MethodPost, "/jobs/job-c/complete", bytes.NewReader(body))
+	req.SetPathValue("id", "job-c")
+	req.Header.Set("Authorization", "Bearer valid-token")
+	w := httptest.NewRecorder()
+
+	sched.handleComplete(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", w.Code)
+	}
+}
+
+func TestHandleComplete_InvalidStatus(t *testing.T) {
+	job := &model.CIJob{ID: "job-c", Status: "claimed"}
+	stub := &stubStore{lookupJob: job}
+	sched := &scheduler{store: stub}
+
+	body, _ := json.Marshal(map[string]string{"status": "unknown"})
+	req := httptest.NewRequest(http.MethodPost, "/jobs/job-c/complete", bytes.NewReader(body))
+	req.SetPathValue("id", "job-c")
+	req.Header.Set("Authorization", "Bearer valid-token")
+	w := httptest.NewRecorder()
+
+	sched.handleComplete(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestHandleComplete_MissingToken(t *testing.T) {
+	stub := &stubStore{}
+	sched := &scheduler{store: stub}
+
+	body, _ := json.Marshal(map[string]string{"status": "passed"})
+	req := httptest.NewRequest(http.MethodPost, "/jobs/job-c/complete", bytes.NewReader(body))
+	req.SetPathValue("id", "job-c")
+	// No Authorization header.
+	w := httptest.NewRecorder()
+
+	sched.handleComplete(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", w.Code)
 	}
 }
