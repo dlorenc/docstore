@@ -26,6 +26,8 @@ import (
 func main() {
 	devIdentity := flag.String("dev-identity", "", "bypass IAP JWT validation and use this identity (local dev/testing only)")
 	bootstrapAdmin := flag.String("bootstrap-admin", "", "identity granted admin access to repos with no admin assigned yet")
+	iapClientID := flag.String("iap-client-id", "", "IAP OAuth client ID advertised via /.well-known/ds-config (overrides IAP_CLIENT_ID env var)")
+	iapClientSecret := flag.String("iap-client-secret", "", "IAP OAuth client secret advertised via /.well-known/ds-config (overrides IAP_CLIENT_SECRET env var)")
 	flag.Parse()
 
 	// Set up structured logger based on LOG_FORMAT and LOG_LEVEL env vars.
@@ -53,6 +55,12 @@ func main() {
 	}
 	if *bootstrapAdmin == "" {
 		*bootstrapAdmin = os.Getenv("BOOTSTRAP_ADMIN")
+	}
+	if *iapClientID == "" {
+		*iapClientID = os.Getenv("IAP_CLIENT_ID")
+	}
+	if *iapClientSecret == "" {
+		*iapClientSecret = os.Getenv("IAP_CLIENT_SECRET")
 	}
 
 	if *devIdentity != "" {
@@ -135,7 +143,7 @@ func main() {
 	dispatchCtx, dispatchCancel := context.WithCancel(context.Background())
 	events.StartDispatcher(dispatchCtx, database, dsn, broker)
 
-	srv := server.NewWithBroker(commitStore, database, bs, broker, *devIdentity, *bootstrapAdmin)
+	srv := server.NewWithBroker(commitStore, database, bs, broker, *devIdentity, *bootstrapAdmin, *iapClientID, *iapClientSecret)
 
 	// Start the auto-merge worker. It subscribes to check.reported and
 	// review.submitted events and merges branches with auto_merge=true.
