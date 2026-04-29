@@ -3,6 +3,7 @@ package main
 import (
 	"cmp"
 	"context"
+	"encoding/base64"
 	"flag"
 	"log/slog"
 	"net/http"
@@ -143,7 +144,26 @@ func main() {
 	dispatchCtx, dispatchCancel := context.WithCancel(context.Background())
 	events.StartDispatcher(dispatchCtx, database, dsn, broker)
 
-	srv := server.NewWithBroker(commitStore, database, bs, broker, *devIdentity, *bootstrapAdmin, *iapClientID, *iapClientSecret)
+	// Configure presigned archive URLs (optional).
+	// ARCHIVE_HMAC_SECRET: base64-encoded raw HMAC secret bytes.
+	// ARCHIVE_BASE_URL: public server base URL, e.g. "https://docstore.dev".
+	archiveHMACSecretB64 := os.Getenv("ARCHIVE_HMAC_SECRET")
+	archiveBaseURL := os.Getenv("ARCHIVE_BASE_URL")
+	var archiveHMACSecret []byte
+	if archiveHMACSecretB64 != "" {
+		archiveHMACSecret, err = base64.StdEncoding.DecodeString(archiveHMACSecretB64)
+		if err != nil {
+			logger.Error("invalid ARCHIVE_HMAC_SECRET", "error", err)
+			os.Exit(1)
+		}
+	} else {
+		logger.Warn("ARCHIVE_HMAC_SECRET not set — presigned archive URLs disabled")
+	}
+
+	jobStore := db.NewStore(database)
+	srv := server.NewWithPresign(commitStore, database, bs, broker,
+		*devIdentity, *bootstrapAdmin, *iapClientID, *iapClientSecret,
+		jobStore, archiveHMACSecret, archiveBaseURL)
 
 	// Start the auto-merge worker. It subscribes to check.reported and
 	// review.submitted events and merges branches with auto_merge=true.

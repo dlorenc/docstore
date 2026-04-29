@@ -219,6 +219,38 @@ func heartbeat(ctx context.Context, schedulerURL, jobID, requestToken string, do
 // Docstore API helpers
 // ---------------------------------------------------------------------------
 
+// getPresignedArchiveURL calls POST /repos/{repo}/-/archive/presign with the
+// request_token and returns the presigned URL for BuildKit to fetch the archive.
+// This endpoint bypasses IAP and uses the request_token for authentication.
+func getPresignedArchiveURL(ctx context.Context, docstoreURL, repo, requestToken string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	u := fmt.Sprintf("%s/repos/%s/-/archive/presign", docstoreURL, url.PathEscape(repo))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, nil)
+	if err != nil {
+		return "", fmt.Errorf("build presign request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+requestToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("presign request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("presign: unexpected status %d", resp.StatusCode)
+	}
+	var body struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return "", fmt.Errorf("decode presign response: %w", err)
+	}
+	if body.URL == "" {
+		return "", fmt.Errorf("presign: empty URL in response")
+	}
+	return body.URL, nil
+}
+
 func fetchConfig(ctx context.Context, client *http.Client, docstoreURL, repo, branch string, headSeq int64) (*executor.Config, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -328,6 +360,7 @@ func runJob(
 	ls logstore.LogStore,
 	docstoreURL string,
 	job *model.CIJob,
+	requestToken string,
 	logDir string,
 	triggerCtx ciconfig.TriggerContext,
 	extraEnv []string,
@@ -353,9 +386,11 @@ func runJob(
 		return "passed", nil, nil
 	}
 
-	// 2. Construct the archive URL.
-	archiveURL := fmt.Sprintf("%s/repos/%s/-/archive?branch=%s&at=%d",
-		docstoreURL, job.Repo, url.QueryEscape(job.Branch), job.Sequence)
+	// 2. Obtain a presigned archive URL for BuildKit to fetch the source.
+	archiveURL, err := getPresignedArchiveURL(ctx, docstoreURL, job.Repo, requestToken)
+	if err != nil {
+		return fail(fmt.Sprintf("get presigned archive URL: %v", err))
+	}
 
 	// 3. Mark each check as pending (in parallel).
 	var pendingWg sync.WaitGroup
@@ -538,7 +573,7 @@ func main() {
 		}
 
 		// Execute the job.
-		jobStatus, jobLogURL, jobErrMsg := runJob(ctx, httpClient, exec, ls, docstoreURL, job, logDir, triggerCtx, extraEnv)
+		jobStatus, jobLogURL, jobErrMsg := runJob(ctx, httpClient, exec, ls, docstoreURL, job, requestToken, logDir, triggerCtx, extraEnv)
 
 		// Stop heartbeat and clear log dir.
 		close(hbDone)

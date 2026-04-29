@@ -200,6 +200,42 @@ func NewWithBroker(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, b
 	return newServer(writeStore, database, bs, broker, devIdentity, bootstrapAdmin, iapClientID, iapClientSecret)
 }
 
+// NewWithPresign is like NewWithBroker but also enables presigned archive URLs.
+// archiveHMACSecret is the raw HMAC secret (not base64); archiveBaseURL is the
+// public server base URL used when constructing presigned URLs.
+// If archiveHMACSecret is nil, presigned archive URLs are disabled.
+func NewWithPresign(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, broker *events.Broker,
+	devIdentity, bootstrapAdmin, iapClientID, iapClientSecret string,
+	jobStore jobTokenStore, archiveHMACSecret []byte, archiveBaseURL string) http.Handler {
+	pc := policy.NewCache()
+	s := &server{
+		commitStore:       writeStore,
+		policyCache:       pc,
+		broker:            broker,
+		globalAdmin:       bootstrapAdmin,
+		iapClientID:       iapClientID,
+		iapClientSecret:   iapClientSecret,
+		archiveHMACSecret: archiveHMACSecret,
+		archiveBaseURL:    archiveBaseURL,
+		jobTokenStore:     jobStore,
+	}
+	if writeStore != nil {
+		var emitter service.EventEmitter
+		if broker != nil {
+			emitter = broker
+		}
+		s.svc = service.New(writeStore, emitter, pc)
+	}
+	if database != nil {
+		rs := store.New(database)
+		if bs != nil {
+			rs.SetBlobStore(bs)
+		}
+		s.readStore = rs
+	}
+	return s.buildHandler(devIdentity, bootstrapAdmin, writeStore)
+}
+
 func newServer(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, broker *events.Broker, devIdentity, bootstrapAdmin, iapClientID, iapClientSecret string) http.Handler {
 	pc := policy.NewCache()
 	s := &server{
@@ -308,8 +344,35 @@ func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore Wri
 	if writeStore != nil {
 		routed = RBACMiddleware(writeStore, bootstrapAdmin)(inner)
 	}
-	outer.Handle("/", IAPMiddleware(devIdentity)(routed))
+	iapHandler := IAPMiddleware(devIdentity)(routed)
+
+	// /repos/ prefix handler on outer: intercepts presign requests and
+	// HMAC-verified archive downloads; everything else passes through IAP.
+	outer.Handle("/repos/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		repoName, endpoint, ok := parseRepoPath(r.URL.Path)
+		if ok && repoName != "" {
+			// Presign request (worker → get presigned URL): auth via request_token.
+			if endpoint == "archive/presign" && r.Method == http.MethodPost {
+				r.SetPathValue("name", repoName)
+				s.handleArchivePresign(w, r)
+				return
+			}
+			// HMAC-verified archive download (BuildKit → fetch source): auth via sig.
+			if endpoint == "archive" && r.Method == http.MethodGet && r.URL.Query().Get("sig") != "" {
+				r.SetPathValue("name", repoName)
+				s.handlePresignedArchive(w, r)
+				return
+			}
+		}
+		iapHandler.ServeHTTP(w, r)
+	}))
+	outer.Handle("/", iapHandler)
 	return RequestLogger(outer)
+}
+
+// jobTokenStore is the subset of db.Store needed for request_token validation.
+type jobTokenStore interface {
+	LookupRequestToken(ctx context.Context, hashedToken string) (*model.CIJob, error)
 }
 
 type server struct {
@@ -325,6 +388,13 @@ type server struct {
 	// so CLI tools can perform the IAP OAuth flow.
 	iapClientID     string
 	iapClientSecret string
+	// archiveHMACSecret is the raw HMAC key for presigned archive URLs.
+	// nil means the feature is disabled.
+	archiveHMACSecret []byte
+	// archiveBaseURL is the public server base URL used when constructing presigned URLs.
+	archiveBaseURL string
+	// jobTokenStore validates request_tokens for presigned archive URL issuance.
+	jobTokenStore jobTokenStore
 }
 
 // handleDSConfig serves GET /.well-known/ds-config — unauthenticated.
