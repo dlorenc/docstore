@@ -286,7 +286,17 @@ func (h *Handler) handleRepos(w http.ResponseWriter, r *http.Request) {
 						RepoCount: len(byOrg[m.Org]),
 					})
 				}
-				showGetStarted = len(myOrgs) == 0
+				if len(myOrgs) == 0 {
+					// Only show the "Get started" card if the user also has no
+					// repo roles. A user who created a repo has an admin role
+					// even without any org membership, so they are not new.
+					roles, rerr := h.write.ListRolesByIdentity(ctx, identity)
+					if rerr != nil {
+						slog.Error("ui list repo roles for get-started check", "error", rerr)
+					} else {
+						showGetStarted = len(roles) == 0
+					}
+				}
 			}
 		}
 	}

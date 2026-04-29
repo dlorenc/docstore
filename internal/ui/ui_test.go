@@ -55,6 +55,8 @@ type fakeWrite struct {
 	miss          bool
 	proposals     []*model.Proposal
 	releases      []model.Release
+	memberships   []model.OrgMember
+	repoRoles     []model.RepoRole
 }
 
 func (f *fakeWrite) ListRepos(_ context.Context) ([]model.Repo, error) { return f.repos, nil }
@@ -77,13 +79,13 @@ func (f *fakeWrite) ListOrgMembers(_ context.Context, _ string) ([]model.OrgMemb
 	return nil, nil
 }
 func (f *fakeWrite) ListOrgMemberships(_ context.Context, _ string) ([]model.OrgMember, error) {
-	return nil, nil
+	return f.memberships, nil
 }
 func (f *fakeWrite) ListRoles(_ context.Context, _ string) ([]model.Role, error) {
 	return nil, nil
 }
 func (f *fakeWrite) ListRolesByIdentity(_ context.Context, _ string) ([]model.RepoRole, error) {
-	return nil, nil
+	return f.repoRoles, nil
 }
 func (f *fakeWrite) ListCheckRuns(_ context.Context, _, _ string, _ *int64, _ bool) ([]model.CheckRun, error) {
 	return nil, nil
@@ -298,6 +300,19 @@ func newTestHandler(t *testing.T, r ReadStore, w *fakeWrite, a AssembleFn) http.
 	t.Helper()
 	svc := service.New(w, nil, nil)
 	h, err := NewHandler(r, w, svc, a, nil)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	mux := http.NewServeMux()
+	h.Register(mux)
+	return mux
+}
+
+func newTestHandlerWithIdentity(t *testing.T, r ReadStore, w *fakeWrite, identity string) http.Handler {
+	t.Helper()
+	svc := service.New(w, nil, nil)
+	identFn := func(_ context.Context) string { return identity }
+	h, err := NewHandler(r, w, svc, nil, identFn)
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
@@ -856,6 +871,32 @@ func TestHandleRepos_ShowsNewButtons(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing link %q", want)
 		}
+	}
+}
+
+// TestHandleRepos_GetStartedShownForNewUser verifies that the "Get started"
+// card is shown for an authenticated user with no org memberships and no repo
+// roles.
+func TestHandleRepos_GetStartedShownForNewUser(t *testing.T) {
+	w := &fakeWrite{} // no memberships, no repoRoles
+	h := newTestHandlerWithIdentity(t, &fakeRead{}, w, "new@example.com")
+	_, body := getStatusAndBody(t, h, "/ui/")
+	if !strings.Contains(body, "Get started") {
+		t.Errorf("expected 'Get started' card for new user, body: %.300s", body)
+	}
+}
+
+// TestHandleRepos_GetStartedHiddenForUserWithRepoRole verifies that the "Get
+// started" card is NOT shown for a user who has a repo role (e.g. created a
+// repo) even if they have no org memberships.
+func TestHandleRepos_GetStartedHiddenForUserWithRepoRole(t *testing.T) {
+	w := &fakeWrite{
+		repoRoles: []model.RepoRole{{Repo: "acme/myrepo", Role: model.RoleAdmin}},
+	}
+	h := newTestHandlerWithIdentity(t, &fakeRead{}, w, "creator@example.com")
+	_, body := getStatusAndBody(t, h, "/ui/")
+	if strings.Contains(body, "Get started") {
+		t.Errorf("expected no 'Get started' card for user with repo role")
 	}
 }
 
