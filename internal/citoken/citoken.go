@@ -8,11 +8,16 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
+	"sync"
 	"time"
 
+	kms "cloud.google.com/go/kms/apiv1"
+	kmspb "cloud.google.com/go/kms/apiv1/kmspb"
 	"github.com/google/uuid"
 	"github.com/lestrrat-go/jwx/v3/jwa"
 	"github.com/lestrrat-go/jwx/v3/jwk"
@@ -157,6 +162,12 @@ func (s *LocalSigner) PublicKeys(_ context.Context) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get public key: %w", err)
 	}
+	if err := pubKey.Set(jwk.AlgorithmKey, jwa.RS256()); err != nil {
+		return nil, fmt.Errorf("set alg on public key: %w", err)
+	}
+	if err := pubKey.Set(jwk.KeyUsageKey, "sig"); err != nil {
+		return nil, fmt.Errorf("set use on public key: %w", err)
+	}
 
 	set := jwk.NewSet()
 	if err := set.AddKey(pubKey); err != nil {
@@ -171,24 +182,140 @@ func (s *LocalSigner) PublicKeys(_ context.Context) ([]byte, error) {
 }
 
 // KMSSigner uses Google Cloud KMS for production JWT signing.
-// TODO: implement full KMS signing once the KMS client is wired in.
+// The key must be an asymmetric RSA-2048 or RSA-4096 signing key with
+// purpose ASYMMETRIC_SIGN and algorithm RSA_SIGN_PKCS1_*_SHA256.
 type KMSSigner struct {
-	// keyName is the full KMS resource name, e.g.
-	// "projects/my-project/locations/global/keyRings/my-ring/cryptoKeys/my-key/cryptoKeyVersions/1"
-	keyName string
+	keyVersionName string
+	client         *kms.KeyManagementClient
+	// cached public key (fetched once; KMS keys rotate infrequently)
+	once   sync.Once
+	pubKey *rsa.PublicKey
+	kid    string
+	pubErr error
 }
 
-// NewKMSSigner creates a KMSSigner for the given KMS key resource name.
-func NewKMSSigner(keyName string) *KMSSigner {
-	return &KMSSigner{keyName: keyName}
+// NewKMSSigner creates a KMSSigner backed by the given KMS key version resource name.
+// The format is:
+//
+//	projects/{project}/locations/{location}/keyRings/{keyRing}/cryptoKeys/{key}/cryptoKeyVersions/{version}
+func NewKMSSigner(ctx context.Context, keyVersionName string) (*KMSSigner, error) {
+	c, err := kms.NewKeyManagementClient(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("create kms client: %w", err)
+	}
+	return &KMSSigner{keyVersionName: keyVersionName, client: c}, nil
 }
 
-// Sign is not yet implemented for KMSSigner.
-func (s *KMSSigner) Sign(_ context.Context, _ map[string]any) (string, error) {
-	return "", fmt.Errorf("KMSSigner.Sign: not yet implemented (key: %s)", s.keyName)
+// fetchPublicKey retrieves and caches the RSA public key from KMS (called once via sync.Once).
+func (s *KMSSigner) fetchPublicKey(ctx context.Context) {
+	resp, err := s.client.GetPublicKey(ctx, &kmspb.GetPublicKeyRequest{Name: s.keyVersionName})
+	if err != nil {
+		s.pubErr = fmt.Errorf("kms get public key: %w", err)
+		return
+	}
+	block, _ := pem.Decode([]byte(resp.Pem))
+	if block == nil {
+		s.pubErr = fmt.Errorf("kms public key: failed to PEM-decode response")
+		return
+	}
+	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		s.pubErr = fmt.Errorf("kms public key: parse PKIX: %w", err)
+		return
+	}
+	rsaKey, ok := pub.(*rsa.PublicKey)
+	if !ok {
+		s.pubErr = fmt.Errorf("kms public key: expected *rsa.PublicKey, got %T", pub)
+		return
+	}
+	jwkKey, err := jwk.Import(rsaKey)
+	if err != nil {
+		s.pubErr = fmt.Errorf("kms public key: import to jwk: %w", err)
+		return
+	}
+	if err := jwk.AssignKeyID(jwkKey); err != nil {
+		s.pubErr = fmt.Errorf("kms public key: assign kid: %w", err)
+		return
+	}
+	kid, ok := jwkKey.KeyID()
+	if !ok {
+		s.pubErr = fmt.Errorf("kms public key: kid not set after AssignKeyID")
+		return
+	}
+	s.pubKey = rsaKey
+	s.kid = kid
 }
 
-// PublicKeys is not yet implemented for KMSSigner.
-func (s *KMSSigner) PublicKeys(_ context.Context) ([]byte, error) {
-	return nil, fmt.Errorf("KMSSigner.PublicKeys: not yet implemented (key: %s)", s.keyName)
+// PublicKeys returns the JWKS JSON containing the KMS RSA public key.
+func (s *KMSSigner) PublicKeys(ctx context.Context) ([]byte, error) {
+	s.once.Do(func() { s.fetchPublicKey(ctx) })
+	if s.pubErr != nil {
+		return nil, s.pubErr
+	}
+
+	jwkKey, err := jwk.Import(s.pubKey)
+	if err != nil {
+		return nil, fmt.Errorf("kms jwks: import public key: %w", err)
+	}
+	if err := jwk.AssignKeyID(jwkKey); err != nil {
+		return nil, fmt.Errorf("kms jwks: assign kid: %w", err)
+	}
+	if err := jwkKey.Set(jwk.AlgorithmKey, jwa.RS256()); err != nil {
+		return nil, fmt.Errorf("kms jwks: set alg: %w", err)
+	}
+	if err := jwkKey.Set(jwk.KeyUsageKey, "sig"); err != nil {
+		return nil, fmt.Errorf("kms jwks: set use: %w", err)
+	}
+
+	set := jwk.NewSet()
+	if err := set.AddKey(jwkKey); err != nil {
+		return nil, fmt.Errorf("kms jwks: add key: %w", err)
+	}
+	data, err := json.Marshal(set)
+	if err != nil {
+		return nil, fmt.Errorf("kms jwks: marshal: %w", err)
+	}
+	return data, nil
+}
+
+// Sign builds a JWT with the given claims and signs it via KMS AsymmetricSign.
+// The JWT is assembled manually so that only the digest is sent to KMS
+// (the private key never leaves KMS).
+func (s *KMSSigner) Sign(ctx context.Context, claims map[string]any) (string, error) {
+	s.once.Do(func() { s.fetchPublicKey(ctx) })
+	if s.pubErr != nil {
+		return "", s.pubErr
+	}
+
+	headerJSON, err := json.Marshal(map[string]string{
+		"alg": "RS256",
+		"kid": s.kid,
+		"typ": "JWT",
+	})
+	if err != nil {
+		return "", fmt.Errorf("kms sign: marshal header: %w", err)
+	}
+	headerB64 := base64.RawURLEncoding.EncodeToString(headerJSON)
+
+	payloadJSON, err := json.Marshal(claims)
+	if err != nil {
+		return "", fmt.Errorf("kms sign: marshal payload: %w", err)
+	}
+	payloadB64 := base64.RawURLEncoding.EncodeToString(payloadJSON)
+
+	signingInput := headerB64 + "." + payloadB64
+	digest := sha256.Sum256([]byte(signingInput))
+
+	signResp, err := s.client.AsymmetricSign(ctx, &kmspb.AsymmetricSignRequest{
+		Name: s.keyVersionName,
+		Digest: &kmspb.Digest{
+			Digest: &kmspb.Digest_Sha256{Sha256: digest[:]},
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("kms sign: asymmetric sign: %w", err)
+	}
+
+	sigB64 := base64.RawURLEncoding.EncodeToString(signResp.Signature)
+	return signingInput + "." + sigB64, nil
 }
