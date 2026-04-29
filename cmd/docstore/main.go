@@ -160,10 +160,22 @@ func main() {
 		logger.Warn("ARCHIVE_HMAC_SECRET not set — presigned archive URLs disabled")
 	}
 
+	// Configure OIDC job token authentication (optional).
+	// OIDC_JWKS_URL: JWKS endpoint of the OIDC issuer.
+	// OIDC_AUDIENCE: expected audience claim (default: "docstore").
+	// OIDC_ISSUER: expected issuer claim (default: "https://oidc.docstore.dev").
+	oidcJWKSURL := os.Getenv("OIDC_JWKS_URL")
+	oidcAudience := cmp.Or(os.Getenv("OIDC_AUDIENCE"), "docstore")
+	oidcIssuer := cmp.Or(os.Getenv("OIDC_ISSUER"), "https://oidc.docstore.dev")
+	if oidcJWKSURL == "" {
+		logger.Warn("OIDC_JWKS_URL not set — job OIDC token authentication disabled")
+	}
+
 	jobStore := db.NewStore(database)
-	srv := server.NewWithPresign(commitStore, database, bs, broker,
+	srv := server.NewWithOIDC(commitStore, database, bs, broker,
 		*devIdentity, *bootstrapAdmin, *iapClientID, *iapClientSecret,
-		jobStore, archiveHMACSecret, archiveBaseURL)
+		jobStore, archiveHMACSecret, archiveBaseURL,
+		oidcJWKSURL, oidcAudience, oidcIssuer)
 
 	// Start the auto-merge worker. It subscribes to check.reported and
 	// review.submitted events and merges branches with auto_merge=true.

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/dlorenc/docstore/internal/blob"
@@ -207,6 +208,24 @@ func NewWithBroker(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, b
 func NewWithPresign(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, broker *events.Broker,
 	devIdentity, bootstrapAdmin, iapClientID, iapClientSecret string,
 	jobStore jobTokenStore, archiveHMACSecret []byte, archiveBaseURL string) http.Handler {
+	return NewWithOIDC(writeStore, database, bs, broker,
+		devIdentity, bootstrapAdmin, iapClientID, iapClientSecret,
+		jobStore, archiveHMACSecret, archiveBaseURL,
+		"", "", "")
+}
+
+// NewWithOIDC is like NewWithPresign but also enables OIDC job token authentication
+// for worker-facing endpoints. Workers presenting a valid job OIDC JWT bypass IAP
+// and RBAC and are routed directly to the inner handler with their job identity.
+//
+// oidcJWKSURL is the JWKS endpoint of the OIDC issuer (e.g. https://oidc.docstore.dev/.well-known/jwks.json).
+// oidcAudience is the expected audience claim (e.g. "docstore").
+// oidcIssuer is the expected issuer claim (e.g. "https://oidc.docstore.dev").
+// If oidcJWKSURL is empty, OIDC job token auth is disabled.
+func NewWithOIDC(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, broker *events.Broker,
+	devIdentity, bootstrapAdmin, iapClientID, iapClientSecret string,
+	jobStore jobTokenStore, archiveHMACSecret []byte, archiveBaseURL string,
+	oidcJWKSURL, oidcAudience, oidcIssuer string) http.Handler {
 	pc := policy.NewCache()
 	s := &server{
 		commitStore:       writeStore,
@@ -218,6 +237,12 @@ func NewWithPresign(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, 
 		archiveHMACSecret: archiveHMACSecret,
 		archiveBaseURL:    archiveBaseURL,
 		jobTokenStore:     jobStore,
+		oidcJWKSURL:       oidcJWKSURL,
+		oidcAudience:      oidcAudience,
+		oidcIssuer:        oidcIssuer,
+	}
+	if oidcJWKSURL != "" {
+		s.oidcKeyCache = newKeyCacheForURL(oidcJWKSURL)
 	}
 	if writeStore != nil {
 		var emitter service.EventEmitter
@@ -346,8 +371,9 @@ func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore Wri
 	}
 	iapHandler := IAPMiddleware(devIdentity)(routed)
 
-	// Wrap the IAP handler: intercept presign and HMAC-signed archive requests
-	// before IAP validation. Everything else falls through to iapHandler.
+	// Wrap the IAP handler: intercept presign, HMAC-signed archive, and job
+	// OIDC token requests before IAP validation. Everything else falls through
+	// to iapHandler.
 	// Using "/" (not "/repos/") avoids the Go mux trailing-slash redirect that
 	// would turn POST /repos into a 307 → POST /repos/.
 	outer.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -366,6 +392,31 @@ func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore Wri
 				return
 			}
 		}
+
+		// Job OIDC token auth: if a Bearer token is present and OIDC is configured,
+		// validate it as a job OIDC JWT. On success, inject job identity into context
+		// and route directly to the inner mux (bypassing IAP and RBAC).
+		// On failure, return 401. If no Bearer token, fall through to iapHandler.
+		if s.oidcKeyCache != nil {
+			auth := r.Header.Get("Authorization")
+			if tok := strings.TrimPrefix(auth, "Bearer "); tok != "" && tok != auth {
+				jobID, err := validateJobOIDCToken(tok, s.oidcKeyCache.get, s.oidcAudience, s.oidcIssuer)
+				if err != nil {
+					slog.Warn("job token auth failed", "reason", err, "path", r.URL.Path)
+					writeAPIError(w, ErrCodeUnauthorized, http.StatusUnauthorized, "unauthenticated")
+					return
+				}
+				identity := "ci-job:" + jobID.JobID
+				if rl := requestLogFromContext(r.Context()); rl != nil {
+					rl.identity = identity
+				}
+				ctx := context.WithValue(r.Context(), jobIdentityKey, jobID)
+				ctx = context.WithValue(ctx, identityKey, identity)
+				inner.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
+		}
+
 		iapHandler.ServeHTTP(w, r)
 	}))
 	return RequestLogger(outer)
@@ -396,6 +447,12 @@ type server struct {
 	archiveBaseURL string
 	// jobTokenStore validates request_tokens for presigned archive URL issuance.
 	jobTokenStore jobTokenStore
+	// OIDC job token authentication fields.
+	// oidcJWKSURL is the JWKS endpoint; empty disables OIDC auth.
+	oidcJWKSURL  string
+	oidcAudience string
+	oidcIssuer   string
+	oidcKeyCache *keyCache
 }
 
 // handleDSConfig serves GET /.well-known/ds-config — unauthenticated.

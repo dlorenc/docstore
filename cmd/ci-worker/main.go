@@ -251,13 +251,58 @@ func getPresignedArchiveURL(ctx context.Context, docstoreURL, repo, requestToken
 	return body.URL, nil
 }
 
-func fetchConfig(ctx context.Context, client *http.Client, docstoreURL, repo, branch string, headSeq int64) (*executor.Config, error) {
+// getDocstoreOIDCToken exchanges the request_token for a short-lived OIDC JWT
+// with aud=docstore. This token is used to authenticate API calls to docstore.
+// Returns empty string if oidcTokenURL is empty (local dev / OIDC not configured).
+func getDocstoreOIDCToken(ctx context.Context, oidcTokenURL, requestToken string) (string, error) {
+	if oidcTokenURL == "" {
+		return "", nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	body, err := json.Marshal(map[string]string{"audience": "docstore"})
+	if err != nil {
+		return "", fmt.Errorf("marshal token request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, oidcTokenURL, bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("build token request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+requestToken)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("token request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("token request: unexpected status %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("decode token response: %w", err)
+	}
+	if result.Token == "" {
+		return "", fmt.Errorf("token response missing token field")
+	}
+	return result.Token, nil
+}
+
+func fetchConfig(ctx context.Context, client *http.Client, docstoreURL, repo, branch string, headSeq int64, jwt string) (*executor.Config, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	fileURL := fmt.Sprintf("%s/repos/%s/-/file/.docstore/ci.yaml?branch=%s&at=%d", docstoreURL, repo, url.QueryEscape(branch), headSeq)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fileURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create config request: %w", err)
+	}
+	if jwt != "" {
+		req.Header.Set("Authorization", "Bearer "+jwt)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -281,7 +326,7 @@ func fetchConfig(ctx context.Context, client *http.Client, docstoreURL, repo, br
 	return &cfg, nil
 }
 
-func postCheckRun(ctx context.Context, client *http.Client, docstoreURL, repo string, req model.CreateCheckRunRequest) error {
+func postCheckRun(ctx context.Context, client *http.Client, docstoreURL, repo string, jwt string, req model.CreateCheckRunRequest) error {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("marshal check run: %w", err)
@@ -292,6 +337,9 @@ func postCheckRun(ctx context.Context, client *http.Client, docstoreURL, repo st
 		return fmt.Errorf("create check run request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	if jwt != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+jwt)
+	}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("post check run: %w", err)
@@ -353,6 +401,8 @@ func (s *checkLogServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // runJob fetches CI config, pulls source, executes checks, uploads logs, and
 // posts check run results. Returns (overallStatus, firstLogURL, errorMessage).
+// jwt is the OIDC job token for authenticating requests to docstore; may be
+// empty when OIDC is not configured (local dev mode).
 func runJob(
 	ctx context.Context,
 	httpClient *http.Client,
@@ -361,6 +411,7 @@ func runJob(
 	docstoreURL string,
 	job *model.CIJob,
 	requestToken string,
+	jwt string,
 	logDir string,
 	triggerCtx ciconfig.TriggerContext,
 	extraEnv []string,
@@ -371,9 +422,9 @@ func runJob(
 	}
 
 	// 1. Fetch CI config from the branch under test at its head sequence.
-	cfg, err := fetchConfig(ctx, httpClient, docstoreURL, job.Repo, job.Branch, job.Sequence)
+	cfg, err := fetchConfig(ctx, httpClient, docstoreURL, job.Repo, job.Branch, job.Sequence, jwt)
 	if err != nil {
-		_ = postCheckRun(ctx, httpClient, docstoreURL, job.Repo, model.CreateCheckRunRequest{
+		_ = postCheckRun(ctx, httpClient, docstoreURL, job.Repo, jwt, model.CreateCheckRunRequest{
 			Branch:    job.Branch,
 			CheckName: "ci/config",
 			Status:    model.CheckRunFailed,
@@ -398,7 +449,7 @@ func runJob(
 		pendingWg.Add(1)
 		go func(checkName string) {
 			defer pendingWg.Done()
-			if err := postCheckRun(ctx, httpClient, docstoreURL, job.Repo, model.CreateCheckRunRequest{
+			if err := postCheckRun(ctx, httpClient, docstoreURL, job.Repo, jwt, model.CreateCheckRunRequest{
 				Branch:    job.Branch,
 				CheckName: checkName,
 				Status:    model.CheckRunPending,
@@ -436,7 +487,7 @@ func runJob(
 			}
 		}
 
-		if err := postCheckRun(ctx, httpClient, docstoreURL, job.Repo, model.CreateCheckRunRequest{
+		if err := postCheckRun(ctx, httpClient, docstoreURL, job.Repo, jwt, model.CreateCheckRunRequest{
 			Branch:    job.Branch,
 			CheckName: result.Name,
 			Status:    model.CheckRunStatus(result.Status),
@@ -540,6 +591,19 @@ func main() {
 
 		slog.Info("claimed job", "job_id", job.ID, "repo", job.Repo, "branch", job.Branch, "sequence", job.Sequence)
 
+		// Exchange the request_token for a short-lived OIDC JWT (aud=docstore)
+		// to authenticate API calls to docstore. If the OIDC token URL is empty
+		// (local dev / presign not configured), jwt remains empty and calls are
+		// made without authentication (relying on DEV_IDENTITY bypass).
+		jwt, err := getDocstoreOIDCToken(ctx, cr.OIDCTokenURL, requestToken)
+		if err != nil {
+			slog.Error("get docstore OIDC token failed", "job_id", job.ID, "error", err)
+			msg := err.Error()
+			_ = completeJob(ctx, schedulerURL, job.ID, requestToken, "failed", nil, &msg)
+			time.Sleep(1 * time.Second)
+			continue
+		}
+
 		// Start heartbeat goroutine.
 		hbDone := make(chan struct{})
 		go heartbeat(ctx, schedulerURL, job.ID, requestToken, hbDone)
@@ -573,7 +637,7 @@ func main() {
 		}
 
 		// Execute the job.
-		jobStatus, jobLogURL, jobErrMsg := runJob(ctx, httpClient, exec, ls, docstoreURL, job, requestToken, logDir, triggerCtx, extraEnv)
+		jobStatus, jobLogURL, jobErrMsg := runJob(ctx, httpClient, exec, ls, docstoreURL, job, requestToken, jwt, logDir, triggerCtx, extraEnv)
 
 		// Stop heartbeat and clear log dir.
 		close(hbDone)
