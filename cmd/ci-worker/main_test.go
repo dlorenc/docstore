@@ -484,6 +484,10 @@ func docstoreHandler(t *testing.T, ciYAML string, tarData []byte, checkStatus in
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.Write(fileResponseJSON(t, ciYAML)) //nolint:errcheck
+		case r.Method == http.MethodPost && strings.Contains(path, "/-/archive/presign"):
+			// Return a fake presigned URL; the mock executor does not fetch it.
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"url":"http://test-archive.example.com/archive.tar"}`)) //nolint:errcheck
 		case strings.Contains(path, "/-/archive"):
 			w.Header().Set("Content-Type", "application/x-tar")
 			w.Write(tarData) //nolint:errcheck
@@ -504,7 +508,7 @@ func TestRunJob_NoCIYAML_ReturnsPassed(t *testing.T) {
 
 	status, logURL, errMsg := runJob(
 		context.Background(), srv.Client(), &mockRunner{}, nil,
-		srv.URL, testJob(), t.TempDir(), ciconfig.TriggerContext{Type: "push"}, nil,
+		srv.URL, testJob(), "", t.TempDir(), ciconfig.TriggerContext{Type: "push"}, nil,
 	)
 	if status != "passed" {
 		t.Errorf("expected passed, got %q", status)
@@ -527,7 +531,7 @@ func TestRunJob_FetchConfigError_ReturnsFailed(t *testing.T) {
 
 	status, _, errMsg := runJob(
 		context.Background(), srv.Client(), &mockRunner{}, nil,
-		srv.URL, testJob(), t.TempDir(), ciconfig.TriggerContext{}, nil,
+		srv.URL, testJob(), "", t.TempDir(), ciconfig.TriggerContext{}, nil,
 	)
 	if status != "failed" {
 		t.Errorf("expected failed, got %q", status)
@@ -547,7 +551,7 @@ func TestRunJob_ExecutorError_ReturnsFailed(t *testing.T) {
 	mockExec := &mockRunner{err: fmt.Errorf("buildkit unavailable")}
 	status, _, errMsg := runJob(
 		context.Background(), srv.Client(), mockExec, nil,
-		srv.URL, testJob(), t.TempDir(), ciconfig.TriggerContext{}, nil,
+		srv.URL, testJob(), "", t.TempDir(), ciconfig.TriggerContext{}, nil,
 	)
 	if status != "failed" {
 		t.Errorf("expected failed, got %q", status)
@@ -578,7 +582,7 @@ func TestRunJob_AllChecksPassed(t *testing.T) {
 
 	status, logURL, errMsg := runJob(
 		context.Background(), srv.Client(), mockExec, ls,
-		srv.URL, testJob(), t.TempDir(), ciconfig.TriggerContext{Type: "push"}, nil,
+		srv.URL, testJob(), "", t.TempDir(), ciconfig.TriggerContext{Type: "push"}, nil,
 	)
 	if status != "passed" {
 		t.Errorf("expected passed, got %q", status)
@@ -614,7 +618,7 @@ func TestRunJob_OneCheckFailed_OverallFailed(t *testing.T) {
 
 	status, _, errMsg := runJob(
 		context.Background(), srv.Client(), mockExec, nil,
-		srv.URL, testJob(), t.TempDir(), ciconfig.TriggerContext{}, nil,
+		srv.URL, testJob(), "", t.TempDir(), ciconfig.TriggerContext{}, nil,
 	)
 	if status != "failed" {
 		t.Errorf("expected failed, got %q", status)
@@ -630,13 +634,17 @@ func TestRunJob_NilLogStore_StillPosts(t *testing.T) {
 
 	var checkPostCount int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
 		switch {
-		case strings.Contains(r.URL.Path, "/-/file/"):
+		case strings.Contains(path, "/-/file/"):
 			w.Header().Set("Content-Type", "application/json")
 			w.Write(fileResponseJSON(t, ciYAML)) //nolint:errcheck
-		case strings.Contains(r.URL.Path, "/-/archive"):
+		case r.Method == http.MethodPost && strings.Contains(path, "/-/archive/presign"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"url":"http://test-archive.example.com/archive.tar"}`)) //nolint:errcheck
+		case strings.Contains(path, "/-/archive"):
 			w.Write(tarData) //nolint:errcheck
-		case strings.Contains(r.URL.Path, "/-/check"):
+		case strings.Contains(path, "/-/check"):
 			checkPostCount++
 			w.WriteHeader(http.StatusCreated)
 		}
@@ -649,7 +657,7 @@ func TestRunJob_NilLogStore_StillPosts(t *testing.T) {
 
 	status, logURL, _ := runJob(
 		context.Background(), srv.Client(), mockExec, nil, // nil log store
-		srv.URL, testJob(), t.TempDir(), ciconfig.TriggerContext{}, nil,
+		srv.URL, testJob(), "", t.TempDir(), ciconfig.TriggerContext{}, nil,
 	)
 	if status != "passed" {
 		t.Errorf("expected passed, got %q", status)
@@ -675,7 +683,7 @@ func TestRunJob_LogsWrittenToDir(t *testing.T) {
 	}}
 
 	logDir := t.TempDir()
-	runJob(context.Background(), srv.Client(), mockExec, nil, srv.URL, testJob(), logDir, ciconfig.TriggerContext{}, nil) //nolint:errcheck
+	runJob(context.Background(), srv.Client(), mockExec, nil, srv.URL, testJob(), "", logDir, ciconfig.TriggerContext{}, nil) //nolint:errcheck
 
 	data, err := os.ReadFile(filepath.Join(logDir, "test.log"))
 	if err != nil {
