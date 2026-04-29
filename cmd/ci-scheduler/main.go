@@ -32,9 +32,13 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/robfig/cron/v3"
 	"gopkg.in/yaml.v3"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 
 	"github.com/dlorenc/docstore/internal/ciconfig"
+	"github.com/dlorenc/docstore/internal/citoken"
 	"github.com/dlorenc/docstore/internal/db"
+	"github.com/dlorenc/docstore/internal/k8sproof"
 	"github.com/dlorenc/docstore/internal/model"
 )
 
@@ -45,6 +49,11 @@ import (
 type ciJobStore interface {
 	InsertCIJob(ctx context.Context, repo, branch string, sequence int64, triggerType, triggerBranch, triggerBaseBranch, triggerProposalID string) (*model.CIJob, error)
 	GetCIJob(ctx context.Context, id string) (*model.CIJob, error)
+	ClaimCIJob(ctx context.Context, podName, podIP string) (*model.CIJob, error)
+	StoreRequestToken(ctx context.Context, jobID string, hashedToken string, exp time.Time) error
+	LookupRequestToken(ctx context.Context, hashedToken string) (*model.CIJob, error)
+	HeartbeatCIJob(ctx context.Context, id string) error
+	CompleteCIJob(ctx context.Context, id, status string, logURL, errorMessage *string) error
 	ReapStaleCIJobs(ctx context.Context) ([]model.CIJob, error)
 	CountQueuedCIJobs(ctx context.Context) (int64, error)
 }
@@ -148,6 +157,8 @@ type scheduler struct {
 	webhookSecret string
 	docstoreURL   string
 	httpClient    *http.Client
+	claimer       *k8sproof.PodClaimer // nil in local dev (no in-cluster K8s)
+	oidcTokenURL  string
 }
 
 // fetchCIConfig fetches and parses .docstore/ci.yaml from the given repo/branch
@@ -481,6 +492,151 @@ func (s *scheduler) handleQueueDepth(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, `{"queue_depth":%d}`, n)
 }
 
+// claimResponse is the JSON body returned by POST /claim on success.
+type claimResponse struct {
+	Job          model.CIJob `json:"job"`
+	RequestToken string      `json:"request_token"`
+	OIDCTokenURL string      `json:"oidc_token_url"`
+}
+
+// handleClaim handles POST /claim.
+// Workers authenticate with their K8s projected service account token.
+// On success the oldest queued job is claimed and a request_token is returned.
+// Returns 204 if no jobs are queued.
+func (s *scheduler) handleClaim(w http.ResponseWriter, r *http.Request) {
+	// Extract Bearer token from Authorization header.
+	authHdr := r.Header.Get("Authorization")
+	saToken := strings.TrimPrefix(authHdr, "Bearer ")
+
+	var podName, podIP string
+	if s.claimer != nil {
+		var err error
+		podName, podIP, err = s.claimer.ValidateToken(r.Context(), saToken)
+		if err != nil {
+			slog.Warn("k8s token validation failed", "error", err)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+	}
+	// If claimer is nil (local dev), allow with empty podName/podIP.
+
+	job, err := s.store.ClaimCIJob(r.Context(), podName, podIP)
+	if err != nil {
+		slog.Error("claim job failed", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if job == nil {
+		// No queued jobs available.
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	// Generate a one-time request token; store its hash in the DB.
+	plaintext, hashed, err := citoken.GenerateRequestToken()
+	if err != nil {
+		slog.Error("generate request token failed", "job_id", job.ID, "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	exp := time.Now().Add(24 * time.Hour)
+	if err := s.store.StoreRequestToken(r.Context(), job.ID, hashed, exp); err != nil {
+		slog.Error("store request token failed", "job_id", job.ID, "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	slog.Info("job claimed via API", "job_id", job.ID, "pod", podName)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(claimResponse{ //nolint:errcheck
+		Job:          *job,
+		RequestToken: plaintext,
+		OIDCTokenURL: s.oidcTokenURL,
+	})
+}
+
+// handleHeartbeat handles POST /jobs/{id}/heartbeat.
+// Authenticated with a request_token in the Authorization: Bearer header.
+func (s *scheduler) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
+	jobID := r.PathValue("id")
+	job, err := s.lookupByToken(r)
+	if errors.Is(err, db.ErrTokenInvalid) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if err != nil {
+		slog.Error("heartbeat token lookup failed", "job_id", jobID, "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if job.ID != jobID {
+		http.Error(w, "token/job mismatch", http.StatusUnauthorized)
+		return
+	}
+	if err := s.store.HeartbeatCIJob(r.Context(), job.ID); err != nil {
+		slog.Error("heartbeat failed", "job_id", job.ID, "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleComplete handles POST /jobs/{id}/complete.
+// Authenticated with a request_token in the Authorization: Bearer header.
+func (s *scheduler) handleComplete(w http.ResponseWriter, r *http.Request) {
+	jobID := r.PathValue("id")
+	job, err := s.lookupByToken(r)
+	if errors.Is(err, db.ErrTokenInvalid) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if err != nil {
+		slog.Error("complete token lookup failed", "job_id", jobID, "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if job.ID != jobID {
+		http.Error(w, "token/job mismatch", http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		Status       string  `json:"status"`
+		LogURL       *string `json:"log_url,omitempty"`
+		ErrorMessage *string `json:"error_message,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.Status == "" {
+		http.Error(w, "status is required", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.store.CompleteCIJob(r.Context(), job.ID, req.Status, req.LogURL, req.ErrorMessage); err != nil {
+		slog.Error("complete job failed", "job_id", job.ID, "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	slog.Info("job completed via API", "job_id", job.ID, "status", req.Status)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// lookupByToken extracts the Bearer token from the request and looks up the
+// corresponding ci_job. Returns db.ErrTokenInvalid if the token is missing,
+// invalid, expired, or the job is not claimed.
+func (s *scheduler) lookupByToken(r *http.Request) (*model.CIJob, error) {
+	authHdr := r.Header.Get("Authorization")
+	plaintext := strings.TrimPrefix(authHdr, "Bearer ")
+	if plaintext == "" || plaintext == authHdr {
+		return nil, db.ErrTokenInvalid
+	}
+	hashed := citoken.HashRequestToken(plaintext)
+	return s.store.LookupRequestToken(r.Context(), hashed)
+}
+
 func newMux(sched *scheduler) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /webhook", sched.handleWebhook)
@@ -488,6 +644,9 @@ func newMux(sched *scheduler) *http.ServeMux {
 	mux.HandleFunc("GET /run/{id}", sched.handleGetRun)
 	mux.HandleFunc("GET /run/{id}/logs/{check}", sched.handleGetLogs)
 	mux.HandleFunc("GET /queue-depth", sched.handleQueueDepth)
+	mux.HandleFunc("POST /claim", sched.handleClaim)
+	mux.HandleFunc("POST /jobs/{id}/heartbeat", sched.handleHeartbeat)
+	mux.HandleFunc("POST /jobs/{id}/complete", sched.handleComplete)
 	return mux
 }
 
@@ -649,6 +808,7 @@ func main() {
 	docstoreURL := flag.String("docstore-url", "", "Base URL of the docstore server")
 	schedulerURL := flag.String("scheduler-url", "", "Public URL of this ci-scheduler (used to register webhook subscription)")
 	webhookSecret := flag.String("webhook-secret", "", "Shared HMAC secret for webhook signature verification")
+	oidcTokenURL := flag.String("oidc-token-url", "", "URL of the CI OIDC token endpoint (returned to workers on /claim)")
 	flag.Parse()
 
 	// Also accept env-var overrides so the binary is container-friendly.
@@ -660,6 +820,12 @@ func main() {
 	}
 	if *webhookSecret == "" {
 		*webhookSecret = os.Getenv("WEBHOOK_SECRET")
+	}
+	if *oidcTokenURL == "" {
+		*oidcTokenURL = os.Getenv("OIDC_TOKEN_URL")
+	}
+	if *oidcTokenURL == "" {
+		*oidcTokenURL = "https://oidc.docstore.dev/ci/token"
 	}
 
 	// Set up structured logging.
@@ -700,11 +866,28 @@ func main() {
 
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 
+	// Build K8s in-cluster client for pod provenance checks.
+	// Log a warning and disable provenance (allow all claims) if not in cluster.
+	var claimer *k8sproof.PodClaimer
+	k8sCfg, k8sErr := rest.InClusterConfig()
+	if k8sErr != nil {
+		slog.Warn("not running in-cluster — k8s provenance checks disabled", "error", k8sErr)
+	} else {
+		k8sClient, k8sClientErr := kubernetes.NewForConfig(k8sCfg)
+		if k8sClientErr != nil {
+			slog.Warn("failed to build k8s client — provenance checks disabled", "error", k8sClientErr)
+		} else {
+			claimer = k8sproof.New(k8sClient, "docstore-ci")
+		}
+	}
+
 	sched := &scheduler{
 		store:         store,
 		webhookSecret: *webhookSecret,
 		docstoreURL:   strings.TrimRight(*docstoreURL, "/"),
 		httpClient:    httpClient,
+		claimer:       claimer,
+		oidcTokenURL:  *oidcTokenURL,
 	}
 
 	// Start schedule-based cron runner.

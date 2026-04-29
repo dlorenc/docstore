@@ -34,6 +34,8 @@ func scanCIJob(row interface {
 	var triggerBranch sql.NullString
 	var triggerBaseBranch sql.NullString
 	var triggerProposalID sql.NullString
+	// requestToken and requestTokenExp are stored in the DB but not exposed on
+	// the public api.CIJob wire type; scan them into discard variables.
 	var requestToken sql.NullString
 	var requestTokenExp sql.NullTime
 	if err := row.Scan(
@@ -45,6 +47,8 @@ func scanCIJob(row interface {
 	); err != nil {
 		return nil, err
 	}
+	_ = requestToken
+	_ = requestTokenExp
 	if claimedAt.Valid {
 		j.ClaimedAt = &claimedAt.Time
 	}
@@ -74,12 +78,6 @@ func scanCIJob(row interface {
 	}
 	if triggerProposalID.Valid {
 		j.TriggerProposalID = &triggerProposalID.String
-	}
-	if requestToken.Valid {
-		j.RequestToken = &requestToken.String
-	}
-	if requestTokenExp.Valid {
-		j.RequestTokenExp = &requestTokenExp.Time
 	}
 	return &j, nil
 }

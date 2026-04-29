@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -31,7 +30,7 @@ type mockRunner struct {
 	err     error
 }
 
-func (m *mockRunner) Run(_ context.Context, _ string, _ executor.Config, _ ciconfig.TriggerContext) ([]executor.CheckResult, error) {
+func (m *mockRunner) Run(_ context.Context, _ string, _ executor.Config, _ ciconfig.TriggerContext, _ []string) ([]executor.CheckResult, error) {
 	return m.results, m.err
 }
 
@@ -47,15 +46,21 @@ func (m *mockLogStore) Write(_ context.Context, _, _ string, _ int64, _, _ strin
 	return m.writeURL, m.writeErr
 }
 
-// mockHeartbeater implements heartbeater for tests.
-type mockHeartbeater struct {
-	calls atomic.Int32
-	err   error
+// mockScheduler is a minimal httptest scheduler for heartbeat/complete tests.
+type mockScheduler struct {
+	calls    atomic.Int32
+	errCode  int // if non-zero, return this HTTP status on heartbeat
 }
 
-func (m *mockHeartbeater) HeartbeatCIJob(_ context.Context, _ string) error {
-	m.calls.Add(1)
-	return m.err
+func (m *mockScheduler) handler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		m.calls.Add(1)
+		if m.errCode != 0 {
+			http.Error(w, "mock error", m.errCode)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -373,12 +378,14 @@ func TestPostCheckRun_WithLogURL(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHeartbeat_StopsOnDone(t *testing.T) {
-	hb := &mockHeartbeater{}
-	done := make(chan struct{})
+	ms := &mockScheduler{}
+	srv := httptest.NewServer(ms.handler())
+	defer srv.Close()
 
+	done := make(chan struct{})
 	finished := make(chan struct{})
 	go func() {
-		heartbeat(context.Background(), hb, "job-1", done)
+		heartbeat(context.Background(), srv.URL, "job-1", "tok", done)
 		close(finished)
 	}()
 
@@ -391,13 +398,16 @@ func TestHeartbeat_StopsOnDone(t *testing.T) {
 }
 
 func TestHeartbeat_StopsOnContextCancel(t *testing.T) {
-	hb := &mockHeartbeater{}
+	ms := &mockScheduler{}
+	srv := httptest.NewServer(ms.handler())
+	defer srv.Close()
+
 	done := make(chan struct{})
 	ctx, cancel := context.WithCancel(t.Context())
 
 	finished := make(chan struct{})
 	go func() {
-		heartbeat(ctx, hb, "job-1", done)
+		heartbeat(ctx, srv.URL, "job-1", "tok", done)
 		close(finished)
 	}()
 
@@ -414,14 +424,17 @@ func TestHeartbeat_CallsHeartbeatPeriodically(t *testing.T) {
 	heartbeatInterval = 20 * time.Millisecond
 	t.Cleanup(func() { heartbeatInterval = orig })
 
-	hb := &mockHeartbeater{}
+	ms := &mockScheduler{}
+	srv := httptest.NewServer(ms.handler())
+	defer srv.Close()
+
 	done := make(chan struct{})
-	go heartbeat(context.Background(), hb, "job-1", done)
+	go heartbeat(context.Background(), srv.URL, "job-1", "tok", done)
 
 	time.Sleep(90 * time.Millisecond)
 	close(done)
 
-	n := hb.calls.Load()
+	n := ms.calls.Load()
 	if n < 2 {
 		t.Errorf("expected ≥2 heartbeat calls in 90ms at 20ms interval, got %d", n)
 	}
@@ -432,17 +445,19 @@ func TestHeartbeat_ErrorDoesNotPanic(t *testing.T) {
 	heartbeatInterval = 20 * time.Millisecond
 	t.Cleanup(func() { heartbeatInterval = orig })
 
-	hb := &mockHeartbeater{err: errors.New("db gone")}
-	done := make(chan struct{})
+	ms := &mockScheduler{errCode: http.StatusInternalServerError}
+	srv := httptest.NewServer(ms.handler())
+	defer srv.Close()
 
+	done := make(chan struct{})
 	finished := make(chan struct{})
 	go func() {
-		heartbeat(context.Background(), hb, "job-1", done)
+		heartbeat(context.Background(), srv.URL, "job-1", "tok", done)
 		close(finished)
 	}()
 
 	time.Sleep(50 * time.Millisecond)
-	close(done) // should not panic even when HeartbeatCIJob returns an error
+	close(done) // should not panic even when heartbeat returns an error
 
 	select {
 	case <-finished:
@@ -489,7 +504,7 @@ func TestRunJob_NoCIYAML_ReturnsPassed(t *testing.T) {
 
 	status, logURL, errMsg := runJob(
 		context.Background(), srv.Client(), &mockRunner{}, nil,
-		srv.URL, testJob(), t.TempDir(), ciconfig.TriggerContext{Type: "push"},
+		srv.URL, testJob(), t.TempDir(), ciconfig.TriggerContext{Type: "push"}, nil,
 	)
 	if status != "passed" {
 		t.Errorf("expected passed, got %q", status)
@@ -512,7 +527,7 @@ func TestRunJob_FetchConfigError_ReturnsFailed(t *testing.T) {
 
 	status, _, errMsg := runJob(
 		context.Background(), srv.Client(), &mockRunner{}, nil,
-		srv.URL, testJob(), t.TempDir(), ciconfig.TriggerContext{},
+		srv.URL, testJob(), t.TempDir(), ciconfig.TriggerContext{}, nil,
 	)
 	if status != "failed" {
 		t.Errorf("expected failed, got %q", status)
@@ -532,7 +547,7 @@ func TestRunJob_ExecutorError_ReturnsFailed(t *testing.T) {
 	mockExec := &mockRunner{err: fmt.Errorf("buildkit unavailable")}
 	status, _, errMsg := runJob(
 		context.Background(), srv.Client(), mockExec, nil,
-		srv.URL, testJob(), t.TempDir(), ciconfig.TriggerContext{},
+		srv.URL, testJob(), t.TempDir(), ciconfig.TriggerContext{}, nil,
 	)
 	if status != "failed" {
 		t.Errorf("expected failed, got %q", status)
@@ -563,7 +578,7 @@ func TestRunJob_AllChecksPassed(t *testing.T) {
 
 	status, logURL, errMsg := runJob(
 		context.Background(), srv.Client(), mockExec, ls,
-		srv.URL, testJob(), t.TempDir(), ciconfig.TriggerContext{Type: "push"},
+		srv.URL, testJob(), t.TempDir(), ciconfig.TriggerContext{Type: "push"}, nil,
 	)
 	if status != "passed" {
 		t.Errorf("expected passed, got %q", status)
@@ -599,7 +614,7 @@ func TestRunJob_OneCheckFailed_OverallFailed(t *testing.T) {
 
 	status, _, errMsg := runJob(
 		context.Background(), srv.Client(), mockExec, nil,
-		srv.URL, testJob(), t.TempDir(), ciconfig.TriggerContext{},
+		srv.URL, testJob(), t.TempDir(), ciconfig.TriggerContext{}, nil,
 	)
 	if status != "failed" {
 		t.Errorf("expected failed, got %q", status)
@@ -634,7 +649,7 @@ func TestRunJob_NilLogStore_StillPosts(t *testing.T) {
 
 	status, logURL, _ := runJob(
 		context.Background(), srv.Client(), mockExec, nil, // nil log store
-		srv.URL, testJob(), t.TempDir(), ciconfig.TriggerContext{},
+		srv.URL, testJob(), t.TempDir(), ciconfig.TriggerContext{}, nil,
 	)
 	if status != "passed" {
 		t.Errorf("expected passed, got %q", status)
@@ -660,7 +675,7 @@ func TestRunJob_LogsWrittenToDir(t *testing.T) {
 	}}
 
 	logDir := t.TempDir()
-	runJob(context.Background(), srv.Client(), mockExec, nil, srv.URL, testJob(), logDir, ciconfig.TriggerContext{}) //nolint:errcheck
+	runJob(context.Background(), srv.Client(), mockExec, nil, srv.URL, testJob(), logDir, ciconfig.TriggerContext{}, nil) //nolint:errcheck
 
 	data, err := os.ReadFile(filepath.Join(logDir, "test.log"))
 	if err != nil {

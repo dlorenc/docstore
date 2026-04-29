@@ -902,12 +902,10 @@ type CIJob struct {
 	LogURL            *string    `json:"log_url,omitempty"`
 	ErrorMessage      *string    `json:"error_message,omitempty"`
 	CreatedAt         time.Time  `json:"created_at"`
-	TriggerType       string     `json:"trigger_type,omitempty"`
-	TriggerBranch     string     `json:"trigger_branch,omitempty"`
-	TriggerBaseBranch string     `json:"trigger_base_branch,omitempty"`
-	TriggerProposalID *string    `json:"trigger_proposal_id,omitempty"`
-	RequestToken      *string    `json:"request_token,omitempty"`
-	RequestTokenExp   *time.Time `json:"request_token_exp,omitempty"`
+	TriggerType       string  `json:"trigger_type,omitempty"`
+	TriggerBranch     string  `json:"trigger_branch,omitempty"`
+	TriggerBaseBranch string  `json:"trigger_base_branch,omitempty"`
+	TriggerProposalID *string `json:"trigger_proposal_id,omitempty"`
 }
 
 // ListCIJobsResponse is the response for GET .../ci-jobs
