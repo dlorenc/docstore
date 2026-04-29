@@ -3,14 +3,21 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/dlorenc/docstore/internal/model"
 )
 
+// ErrTokenInvalid is returned by LookupRequestToken when the token is not
+// found, is expired, or the associated job is not in the 'claimed' state.
+var ErrTokenInvalid = errors.New("request token invalid or expired")
+
 // ciJobColumns is the ordered list of columns returned by SELECT * on ci_jobs.
 const ciJobColumns = `id, repo, branch, sequence, status, claimed_at, last_heartbeat_at,
-	worker_pod, worker_pod_ip, log_url, error_message, created_at, trigger_type, trigger_branch, trigger_base_branch, trigger_proposal_id`
+	worker_pod, worker_pod_ip, log_url, error_message, created_at, trigger_type, trigger_branch, trigger_base_branch, trigger_proposal_id,
+	request_token, request_token_exp`
 
 // scanCIJob scans a single ci_jobs row into a model.CIJob.
 func scanCIJob(row interface {
@@ -27,11 +34,14 @@ func scanCIJob(row interface {
 	var triggerBranch sql.NullString
 	var triggerBaseBranch sql.NullString
 	var triggerProposalID sql.NullString
+	var requestToken sql.NullString
+	var requestTokenExp sql.NullTime
 	if err := row.Scan(
 		&j.ID, &j.Repo, &j.Branch, &j.Sequence, &j.Status,
 		&claimedAt, &lastHeartbeatAt, &workerPod, &workerPodIP,
 		&logURL, &errorMessage, &j.CreatedAt,
 		&triggerType, &triggerBranch, &triggerBaseBranch, &triggerProposalID,
+		&requestToken, &requestTokenExp,
 	); err != nil {
 		return nil, err
 	}
@@ -65,7 +75,46 @@ func scanCIJob(row interface {
 	if triggerProposalID.Valid {
 		j.TriggerProposalID = &triggerProposalID.String
 	}
+	if requestToken.Valid {
+		j.RequestToken = &requestToken.String
+	}
+	if requestTokenExp.Valid {
+		j.RequestTokenExp = &requestTokenExp.Time
+	}
 	return &j, nil
+}
+
+// StoreRequestToken sets the hashed request token and its expiry on a ci_job.
+func (s *Store) StoreRequestToken(ctx context.Context, jobID string, hashedToken string, exp time.Time) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE ci_jobs SET request_token = $2, request_token_exp = $3 WHERE id = $1`,
+		jobID, hashedToken, exp,
+	)
+	if err != nil {
+		return fmt.Errorf("store request token: %w", err)
+	}
+	return nil
+}
+
+// LookupRequestToken looks up a ci_job by its hashed request token.
+// It returns the job if the token exists, is not expired, and the job status
+// is 'claimed'. Otherwise it returns ErrTokenInvalid.
+func (s *Store) LookupRequestToken(ctx context.Context, hashedToken string) (*model.CIJob, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT `+ciJobColumns+` FROM ci_jobs
+		WHERE request_token = $1
+		  AND request_token_exp > now()
+		  AND status = 'claimed'`,
+		hashedToken,
+	)
+	j, err := scanCIJob(row)
+	if err == sql.ErrNoRows {
+		return nil, ErrTokenInvalid
+	}
+	if err != nil {
+		return nil, fmt.Errorf("lookup request token: %w", err)
+	}
+	return j, nil
 }
 
 // InsertCIJob inserts a new ci_job row with status 'queued' and returns it.
