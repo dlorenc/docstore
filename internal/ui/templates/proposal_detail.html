@@ -64,6 +64,31 @@
 </div>
 
 {{if eq (printf "%s" .Proposal.State) "open"}}
+<h2>Merge branch</h2>
+<div class="card">
+  <div style="padding:8px 4px 4px">
+    <p style="margin:0 0 10px;color:var(--text-dim);font-size:12px">Merge <strong>{{.Proposal.Branch}}</strong> into <strong>{{.Proposal.BaseBranch}}</strong>. The branch must satisfy all policies and checks.</p>
+    <button id="proposal-merge-btn" class="btn" onclick="(function(){
+      var btn = document.getElementById('proposal-merge-btn');
+      var errDiv = document.getElementById('proposal-merge-err');
+      btn.disabled = true; btn.textContent = 'merging…';
+      fetch('/repos/{{.Repo.Name}}/-/merge', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({branch: '{{.Proposal.Branch}}'})
+      }).then(function(r){
+        if(r.ok){ location.reload(); }
+        else { r.json().then(function(j){
+          errDiv.textContent = j.error || JSON.stringify(j);
+          errDiv.style.display = '';
+          btn.disabled = false; btn.textContent = 'Merge branch';
+        }).catch(function(){ errDiv.textContent = 'merge failed (status ' + r.status + ')'; errDiv.style.display = ''; btn.disabled = false; btn.textContent = 'Merge branch'; }); }
+      }).catch(function(e){ errDiv.textContent = String(e); errDiv.style.display = ''; btn.disabled = false; btn.textContent = 'Merge branch'; });
+    })()">Merge branch</button>
+    <div id="proposal-merge-err" style="display:none;color:var(--bad);font-size:12px;margin-top:6px"></div>
+  </div>
+</div>
+
 <h2>Close proposal</h2>
 <div class="card">
   <form method="POST" action="/ui/r/{{.Repo.Name}}/proposals/{{.Proposal.ID}}/close" style="padding:8px 4px 4px">
