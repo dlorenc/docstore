@@ -47,7 +47,7 @@ jobs:
             --region=us-central1 \
             --service-account=docstore-server@dlorenc-chainguard.iam.gserviceaccount.com \
             --add-cloudsql-instances=dlorenc-chainguard:us-central1:docstore-mvp \
-            --update-secrets=DATABASE_URL=docstore-db-url:latest \
+            --update-secrets=DATABASE_URL=docstore-db-url:latest,IAP_CLIENT_SECRET=iap-oauth-client-secret:latest \
             --ingress=internal-and-cloud-load-balancing \
             --min-instances=1 \
             --max-instances=1 \
@@ -56,7 +56,7 @@ jobs:
             --network=default \
             --subnet=default \
             --vpc-egress=private-ranges-only \
-            --args=--bootstrap-admin=dlorenc@chainguard.dev
+            --args=--bootstrap-admin=dlorenc@chainguard.dev,--iap-client-id=320310132788-md94jtp0d9fdcdlq2quma4mcpr0ul1qr.apps.googleusercontent.com
 
   build-and-deploy-ci-scheduler:
     runs-on: ubuntu-latest
