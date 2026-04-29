@@ -148,6 +148,12 @@ func registerWebhookSubscription(ctx context.Context, client *http.Client, docst
 	}
 }
 
+// claimValidator validates a worker pod's Kubernetes service account token.
+// *k8sproof.PodClaimer satisfies this interface.
+type claimValidator interface {
+	ValidateToken(ctx context.Context, token string) (podName, podIP string, err error)
+}
+
 // ---------------------------------------------------------------------------
 // scheduler holds handler dependencies
 // ---------------------------------------------------------------------------
@@ -157,7 +163,7 @@ type scheduler struct {
 	webhookSecret string
 	docstoreURL   string
 	httpClient    *http.Client
-	claimer       *k8sproof.PodClaimer // nil in local dev (no in-cluster K8s)
+	claimer       claimValidator // nil in local dev (no in-cluster K8s)
 	oidcTokenURL  string
 }
 
@@ -612,6 +618,10 @@ func (s *scheduler) handleComplete(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Status == "" {
 		http.Error(w, "status is required", http.StatusBadRequest)
+		return
+	}
+	if req.Status != "passed" && req.Status != "failed" {
+		http.Error(w, "status must be 'passed' or 'failed'", http.StatusBadRequest)
 		return
 	}
 
