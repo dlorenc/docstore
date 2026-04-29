@@ -7,9 +7,11 @@ import (
 	"flag"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -146,9 +148,27 @@ func main() {
 
 	// Configure presigned archive URLs (optional).
 	// ARCHIVE_HMAC_SECRET: base64-encoded raw HMAC secret bytes.
-	// ARCHIVE_BASE_URL: public server base URL, e.g. "https://docstore.dev".
+	// ARCHIVE_BASE_URL: public server base URL used when constructing presigned archive
+	// download URLs returned to CI workers, e.g. "https://docstore.dev". Must use
+	// http or https scheme and include a host. Trailing slash is stripped automatically.
 	archiveHMACSecretB64 := os.Getenv("ARCHIVE_HMAC_SECRET")
 	archiveBaseURL := os.Getenv("ARCHIVE_BASE_URL")
+	if archiveBaseURL != "" {
+		parsedBaseURL, parseErr := url.Parse(archiveBaseURL)
+		if parseErr != nil {
+			logger.Error("invalid ARCHIVE_BASE_URL", "error", parseErr)
+			os.Exit(1)
+		}
+		if parsedBaseURL.Scheme != "http" && parsedBaseURL.Scheme != "https" {
+			logger.Error("ARCHIVE_BASE_URL must use http or https scheme", "url", archiveBaseURL)
+			os.Exit(1)
+		}
+		if parsedBaseURL.Host == "" {
+			logger.Error("ARCHIVE_BASE_URL must include a host", "url", archiveBaseURL)
+			os.Exit(1)
+		}
+		archiveBaseURL = strings.TrimRight(archiveBaseURL, "/")
+	}
 	var archiveHMACSecret []byte
 	if archiveHMACSecretB64 != "" {
 		archiveHMACSecret, err = base64.StdEncoding.DecodeString(archiveHMACSecretB64)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,8 @@ import (
 	"github.com/dlorenc/docstore/internal/citoken"
 	"github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/model"
+	"github.com/dlorenc/docstore/internal/policy"
+	"github.com/dlorenc/docstore/internal/service"
 )
 
 // stubJobTokenStore is a minimal jobTokenStore implementation for tests.
@@ -246,5 +249,42 @@ func TestHandlePresignedArchive_ValidSig_PassesHMACCheck(t *testing.T) {
 	// 403 would indicate HMAC failure; any other code means HMAC check passed.
 	if rec.Code == http.StatusForbidden {
 		t.Fatalf("HMAC check should have passed, got 403; body: %s", rec.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Routing regression: POST /repos must not be redirected
+// ---------------------------------------------------------------------------
+
+// TestCreateRepo_NoTrailingSlashRedirect verifies that POST /repos (without a
+// trailing slash) is served directly and returns 201, not a 307 redirect to
+// POST /repos/. The outer mux previously used "/repos/" as its catch-all which
+// caused Go's ServeMux to redirect bare POST /repos to POST /repos/.
+func TestCreateRepo_NoTrailingSlashRedirect(t *testing.T) {
+	ms := &mockStore{
+		createRepoFn: func(_ context.Context, req model.CreateRepoRequest) (*model.Repo, error) {
+			return &model.Repo{Name: req.Owner + "/" + req.Name, Owner: req.Owner}, nil
+		},
+		setRoleFn: func(_ context.Context, _, _ string, _ model.RoleType) error {
+			return nil
+		},
+	}
+	s := &server{
+		commitStore: ms,
+		svc:         service.New(ms, nil, policy.NewCache()),
+	}
+	handler := s.buildHandler(devID, devID, ms)
+
+	body := strings.NewReader(`{"owner":"default","name":"myrepo"}`)
+	req := httptest.NewRequest(http.MethodPost, "/repos", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusTemporaryRedirect || rec.Code == http.StatusMovedPermanently || rec.Code == http.StatusPermanentRedirect {
+		t.Fatalf("POST /repos was redirected (status %d) — trailing-slash redirect bug; body: %s", rec.Code, rec.Body.String())
+	}
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d; body: %s", rec.Code, rec.Body.String())
 	}
 }
