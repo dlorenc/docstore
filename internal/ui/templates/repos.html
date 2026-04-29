@@ -1,6 +1,5 @@
 {{define "content"}}
 <h1>Repos</h1>
-{{with .Body}}
 <div style="margin-bottom:12px">
   <a href="/ui/orgs/new"><button>New org</button></a>
   <a href="/ui/repos/new" style="margin-left:8px"><button>New repo</button></a>
@@ -42,6 +41,5 @@
 {{end}}
 {{else}}
 <div class="card empty">No repos yet.</div>
-{{end}}
 {{end}}
 {{end}}

@@ -1,5 +1,4 @@
 {{define "content"}}
-{{with .Body}}
 {{$page := .}}
 <div class="headline">
   <h1>{{$page.Repo.Name}} <span class="meta">{{$page.Branch}}:{{$page.Path}}</span></h1>
@@ -56,5 +55,4 @@
     {{end}}
   </div>
 </div>
-{{end}}
 {{end}}

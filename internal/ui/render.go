@@ -271,10 +271,15 @@ func (h *Handler) render(w http.ResponseWriter, r *http.Request, t *template.Tem
 // renderError renders the error page with the given status.
 func (h *Handler) renderError(w http.ResponseWriter, r *http.Request, status int, message string) {
 	var buf bytes.Buffer
+	title := fmt.Sprintf("%d %s", status, http.StatusText(status))
 	data := pageData{
-		Title: fmt.Sprintf("%d %s", status, http.StatusText(status)),
+		Title: title,
 		Err: errorInfo{
 			Status:  status,
+			Message: message,
+		},
+		Body: errorBody{
+			Title:   title,
 			Message: message,
 		},
 	}
@@ -309,6 +314,12 @@ type crumb struct {
 
 type errorInfo struct {
 	Status  int
+	Message string
+}
+
+// errorBody is the concrete body type passed to the error page content template.
+type errorBody struct {
+	Title   string
 	Message string
 }
 

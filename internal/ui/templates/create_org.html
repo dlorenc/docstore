@@ -1,6 +1,5 @@
 {{define "content"}}
 <h1>New organisation</h1>
-{{with .Body}}
 <div class="card">
   {{if .Err}}
   <div class="row"><span class="badge bad">{{.Err}}</span></div>
@@ -16,5 +15,4 @@
     </div>
   </form>
 </div>
-{{end}}
 {{end}}

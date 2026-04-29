@@ -1,5 +1,4 @@
 {{define "content"}}
-{{with .Body}}
 <div class="headline">
   <h1>New commit — {{.Branch}}</h1>
   <span class="meta">{{.Repo.Name}}</span>
@@ -34,5 +33,4 @@
     <a href="/ui/r/{{.Repo.Name}}/b/{{urlPathEscape .Branch}}" style="margin-left:12px;font-size:12px">cancel</a>
   </form>
 </div>
-{{end}}
 {{end}}
