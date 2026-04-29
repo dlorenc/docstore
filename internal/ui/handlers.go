@@ -428,6 +428,19 @@ func (h *Handler) handleBranchPartialGetDispatch(w http.ResponseWriter, r *http.
 		h.handleCheckHistoryPartial(w, r)
 		return
 	}
+	// /b/{branch}/c/{seq}/diff/{path...} — inline file diff partial
+	if idx := strings.Index(raw, "/c/"); idx >= 0 {
+		after := raw[idx+3:] // seq/diff/path...
+		if diffIdx := strings.Index(after, "/diff/"); diffIdx >= 0 {
+			seqStr := after[:diffIdx]
+			filePath := after[diffIdx+6:]
+			r.SetPathValue("branch", raw[:idx])
+			r.SetPathValue("seq", seqStr)
+			r.SetPathValue("path", filePath)
+			h.handleCommitFileDiffPartial(w, r)
+			return
+		}
+	}
 
 	http.NotFound(w, r)
 }
@@ -1291,6 +1304,64 @@ func (h *Handler) handleCommitDetail(w http.ResponseWriter, r *http.Request) {
 			Commit: commit,
 		},
 	})
+}
+
+// handleCommitFileDiffPartial returns an HTML fragment with the inline diff
+// for a single file in a commit. The diff compares the file at sequence seq
+// against seq-1 (the previous commit that touched any file on the branch).
+// Route: GET /ui/_/r/{owner}/{name}/b/{branch}/c/{seq}/diff/{path...}
+func (h *Handler) handleCommitFileDiffPartial(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	branch := r.PathValue("branch")
+	seqStr := r.PathValue("seq")
+	path := r.PathValue("path")
+	repoName := owner + "/" + name
+
+	seq, err := strconv.ParseInt(seqStr, 10, 64)
+	if err != nil || seq < 1 {
+		h.renderError(w, r, http.StatusBadRequest, "invalid seq")
+		return
+	}
+
+	_, err = h.write.GetRepo(r.Context(), repoName)
+	if err != nil {
+		if errors.Is(err, db.ErrRepoNotFound) {
+			h.renderError(w, r, http.StatusNotFound, "repo not found")
+			return
+		}
+		slog.Error("ui commit diff get repo", "repo", repoName, "error", err)
+		h.renderError(w, r, http.StatusInternalServerError, "could not load repo")
+		return
+	}
+
+	current, err := h.read.GetFile(r.Context(), repoName, branch, path, &seq)
+	if err != nil {
+		slog.Error("ui commit diff get current", "repo", repoName, "path", path, "seq", seq, "error", err)
+		h.renderError(w, r, http.StatusInternalServerError, "could not load file")
+		return
+	}
+
+	var previous *store.FileContent
+	if prevSeq := seq - 1; prevSeq >= 1 {
+		previous, err = h.read.GetFile(r.Context(), repoName, branch, path, &prevSeq)
+		if err != nil {
+			slog.Error("ui commit diff get previous", "repo", repoName, "path", path, "seq", prevSeq, "error", err)
+			h.renderError(w, r, http.StatusInternalServerError, "could not load file")
+			return
+		}
+	}
+
+	var oldContent, newContent []byte
+	if previous != nil {
+		oldContent = previous.Content
+	}
+	if current != nil {
+		newContent = current.Content
+	}
+
+	data := computeFileDiff(oldContent, newContent, path)
+	h.render(w, r, h.tmpl.commitFileDiff, "_commit_file_diff.html", data)
 }
 
 // handleAcceptInvite renders the invite acceptance confirmation page (GET) and
