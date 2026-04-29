@@ -3,12 +3,18 @@
 BINARY := docstore
 BUILD_DIR := bin
 DEFAULT_REMOTE ?= https://docstore.dev
+# IAP OAuth client ID for docstore.dev (public — Desktop app clients are distributed openly).
+IAP_CLIENT_ID ?= 320310132788-md94jtp0d9fdcdlq2quma4mcpr0ul1qr.apps.googleusercontent.com
+# IAP OAuth client secret — do NOT commit. Set via env var or GitHub Actions secret.
+# Local builds: make build-ds IAP_CLIENT_SECRET=<secret>
+# CI builds: injected from the IAP_OAUTH_CLIENT_SECRET Actions secret.
+IAP_CLIENT_SECRET ?=
 
 build:
 	go build -o $(BUILD_DIR)/$(BINARY) ./cmd/docstore
 
 build-ds:
-	go build -ldflags "-X main.defaultRemote=$(DEFAULT_REMOTE)" -o $(BUILD_DIR)/ds ./cmd/ds
+	go build -ldflags "-X main.defaultRemote=$(DEFAULT_REMOTE) -X main.defaultIAPClientID=$(IAP_CLIENT_ID) -X main.defaultIAPClientSecret=$(IAP_CLIENT_SECRET)" -o $(BUILD_DIR)/ds ./cmd/ds
 
 test:
 	go test ./...
