@@ -46,6 +46,7 @@ type templateSet struct {
 	newCommit       *template.Template
 	repoSettings    *template.Template
 	userProfile     *template.Template
+	commitFileDiff  *template.Template
 }
 
 func parseTemplates(root fs.FS) (*templateSet, error) {
@@ -203,6 +204,10 @@ func parseTemplates(root fs.FS) (*templateSet, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse user: %w", err)
 	}
+	commitFileDiff, err := loadFragment("_commit_file_diff.html")
+	if err != nil {
+		return nil, fmt.Errorf("parse commit_file_diff: %w", err)
+	}
 	return &templateSet{
 		repos:          repos,
 		branches:       branches,
@@ -233,6 +238,7 @@ func parseTemplates(root fs.FS) (*templateSet, error) {
 		newCommit:       newCommit,
 		repoSettings:    repoSettings,
 		userProfile:     userProfile,
+		commitFileDiff:  commitFileDiff,
 	}, nil
 }
 

@@ -151,4 +151,7 @@ func TestTemplateTypes(t *testing.T) {
 			Memberships: []model.OrgMember{{Role: model.OrgRoleMember}},
 		})
 	})
+	t.Run("commit_file_diff", func(t *testing.T) {
+		check(t, tmpl.commitFileDiff, commitFileDiffData{})
+	})
 }
