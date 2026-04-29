@@ -3,7 +3,7 @@
 <tr>
   <td><a href="/ui/r/{{$.Repo.Name}}/b/{{urlPathEscape $.Branch}}/c/{{.Seq}}">{{.Seq}}</a></td>
   <td>{{.Message}}</td>
-  <td>{{.Author}}</td>
+  <td><a href="/ui/u/{{.Author}}">{{.Author}}</a></td>
   <td>{{relTime .Time}}</td>
 </tr>
 {{end}}

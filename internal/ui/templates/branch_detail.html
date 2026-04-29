@@ -258,7 +258,7 @@
     <tr>
       <td><a href="/ui/r/{{$page.Repo.Name}}/b/{{urlPathEscape $ctx.Branch.Name}}/c/{{.Sequence}}">{{.Sequence}}</a></td>
       <td>{{.Message}}</td>
-      <td>{{.Author}}</td>
+      <td><a href="/ui/u/{{.Author}}">{{.Author}}</a></td>
       <td class="meta">{{relTime .CreatedAt}}</td>
     </tr>
     {{end}}
