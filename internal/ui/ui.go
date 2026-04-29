@@ -55,6 +55,7 @@ type WriteStoreLite interface {
 	ListReleases(ctx context.Context, repo string, limit int, afterID string) ([]model.Release, error)
 	GetRelease(ctx context.Context, repo, name string) (*model.Release, error)
 	ListIssueRefs(ctx context.Context, repo string, number int64) ([]model.IssueRef, error)
+	ListIssuesByRef(ctx context.Context, repo string, refType model.IssueRefType, refID string) ([]model.Issue, error)
 	ListCIJobs(ctx context.Context, repo string, branch, status *string, limit int) ([]model.CIJob, error)
 	GetCIJob(ctx context.Context, id string) (*model.CIJob, error)
 	CreateOrg(ctx context.Context, name, createdBy string) (*model.Org, error)

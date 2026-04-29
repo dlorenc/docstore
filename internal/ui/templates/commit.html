@@ -24,6 +24,22 @@
   </div>
 </div>
 
+<h2>Linked issues</h2>
+<div class="card">
+  {{if not .Issues}}
+  <div class="empty">no linked issues</div>
+  {{else}}
+  {{range .Issues}}
+  <div class="row">
+    <div>
+      <a href="/ui/r/{{$page.Repo.Name}}/issues/{{.Number}}">#{{.Number}} {{.Title}}</a>
+    </div>
+    <span class="badge {{statusClass (printf "%s" .State)}}">{{.State}}</span>
+  </div>
+  {{end}}
+  {{end}}
+</div>
+
 <h2>files changed ({{len .Commit.Files}})</h2>
 {{if not .Commit.Files}}
 <div class="card"><div class="empty">no files changed</div></div>

@@ -246,6 +246,9 @@ func (fakeWrite) GetRelease(_ context.Context, _, name string) (*model.Release, 
 func (fakeWrite) ListIssueRefs(_ context.Context, _ string, _ int64) ([]model.IssueRef, error) {
 	return nil, nil
 }
+func (fakeWrite) ListIssuesByRef(_ context.Context, _ string, _ model.IssueRefType, _ string) ([]model.Issue, error) {
+	return nil, nil
+}
 func (fakeWrite) CreateIssue(_ context.Context, _, _, _, _ string, _ []string) (*model.Issue, error) {
 	return &model.Issue{ID: "new-id", Number: 99, Title: "new", Author: "test", State: "open"}, nil
 }
