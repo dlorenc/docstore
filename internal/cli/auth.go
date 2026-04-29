@@ -185,37 +185,40 @@ type dsServerConfig struct {
 	Auth dsAuthConfig `json:"auth"`
 }
 
-// Login authenticates with the given server using the OAuth flow advertised
-// by the server's /.well-known/ds-config endpoint and stores the credentials.
-func (a *App) Login(serverURL string) error {
+// Login authenticates with the given server and stores the credentials.
+// It first tries to discover OAuth client credentials via /.well-known/ds-config.
+// If that fails (e.g. the endpoint is behind IAP itself), it falls back to the
+// compiled-in fallbackClientID and fallbackClientSecret.
+func (a *App) Login(serverURL, fallbackClientID, fallbackClientSecret string) error {
 	serverURL = strings.TrimRight(serverURL, "/")
 
+	clientID, clientSecret := fallbackClientID, fallbackClientSecret
+
+	// Attempt discovery via well-known endpoint; failure is non-fatal if we
+	// have compiled-in fallback credentials.
 	resp, err := a.HTTP.Get(serverURL + "/.well-known/ds-config")
-	if err != nil {
-		return fmt.Errorf("fetch server config: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("server returned status %d for /.well-known/ds-config", resp.StatusCode)
-	}
-
-	var cfg dsServerConfig
-	if err := json.NewDecoder(resp.Body).Decode(&cfg); err != nil {
-		return fmt.Errorf("parse server config: %w", err)
-	}
-
-	if cfg.Auth.Type == "none" || cfg.Auth.Type == "" {
-		fmt.Fprintln(a.Out, "Server does not require authentication")
-		return nil
-	}
-	if cfg.Auth.Type != "iap" {
-		return fmt.Errorf("unsupported auth type: %s", cfg.Auth.Type)
-	}
-	if cfg.Auth.ClientID == "" {
-		return fmt.Errorf("server did not provide client_id in auth config")
+	if err == nil && resp.StatusCode == http.StatusOK {
+		defer resp.Body.Close()
+		var cfg dsServerConfig
+		if jsonErr := json.NewDecoder(resp.Body).Decode(&cfg); jsonErr == nil {
+			if cfg.Auth.Type == "none" || cfg.Auth.Type == "" {
+				fmt.Fprintln(a.Out, "Server does not require authentication")
+				return nil
+			}
+			if cfg.Auth.Type == "iap" && cfg.Auth.ClientID != "" {
+				clientID = cfg.Auth.ClientID
+				clientSecret = cfg.Auth.ClientSecret
+			}
+		}
+	} else if resp != nil {
+		resp.Body.Close()
 	}
 
-	oauthTok, err := runOAuthDesktopFlow(cfg.Auth.ClientID, cfg.Auth.ClientSecret)
+	if clientID == "" {
+		return fmt.Errorf("could not determine OAuth client ID: server did not provide one via /.well-known/ds-config and no default is compiled in")
+	}
+
+	oauthTok, err := runOAuthDesktopFlow(clientID, clientSecret)
 	if err != nil {
 		return fmt.Errorf("oauth flow: %w", err)
 	}
@@ -230,8 +233,8 @@ func (a *App) Login(serverURL string) error {
 		AccessToken:  oauthTok.AccessToken,
 		RefreshToken: oauthTok.RefreshToken,
 		Expiry:       oauthTok.Expiry,
-		ClientID:     cfg.Auth.ClientID,
-		ClientSecret: cfg.Auth.ClientSecret,
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
 	}
 	if err := saveCreds(serverURL, tok); err != nil {
 		return fmt.Errorf("save credentials: %w", err)
