@@ -16,6 +16,15 @@ import (
 // If empty, ds init requires an explicit remote URL.
 var defaultRemote string
 
+// defaultIAPClientID and defaultIAPClientSecret are the compiled-in OAuth
+// client credentials for the hosted docstore.dev instance, injected via
+// -ldflags. Used as fallback when /.well-known/ds-config is not reachable
+// (e.g. when the server is behind IAP and the endpoint is blocked).
+// Desktop app OAuth secrets are semi-public by nature (shipped in every CLI
+// binary), so embedding them here is intentional and standard practice.
+var defaultIAPClientID string
+var defaultIAPClientSecret string
+
 const usage = `usage: ds <command> [args]
 
 commands:
@@ -1230,7 +1239,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "error: no server URL provided and no default compiled in")
 			os.Exit(1)
 		}
-		err = app.Login(serverURL)
+		err = app.Login(serverURL, defaultIAPClientID, defaultIAPClientSecret)
 
 	case "logout":
 		serverURL := defaultRemote
