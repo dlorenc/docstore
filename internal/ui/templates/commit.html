@@ -8,7 +8,7 @@
 <div class="card">
   <div class="commit-meta">
     <div><strong>message</strong> {{.Commit.Message}}</div>
-    <div><strong>author</strong> {{.Commit.Author}}</div>
+    <div><strong>author</strong> <a href="/ui/u/{{.Commit.Author}}">{{.Commit.Author}}</a></div>
     <div><strong>branch</strong> {{.Commit.Branch}}</div>
     <div><strong>when</strong> {{relTime .Commit.CreatedAt}}</div>
   </div>
