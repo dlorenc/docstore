@@ -346,6 +346,8 @@ List reviews for a branch.
 
 Report a CI check result.
 
+**Auth:** IAP JWT (human users) or job OIDC JWT (`Authorization: Bearer {jwt}`, issued by `oidc.docstore.dev`).
+
 **Body:**
 ```json
 {
@@ -360,6 +362,8 @@ Report a CI check result.
 `status` is `passed`, `failed`, or `pending`.
 
 **Response 201:** Check run object.
+
+When submitted via a job OIDC JWT, the `reporter` field on the check run is set to `ci-job:{job_id}` (the job UUID from the JWT's `job_id` claim). This identifies which CI job produced the result.
 
 ### `GET /repos/{name}/-/branch/{branch}/checks`
 
@@ -415,6 +419,39 @@ Download the repo tree as a `.tar.gz`.
 **Query parameters:**
 - `branch` — Branch name (default `main`).
 - `at` — Sequence number.
+
+Requires authentication (IAP JWT or job OIDC JWT). For CI workers, use the presigned URL variant instead.
+
+### `GET /repos/{name}/-/archive` (presigned — no auth required)
+
+When the `sig` and `expires` query parameters are present, the server validates the HMAC signature and serves the archive without authentication. This form is intended for BuildKit `llb.HTTP` sources.
+
+**Query parameters:**
+- `branch` — Branch name (required).
+- `at` — Sequence number (required).
+- `expires` — Unix timestamp after which the URL is invalid (required).
+- `sig` — Hex-encoded HMAC-SHA256 over `repo\nbranch\nsequence\nexpires` (required).
+
+**Response 403** if the signature is invalid or the URL has expired.
+
+## CI Job Authentication
+
+### `POST /repos/{name}/-/archive/presign`
+
+Obtain a time-limited presigned URL for a CI job's source archive. The presigned URL can be fetched by BuildKit without any credentials.
+
+**Auth:** `Authorization: Bearer {request_token}` (the one-time token returned by ci-scheduler's `POST /claim`).
+
+The `request_token` is bound to a specific job; the repo in the token must match the `{name}` path parameter.
+
+**Response 200:**
+```json
+{"url": "https://docstore.dev/repos/{repo}/-/archive?branch={branch}&at={seq}&expires={unix}&sig={hex}"}
+```
+
+The URL is valid for 1 hour. Pass it directly to BuildKit as the `llb.HTTP` source — no credentials needed.
+
+**Response 401** if the token is missing, invalid, or expired.
 
 ## Chain
 
@@ -520,3 +557,55 @@ Delete a subscription. Global admin or the subscription creator.
 Resume a suspended subscription. Global admin or the subscription creator. Clears `suspended_at` and resets `failure_count` to 0.
 
 **Response 204.**
+
+## OIDC Identity Endpoints (oidc.docstore.dev)
+
+These endpoints are served by the `ci-oidc-public` Cloud Run service at `oidc.docstore.dev`. They require no authentication.
+
+### `GET /.well-known/openid-configuration`
+
+Returns the OIDC discovery document for the `https://oidc.docstore.dev` issuer.
+
+**Response 200:**
+```json
+{
+  "issuer": "https://oidc.docstore.dev",
+  "jwks_uri": "https://oidc.docstore.dev/.well-known/jwks.json",
+  "response_types_supported": ["id_token"],
+  "subject_types_supported": ["public"],
+  "id_token_signing_alg_values_supported": ["RS256"]
+}
+```
+
+### `GET /.well-known/jwks.json`
+
+Returns the JSON Web Key Set containing the RSA public key used to sign CI job JWTs. Use this to verify job JWT signatures without trusting DocStore's internal state.
+
+External systems (GCP Workload Identity Federation, AWS STS, HashiCorp Vault) can use this endpoint to exchange job JWTs for cloud provider credentials.
+
+## CI OIDC Token Endpoint (internal)
+
+This endpoint is served by the `ci-oidc` Cloud Run service. It is accessible from GKE worker pods via VPC (`--ingress=internal`) but not from the public internet.
+
+### `POST /ci/token`
+
+Exchange a `request_token` for a short-lived job OIDC JWT.
+
+**Auth:** `Authorization: Bearer {request_token}` (the one-time token returned by ci-scheduler's `POST /claim`).
+
+**Body:**
+```json
+{"audience": "docstore", "check_name": "ci/build"}
+```
+
+- `audience` — Required. The JWT `aud` claim. Use `"docstore"` for docstore API access.
+- `check_name` — Optional. Included in the JWT `sub` claim as `repo:{repo}:branch:{branch}:check:{check_name}`.
+
+**Response 200:**
+```json
+{"token": "eyJ..."}
+```
+
+The returned JWT has a 1-hour lifetime and is signed with RS256 via Cloud KMS. Each call produces a unique JWT (unique `jti`) recorded in the `ci_oidc_tokens` audit table.
+
+**Response 401** if the `request_token` is missing, invalid, or expired.
