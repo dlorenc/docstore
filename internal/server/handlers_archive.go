@@ -55,7 +55,7 @@ func (s *server) handleArchivePresign(w http.ResponseWriter, r *http.Request) {
 
 	presignedURL := fmt.Sprintf("%s/repos/%s/-/archive?branch=%s&at=%d&expires=%d&sig=%s",
 		s.archiveBaseURL,
-		url.PathEscape(job.Repo),
+		job.Repo,
 		url.QueryEscape(job.Branch),
 		job.Sequence,
 		expiresUnix,
