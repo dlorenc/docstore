@@ -30,6 +30,17 @@ import (
 // in the HTTP handler and YAML parse in Milestone 1.
 type Config struct {
 	Checks []Check `json:"checks" yaml:"checks"`
+
+	// CacheRef is an optional BuildKit registry cache reference of the form
+	// "host/org/repo:tag". When set, cache is exported to and imported from
+	// this OCI reference using the registry backend with insecure (HTTP) mode.
+	// Not parsed from ci.yaml; populated by the CI worker at runtime.
+	CacheRef string `json:"-" yaml:"-"`
+
+	// DockerConfigDir is an optional directory containing a config.json for
+	// registry authentication. When set, overrides DOCKER_CONFIG and the
+	// default ~/.docker directory. Not parsed from ci.yaml.
+	DockerConfigDir string `json:"-" yaml:"-"`
 }
 
 // Check is a single CI check configuration.
@@ -113,7 +124,7 @@ func (e *Executor) Run(ctx context.Context, source string, cfg Config, triggerCt
 					}
 				}
 			}()
-			results[j] = e.runCheck(ctx, source, check, extraEnv)
+			results[j] = e.runCheck(ctx, source, check, cfg.CacheRef, cfg.DockerConfigDir, extraEnv)
 		})
 	}
 	wg.Wait()
@@ -126,8 +137,10 @@ func (e *Executor) Close() error {
 }
 
 // runCheck executes a single check and returns its result.
+// cacheRef, when non-empty, enables BuildKit registry cache export/import.
+// dockerConfigDir, when non-empty, overrides the Docker config directory for auth.
 // extraEnv is injected as additional environment variables into every step.
-func (e *Executor) runCheck(ctx context.Context, source string, check Check, extraEnv []string) CheckResult {
+func (e *Executor) runCheck(ctx context.Context, source string, check Check, cacheRef, dockerConfigDir string, extraEnv []string) CheckResult {
 	isHTTP := strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://")
 	isLocal := source != "" && !isHTTP
 
@@ -164,15 +177,18 @@ func (e *Executor) runCheck(ctx context.Context, source string, check Check, ext
 		}
 	})
 
-	dockerConfigDir := os.Getenv("DOCKER_CONFIG")
-	if dockerConfigDir == "" {
-		home := os.Getenv("HOME")
-		if home == "" {
-			home = "/root"
+	effectiveDockerConfigDir := dockerConfigDir
+	if effectiveDockerConfigDir == "" {
+		effectiveDockerConfigDir = os.Getenv("DOCKER_CONFIG")
+		if effectiveDockerConfigDir == "" {
+			home := os.Getenv("HOME")
+			if home == "" {
+				home = "/root"
+			}
+			effectiveDockerConfigDir = home + "/.docker"
 		}
-		dockerConfigDir = home + "/.docker"
 	}
-	dockerCfg, _ := dockerconfig.Load(dockerConfigDir)
+	dockerCfg, _ := dockerconfig.Load(effectiveDockerConfigDir)
 
 	var ap authprovider.DockerAuthProviderConfig
 	if dockerCfg != nil {
@@ -184,6 +200,22 @@ func (e *Executor) runCheck(ctx context.Context, source string, check Check, ext
 		Session: []session.Attachable{
 			authprovider.NewDockerAuthProvider(ap),
 		},
+	}
+	if cacheRef != "" {
+		solveOpt.CacheExports = []client.CacheOptionsEntry{{
+			Type: "registry",
+			Attrs: map[string]string{
+				"ref":               cacheRef,
+				"registry.insecure": "true",
+			},
+		}}
+		solveOpt.CacheImports = []client.CacheOptionsEntry{{
+			Type: "registry",
+			Attrs: map[string]string{
+				"ref":               cacheRef,
+				"registry.insecure": "true",
+			},
+		}}
 	}
 	if isLocal {
 		solveOpt.LocalDirs = map[string]string{
