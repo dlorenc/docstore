@@ -53,7 +53,10 @@ type fileHistEntry struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-const configDir = ".docstore"
+// configDir is the local metadata directory for the ds CLI.
+// Note: previously this was ".docstore"; existing users must rename .docstore/ to .ds/.
+// Note: .docstore/ci.yaml is the CI config path (separate concern) and is NOT affected.
+const configDir = ".ds"
 const configFile = "config.json"
 const stateFile = "state.json"
 
@@ -88,7 +91,7 @@ func (a *App) fetchChain(cfg *Config, from, to int64) ([]chainEntry, error) {
 	return entries, nil
 }
 
-// Config is the persistent CLI configuration stored in .docstore/config.json.
+// Config is the persistent CLI configuration stored in .ds/config.json.
 type Config struct {
 	Remote string `json:"remote"`
 	Repo   string `json:"repo"`
@@ -133,7 +136,7 @@ func (a *App) loadConfig() (*Config, error) {
 }
 
 // loadRemote returns the server remote URL. It first tries to read
-// .docstore/config.json; if absent it falls back to App.DefaultRemote.
+// .ds/config.json; if absent it falls back to App.DefaultRemote.
 func (a *App) loadRemote() (string, error) {
 	data, err := os.ReadFile(a.configPath())
 	if err == nil {
@@ -180,7 +183,7 @@ func (a *App) saveState(st *State) error {
 }
 
 // scanLocalFiles walks the working directory and returns a map of path -> content_hash.
-// It skips the .docstore directory.
+// It skips the .ds directory.
 func (a *App) scanLocalFiles() (map[string]string, error) {
 	localFiles := make(map[string]string)
 	err := filepath.Walk(a.Dir, func(path string, info os.FileInfo, err error) error {
@@ -2016,7 +2019,7 @@ func (a *App) RetryChecks(branch string, checks []string) error {
 	return nil
 }
 
-// TUI launches the terminal UI reading config from .docstore/config.json.
+// TUI launches the terminal UI reading config from .ds/config.json.
 func (a *App) TUI() error {
 	cfg, err := a.loadConfig()
 	if err != nil {
