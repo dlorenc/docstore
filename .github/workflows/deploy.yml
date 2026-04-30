@@ -65,7 +65,7 @@ jobs:
             --region=us-central1 \
             --project=dlorenc-chainguard \
             --member=allUsers \
-            --role=roles/run.invoker
+            --role=roles/run.invoker || true
 
   build-and-deploy-ci-scheduler:
     runs-on: ubuntu-latest
