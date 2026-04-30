@@ -22,9 +22,9 @@ const (
 	// that ci-worker pods must run as.
 	expectedServiceAccount = "system:serviceaccount:docstore-ci:ci-worker"
 
-	// maxPodAge is the maximum age of a pod that may claim a job.
-	// This prevents long-lived or recycled pods from claiming jobs.
-	maxPodAge = 10 * time.Minute
+	// DefaultMaxPodAge is the default maximum age for a pod to be eligible to claim a job.
+	// Set to 4 hours to accommodate warm pool workers (KEDA ScaledJob minReplicaCount > 0).
+	DefaultMaxPodAge = 4 * time.Hour
 
 	// expectedScaledJobName is the KEDA ScaledJob that must own the pod.
 	expectedScaledJobName = "ci-worker"
@@ -35,12 +35,17 @@ const (
 type PodClaimer struct {
 	client    kubernetes.Interface
 	namespace string
+	maxAge    time.Duration
 }
 
 // New creates a PodClaimer that validates tokens against the K8s API server.
 // namespace is the Kubernetes namespace where ci-worker pods run.
 func New(client kubernetes.Interface, namespace string) *PodClaimer {
-	return &PodClaimer{client: client, namespace: namespace}
+	return &PodClaimer{
+		client:    client,
+		namespace: namespace,
+		maxAge:    DefaultMaxPodAge,
+	}
 }
 
 // ValidateToken validates a Kubernetes projected service account token and
@@ -79,8 +84,8 @@ func (p *PodClaimer) ValidateToken(ctx context.Context, token string) (podName, 
 		return "", "", fmt.Errorf("fetch pod %q: %w", podName, err)
 	}
 	podAge := time.Since(pod.CreationTimestamp.Time)
-	if podAge > maxPodAge {
-		return "", "", fmt.Errorf("pod %q is too old (%s > %s)", podName, podAge.Round(time.Second), maxPodAge)
+	if podAge > p.maxAge {
+		return "", "", fmt.Errorf("pod %q is too old (%s > %s)", podName, podAge.Round(time.Second), p.maxAge)
 	}
 	podIP = pod.Status.PodIP
 
