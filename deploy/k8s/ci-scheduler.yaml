@@ -59,6 +59,8 @@ spec:
               name: ci-runner
               key: runner-url
               optional: true
+        - name: OIDC_TOKEN_URL
+          value: ''  # set at deploy time by workflow via kubectl set env
         ports:
         - containerPort: 8080
         resources:

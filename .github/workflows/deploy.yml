@@ -47,7 +47,8 @@ jobs:
             --region=us-central1 \
             --service-account=docstore-server@dlorenc-chainguard.iam.gserviceaccount.com \
             --add-cloudsql-instances=dlorenc-chainguard:us-central1:docstore-mvp \
-            --update-secrets=DATABASE_URL=docstore-db-url:latest,IAP_CLIENT_SECRET=iap-oauth-client-secret:latest \
+            --update-secrets=DATABASE_URL=docstore-db-url:latest,IAP_CLIENT_SECRET=iap-oauth-client-secret:latest,ARCHIVE_HMAC_SECRET=archive-hmac-secret:latest \
+            --set-env-vars=ARCHIVE_BASE_URL=https://docstore.dev,OIDC_JWKS_URL=https://oidc.docstore.dev/.well-known/jwks.json,OIDC_AUDIENCE=docstore,OIDC_ISSUER=https://oidc.docstore.dev \
             --ingress=internal-and-cloud-load-balancing \
             --min-instances=1 \
             --max-instances=1 \
@@ -101,6 +102,10 @@ jobs:
             ci-scheduler=us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-scheduler@${{ steps.build.outputs.digest }} \
             -n docstore-ci
           kubectl rollout status deployment/ci-scheduler -n docstore-ci --timeout=300s
+
+      - name: Apply ci-scheduler RBAC
+        run: |
+          kubectl apply -f deploy/k8s/ci-scheduler-rbac.yaml
 
       - name: Update ci-runner-url secret
         run: |
@@ -168,3 +173,102 @@ jobs:
           kubectl patch scaledjob ci-worker -n docstore-ci \
             --type='json' \
             -p='[{"op":"replace","path":"/spec/jobTargetRef/template/spec/containers/0/image","value":"us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-worker@${{ steps.build.outputs.digest }}"}]'
+
+  build-and-deploy-ci-oidc:
+    runs-on: ubuntu-latest
+    needs: [deploy]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/320310132788/locations/global/workloadIdentityPools/github-actions/providers/github
+          service_account: docstore-deployer@dlorenc-chainguard.iam.gserviceaccount.com
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: docstore-ci
+          location: us-central1
+          project_id: dlorenc-chainguard
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+      - name: Build and push ci-oidc image
+        id: build
+        run: |
+          SHA=$(git rev-parse --short HEAD)
+          docker buildx build --platform linux/amd64 \
+            -f Dockerfile.ci-oidc \
+            -t us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-oidc:latest \
+            -t us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-oidc:${SHA} \
+            --push \
+            --metadata-file /tmp/ci-oidc-metadata.json \
+            .
+          DIGEST=$(jq -r '."containerimage.digest"' /tmp/ci-oidc-metadata.json)
+          echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
+
+      - name: Deploy ci-oidc (internal)
+        run: |
+          gcloud run deploy ci-oidc \
+            --image=us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-oidc@${{ steps.build.outputs.digest }} \
+            --project=dlorenc-chainguard \
+            --region=us-central1 \
+            --service-account=ci-oidc@dlorenc-chainguard.iam.gserviceaccount.com \
+            --add-cloudsql-instances=dlorenc-chainguard:us-central1:docstore-mvp \
+            --update-secrets=DATABASE_URL=docstore-db-url:latest,KMS_KEY_VERSION=ci-oidc-kms-key-version:latest \
+            --ingress=internal \
+            --min-instances=1 \
+            --max-instances=3 \
+            --no-cpu-throttling \
+            --port=8081 \
+            --network=default \
+            --subnet=default \
+            --vpc-egress=private-ranges-only
+
+      - name: Store internal token URL in Secret Manager
+        run: |
+          OIDC_INTERNAL_URL=$(gcloud run services describe ci-oidc \
+            --region=us-central1 \
+            --project=dlorenc-chainguard \
+            --format='value(status.url)')
+          printf '%s' "${OIDC_INTERNAL_URL}/ci/token" | \
+            gcloud secrets versions add ci-oidc-token-url \
+              --data-file=- --project=dlorenc-chainguard \
+            || printf '%s' "${OIDC_INTERNAL_URL}/ci/token" | \
+            gcloud secrets create ci-oidc-token-url \
+              --data-file=- --project=dlorenc-chainguard \
+              --replication-policy=automatic
+          echo "oidc_internal_url=${OIDC_INTERNAL_URL}" >> $GITHUB_ENV
+
+      - name: Deploy ci-oidc-public (public)
+        run: |
+          gcloud run deploy ci-oidc-public \
+            --image=us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-oidc@${{ steps.build.outputs.digest }} \
+            --project=dlorenc-chainguard \
+            --region=us-central1 \
+            --service-account=ci-oidc-public@dlorenc-chainguard.iam.gserviceaccount.com \
+            --update-secrets=KMS_KEY_VERSION=ci-oidc-kms-key-version:latest \
+            --set-env-vars=PUBLIC_ONLY=true \
+            --ingress=all \
+            --allow-unauthenticated \
+            --min-instances=1 \
+            --max-instances=10 \
+            --port=8081
+
+      - name: Create domain mapping for ci-oidc-public (idempotent)
+        run: |
+          gcloud run domain-mappings create \
+            --service=ci-oidc-public \
+            --domain=oidc.docstore.dev \
+            --region=us-central1 \
+            --project=dlorenc-chainguard \
+            2>/dev/null || echo 'domain mapping already exists'
+
+      - name: Update ci-scheduler OIDC_TOKEN_URL in GKE
+        run: |
+          kubectl set env deployment/ci-scheduler \
+            OIDC_TOKEN_URL="${{ env.oidc_internal_url }}/ci/token" \
+            -n docstore-ci
