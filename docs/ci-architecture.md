@@ -25,7 +25,7 @@ docstore events (CloudEvents via outbox)
                                                ├─ fetch .docstore/ci.yaml (JWT auth)
                                                ├─ evaluate if: conditions
                                                ├─ run checks via BuildKit executor
-                                               ├─ upload logs → GCS
+                                               ├─ POST logs → docstore server (request_token auth) → GCS
                                                └─ POST check_runs → docstore (JWT auth)
 ```
 
@@ -34,7 +34,7 @@ docstore events (CloudEvents via outbox)
 | File | Role |
 |---|---|
 | `cmd/ci-scheduler/main.go` | Webhook receiver; inserts `ci_jobs` rows; validates K8s SA tokens; issues request_tokens; reaps stale claimed jobs |
-| `cmd/ci-worker/main.go` | Claims job via POST /claim with K8s SA token; exchanges request_token for OIDC JWT; runs executor; uploads logs; posts check run results; then exits |
+| `cmd/ci-worker/main.go` | Claims job via POST /claim with K8s SA token; exchanges request_token for OIDC JWT; runs executor; uploads logs via POST /repos/:repo/-/check/:name/logs on docstore server (request_token auth); posts check run results; then exits |
 | `cmd/ci-oidc/main.go` | Exchanges request_tokens for signed OIDC JWTs; serves OIDC discovery and JWKS endpoints |
 | `internal/k8sproof/k8sproof.go` | Validates K8s projected SA tokens and pod provenance (owner chain, age, service account) |
 | `internal/executor/executor.go` | Translates `.docstore/ci.yaml` checks into BuildKit LLB DAGs and dispatches them to buildkitd |
@@ -175,7 +175,7 @@ The `proposal_synchronized` trigger is synthetic — ci-scheduler detects it by 
 8. The worker fetches `.docstore/ci.yaml` from the branch at the pinned sequence (JWT auth) and builds a `TriggerContext` from the job row.
 9. For each check, the worker evaluates the `if:` expression against the `TriggerContext`. Checks that evaluate to false are skipped entirely.
 10. Remaining checks are executed concurrently via BuildKit LLB inside the Kata microVM.
-11. The worker uploads logs to GCS and posts `check_runs` back to docstore (JWT auth).
+11. The worker POSTs logs to the docstore server at `POST /repos/:repo/-/check/:name/logs` (request_token auth); the server writes the logs to GCS. The worker then posts `check_runs` back to docstore (JWT auth).
 12. The worker calls `POST /jobs/{id}/complete` (authenticated with `request_token`) to record final status.
 13. The pod exits. KEDA sees the queue depth change and creates a new pod for the next job.
 14. ci-scheduler reaps jobs whose `last_heartbeat_at` has gone stale (missed heartbeats from crashed workers) every 30 seconds, resetting them to `queued`.
