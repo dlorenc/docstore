@@ -375,37 +375,6 @@ func (s *scheduler) handleProposalOpened(w http.ResponseWriter, r *http.Request,
 	w.WriteHeader(http.StatusOK)
 }
 
-// handleRun handles POST /run — manual trigger for a CI job.
-// Accepts JSON body: {"repo": "...", "branch": "...", "head_sequence": 123}
-// No signature verification is required; this is a direct API call.
-func (s *scheduler) handleRun(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Repo         string `json:"repo"`
-		Branch       string `json:"branch"`
-		HeadSequence int64  `json:"head_sequence"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
-	if req.Repo == "" || req.Branch == "" {
-		http.Error(w, "repo and branch are required", http.StatusBadRequest)
-		return
-	}
-
-	job, err := s.store.InsertCIJob(r.Context(), req.Repo, req.Branch, req.HeadSequence, "manual", req.Branch, "", "")
-	if err != nil {
-		slog.Error("insert ci job failed", "repo", req.Repo, "branch", req.Branch, "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-
-	slog.Info("ci job manually triggered", "id", job.ID, "repo", req.Repo, "branch", req.Branch)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]string{"run_id": job.ID}) //nolint:errcheck
-}
-
 // runStatusResponse is the JSON shape returned by GET /run/{id}.
 type runStatusResponse struct {
 	RunID  string `json:"run_id"`
@@ -650,7 +619,6 @@ func (s *scheduler) lookupByToken(r *http.Request) (*model.CIJob, error) {
 func newMux(sched *scheduler) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /webhook", sched.handleWebhook)
-	mux.HandleFunc("POST /run", sched.handleRun)
 	mux.HandleFunc("GET /run/{id}", sched.handleGetRun)
 	mux.HandleFunc("GET /run/{id}/logs/{check}", sched.handleGetLogs)
 	mux.HandleFunc("GET /queue-depth", sched.handleQueueDepth)

@@ -11,6 +11,7 @@ import (
 
 	"github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/model"
+	"github.com/dlorenc/docstore/internal/store"
 )
 
 // ---------------------------------------------------------------------------
@@ -1021,5 +1022,100 @@ func TestHandleCreateSubscription_InvalidConfigType(t *testing.T) {
 	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for array config, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleTriggerCIRun tests
+// ---------------------------------------------------------------------------
+
+func TestTriggerCIRun_Success(t *testing.T) {
+	ms := &mockStore{}
+	rs := &mockReadStore{
+		getBranchFn: func(_ context.Context, _, _ string) (*store.BranchInfo, error) {
+			return &store.BranchInfo{HeadSequence: 42}, nil
+		},
+	}
+	srv := NewWithReadStore(ms, rs, devID, devID)
+
+	body, _ := json.Marshal(map[string]string{"branch": "feat/my-feature"})
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/ci/run", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["run_id"] == "" {
+		t.Errorf("expected run_id in response, got empty")
+	}
+}
+
+func TestTriggerCIRun_DefaultsBranchToMain(t *testing.T) {
+	var gotBranch string
+	ms := &mockStore{}
+	rs := &mockReadStore{
+		getBranchFn: func(_ context.Context, _, branch string) (*store.BranchInfo, error) {
+			gotBranch = branch
+			return &store.BranchInfo{HeadSequence: 1}, nil
+		},
+	}
+	srv := NewWithReadStore(ms, rs, devID, devID)
+
+	// Empty body — branch should default to "main".
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/ci/run", bytes.NewReader([]byte(`{}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	if gotBranch != "main" {
+		t.Errorf("expected branch 'main', got %q", gotBranch)
+	}
+}
+
+func TestTriggerCIRun_NonexistentRepo(t *testing.T) {
+	ms := &mockStore{
+		getRepoFn: func(_ context.Context, name string) (*model.Repo, error) {
+			return nil, db.ErrRepoNotFound
+		},
+	}
+	srv := NewWithReadStore(ms, &mockReadStore{}, devID, devID)
+
+	body, _ := json.Marshal(map[string]string{"branch": "main"})
+	req := httptest.NewRequest(http.MethodPost, "/repos/nonexistent/repo/-/ci/run", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestTriggerCIRun_NonexistentBranch(t *testing.T) {
+	ms := &mockStore{}
+	rs := &mockReadStore{
+		getBranchFn: func(_ context.Context, _, _ string) (*store.BranchInfo, error) {
+			return nil, nil // branch not found
+		},
+	}
+	srv := NewWithReadStore(ms, rs, devID, devID)
+
+	body, _ := json.Marshal(map[string]string{"branch": "no-such-branch"})
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/ci/run", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d; body: %s", rec.Code, rec.Body.String())
 	}
 }

@@ -401,56 +401,6 @@ func TestHandleGetLogs_Queued_Returns404(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Tests: POST /run (manual trigger)
-// ---------------------------------------------------------------------------
-
-func TestHandleRun_HappyPath(t *testing.T) {
-	stub := &stubStore{}
-	sched := &scheduler{store: stub}
-
-	body, _ := json.Marshal(map[string]any{
-		"repo":          "org/repo",
-		"branch":        "main",
-		"head_sequence": 10,
-	})
-	req := httptest.NewRequest(http.MethodPost, "/run", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-
-	sched.handleRun(w, req)
-
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
-	}
-	var resp map[string]string
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if resp["run_id"] == "" {
-		t.Error("expected non-empty run_id")
-	}
-	if len(stub.insertedJobs) != 1 {
-		t.Fatalf("expected 1 inserted job, got %d", len(stub.insertedJobs))
-	}
-}
-
-func TestHandleRun_MissingRepo_Returns400(t *testing.T) {
-	stub := &stubStore{}
-	sched := &scheduler{store: stub}
-
-	body, _ := json.Marshal(map[string]any{"branch": "main"})
-	req := httptest.NewRequest(http.MethodPost, "/run", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-
-	sched.handleRun(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", w.Code)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Tests: push trigger type is recorded
 // ---------------------------------------------------------------------------
 
@@ -476,33 +426,6 @@ func TestHandleWebhook_SetsTrigerTypePush(t *testing.T) {
 	}
 	if j.TriggerBranch != "feat" {
 		t.Errorf("TriggerBranch = %q, want %q", j.TriggerBranch, "feat")
-	}
-}
-
-func TestHandleRun_SetsTrigerTypeManual(t *testing.T) {
-	stub := &stubStore{}
-	sched := &scheduler{store: stub}
-
-	body, _ := json.Marshal(map[string]any{
-		"repo":          "org/repo",
-		"branch":        "main",
-		"head_sequence": 10,
-	})
-	req := httptest.NewRequest(http.MethodPost, "/run", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-
-	sched.handleRun(w, req)
-
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d", w.Code)
-	}
-	if len(stub.insertedJobs) != 1 {
-		t.Fatalf("expected 1 job, got %d", len(stub.insertedJobs))
-	}
-	j := stub.insertedJobs[0]
-	if j.TriggerType != "manual" {
-		t.Errorf("TriggerType = %q, want %q", j.TriggerType, "manual")
 	}
 }
 
