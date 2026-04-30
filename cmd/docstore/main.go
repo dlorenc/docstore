@@ -21,6 +21,7 @@ import (
 	"github.com/dlorenc/docstore/internal/blob"
 	"github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/events"
+	"github.com/dlorenc/docstore/internal/logstore"
 	"github.com/dlorenc/docstore/internal/policy"
 	"github.com/dlorenc/docstore/internal/server"
 	"github.com/dlorenc/docstore/internal/store"
@@ -191,11 +192,18 @@ func main() {
 		logger.Warn("OIDC_JWKS_URL not set — job OIDC token authentication disabled")
 	}
 
+	// Initialize log store for CI check log uploads.
+	ls, err := logstore.NewFromEnv(context.Background())
+	if err != nil {
+		logger.Error("failed to create log store", "error", err)
+		os.Exit(1)
+	}
+
 	jobStore := db.NewStore(database)
 	srv := server.NewWithOIDC(commitStore, database, bs, broker,
 		*devIdentity, *bootstrapAdmin, *iapClientID, *iapClientSecret,
 		jobStore, archiveHMACSecret, archiveBaseURL,
-		oidcJWKSURL, oidcAudience, oidcIssuer)
+		oidcJWKSURL, oidcAudience, oidcIssuer, ls)
 
 	// Start the auto-merge worker. It subscribes to check.reported and
 	// review.submitted events and merges branches with auto_merge=true.

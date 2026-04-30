@@ -14,6 +14,7 @@ import (
 	"github.com/dlorenc/docstore/internal/blob"
 	"github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/events"
+	"github.com/dlorenc/docstore/internal/logstore"
 	"github.com/dlorenc/docstore/internal/model"
 	"github.com/dlorenc/docstore/internal/policy"
 	"github.com/dlorenc/docstore/internal/service"
@@ -214,7 +215,7 @@ func NewWithPresign(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, 
 	return NewWithOIDC(writeStore, database, bs, broker,
 		devIdentity, bootstrapAdmin, iapClientID, iapClientSecret,
 		jobStore, archiveHMACSecret, archiveBaseURL,
-		"", "", "")
+		"", "", "", nil)
 }
 
 // NewWithOIDC is like NewWithPresign but also enables OIDC job token authentication
@@ -225,10 +226,11 @@ func NewWithPresign(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, 
 // oidcAudience is the expected audience claim (e.g. "docstore").
 // oidcIssuer is the expected issuer claim (e.g. "https://oidc.docstore.dev").
 // If oidcJWKSURL is empty, OIDC job token auth is disabled.
+// ls is the LogStore used by POST /repos/:repo/-/check/:name/logs; if nil the endpoint returns 503.
 func NewWithOIDC(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, broker *events.Broker,
 	devIdentity, bootstrapAdmin, iapClientID, iapClientSecret string,
 	jobStore jobTokenStore, archiveHMACSecret []byte, archiveBaseURL string,
-	oidcJWKSURL, oidcAudience, oidcIssuer string) http.Handler {
+	oidcJWKSURL, oidcAudience, oidcIssuer string, ls logstore.LogStore) http.Handler {
 	pc := policy.NewCache()
 	s := &server{
 		commitStore:       writeStore,
@@ -243,6 +245,7 @@ func NewWithOIDC(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, bro
 		oidcJWKSURL:       oidcJWKSURL,
 		oidcAudience:      oidcAudience,
 		oidcIssuer:        oidcIssuer,
+		logStore:          ls,
 	}
 	if oidcJWKSURL != "" {
 		s.oidcKeyCache = newKeyCacheForURL(oidcJWKSURL)
@@ -394,6 +397,18 @@ func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore Wri
 				s.handlePresignedArchive(w, r)
 				return
 			}
+			// Log upload (worker → upload check logs): auth via request_token.
+			// Endpoint format: check/{checkName}/logs
+			if r.Method == http.MethodPost && strings.HasPrefix(endpoint, "check/") && strings.HasSuffix(endpoint, "/logs") {
+				middle := strings.TrimPrefix(endpoint, "check/")
+				checkName := strings.TrimSuffix(middle, "/logs")
+				if checkName != "" {
+					r.SetPathValue("name", repoName)
+					r.SetPathValue("checkName", checkName)
+					s.handleCheckLogs(w, r)
+					return
+				}
+			}
 		}
 
 		// Job OIDC token auth: if a Bearer token is present and OIDC is configured,
@@ -459,6 +474,9 @@ type server struct {
 	oidcAudience string
 	oidcIssuer   string
 	oidcKeyCache *keyCache
+	// logStore writes CI check logs; used by POST /repos/:repo/-/check/:name/logs.
+	// nil means the endpoint is disabled (returns 503).
+	logStore logstore.LogStore
 }
 
 // handleDSConfig serves GET /.well-known/ds-config — unauthenticated.
