@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"encoding/base64"
 	"net/http"
 	"strings"
 
@@ -18,8 +19,27 @@ import (
 func authMiddleware(inner http.Handler, validate func(string) (*server.JobIdentity, error)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auth := r.Header.Get("Authorization")
-		tokenStr := strings.TrimPrefix(auth, "Bearer ")
-		if tokenStr == "" || tokenStr == auth {
+
+		// Accept Bearer tokens directly (used by CI workers) and Basic auth
+		// where the password is the OIDC token (used by BuildKit's docker auth
+		// provider reading from ~/.docker/config.json).
+		var tokenStr string
+		switch {
+		case strings.HasPrefix(auth, "Bearer "):
+			tokenStr = strings.TrimPrefix(auth, "Bearer ")
+		case strings.HasPrefix(auth, "Basic "):
+			b64 := strings.TrimPrefix(auth, "Basic ")
+			if decoded, err := base64.StdEncoding.DecodeString(b64); err == nil {
+				// Format is "username:password"; use the password as the bearer token.
+				_, pass, _ := strings.Cut(string(decoded), ":")
+				tokenStr = pass
+			}
+		}
+
+		if tokenStr == "" {
+			// Send a Bearer realm challenge. BuildKit uses Bearer challenges
+			// to trigger its session auth provider (which falls back to Basic
+			// credentials from the docker config when the realm is not a URL).
 			w.Header().Set("WWW-Authenticate", `Bearer realm="ci-registry"`)
 			http.Error(w, "authentication required", http.StatusUnauthorized)
 			return

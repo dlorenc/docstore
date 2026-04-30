@@ -159,12 +159,13 @@ type claimValidator interface {
 // ---------------------------------------------------------------------------
 
 type scheduler struct {
-	store         ciJobStore
-	webhookSecret string
-	docstoreURL   string
-	httpClient    *http.Client
-	claimer       claimValidator // nil in local dev (no in-cluster K8s)
-	oidcTokenURL  string
+	store             ciJobStore
+	webhookSecret     string
+	docstoreURL       string
+	httpClient        *http.Client
+	claimer           claimValidator // nil in local dev (no in-cluster K8s)
+	oidcTokenURL      string
+	cacheRegistryURL  string
 }
 
 // fetchCIConfig fetches and parses .docstore/ci.yaml from the given repo/branch
@@ -469,9 +470,10 @@ func (s *scheduler) handleQueueDepth(w http.ResponseWriter, r *http.Request) {
 
 // claimResponse is the JSON body returned by POST /claim on success.
 type claimResponse struct {
-	Job          model.CIJob `json:"job"`
-	RequestToken string      `json:"request_token"`
-	OIDCTokenURL string      `json:"oidc_token_url"`
+	Job             model.CIJob `json:"job"`
+	RequestToken    string      `json:"request_token"`
+	OIDCTokenURL    string      `json:"oidc_token_url"`
+	CacheRegistry   string      `json:"cache_registry,omitempty"`
 }
 
 // handleClaim handles POST /claim.
@@ -525,9 +527,10 @@ func (s *scheduler) handleClaim(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(claimResponse{ //nolint:errcheck
-		Job:          *job,
-		RequestToken: plaintext,
-		OIDCTokenURL: s.oidcTokenURL,
+		Job:           *job,
+		RequestToken:  plaintext,
+		OIDCTokenURL:  s.oidcTokenURL,
+		CacheRegistry: s.cacheRegistryURL,
 	})
 }
 
@@ -806,6 +809,8 @@ func main() {
 		*oidcTokenURL = "https://oidc.docstore.dev/ci/token"
 	}
 
+	cacheRegistryURL := os.Getenv("CACHE_REGISTRY_URL")
+
 	// Set up structured logging.
 	var logLevel slog.LevelVar
 	if lvlStr := os.Getenv("LOG_LEVEL"); lvlStr != "" {
@@ -860,12 +865,13 @@ func main() {
 	}
 
 	sched := &scheduler{
-		store:         store,
-		webhookSecret: *webhookSecret,
-		docstoreURL:   strings.TrimRight(*docstoreURL, "/"),
-		httpClient:    httpClient,
-		claimer:       claimer,
-		oidcTokenURL:  *oidcTokenURL,
+		store:            store,
+		webhookSecret:    *webhookSecret,
+		docstoreURL:      strings.TrimRight(*docstoreURL, "/"),
+		httpClient:       httpClient,
+		claimer:          claimer,
+		oidcTokenURL:     *oidcTokenURL,
+		cacheRegistryURL: cacheRegistryURL,
 	}
 
 	// Start schedule-based cron runner.
