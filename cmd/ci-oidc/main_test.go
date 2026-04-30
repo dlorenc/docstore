@@ -368,6 +368,25 @@ func TestHandleHealth(t *testing.T) {
 	}
 }
 
+// TestHandleToken_PublicOnlyMode_Returns404 verifies that POST /ci/token is
+// not registered when the server is built with newPublicMux (PUBLIC_ONLY mode).
+func TestHandleToken_PublicOnlyMode_Returns404(t *testing.T) {
+	t.Parallel()
+	s, _ := newTestServer(t, &stubStore{})
+
+	mux := newPublicMux(s)
+
+	body, _ := json.Marshal(map[string]string{"audience": "https://example.com"})
+	r := newRequest(t, http.MethodPost, "/ci/token", body)
+	r.Header.Set("Authorization", "Bearer validtoken")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 (public-only mode must not serve /ci/token)", w.Code)
+	}
+}
+
 // Verify that triggerToRefType is exercised (also tested indirectly above).
 func TestTriggerToRefType(t *testing.T) {
 	t.Parallel()
