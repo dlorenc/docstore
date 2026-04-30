@@ -52,10 +52,8 @@ spec:
             memory: "256Mi"
         readinessProbe:
           httpGet:
-            path: /v2/
+            path: /healthz
             port: 8080
-          # /v2/ returns 401 when unauthenticated, which means the registry is
-          # up and responding; we treat any response as ready.
           failureThreshold: 3
           periodSeconds: 10
 ---
