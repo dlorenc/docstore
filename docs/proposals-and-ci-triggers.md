@@ -225,7 +225,7 @@ Always enabled. Trigger a run via the docstore server (IAP-protected, requires w
 curl -X POST https://docstore.dev/repos/acme/myrepo/-/ci/run \
   -H "Content-Type: application/json" \
   -H "Proxy-Authorization: Bearer $(gcloud auth print-identity-token)" \
-  -d '{"branch": "feature/x", "head_sequence": 42}'
+  -d '{"branch": "feature/x"}'
 # Returns: {"run_id": "..."}
 ```
 
