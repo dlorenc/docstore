@@ -9,12 +9,16 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	dockerconfig "github.com/docker/cli/cli/config"
 	"github.com/moby/buildkit/client"
 	"github.com/moby/buildkit/client/llb"
 	gwclient "github.com/moby/buildkit/frontend/gateway/client"
+	"github.com/moby/buildkit/session"
+	"github.com/moby/buildkit/session/auth/authprovider"
 
 	"github.com/dlorenc/docstore/internal/citoken"
 	"github.com/dlorenc/docstore/internal/testutil"
@@ -74,7 +78,20 @@ func TestE2ECacheRoundTrip(t *testing.T) {
 	defer bkClient.Close()
 
 	cacheRef := regHost + "/testorg/cache:buildkit"
-	_ = tok // token available for future auth session integration
+
+	// Write a temp docker config with the OIDC token as Basic auth password so
+	// BuildKit can authenticate against the test registry (which accepts Basic
+	// auth via the authMiddleware Basic auth path added alongside this test).
+	dockerConfigDir := writeTempDockerConfig(t, regHost, tok)
+	defer os.RemoveAll(dockerConfigDir)
+
+	dockerCfg, err := dockerconfig.Load(dockerConfigDir)
+	if err != nil {
+		t.Fatalf("load docker config: %v", err)
+	}
+	var ap authprovider.DockerAuthProviderConfig
+	ap.AuthConfigProvider = authprovider.LoadAuthConfig(dockerCfg)
+	authSession := authprovider.NewDockerAuthProvider(ap)
 
 	// --- First build: export cache ---
 	def, err := llb.Image("alpine").Run(llb.Shlex("echo cache-test")).Root().Marshal(ctx)
@@ -90,6 +107,7 @@ func TestE2ECacheRoundTrip(t *testing.T) {
 				"registry.insecure": "true",
 			},
 		}},
+		Session: []session.Attachable{authSession},
 	}, "", func(ctx context.Context, c gwclient.Client) (*gwclient.Result, error) {
 		return c.Solve(ctx, gwclient.SolveRequest{Definition: def.ToPB()})
 	}, nil)
@@ -121,6 +139,7 @@ func TestE2ECacheRoundTrip(t *testing.T) {
 				"registry.insecure": "true",
 			},
 		}},
+		Session: []session.Attachable{authSession},
 	}, "", func(ctx context.Context, c gwclient.Client) (*gwclient.Result, error) {
 		return c.Solve(ctx, gwclient.SolveRequest{Definition: def.ToPB()})
 	}, statusCh)
@@ -170,18 +189,28 @@ func TestE2ECrossOrgRejected(t *testing.T) {
 	}
 }
 
-// dockerAuthConfig returns a base64-encoded Docker auth config for the
-// BuildKit auth session.
-func dockerAuthConfig(token string) string {
-	type authEntry struct {
-		Auth string `json:"auth"`
+// writeTempDockerConfig writes a temporary Docker config.json with Basic auth
+// credentials for the given registry host, using token as the password.
+// The caller is responsible for removing the returned directory.
+func writeTempDockerConfig(t *testing.T, regHost, token string) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "ci-docker-test-*")
+	if err != nil {
+		t.Fatalf("create docker config dir: %v", err)
 	}
-	// Docker auth format: base64("username:password").
-	// We use "bearer" as the username and the token as the password.
-	creds := base64.StdEncoding.EncodeToString([]byte("bearer:" + token))
-	entry := authEntry{Auth: creds}
-	data, _ := json.Marshal(entry)
-	return string(data)
+	creds := base64.StdEncoding.EncodeToString([]byte("ci-worker:" + token))
+	cfg := map[string]any{
+		"auths": map[string]any{
+			regHost: map[string]string{
+				"auth": creds,
+			},
+		},
+	}
+	data, _ := json.Marshal(cfg)
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), data, 0o600); err != nil {
+		t.Fatalf("write docker config: %v", err)
+	}
+	return dir
 }
 
 // hostAccessibleAddr returns the address of the test server that buildkitd

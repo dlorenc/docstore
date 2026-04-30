@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -91,9 +92,10 @@ func waitDockerdReady(ctx context.Context) error {
 
 // claimResponse is the JSON body returned by POST /claim on success.
 type claimResponse struct {
-	Job          model.CIJob `json:"job"`
-	RequestToken string      `json:"request_token"`
-	OIDCTokenURL string      `json:"oidc_token_url"`
+	Job           model.CIJob `json:"job"`
+	RequestToken  string      `json:"request_token"`
+	OIDCTokenURL  string      `json:"oidc_token_url"`
+	CacheRegistry string      `json:"cache_registry,omitempty"`
 }
 
 // readSAToken reads the Kubernetes projected service account token from the
@@ -325,6 +327,92 @@ func getDocstoreOIDCToken(ctx context.Context, oidcTokenURL, requestToken string
 	return result.Token, nil
 }
 
+// getCIRegistryToken exchanges the request_token for a short-lived OIDC JWT
+// with aud=ci-registry for authenticating against the CI cache registry.
+// Returns empty string if oidcTokenURL is empty (local dev / OIDC not configured).
+func getCIRegistryToken(ctx context.Context, oidcTokenURL, requestToken string) (string, error) {
+	if oidcTokenURL == "" {
+		return "", nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	body, err := json.Marshal(map[string]string{"audience": "ci-registry"})
+	if err != nil {
+		return "", fmt.Errorf("marshal token request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, oidcTokenURL, bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("build token request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+requestToken)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("token request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("token request: unexpected status %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("decode token response: %w", err)
+	}
+	if result.Token == "" {
+		return "", fmt.Errorf("token response missing token field")
+	}
+	return result.Token, nil
+}
+
+// registryHost returns the host[:port] portion of a registry reference.
+// Input may be "host:port/path" (no scheme) or "scheme://host:port/path".
+func registryHost(registry string) string {
+	if strings.Contains(registry, "://") {
+		u, err := url.Parse(registry)
+		if err == nil {
+			return u.Host
+		}
+	}
+	// No scheme — first path component is host[:port].
+	host, _, _ := strings.Cut(registry, "/")
+	return host
+}
+
+// writeCacheDockerConfig writes a temporary Docker config.json that stores
+// Basic auth credentials for registryHost, using token as the password.
+// BuildKit's docker auth provider reads this when authenticating against
+// the cache registry. The caller is responsible for removing the directory.
+func writeCacheDockerConfig(regHost, token string) (string, error) {
+	dir, err := os.MkdirTemp("", "ci-docker-*")
+	if err != nil {
+		return "", fmt.Errorf("create docker config dir: %w", err)
+	}
+	// Docker auth format: base64("ci-worker:<token>").
+	creds := base64.StdEncoding.EncodeToString([]byte("ci-worker:" + token))
+	cfg := map[string]any{
+		"auths": map[string]any{
+			regHost: map[string]string{
+				"auth": creds,
+			},
+		},
+	}
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		os.RemoveAll(dir)
+		return "", fmt.Errorf("marshal docker config: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), data, 0o600); err != nil {
+		os.RemoveAll(dir)
+		return "", fmt.Errorf("write docker config: %w", err)
+	}
+	return dir, nil
+}
+
 func fetchConfig(ctx context.Context, client *http.Client, docstoreURL, repo, branch string, headSeq int64, jwt string) (*executor.Config, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -446,6 +534,8 @@ func runJob(
 	logDir string,
 	triggerCtx ciconfig.TriggerContext,
 	extraEnv []string,
+	cacheRef string,
+	dockerConfigDir string,
 ) (status string, logURL *string, errMsg *string) {
 	fail := func(msg string) (string, *string, *string) {
 		slog.Error("job failed", "job_id", job.ID, "reason", msg)
@@ -493,6 +583,9 @@ func runJob(
 	pendingWg.Wait()
 
 	// 4. Execute all checks.
+	// Set cache fields if configured (populated by the caller, not from ci.yaml).
+	cfg.CacheRef = cacheRef
+	cfg.DockerConfigDir = dockerConfigDir
 	results, err := exec.Run(ctx, archiveURL, *cfg, triggerCtx, extraEnv)
 	if err != nil {
 		return fail(fmt.Sprintf("executor: %v", err))
@@ -658,8 +751,31 @@ func main() {
 			"DOCSTORE_OIDC_REQUEST_URL=" + cr.OIDCTokenURL,
 		}
 
+		// Set up BuildKit registry cache if the scheduler provided a registry.
+		var cacheRef, cacheDockerConfigDir string
+		if cr.CacheRegistry != "" {
+			org, repoName, _ := strings.Cut(job.Repo, "/")
+			if org != "" && repoName != "" {
+				regToken, err := getCIRegistryToken(ctx, cr.OIDCTokenURL, requestToken)
+				if err != nil {
+					slog.Warn("get ci-registry OIDC token failed, cache disabled", "job_id", job.ID, "error", err)
+				} else if regToken != "" {
+					regHost := registryHost(cr.CacheRegistry)
+					dir, err := writeCacheDockerConfig(regHost, regToken)
+					if err != nil {
+						slog.Warn("write cache docker config failed, cache disabled", "job_id", job.ID, "error", err)
+					} else {
+						cacheRef = cr.CacheRegistry + "/" + org + "/" + repoName + ":buildkit"
+						cacheDockerConfigDir = dir
+						defer os.RemoveAll(dir)
+					}
+				}
+				// If regToken is empty, OIDC is not configured; cache silently disabled.
+			}
+		}
+
 		// Execute the job.
-		jobStatus, jobLogURL, jobErrMsg := runJob(ctx, httpClient, exec, docstoreURL, job, requestToken, jwt, logDir, triggerCtx, extraEnv)
+		jobStatus, jobLogURL, jobErrMsg := runJob(ctx, httpClient, exec, docstoreURL, job, requestToken, jwt, logDir, triggerCtx, extraEnv, cacheRef, cacheDockerConfigDir)
 
 		// Stop heartbeat and clear log dir.
 		close(hbDone)
