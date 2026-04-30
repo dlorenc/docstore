@@ -1,12 +1,39 @@
 package server
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
+
+	"cloud.google.com/go/storage"
 
 	"github.com/dlorenc/docstore/internal/model"
 )
+
+// logFetcher abstracts reading a log object from a remote store.
+// The real implementation reads from GCS; tests inject a mock.
+type logFetcher interface {
+	Fetch(ctx context.Context, bucket, key string) ([]byte, error)
+}
+
+// gcsLogFetcher implements logFetcher using the GCS storage client.
+type gcsLogFetcher struct {
+	client *storage.Client
+}
+
+func (f *gcsLogFetcher) Fetch(ctx context.Context, bucket, key string) ([]byte, error) {
+	rc, err := f.client.Bucket(bucket).Object(key).NewReader(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+	return io.ReadAll(rc)
+}
 
 // ---------------------------------------------------------------------------
 // CI job handlers (read-only)
@@ -86,4 +113,80 @@ func (s *server) handleGetCIJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, job)
+}
+
+// handleCIJobLogs implements GET /repos/:repo/-/ci-jobs/:id/logs/:check
+// Streams the stored log for the named check as text/plain.
+func (s *server) handleCIJobLogs(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
+
+	id := r.PathValue("id")
+	check := r.PathValue("check")
+
+	job, err := s.commitStore.GetCIJob(r.Context(), id)
+	if err != nil {
+		slog.Error("internal error", "op", "ci_job_logs", "id", id, "error", err)
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if job == nil {
+		writeError(w, http.StatusNotFound, "ci job not found")
+		return
+	}
+	if job.Repo != repo {
+		writeError(w, http.StatusNotFound, "ci job not found")
+		return
+	}
+	if job.LogURL == nil || *job.LogURL == "" {
+		writeError(w, http.StatusNotFound, "no logs for this job")
+		return
+	}
+
+	// Extract bucket from gs:// URL.
+	const gsPrefix = "gs://"
+	if !strings.HasPrefix(*job.LogURL, gsPrefix) {
+		writeError(w, http.StatusNotFound, "log not available")
+		return
+	}
+	rest := strings.TrimPrefix(*job.LogURL, gsPrefix)
+	bucket, _, found := strings.Cut(rest, "/")
+	if !found || bucket == "" {
+		writeError(w, http.StatusInternalServerError, "invalid log URL")
+		return
+	}
+
+	// Construct the object key for the requested check.
+	safeName := strings.ReplaceAll(check, "/", "_")
+	objectKey := fmt.Sprintf("%s/%s/%d/%s.log", job.Repo, job.Branch, job.Sequence, safeName)
+
+	lf := s.logFetcher
+	if lf == nil {
+		// Production: create a GCS client using Application Default Credentials.
+		client, err := storage.NewClient(r.Context())
+		if err != nil {
+			slog.Error("create gcs client for log fetch", "error", err)
+			writeError(w, http.StatusInternalServerError, "could not connect to log storage")
+			return
+		}
+		defer client.Close()
+		lf = &gcsLogFetcher{client: client}
+	}
+
+	data, err := lf.Fetch(r.Context(), bucket, objectKey)
+	if err != nil {
+		if errors.Is(err, storage.ErrObjectNotExist) {
+			writeError(w, http.StatusNotFound, "log not found")
+			return
+		}
+		slog.Error("fetch log", "bucket", bucket, "key", objectKey, "error", err)
+		writeError(w, http.StatusInternalServerError, "could not read log")
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	w.Write(data) //nolint:errcheck
 }

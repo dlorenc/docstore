@@ -80,6 +80,9 @@ type mockStore struct {
 	updateProposalFn  func(ctx context.Context, repo, proposalID string, title, description *string) (*model.Proposal, error)
 	closeProposalFn   func(ctx context.Context, repo, proposalID string) error
 	listIssuesByRefFn func(ctx context.Context, repo string, refType model.IssueRefType, refID string) ([]model.Issue, error)
+
+	getCIJobFn   func(ctx context.Context, id string) (*model.CIJob, error)
+	listCIJobsFn func(ctx context.Context, repo string, branch, status *string, limit int) ([]model.CIJob, error)
 }
 
 func (m *mockStore) Commit(ctx context.Context, req model.CommitRequest) (*model.CommitResponse, error) {
@@ -526,11 +529,17 @@ func (m *mockStore) ListIssuesByRef(ctx context.Context, repo string, refType mo
 	return []model.Issue{}, nil
 }
 
-func (m *mockStore) GetCIJob(_ context.Context, _ string) (*model.CIJob, error) {
+func (m *mockStore) GetCIJob(ctx context.Context, id string) (*model.CIJob, error) {
+	if m.getCIJobFn != nil {
+		return m.getCIJobFn(ctx, id)
+	}
 	return nil, nil
 }
 
-func (m *mockStore) ListCIJobs(_ context.Context, _ string, _, _ *string, _ int) ([]model.CIJob, error) {
+func (m *mockStore) ListCIJobs(ctx context.Context, repo string, branch, status *string, limit int) ([]model.CIJob, error) {
+	if m.listCIJobsFn != nil {
+		return m.listCIJobsFn(ctx, repo, branch, status, limit)
+	}
 	return []model.CIJob{}, nil
 }
 

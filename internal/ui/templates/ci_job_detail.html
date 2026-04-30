@@ -80,12 +80,6 @@
     <div class="meta">{{relTimep .Job.LastHeartbeatAt}}</div>
   </div>
   {{end}}
-  {{if .Job.LogURL}}
-  <div class="row">
-    <div><strong>log</strong></div>
-    <div><a href="{{.Job.LogURL}}" target="_blank" rel="noopener">view logs →</a></div>
-  </div>
-  {{end}}
   {{if .Job.ErrorMessage}}
   <div class="row">
     <div><strong>error</strong></div>
@@ -93,4 +87,20 @@
   </div>
   {{end}}
 </div>
+
+{{if .Job.LogURL}}
+<h2>Logs</h2>
+<div class="card">
+  <div style="margin-bottom:8px">
+    <strong>{{.CheckName}}</strong>
+  </div>
+  <pre class="log-output" id="log-output">Loading...</pre>
+</div>
+<script>
+fetch('/repos/{{.Repo.Name}}/-/ci-jobs/{{.Job.ID}}/logs/{{.CheckName}}')
+  .then(r => r.ok ? r.text() : Promise.reject(r.status))
+  .then(t => { document.getElementById('log-output').textContent = t })
+  .catch(e => { document.getElementById('log-output').textContent = 'could not load logs: ' + e })
+</script>
+{{end}}
 {{end}}
