@@ -225,7 +225,7 @@ func heartbeat(ctx context.Context, schedulerURL, jobID, requestToken string, do
 func getPresignedArchiveURL(ctx context.Context, docstoreURL, repo, requestToken string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	u := fmt.Sprintf("%s/repos/%s/-/archive/presign", docstoreURL, url.PathEscape(repo))
+	u := fmt.Sprintf("%s/repos/%s/-/archive/presign", docstoreURL, repo)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, nil)
 	if err != nil {
 		return "", fmt.Errorf("build presign request: %w", err)
