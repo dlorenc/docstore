@@ -201,7 +201,7 @@ The manual trigger endpoint moved to the main docstore server (IAP-protected, re
 curl -X POST https://docstore.dev/repos/acme/myrepo/-/ci/run \
   -H "Content-Type: application/json" \
   -H "Proxy-Authorization: Bearer $(gcloud auth print-identity-token)" \
-  -d '{"branch": "feature/x", "head_sequence": 42}'
+  -d '{"branch": "feature/x"}'
 ```
 
 Returns `{"run_id": "..."}`. Manual runs use `trigger_type=manual` and bypass the `on:` block filter — they always enqueue regardless of what triggers are configured.
