@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
@@ -104,12 +105,9 @@ func TestGetCIJob_NotFound(t *testing.T) {
 	s, _ := newCIJobStore(t)
 	ctx := context.Background()
 
-	got, err := s.GetCIJob(ctx, "00000000-0000-0000-0000-000000000000")
-	if err != nil {
-		t.Fatalf("GetCIJob: %v", err)
-	}
-	if got != nil {
-		t.Errorf("expected nil for missing job, got %+v", got)
+	_, err := s.GetCIJob(ctx, "00000000-0000-0000-0000-000000000000")
+	if !errors.Is(err, ErrCIJobNotFound) {
+		t.Fatalf("expected ErrCIJobNotFound, got %v", err)
 	}
 }
 
