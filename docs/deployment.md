@@ -193,7 +193,22 @@ The domain `docstore.dev` is registered via Cloud Domains in project `dlorenc-ch
 
 ## One-time OIDC setup prerequisites
 
-The ci-oidc service requires several GCP resources that must be created once before first deployment.
+The CI OIDC identity system deploys as two Cloud Run services from the same `ci-oidc` image:
+
+- **ci-oidc** (`--ingress=internal`): Serves `POST /ci/token` plus the discovery endpoints. Accessible from GKE worker pods via VPC. Requires `DATABASE_URL` and `KMS_KEY_VERSION`. Token issuance happens here.
+- **ci-oidc-public** (`--ingress=all --allow-unauthenticated`, `PUBLIC_ONLY=true`): Serves only `GET /.well-known/openid-configuration` and `GET /.well-known/jwks.json` at `oidc.docstore.dev`. No database access. Allows external systems to verify job JWT signatures.
+
+Additionally, the docstore Cloud Run service must allow unauthenticated invocations so worker pods can call it using the OIDC JWT for application-level auth (rather than needing a Google identity token):
+
+```bash
+gcloud run services add-iam-policy-binding docstore \
+  --member=allUsers \
+  --role=roles/run.invoker \
+  --region=us-central1 \
+  --project=dlorenc-chainguard
+```
+
+The following GCP resources must be created once before first deployment.
 
 ### 1. Create the KMS keyring and signing key
 
@@ -284,7 +299,7 @@ gcloud secrets add-iam-policy-binding archive-hmac-secret \
 
 ### 7. DNS setup for oidc.docstore.dev
 
-After the Cloud Run domain mapping is created by the deploy workflow, add a CNAME record:
+The `build-and-deploy-ci-oidc` workflow job creates the Cloud Run domain mapping for `oidc.docstore.dev → ci-oidc-public` idempotently on each deploy. After the first deploy, add a CNAME record pointing to the Cloud Run hosting:
 
 ```
 oidc.docstore.dev. CNAME ghs.googlehosted.com.
@@ -301,7 +316,11 @@ gcloud dns record-sets create oidc.docstore.dev. \
   --project=dlorenc-chainguard
 ```
 
-The domain mapping is created idempotently by the `build-and-deploy-ci-oidc` workflow job on each deploy. Wait for the mapping to become active before the CNAME resolves correctly (can take a few minutes on first creation).
+Wait for the domain mapping to become active before the CNAME resolves correctly (can take a few minutes on first creation). Verify with:
+
+```bash
+curl https://oidc.docstore.dev/.well-known/jwks.json
+```
 
 ## GKE deployment (CI system)
 
@@ -367,17 +386,33 @@ The deploy workflow (`deploy.yml`) also builds and deploys both CI binaries afte
      --data-file=- --project=dlorenc-chainguard
    ```
 4. Provision the Global HTTPS LB + IAP infrastructure (see "One-time infrastructure" commands in the Authentication section above). This only needs to be done once per project.
-5. Push to `main` to trigger the deploy workflow.
-6. After deploy, verify with `curl https://docstore.dev/healthz`.
-7. Create the first org and repo:
+5. Create the OIDC KMS resources and secrets (see "One-time OIDC setup prerequisites" above):
+   - KMS keyring and signing key
+   - `ci-oidc-kms-key-version` secret in Secret Manager
+   - `archive-hmac-secret` in Secret Manager
+   - `ci-oidc` and `ci-oidc-public` service accounts with KMS roles
+6. Grant allUsers `run.invoker` on the docstore Cloud Run service (allows worker pods to call the internal URL using OIDC JWT auth):
    ```bash
-   ds orgs create myorg
-   ds repos create myorg myrepo
+   gcloud run services add-iam-policy-binding docstore \
+     --member=allUsers --role=roles/run.invoker \
+     --region=us-central1 --project=dlorenc-chainguard
    ```
-8. Assign a bootstrap admin (the `--bootstrap-admin` flag is already set on the Cloud Run service as `dlorenc@chainguard.dev`; update as needed):
+7. Push to `main` to trigger the deploy workflow. The workflow deploys the docstore server, ci-scheduler, ci-worker, and both ci-oidc services in dependency order.
+8. After deploy, add the CNAME for `oidc.docstore.dev` (see step 7 of "One-time OIDC setup prerequisites" above).
+9. Verify OIDC is working:
    ```bash
-   ds roles set you@example.com admin
+   curl https://docstore.dev/healthz
+   curl https://oidc.docstore.dev/.well-known/jwks.json
    ```
+10. Create the first org and repo:
+    ```bash
+    ds orgs create myorg
+    ds repos create myorg myrepo
+    ```
+11. Assign a bootstrap admin (the `--bootstrap-admin` flag is already set on the Cloud Run service as `dlorenc@chainguard.dev`; update as needed):
+    ```bash
+    ds roles set you@example.com admin
+    ```
 
 ## Horizontal scaling
 

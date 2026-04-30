@@ -12,28 +12,36 @@ docstore events (CloudEvents via outbox)
                                                ci-scheduler (standard GKE node, :8080)
                                                ├─ POST /webhook   ← webhook delivery
                                                ├─ POST /run       ← manual trigger
+                                               ├─ POST /claim     ← K8s SA token auth
+                                               ├─ POST /jobs/{id}/heartbeat ← request_token auth
+                                               ├─ POST /jobs/{id}/complete  ← request_token auth
                                                └─ cron runner     ← schedule trigger
                                                          │
                                                INSERT INTO ci_jobs (trigger_type, ...)
                                                          │
-                                               ci-worker pod (Kata CLH microVM) polls ci_jobs
-                                               ├─ claim job (SKIP LOCKED)
-                                               ├─ fetch .docstore/ci.yaml (branch under test)
+                                               ci-worker pod (Kata CLH microVM) calls POST /claim
+                                               ├─ K8s SA token → request_token + oidc_token_url
+                                               ├─ exchange request_token → OIDC JWT
+                                               ├─ GET presigned archive URL
+                                               ├─ fetch .docstore/ci.yaml (JWT auth)
                                                ├─ evaluate if: conditions
                                                ├─ run checks via BuildKit executor
                                                ├─ upload logs → GCS
-                                               └─ POST check_runs → docstore
+                                               └─ POST check_runs → docstore (JWT auth)
 ```
 
 ### Components
 
 | File | Role |
 |---|---|
-| `cmd/ci-scheduler/main.go` | Webhook receiver; inserts `ci_jobs` rows; serves `/run` for manual triggers; reaps stale claimed jobs |
-| `cmd/ci-worker/main.go` | Polls `ci_jobs`, claims one job, runs executor, uploads logs, posts check run results, then exits |
+| `cmd/ci-scheduler/main.go` | Webhook receiver; inserts `ci_jobs` rows; serves `/run` for manual triggers; validates K8s SA tokens; issues request_tokens; reaps stale claimed jobs |
+| `cmd/ci-worker/main.go` | Claims job via POST /claim with K8s SA token; exchanges request_token for OIDC JWT; runs executor; uploads logs; posts check run results; then exits |
+| `cmd/ci-oidc/main.go` | Exchanges request_tokens for signed OIDC JWTs; serves OIDC discovery and JWKS endpoints |
+| `internal/k8sproof/k8sproof.go` | Validates K8s projected SA tokens and pod provenance (owner chain, age, service account) |
 | `internal/executor/executor.go` | Translates `.docstore/ci.yaml` checks into BuildKit LLB DAGs and dispatches them to buildkitd |
+| `internal/archivesign/archivesign.go` | HMAC-SHA256 signing and verification for presigned archive URLs |
 | `entrypoint-worker.sh` | Kata VM startup: GCR auth → loop-ext4 setup → buildkitd → dockerd → ci-worker |
-| `deploy/k8s/ci-worker.yaml` | Kata CLH Deployment (`runtimeClassName: kata-clh`); 3 replicas; each pod handles one job then exits |
+| `deploy/k8s/ci-worker.yaml` | Kata CLH KEDA ScaledJob (`runtimeClassName: kata-clh`); KEDA creates one pod per queued job; each pod handles one job then exits |
 | `deploy/k8s/ci-scheduler.yaml` | Standard GKE Deployment (1 replica) + internal LoadBalancer reachable via VPC Direct Egress |
 | `deploy/k8s/debug-kata.yaml` | Throwaway privileged ubuntu:24.04 pod with `runtimeClassName: kata-clh` for kernel investigation |
 
@@ -46,10 +54,90 @@ Cloud Run (docstore)
                                            └─► PostgreSQL (Cloud SQL proxy sidecar)
 
 ci-worker pods (kata-clh microVM)
+  ├─► ci-scheduler :8080  (claim, heartbeat, complete)
+  ├─► ci-oidc (internal Cloud Run)  (POST /ci/token)
+  ├─► docstore Cloud Run (JWT-authenticated API calls)
   ├─► buildkitd tcp://localhost:1234
   ├─► dockerd   tcp://127.0.0.1:2375
   └─► log HTTP  :8081  (proxied through ci-scheduler for live log streaming)
+
+oidc.docstore.dev (Cloud Run domain mapping → ci-oidc-public)
+  ├─► GET /.well-known/openid-configuration
+  └─► GET /.well-known/jwks.json
 ```
+
+---
+
+## Security Architecture
+
+### Why: the problem with static credentials
+
+The original CI system gave workers direct database access (`DATABASE_URL`). This created a large blast radius: any compromised worker could read or modify any CI job. The new system replaces static shared credentials with cryptographically verifiable, scoped, short-lived job identity.
+
+### How: the authentication chain
+
+```
+Pod starts (Kata CLH microVM)
+    │
+    ├─ K8s projected SA token (auto-mounted at
+    │  /var/run/secrets/kubernetes.io/serviceaccount/token)
+    │
+    ▼
+POST ci-scheduler/claim
+    │  K8s TokenReview + provenance checks (internal/k8sproof):
+    │  • token valid, SA = system:serviceaccount:docstore-ci:ci-worker
+    │  • pod age < 4h (warm pool workers stay valid)
+    │  • owner chain: Pod → batch/v1 Job → keda.sh/v1alpha1 ScaledJob(ci-worker)
+    │
+    ▼
+request_token (32-byte random, base64url, plaintext returned once)
+SHA-256 hash stored in ci_jobs table
+    │
+    ├─ Used for: POST /heartbeat, POST /complete, POST /archive/presign
+    │
+    ▼
+POST ci-oidc/ci/token (internal Cloud Run — GKE only)
+    │  Validates request_token against ci_jobs table
+    │  Signs JWT via Cloud KMS (RS256, private key never leaves KMS)
+    │
+    ▼
+Job OIDC JWT (valid 1 hour)
+    iss: https://oidc.docstore.dev
+    sub: repo:acme/myrepo:branch:main:check:ci/test
+    aud: docstore
+    jti: <uuid> (written to ci_oidc_tokens audit table)
+    job_id, repo, org, branch, check_name, ref_type, sequence
+    │
+    ├─ Authorization: Bearer <jwt> on all docstore API calls
+    │  (fetch config, mark checks pending, post check results)
+    │
+    └─ Can be exchanged with GCP Workload Identity Federation, AWS STS,
+       HashiCorp Vault for cloud provider credentials — no static secrets needed
+```
+
+### Pod provenance chain
+
+The KEDA ScaledJob creates a new Kubernetes Job (and pod) for each item in the queue. ci-scheduler verifies this lineage:
+
+```
+KEDA ScaledJob "ci-worker"
+    └─ creates: batch/v1 Job (per queue item)
+                    └─ creates: Pod (runs Kata CLH microVM)
+                                    └─ mounts: projected SA token
+                                               (bound to the pod's lifetime)
+```
+
+The `internal/k8sproof` package walks this owner reference chain via the Kubernetes API. A token from any pod not owned by the `ci-worker` ScaledJob is rejected, preventing spoofed claims from arbitrary pods.
+
+### OIDC issuer as a trust anchor
+
+`oidc.docstore.dev` acts as a standard OIDC identity provider. The JWKS is publicly accessible so external systems can:
+
+- Verify the JWT signature without trusting DocStore's internal state
+- Use GCP Workload Identity Federation, AWS STS, or HashiCorp Vault to exchange the job JWT for cloud credentials
+- Audit token issuance via the `ci_oidc_tokens` table (jti, job_id, audience, exp)
+
+---
 
 ### Event subscription and routing
 
@@ -82,13 +170,16 @@ The `proposal_synchronized` trigger is synthetic — ci-scheduler detects it by 
 2. ci-scheduler verifies the HMAC signature (webhook path only), parses the CloudEvent, and reads `.docstore/ci.yaml` from the branch under test.
 3. The `on:` block in ci.yaml is evaluated against the event. If no trigger matches, the request is acknowledged and no job is enqueued.
 4. A `ci_jobs` row is inserted with `status='queued'` and trigger metadata (`trigger_type`, `trigger_branch`, `trigger_base_branch`, `trigger_proposal_id`).
-5. A ci-worker pod polls `ClaimCIJob` (atomic `UPDATE … WHERE status='queued' LIMIT 1 … SKIP LOCKED RETURNING *`).
-6. The worker builds a `TriggerContext` from the job row and fetches `.docstore/ci.yaml` from the branch under test at the pinned sequence.
-7. For each check, the worker evaluates the `if:` expression against the `TriggerContext`. Checks that evaluate to false are skipped entirely.
-8. Remaining checks are executed concurrently via BuildKit LLB inside the Kata microVM.
-9. The worker uploads logs to GCS, posts `check_runs` back to docstore, and calls `CompleteCIJob`.
-10. The Deployment controller replaces the exited pod, maintaining the pool size.
-11. ci-scheduler reaps jobs whose `last_heartbeat_at` has gone stale (missed heartbeats from crashed workers) every 30 seconds, resetting them to `queued`.
+5. A ci-worker pod calls `POST /claim` with its Kubernetes projected service account token. ci-scheduler validates the token via the K8s TokenReview API and verifies pod provenance (service account, pod age, owner chain). On success, it atomically claims the oldest queued job and returns the job row plus a one-time `request_token` and `oidc_token_url`.
+6. The worker exchanges the `request_token` for a short-lived OIDC JWT by calling `POST <oidc_token_url>` on the ci-oidc internal service.
+7. The worker calls `POST /repos/{repo}/-/archive/presign` (authenticated with `request_token`) to obtain a presigned, HMAC-signed archive URL. The URL is passed to BuildKit as the source — no credentials are embedded.
+8. The worker fetches `.docstore/ci.yaml` from the branch at the pinned sequence (JWT auth) and builds a `TriggerContext` from the job row.
+9. For each check, the worker evaluates the `if:` expression against the `TriggerContext`. Checks that evaluate to false are skipped entirely.
+10. Remaining checks are executed concurrently via BuildKit LLB inside the Kata microVM.
+11. The worker uploads logs to GCS and posts `check_runs` back to docstore (JWT auth).
+12. The worker calls `POST /jobs/{id}/complete` (authenticated with `request_token`) to record final status.
+13. The pod exits. KEDA sees the queue depth change and creates a new pod for the next job.
+14. ci-scheduler reaps jobs whose `last_heartbeat_at` has gone stale (missed heartbeats from crashed workers) every 30 seconds, resetting them to `queued`.
 
 ### Trigger context
 
@@ -217,6 +308,10 @@ docker push us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-worker:lates
 docker build -f Dockerfile.ci-scheduler \
   -t us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-scheduler:latest .
 docker push us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-scheduler:latest
+
+docker build -f Dockerfile.ci-oidc \
+  -t us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-oidc:latest .
+docker push us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-oidc:latest
 ```
 
 ### Apply
@@ -225,7 +320,6 @@ docker push us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-scheduler:la
 kubectl apply -f deploy/k8s/ci-scheduler.yaml
 kubectl apply -f deploy/k8s/ci-worker.yaml
 kubectl rollout status deployment/ci-scheduler -n docstore-ci
-kubectl rollout status deployment/ci-worker -n docstore-ci
 ```
 
 Subsequent deploys happen automatically via the `build-and-deploy-ci` CI job on every push to `main`.
@@ -234,13 +328,13 @@ Subsequent deploys happen automatically via the `build-and-deploy-ci` CI job on 
 
 | Variable | Required | Description |
 |---|---|---|
-| `DATABASE_URL` | yes | PostgreSQL connection string (via Cloud SQL proxy) |
 | `DOCSTORE_URL` | yes | Base URL of the docstore server |
-| `POD_NAME` | yes | Injected via Downward API; used to claim jobs |
-| `POD_IP` | yes | Injected via Downward API; used for live log proxying |
+| `CI_SCHEDULER_URL` | yes | URL of the ci-scheduler service |
 | `BUILDKIT_ADDR` | no | buildkitd address; defaults to `tcp://localhost:1234` |
 | `LOG_STORE` | no | `gcs` (production) or `local`; defaults to `local` |
 | `LOG_BUCKET` | if gcs | GCS bucket name for build logs |
+
+The Kubernetes projected service account token is auto-mounted at `/var/run/secrets/kubernetes.io/serviceaccount/token`.
 
 ### Environment variables (ci-scheduler)
 
@@ -248,5 +342,6 @@ Subsequent deploys happen automatically via the `build-and-deploy-ci` CI job on 
 |---|---|---|
 | `DATABASE_URL` | yes | PostgreSQL connection string |
 | `DOCSTORE_URL` | yes | Base URL of the docstore server |
+| `OIDC_TOKEN_URL` | yes | URL of the ci-oidc `/ci/token` endpoint (returned to workers on /claim) |
 | `WEBHOOK_SECRET` | no | HMAC secret for verifying incoming webhook deliveries |
 | `RUNNER_URL` | no | Public URL of this scheduler (used to auto-register with docstore) |
