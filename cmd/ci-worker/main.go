@@ -20,7 +20,6 @@ import (
 
 	"github.com/dlorenc/docstore/internal/ciconfig"
 	"github.com/dlorenc/docstore/internal/executor"
-	"github.com/dlorenc/docstore/internal/logstore"
 	"github.com/dlorenc/docstore/internal/model"
 )
 
@@ -251,6 +250,39 @@ func getPresignedArchiveURL(ctx context.Context, docstoreURL, repo, requestToken
 	return body.URL, nil
 }
 
+// postCheckLogs uploads the logs for a check run to the docstore server via
+// POST /repos/{repo}/-/check/{checkName}/logs. The server writes the log to GCS
+// using the job metadata bound to the request_token. Returns the log URL on success.
+func postCheckLogs(ctx context.Context, docstoreURL, repo, checkName, requestToken, logs string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	u := fmt.Sprintf("%s/repos/%s/-/check/%s/logs", docstoreURL, repo, url.PathEscape(checkName))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, strings.NewReader(logs))
+	if err != nil {
+		return "", fmt.Errorf("build log upload request: %w", err)
+	}
+	req.Header.Set("Content-Type", "text/plain")
+	req.Header.Set("Authorization", "Bearer "+requestToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("log upload request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("log upload: unexpected status %d", resp.StatusCode)
+	}
+	var body struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return "", fmt.Errorf("decode log upload response: %w", err)
+	}
+	if body.URL == "" {
+		return "", fmt.Errorf("log upload: empty URL in response")
+	}
+	return body.URL, nil
+}
+
 // getDocstoreOIDCToken exchanges the request_token for a short-lived OIDC JWT
 // with aud=docstore. This token is used to authenticate API calls to docstore.
 // Returns empty string if oidcTokenURL is empty (local dev / OIDC not configured).
@@ -407,7 +439,6 @@ func runJob(
 	ctx context.Context,
 	httpClient *http.Client,
 	exec runner,
-	ls logstore.LogStore,
 	docstoreURL string,
 	job *model.CIJob,
 	requestToken string,
@@ -475,15 +506,13 @@ func runJob(
 		_ = os.WriteFile(filepath.Join(logDir, safeName+".log"), []byte(result.Logs), 0o644)
 
 		var checkLogURL *string
-		if ls != nil {
-			u, err := ls.Write(ctx, job.Repo, job.Branch, job.Sequence, result.Name, result.Logs)
-			if err != nil {
-				slog.Warn("log upload failed", "check", result.Name, "error", err)
-			} else {
-				checkLogURL = &u
-				if firstLogURL == nil {
-					firstLogURL = &u
-				}
+		u, err := postCheckLogs(ctx, docstoreURL, job.Repo, result.Name, requestToken, result.Logs)
+		if err != nil {
+			slog.Warn("log upload failed", "check", result.Name, "error", err)
+		} else {
+			checkLogURL = &u
+			if firstLogURL == nil {
+				firstLogURL = &u
 			}
 		}
 
@@ -548,13 +577,6 @@ func main() {
 		os.Exit(1)
 	}
 	defer exec.Close()
-
-	// Build log store.
-	ls, err := logstore.NewFromEnv(ctx)
-	if err != nil {
-		slog.Error("create log store", "error", err)
-		os.Exit(1)
-	}
 
 	// HTTP client for docstore requests.
 	httpClient := &http.Client{Timeout: 5 * time.Minute}
@@ -637,7 +659,7 @@ func main() {
 		}
 
 		// Execute the job.
-		jobStatus, jobLogURL, jobErrMsg := runJob(ctx, httpClient, exec, ls, docstoreURL, job, requestToken, jwt, logDir, triggerCtx, extraEnv)
+		jobStatus, jobLogURL, jobErrMsg := runJob(ctx, httpClient, exec, docstoreURL, job, requestToken, jwt, logDir, triggerCtx, extraEnv)
 
 		// Stop heartbeat and clear log dir.
 		close(hbDone)

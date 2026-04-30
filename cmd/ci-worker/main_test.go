@@ -34,18 +34,6 @@ func (m *mockRunner) Run(_ context.Context, _ string, _ executor.Config, _ cicon
 	return m.results, m.err
 }
 
-// mockLogStore implements logstore.LogStore for tests.
-type mockLogStore struct {
-	writeURL string
-	writeErr error
-	calls    atomic.Int32
-}
-
-func (m *mockLogStore) Write(_ context.Context, _, _ string, _ int64, _, _ string) (string, error) {
-	m.calls.Add(1)
-	return m.writeURL, m.writeErr
-}
-
 // mockScheduler is a minimal httptest scheduler for heartbeat/complete tests.
 type mockScheduler struct {
 	calls    atomic.Int32
@@ -491,6 +479,11 @@ func docstoreHandler(t *testing.T, ciYAML string, tarData []byte, checkStatus in
 		case strings.Contains(path, "/-/archive"):
 			w.Header().Set("Content-Type", "application/x-tar")
 			w.Write(tarData) //nolint:errcheck
+		case r.Method == http.MethodPost && strings.Contains(path, "/-/check/") && strings.HasSuffix(path, "/logs"):
+			// Log upload endpoint: return a fake log URL.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"url":"file:///tmp/ci-logs/test.log"}`)) //nolint:errcheck
 		case strings.Contains(path, "/-/check"):
 			w.WriteHeader(checkStatus)
 		default:
@@ -507,7 +500,7 @@ func TestRunJob_NoCIYAML_ReturnsPassed(t *testing.T) {
 	defer srv.Close()
 
 	status, logURL, errMsg := runJob(
-		context.Background(), srv.Client(), &mockRunner{}, nil,
+		context.Background(), srv.Client(), &mockRunner{},
 		srv.URL, testJob(), "", "", t.TempDir(), ciconfig.TriggerContext{Type: "push"}, nil,
 	)
 	if status != "passed" {
@@ -530,7 +523,7 @@ func TestRunJob_FetchConfigError_ReturnsFailed(t *testing.T) {
 	defer srv.Close()
 
 	status, _, errMsg := runJob(
-		context.Background(), srv.Client(), &mockRunner{}, nil,
+		context.Background(), srv.Client(), &mockRunner{},
 		srv.URL, testJob(), "", "", t.TempDir(), ciconfig.TriggerContext{}, nil,
 	)
 	if status != "failed" {
@@ -550,7 +543,7 @@ func TestRunJob_ExecutorError_ReturnsFailed(t *testing.T) {
 
 	mockExec := &mockRunner{err: fmt.Errorf("buildkit unavailable")}
 	status, _, errMsg := runJob(
-		context.Background(), srv.Client(), mockExec, nil,
+		context.Background(), srv.Client(), mockExec,
 		srv.URL, testJob(), "", "", t.TempDir(), ciconfig.TriggerContext{}, nil,
 	)
 	if status != "failed" {
@@ -571,30 +564,52 @@ func TestRunJob_AllChecksPassed(t *testing.T) {
   steps: ["golangci-lint run"]
 `
 	tarData := makeTar(t, map[string]string{"main.go": "package main"})
-	srv := httptest.NewServer(docstoreHandler(t, ciYAML, tarData, http.StatusCreated))
+	var logUploadCount atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		switch {
+		case strings.Contains(path, "/-/file/"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(fileResponseJSON(t, ciYAML)) //nolint:errcheck
+		case r.Method == http.MethodPost && strings.Contains(path, "/-/archive/presign"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"url":"http://test-archive.example.com/archive.tar"}`)) //nolint:errcheck
+		case strings.Contains(path, "/-/archive"):
+			w.Header().Set("Content-Type", "application/x-tar")
+			w.Write(tarData) //nolint:errcheck
+		case r.Method == http.MethodPost && strings.Contains(path, "/-/check/") && strings.HasSuffix(path, "/logs"):
+			logUploadCount.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"url":"file:///tmp/ci-logs/test.log"}`)) //nolint:errcheck
+		case strings.Contains(path, "/-/check"):
+			w.WriteHeader(http.StatusCreated)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
 	defer srv.Close()
 
 	mockExec := &mockRunner{results: []executor.CheckResult{
 		{Name: "test", Status: "passed", Logs: "ok"},
 		{Name: "lint", Status: "passed", Logs: "clean"},
 	}}
-	ls := &mockLogStore{writeURL: "file:///tmp/ci-logs/test.log"}
 
 	status, logURL, errMsg := runJob(
-		context.Background(), srv.Client(), mockExec, ls,
-		srv.URL, testJob(), "", "", t.TempDir(), ciconfig.TriggerContext{Type: "push"}, nil,
+		context.Background(), srv.Client(), mockExec,
+		srv.URL, testJob(), "test-request-token", "", t.TempDir(), ciconfig.TriggerContext{Type: "push"}, nil,
 	)
 	if status != "passed" {
 		t.Errorf("expected passed, got %q", status)
 	}
 	if logURL == nil {
-		t.Error("expected logURL to be set from log store")
+		t.Error("expected logURL to be set from log upload")
 	}
 	if errMsg != nil {
 		t.Errorf("expected nil errMsg, got %q", *errMsg)
 	}
-	if n := ls.calls.Load(); n != 2 {
-		t.Errorf("expected 2 log store writes, got %d", n)
+	if n := logUploadCount.Load(); n != 2 {
+		t.Errorf("expected 2 log uploads, got %d", n)
 	}
 }
 
@@ -617,7 +632,7 @@ func TestRunJob_OneCheckFailed_OverallFailed(t *testing.T) {
 	}}
 
 	status, _, errMsg := runJob(
-		context.Background(), srv.Client(), mockExec, nil,
+		context.Background(), srv.Client(), mockExec,
 		srv.URL, testJob(), "", "", t.TempDir(), ciconfig.TriggerContext{}, nil,
 	)
 	if status != "failed" {
@@ -628,7 +643,9 @@ func TestRunJob_OneCheckFailed_OverallFailed(t *testing.T) {
 	}
 }
 
-func TestRunJob_NilLogStore_StillPosts(t *testing.T) {
+func TestRunJob_LogUploadFails_StillPosts(t *testing.T) {
+	// Verifies that even when the log upload endpoint returns an error,
+	// check run results are still posted and the job succeeds.
 	const ciYAML = "checks:\n- name: build\n  image: golang:1.22\n  steps: [\"go build\"]\n"
 	tarData := makeTar(t, map[string]string{"main.go": "package main"})
 
@@ -644,6 +661,9 @@ func TestRunJob_NilLogStore_StillPosts(t *testing.T) {
 			w.Write([]byte(`{"url":"http://test-archive.example.com/archive.tar"}`)) //nolint:errcheck
 		case strings.Contains(path, "/-/archive"):
 			w.Write(tarData) //nolint:errcheck
+		case r.Method == http.MethodPost && strings.Contains(path, "/-/check/") && strings.HasSuffix(path, "/logs"):
+			// Log upload fails — server unavailable.
+			w.WriteHeader(http.StatusServiceUnavailable)
 		case strings.Contains(path, "/-/check"):
 			checkPostCount++
 			w.WriteHeader(http.StatusCreated)
@@ -656,14 +676,14 @@ func TestRunJob_NilLogStore_StillPosts(t *testing.T) {
 	}}
 
 	status, logURL, _ := runJob(
-		context.Background(), srv.Client(), mockExec, nil, // nil log store
+		context.Background(), srv.Client(), mockExec,
 		srv.URL, testJob(), "", "", t.TempDir(), ciconfig.TriggerContext{}, nil,
 	)
 	if status != "passed" {
 		t.Errorf("expected passed, got %q", status)
 	}
 	if logURL != nil {
-		t.Errorf("expected nil logURL with nil log store, got %v", logURL)
+		t.Errorf("expected nil logURL when log upload fails, got %v", logURL)
 	}
 	// Expect: 1 pending post + 1 result post = 2
 	if checkPostCount != 2 {
@@ -683,7 +703,7 @@ func TestRunJob_LogsWrittenToDir(t *testing.T) {
 	}}
 
 	logDir := t.TempDir()
-	runJob(context.Background(), srv.Client(), mockExec, nil, srv.URL, testJob(), "", "", logDir, ciconfig.TriggerContext{}, nil) //nolint:errcheck
+	runJob(context.Background(), srv.Client(), mockExec, srv.URL, testJob(), "", "", logDir, ciconfig.TriggerContext{}, nil) //nolint:errcheck
 
 	data, err := os.ReadFile(filepath.Join(logDir, "test.log"))
 	if err != nil {
