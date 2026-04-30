@@ -42,7 +42,13 @@ func main() {
 	defer gcsClient.Close()
 
 	blobHandler := registry.NewGCSHandler(gcsClient.Bucket(gcsBucket))
-	handler := registry.New(blobHandler, jwksURL, audience, issuer)
+	registryHandler := registry.New(blobHandler, jwksURL, audience, issuer)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.Handle("/", registryHandler)
 
 	addr := ":" + port
 	slog.Info("ci-registry starting",
@@ -55,7 +61,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:    addr,
-		Handler: handler,
+		Handler: mux,
 	}
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		slog.Error("listen", "error", err)
