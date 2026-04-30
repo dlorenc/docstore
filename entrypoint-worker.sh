@@ -3,7 +3,7 @@ set -e
 
 # Private registry authentication (e.g. GCP Artifact Registry) is a separate
 # concern and is not handled here. Build images must be on public registries.
-# TODO: file a tracking issue for private registry auth support.
+# Tracked in issue #391.
 
 # Set up a loop-backed ext4 volume at /var/lib/buildkit so that buildkitd can use the
 # native overlayfs snapshotter. The Kata CLH guest rootfs is virtiofs, which does not

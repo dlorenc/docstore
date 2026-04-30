@@ -18,8 +18,6 @@ kind: ServiceAccount
 metadata:
   name: ci-worker
   namespace: docstore-ci
-  annotations:
-    iam.gke.io/gcp-service-account: ci-runner@dlorenc-chainguard.iam.gserviceaccount.com
 ---
 apiVersion: keda.sh/v1alpha1
 kind: ScaledJob
@@ -51,10 +49,6 @@ spec:
             value: https://docstore-efuj4cj54a-uc.a.run.app
           - name: CI_SCHEDULER_URL
             value: http://ci-scheduler.docstore-ci.svc.cluster.local:8080
-          - name: LOG_STORE
-            value: gcs
-          - name: LOG_BUCKET
-            value: docstore-ci-logs
           ports:
           - containerPort: 8081
           resources:
