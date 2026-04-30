@@ -149,7 +149,7 @@ func (s *Store) GetCIJob(ctx context.Context, id string) (*model.CIJob, error) {
 	)
 	j, err := scanCIJob(row)
 	if err == sql.ErrNoRows {
-		return nil, nil
+		return nil, ErrCIJobNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get ci job: %w", err)
@@ -198,7 +198,7 @@ func (s *Store) HeartbeatCIJob(ctx context.Context, id string) error {
 // CompleteCIJob sets a terminal status, log URL, and error message on the job.
 func (s *Store) CompleteCIJob(ctx context.Context, id, status string, logURL, errorMessage *string) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE ci_jobs SET status = $2, log_url = $3, error_message = $4 WHERE id = $1`,
+		`UPDATE ci_jobs SET status = $2, log_url = $3, error_message = $4, request_token = NULL, request_token_exp = NULL WHERE id = $1`,
 		id, status, logURL, errorMessage,
 	)
 	if err != nil {
@@ -258,11 +258,13 @@ func (s *Store) CountQueuedCIJobs(ctx context.Context) (int64, error) {
 func (s *Store) ReapStaleCIJobs(ctx context.Context) ([]model.CIJob, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`UPDATE ci_jobs
-		SET status            = 'queued',
-		    claimed_at        = NULL,
-		    last_heartbeat_at = NULL,
-		    worker_pod        = NULL,
-		    worker_pod_ip     = NULL
+		SET status              = 'queued',
+		    claimed_at          = NULL,
+		    last_heartbeat_at   = NULL,
+		    worker_pod          = NULL,
+		    worker_pod_ip       = NULL,
+		    request_token       = NULL,
+		    request_token_exp   = NULL
 		WHERE status = 'claimed'
 		  AND COALESCE(last_heartbeat_at, claimed_at) < now() - interval '2 minutes'
 		RETURNING `+ciJobColumns,
