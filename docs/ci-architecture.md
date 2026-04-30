@@ -11,7 +11,6 @@ docstore events (CloudEvents via outbox)
                                                                  ▼
                                                ci-scheduler (standard GKE node, :8080)
                                                ├─ POST /webhook   ← webhook delivery
-                                               ├─ POST /run       ← manual trigger
                                                ├─ POST /claim     ← K8s SA token auth
                                                ├─ POST /jobs/{id}/heartbeat ← request_token auth
                                                ├─ POST /jobs/{id}/complete  ← request_token auth
@@ -34,7 +33,7 @@ docstore events (CloudEvents via outbox)
 
 | File | Role |
 |---|---|
-| `cmd/ci-scheduler/main.go` | Webhook receiver; inserts `ci_jobs` rows; serves `/run` for manual triggers; validates K8s SA tokens; issues request_tokens; reaps stale claimed jobs |
+| `cmd/ci-scheduler/main.go` | Webhook receiver; inserts `ci_jobs` rows; validates K8s SA tokens; issues request_tokens; reaps stale claimed jobs |
 | `cmd/ci-worker/main.go` | Claims job via POST /claim with K8s SA token; exchanges request_token for OIDC JWT; runs executor; uploads logs; posts check run results; then exits |
 | `cmd/ci-oidc/main.go` | Exchanges request_tokens for signed OIDC JWTs; serves OIDC discovery and JWKS endpoints |
 | `internal/k8sproof/k8sproof.go` | Validates K8s projected SA tokens and pod provenance (owner chain, age, service account) |
@@ -160,13 +159,13 @@ Deliveries are HMAC-SHA256 signed using `WEBHOOK_SECRET`. The scheduler verifies
 | `com.docstore.commit.created` | `proposal_synchronized` | Additionally, if the pushed branch has an open proposal and `on.proposal` is configured |
 | `com.docstore.proposal.opened` | `proposal` | If `on.proposal.base_branches` matches the proposal's base branch |
 | *(cron runner)* | `schedule` | If the current minute matches a `on.schedule[].cron` expression |
-| `POST /run` (manual) | `manual` | Always |
+| `POST /repos/:name/-/ci/run` on docstore (IAP-protected, writer+) | `manual` | Always |
 
 The `proposal_synchronized` trigger is synthetic — ci-scheduler detects it by querying `GET /repos/:name/-/proposals?state=open&branch=<branch>` after receiving a `commit.created` event. No separate event is emitted by docstore.
 
 ### Job lifecycle
 
-1. An event arrives at `POST /webhook` (or the cron runner fires, or `POST /run` is called).
+1. An event arrives at `POST /webhook` (or the cron runner fires, or `POST /repos/:name/-/ci/run` is called on the docstore server).
 2. ci-scheduler verifies the HMAC signature (webhook path only), parses the CloudEvent, and reads `.docstore/ci.yaml` from the branch under test.
 3. The `on:` block in ci.yaml is evaluated against the event. If no trigger matches, the request is acknowledged and no job is enqueued.
 4. A `ci_jobs` row is inserted with `status='queued'` and trigger metadata (`trigger_type`, `trigger_branch`, `trigger_base_branch`, `trigger_proposal_id`).
@@ -196,13 +195,16 @@ These map directly to the `event.*` fields available in `if:` expressions (see [
 
 ### Manual trigger
 
+The manual trigger endpoint moved to the main docstore server (IAP-protected, requires writer role):
+
 ```bash
-curl -X POST http://<ci-scheduler-ip>:8080/run \
+curl -X POST https://docstore.dev/repos/acme/myrepo/-/ci/run \
   -H "Content-Type: application/json" \
-  -d '{"repo": "acme/myrepo", "branch": "feature/x", "head_sequence": 42}'
+  -H "Proxy-Authorization: Bearer $(gcloud auth print-identity-token)" \
+  -d '{"branch": "feature/x", "head_sequence": 42}'
 ```
 
-Returns `{"run_id": "..."}`. Poll status with `GET /run/{id}`. Manual runs use `trigger_type=manual` and bypass the `on:` block filter — they always enqueue regardless of what triggers are configured.
+Returns `{"run_id": "..."}`. Manual runs use `trigger_type=manual` and bypass the `on:` block filter — they always enqueue regardless of what triggers are configured.
 
 ---
 
