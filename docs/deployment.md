@@ -191,6 +191,118 @@ gcloud dns record-sets create docstore.dev \
 
 The domain `docstore.dev` is registered via Cloud Domains in project `dlorenc-chainguard` with its nameservers pointed at the Cloud DNS zone above.
 
+## One-time OIDC setup prerequisites
+
+The ci-oidc service requires several GCP resources that must be created once before first deployment.
+
+### 1. Create the KMS keyring and signing key
+
+```bash
+# Create the keyring
+gcloud kms keyrings create docstore-oidc \
+  --location=us-central1 \
+  --project=dlorenc-chainguard
+
+# Create the RSA signing key
+gcloud kms keys create ci-oidc-signing-key \
+  --keyring=docstore-oidc \
+  --location=us-central1 \
+  --purpose=asymmetric-signing \
+  --default-algorithm=rsa-sign-pkcs1-2048-sha256 \
+  --project=dlorenc-chainguard
+```
+
+### 2. Store the key version name in Secret Manager
+
+```bash
+KEY_VERSION=$(gcloud kms keys versions list \
+  --key=ci-oidc-signing-key \
+  --keyring=docstore-oidc \
+  --location=us-central1 \
+  --project=dlorenc-chainguard \
+  --format='value(name)' | head -1)
+
+printf '%s' "${KEY_VERSION}" | \
+  gcloud secrets create ci-oidc-kms-key-version \
+    --data-file=- \
+    --project=dlorenc-chainguard \
+    --replication-policy=automatic
+```
+
+### 3. Create the archive HMAC secret
+
+```bash
+openssl rand -base64 32 | \
+  gcloud secrets create archive-hmac-secret \
+    --data-file=- \
+    --project=dlorenc-chainguard \
+    --replication-policy=automatic
+```
+
+### 4. Create service accounts
+
+```bash
+# Internal service (DB + KMS sign)
+gcloud iam service-accounts create ci-oidc \
+  --display-name="ci-oidc service account" \
+  --project=dlorenc-chainguard
+
+# Public service (KMS verify only)
+gcloud iam service-accounts create ci-oidc-public \
+  --display-name="ci-oidc-public service account" \
+  --project=dlorenc-chainguard
+```
+
+### 5. Grant KMS roles
+
+```bash
+# ci-oidc SA: can sign and verify (needed to issue JWTs)
+gcloud kms keys add-iam-policy-binding ci-oidc-signing-key \
+  --keyring=docstore-oidc \
+  --location=us-central1 \
+  --member=serviceAccount:ci-oidc@dlorenc-chainguard.iam.gserviceaccount.com \
+  --role=roles/cloudkms.signerVerifier \
+  --project=dlorenc-chainguard
+
+# ci-oidc-public SA: can only verify (needed to serve JWKS)
+gcloud kms keys add-iam-policy-binding ci-oidc-signing-key \
+  --keyring=docstore-oidc \
+  --location=us-central1 \
+  --member=serviceAccount:ci-oidc-public@dlorenc-chainguard.iam.gserviceaccount.com \
+  --role=roles/cloudkms.verifier \
+  --project=dlorenc-chainguard
+```
+
+### 6. Grant archive HMAC secret access to the docstore server SA
+
+```bash
+gcloud secrets add-iam-policy-binding archive-hmac-secret \
+  --member=serviceAccount:docstore-server@dlorenc-chainguard.iam.gserviceaccount.com \
+  --role=roles/secretmanager.secretAccessor \
+  --project=dlorenc-chainguard
+```
+
+### 7. DNS setup for oidc.docstore.dev
+
+After the Cloud Run domain mapping is created by the deploy workflow, add a CNAME record:
+
+```
+oidc.docstore.dev. CNAME ghs.googlehosted.com.
+```
+
+With Cloud DNS:
+
+```bash
+gcloud dns record-sets create oidc.docstore.dev. \
+  --zone=docstore-dev \
+  --type=CNAME \
+  --ttl=300 \
+  --rrdatas=ghs.googlehosted.com. \
+  --project=dlorenc-chainguard
+```
+
+The domain mapping is created idempotently by the `build-and-deploy-ci-oidc` workflow job on each deploy. Wait for the mapping to become active before the CNAME resolves correctly (can take a few minutes on first creation).
+
 ## GKE deployment (CI system)
 
 The CI system runs in GKE cluster `docstore-ci` in region `us-central1`, project `dlorenc-chainguard`.

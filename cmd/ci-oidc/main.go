@@ -225,6 +225,17 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 // HTTP mux
 // ---------------------------------------------------------------------------
 
+// newPublicMux returns a mux that serves only the public OIDC discovery
+// endpoints: /healthz, /.well-known/openid-configuration, /.well-known/jwks.json.
+// It does NOT register POST /ci/token. Used when PUBLIC_ONLY=true.
+func newPublicMux(s *server) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", handleHealth)
+	mux.HandleFunc("GET /.well-known/openid-configuration", s.handleDiscovery)
+	mux.HandleFunc("GET /.well-known/jwks.json", s.handleJWKS)
+	return mux
+}
+
 func newMux(s *server) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealth)
@@ -242,6 +253,7 @@ func main() {
 	port := flag.String("port", "8080", "HTTP listen port")
 	issuerURL := flag.String("issuer-url", "https://oidc.docstore.dev", "OIDC issuer URL")
 	kmsKeyVersion := flag.String("kms-key-version", "", "KMS key version resource name (empty = use LocalSigner)")
+	publicOnly := flag.Bool("public-only", false, "Only serve public endpoints (/.well-known/*, /healthz); skip DATABASE_URL")
 	flag.Parse()
 
 	if v := os.Getenv("PORT"); v != "" && *port == "8080" {
@@ -252,6 +264,9 @@ func main() {
 	}
 	if v := os.Getenv("KMS_KEY_VERSION"); v != "" {
 		*kmsKeyVersion = v
+	}
+	if v := os.Getenv("PUBLIC_ONLY"); v == "true" || v == "1" {
+		*publicOnly = true
 	}
 
 	// Set up structured logging.
@@ -269,22 +284,7 @@ func main() {
 	}
 	slog.SetDefault(slog.New(handler))
 
-	// Connect to Postgres.
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		slog.Error("DATABASE_URL environment variable is required")
-		os.Exit(1)
-	}
-	database, err := db.Open(dsn)
-	if err != nil {
-		slog.Error("failed to connect to database", "error", err)
-		os.Exit(1)
-	}
-	defer database.Close()
-
-	store := db.NewStore(database)
-
-	// Build signer.
+	// Build signer (needed in all modes for PublicKeys()).
 	ctx := context.Background()
 	var signer citoken.Signer
 	if *kmsKeyVersion != "" {
@@ -306,14 +306,35 @@ func main() {
 	}
 
 	srv := &server{
-		store:     store,
 		signer:    signer,
 		issuerURL: strings.TrimRight(*issuerURL, "/"),
 	}
 
+	var mux *http.ServeMux
+	if *publicOnly {
+		slog.Info("starting ci-oidc in public-only mode")
+		mux = newPublicMux(srv)
+	} else {
+		// Connect to Postgres.
+		dsn := os.Getenv("DATABASE_URL")
+		if dsn == "" {
+			slog.Error("DATABASE_URL environment variable is required")
+			os.Exit(1)
+		}
+		database, err := db.Open(dsn)
+		if err != nil {
+			slog.Error("failed to connect to database", "error", err)
+			os.Exit(1)
+		}
+		defer database.Close()
+
+		srv.store = db.NewStore(database)
+		mux = newMux(srv)
+	}
+
 	httpSrv := &http.Server{
 		Addr:        ":" + *port,
-		Handler:     newMux(srv),
+		Handler:     mux,
 		ReadTimeout: 10 * time.Second,
 		IdleTimeout: 60 * time.Second,
 	}
