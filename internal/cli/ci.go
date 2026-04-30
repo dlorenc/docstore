@@ -27,7 +27,8 @@ var ErrChecksFailed = errors.New("checks failed")
 // connects to buildkitd, and streams results to a.Out.
 func (a *App) CIRun(checkFilter, trigger, baseBranch, buildkitAddr string) error {
 	// 1. Read and parse .docstore/ci.yaml from working directory.
-	ciYAMLPath := filepath.Join(a.Dir, configDir, "ci.yaml")
+	// Note: .docstore/ci.yaml is the CI config path (not the ds metadata dir .ds/).
+	ciYAMLPath := filepath.Join(a.Dir, ".docstore", "ci.yaml")
 	data, err := os.ReadFile(ciYAMLPath)
 	if err != nil {
 		if os.IsNotExist(err) {
