@@ -59,6 +59,14 @@ jobs:
             --vpc-egress=private-ranges-only \
             --args=--bootstrap-admin=dlorenc@chainguard.dev,--iap-client-id=320310132788-md94jtp0d9fdcdlq2quma4mcpr0ul1qr.apps.googleusercontent.com
 
+      - name: Grant CI workers access to docstore internal URL
+        run: |
+          gcloud run services add-iam-policy-binding docstore \
+            --region=us-central1 \
+            --project=dlorenc-chainguard \
+            --member=allUsers \
+            --role=roles/run.invoker
+
   build-and-deploy-ci-scheduler:
     runs-on: ubuntu-latest
     needs: [deploy]
@@ -176,7 +184,7 @@ jobs:
 
   build-and-deploy-ci-oidc:
     runs-on: ubuntu-latest
-    needs: [deploy]
+    needs: [deploy, build-and-deploy-ci-scheduler]
     steps:
       - uses: actions/checkout@v4
 
@@ -220,6 +228,7 @@ jobs:
             --add-cloudsql-instances=dlorenc-chainguard:us-central1:docstore-mvp \
             --update-secrets=DATABASE_URL=docstore-db-url:latest,KMS_KEY_VERSION=ci-oidc-kms-key-version:latest \
             --ingress=internal \
+            --allow-unauthenticated \
             --min-instances=1 \
             --max-instances=3 \
             --no-cpu-throttling \
