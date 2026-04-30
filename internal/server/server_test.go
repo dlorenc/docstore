@@ -543,6 +543,10 @@ func (m *mockStore) ListCIJobs(ctx context.Context, repo string, branch, status 
 	return []model.CIJob{}, nil
 }
 
+func (m *mockStore) InsertCIJob(_ context.Context, _, _ string, _ int64, _, _, _, _ string) (*model.CIJob, error) {
+	return &model.CIJob{ID: "test-job-id"}, nil
+}
+
 func TestHealthEndpoint(t *testing.T) {
 	// /healthz is exempt from IAP auth, so devIdentity="" is fine here.
 	srv := New(nil, nil, "", "")

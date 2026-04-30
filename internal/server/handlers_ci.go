@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -89,6 +90,53 @@ func (s *server) handleListCIJobs(w http.ResponseWriter, r *http.Request) {
 		jobs = []model.CIJob{}
 	}
 	writeJSON(w, http.StatusOK, model.ListCIJobsResponse{Jobs: jobs})
+}
+
+// handleTriggerCIRun implements POST /repos/:name/-/ci/run (writer+).
+// Request body (JSON, all fields optional):
+//
+//	{"branch": "feat/my-feature"}   // defaults to "main"
+//
+// The server looks up the current head sequence for the branch itself;
+// callers do not supply a sequence number.
+func (s *server) handleTriggerCIRun(w http.ResponseWriter, r *http.Request) {
+	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
+
+	var req struct {
+		Branch string `json:"branch"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Branch == "" {
+		req.Branch = "main"
+	}
+
+	// Validate branch existence and get its current head sequence.
+	branchInfo, err := s.readStore.GetBranch(r.Context(), repo, req.Branch)
+	if err != nil {
+		slog.Error("internal error", "op", "trigger_ci_run", "repo", repo, "branch", req.Branch, "error", err)
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if branchInfo == nil {
+		writeAPIError(w, ErrCodeBranchNotFound, http.StatusNotFound, "branch not found")
+		return
+	}
+
+	job, err := s.commitStore.InsertCIJob(r.Context(), repo, req.Branch, branchInfo.HeadSequence, "manual", req.Branch, "", "")
+	if err != nil {
+		slog.Error("internal error", "op", "trigger_ci_run", "repo", repo, "branch", req.Branch, "error", err)
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "insert ci job failed")
+		return
+	}
+
+	slog.Info("ci job manually triggered", "repo", repo, "branch", req.Branch, "sequence", branchInfo.HeadSequence, "job_id", job.ID)
+	writeJSON(w, http.StatusCreated, map[string]string{"run_id": job.ID})
 }
 
 // handleGetCIJob implements GET /ci-jobs/{id}

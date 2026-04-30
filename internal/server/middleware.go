@@ -335,6 +335,11 @@ func roleAllows(role model.RoleType, method, subPath string, r *http.Request) bo
 		return role == model.RoleWriter || role == model.RoleMaintainer || role == model.RoleAdmin
 	}
 
+	// POST /ci/run — writer+.
+	if method == http.MethodPost && subPath == "ci/run" {
+		return role == model.RoleWriter || role == model.RoleMaintainer || role == model.RoleAdmin
+	}
+
 	return false
 }
 
