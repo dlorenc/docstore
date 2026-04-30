@@ -141,7 +141,7 @@ func TestValidateToken_StalePod(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              podName,
 			Namespace:         ns,
-			CreationTimestamp: metav1.NewTime(time.Now().Add(-20 * time.Minute)),
+			CreationTimestamp: metav1.NewTime(time.Now().Add(-5 * time.Hour)),
 			OwnerReferences: []metav1.OwnerReference{
 				{APIVersion: "batch/v1", Kind: "Job", Name: jobName},
 			},
