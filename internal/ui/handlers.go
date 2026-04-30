@@ -216,8 +216,9 @@ type ciJobsPage struct {
 }
 
 type ciJobDetailPage struct {
-	Repo model.Repo
-	Job  *model.CIJob
+	Repo      model.Repo
+	Job       *model.CIJob
+	CheckName string // basename of log_url without .log, used for the inline log viewer
 }
 
 type createOrgPage struct {
@@ -1078,6 +1079,16 @@ func (h *Handler) handleCIJobDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Derive check name from the log URL for the inline log viewer.
+	// log_url is gs://{bucket}/{repo}/{branch}/{seq}/{safe_name}.log
+	var checkName string
+	if job.LogURL != nil {
+		u := *job.LogURL
+		if idx := strings.LastIndex(u, "/"); idx >= 0 {
+			checkName = strings.TrimSuffix(u[idx+1:], ".log")
+		}
+	}
+
 	h.render(w, r, h.tmpl.ciJobDetail, "layout.html", pageData{
 		Title: repoName + " / ci-jobs / " + id,
 		Breadcrumbs: []crumb{
@@ -1086,7 +1097,7 @@ func (h *Handler) handleCIJobDetail(w http.ResponseWriter, r *http.Request) {
 			{Label: "ci-jobs", Href: "/ui/r/" + repoName + "/ci-jobs"},
 			{Label: id[:8], Href: ""},
 		},
-		Body: ciJobDetailPage{Repo: *repo, Job: job},
+		Body: ciJobDetailPage{Repo: *repo, Job: job, CheckName: checkName},
 	})
 }
 

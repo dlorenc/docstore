@@ -526,3 +526,19 @@ details.file-diff summary.file-diff-summary:hover { background: var(--bg-3); bor
 .cdiff-del { background: var(--bad-bg); color: var(--bad); }
 .cdiff-hunk { background: var(--bg-2); color: var(--text-dim); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); margin: 2px 0; }
 .cdiff-ctx { color: var(--text); }
+
+.log-output {
+  background: #0d1117;
+  color: #e6edf3;
+  padding: 16px;
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 600px;
+  overflow-y: auto;
+  margin: 0;
+}

@@ -433,6 +433,9 @@ type server struct {
 	policyCache policyCache
 	broker      *events.Broker
 	svc         *service.Service
+	// logFetcher reads CI log objects. Nil in production (uses real GCS);
+	// injected in tests to avoid real GCS calls.
+	logFetcher logFetcher
 	// globalAdmin is the identity that may manage global resources like
 	// event subscriptions. Corresponds to the --bootstrap-admin flag.
 	globalAdmin string

@@ -403,6 +403,21 @@ func (s *server) handleReposPrefix(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
 
+	case strings.HasPrefix(endpoint, "ci-jobs/") && strings.Contains(endpoint, "/logs/"):
+		// endpoint format: ci-jobs/{id}/logs/{check}
+		rest := strings.TrimPrefix(endpoint, "ci-jobs/")
+		if idx := strings.Index(rest, "/logs/"); idx >= 0 {
+			r.SetPathValue("id", rest[:idx])
+			r.SetPathValue("check", rest[idx+len("/logs/"):])
+			if r.Method == http.MethodGet {
+				s.handleCIJobLogs(w, r)
+			} else {
+				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			}
+		} else {
+			writeError(w, http.StatusNotFound, "not found")
+		}
+
 	default:
 		writeError(w, http.StatusNotFound, "not found")
 	}
