@@ -1,0 +1,76 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ci-registry
+  namespace: docstore-ci
+  annotations:
+    # Workload Identity: bind to a GCP service account with Storage Object Admin
+    # on the ci-registry-cache bucket.
+    iam.gke.io/gcp-service-account: ci-registry@dlorenc-chainguard.iam.gserviceaccount.com
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ci-registry
+  namespace: docstore-ci
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ci-registry
+  template:
+    metadata:
+      labels:
+        app: ci-registry
+    spec:
+      serviceAccountName: ci-registry
+      containers:
+      - name: ci-registry
+        image: us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-registry:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: GCS_BUCKET
+          value: dlorenc-chainguard-ci-registry-cache
+        - name: JWKS_URL
+          value: https://oidc.docstore.dev/.well-known/jwks.json
+        - name: OIDC_AUDIENCE
+          value: docstore
+        - name: OIDC_ISSUER
+          value: https://oidc.docstore.dev
+        - name: PORT
+          value: "8080"
+        - name: LOG_LEVEL
+          value: info
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "256Mi"
+        readinessProbe:
+          httpGet:
+            path: /v2/
+            port: 8080
+          # /v2/ returns 401 when unauthenticated, which means the registry is
+          # up and responding; we treat any response as ready.
+          failureThreshold: 3
+          periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ci-registry
+  namespace: docstore-ci
+spec:
+  # ClusterIP only — not exposed externally.  Workers reach it at:
+  #   ci-registry.docstore-ci.svc.cluster.local
+  type: ClusterIP
+  selector:
+    app: ci-registry
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP

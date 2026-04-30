@@ -394,6 +394,16 @@ func JobTokenMiddleware(jwksURL, audience, issuer string) func(http.Handler) htt
 	return newJobTokenMiddlewareWithKeyFetcher(cache.get, audience, issuer)
 }
 
+// NewJobTokenValidator returns a function that validates a CI job OIDC token
+// string, using JWKS keys fetched from jwksURL. Used by packages that need to
+// validate job tokens outside of the standard HTTP middleware chain.
+func NewJobTokenValidator(jwksURL, audience, issuer string) func(string) (*JobIdentity, error) {
+	cache := newKeyCacheForURL(jwksURL)
+	return func(tokenStr string) (*JobIdentity, error) {
+		return validateJobOIDCToken(tokenStr, cache.get, audience, issuer)
+	}
+}
+
 // newJobTokenMiddlewareWithKeyFetcher is the testable core of JobTokenMiddleware.
 func newJobTokenMiddlewareWithKeyFetcher(fetchKey func(kid string) (crypto.PublicKey, error), audience, issuer string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
