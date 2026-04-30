@@ -152,6 +152,9 @@ type WriteStore interface {
 	// CI job queries (read-only)
 	GetCIJob(ctx context.Context, id string) (*model.CIJob, error)
 	ListCIJobs(ctx context.Context, repo string, branch, status *string, limit int) ([]model.CIJob, error)
+
+	// CI job management
+	InsertCIJob(ctx context.Context, repo, branch string, sequence int64, triggerType, triggerBranch, triggerBaseBranch, triggerProposalID string) (*model.CIJob, error)
 }
 
 // CommitStore is an alias for backward compatibility with tests.
