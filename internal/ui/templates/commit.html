@@ -6,19 +6,19 @@
 </div>
 
 <nav class="repo-tabs">
-  <a href="/ui/r/{{.Repo.Name}}">branches</a>
-  <a href="/ui/r/{{.Repo.Name}}/issues">issues</a>
-  <a href="/ui/r/{{.Repo.Name}}/releases">releases</a>
-  <a href="/ui/r/{{.Repo.Name}}/proposals">proposals</a>
-  <a href="/ui/r/{{.Repo.Name}}/ci-jobs">ci-jobs</a>
-  <a href="/ui/r/{{.Repo.Name}}/log" class="active">log</a>
-  <a href="/ui/r/{{.Repo.Name}}/settings">settings</a>
+  <a href="/r/{{.Repo.Name}}">branches</a>
+  <a href="/r/{{.Repo.Name}}/issues">issues</a>
+  <a href="/r/{{.Repo.Name}}/releases">releases</a>
+  <a href="/r/{{.Repo.Name}}/proposals">proposals</a>
+  <a href="/r/{{.Repo.Name}}/ci-jobs">ci-jobs</a>
+  <a href="/r/{{.Repo.Name}}/log" class="active">log</a>
+  <a href="/r/{{.Repo.Name}}/settings">settings</a>
 </nav>
 
 <div class="card">
   <div class="commit-meta">
     <div><strong>message</strong> {{.Commit.Message}}</div>
-    <div><strong>author</strong> <a href="/ui/u/{{.Commit.Author}}">{{.Commit.Author}}</a></div>
+    <div><strong>author</strong> <a href="/u/{{.Commit.Author}}">{{.Commit.Author}}</a></div>
     <div><strong>branch</strong> {{.Commit.Branch}}</div>
     <div><strong>when</strong> {{relTime .Commit.CreatedAt}}</div>
   </div>
@@ -32,7 +32,7 @@
   {{range .Issues}}
   <div class="row">
     <div>
-      <a href="/ui/r/{{$page.Repo.Name}}/issues/{{.Number}}">#{{.Number}} {{.Title}}</a>
+      <a href="/r/{{$page.Repo.Name}}/issues/{{.Number}}">#{{.Number}} {{.Title}}</a>
     </div>
     <span class="badge {{statusClass (printf "%s" .State)}}">{{.State}}</span>
   </div>
@@ -47,11 +47,11 @@
 {{range .Commit.Files}}
 <details class="card file-diff">
   <summary class="file-diff-summary">
-    <span class="file-diff-path"><a href="/ui/r/{{$page.Repo.Name}}/f/{{.Path}}?branch={{$page.Branch}}&at={{$page.Commit.Sequence}}" onclick="event.stopPropagation()">{{.Path}}</a></span>
+    <span class="file-diff-path"><a href="/r/{{$page.Repo.Name}}/f/{{.Path}}?branch={{$page.Branch}}&at={{$page.Commit.Sequence}}" onclick="event.stopPropagation()">{{.Path}}</a></span>
     <span class="badge {{diffClass .VersionID}}">{{if .VersionID}}modified{{else}}deleted{{end}}</span>
   </summary>
   <div class="file-diff-body"
-       data-diff-url="/ui/_/r/{{$page.Repo.Name}}/b/{{urlPathEscape $page.Branch}}/c/{{$page.Commit.Sequence}}/diff/{{.Path}}">
+       data-diff-url="/_/r/{{$page.Repo.Name}}/b/{{urlPathEscape $page.Branch}}/c/{{$page.Commit.Sequence}}/diff/{{.Path}}">
     <div class="empty">Loading diff…</div>
   </div>
 </details>

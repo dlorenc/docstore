@@ -15,7 +15,7 @@
   {{else}}
   <div class="row-list">
     {{range .Repos}}
-    <a href="/ui/r/{{.Name}}">
+    <a href="/r/{{.Name}}">
       <span>{{.Name}}</span>
       <span class="meta">by {{.CreatedBy}} · {{relTime .CreatedAt}}</span>
     </a>
@@ -36,7 +36,7 @@
     <tr>
       <td>{{.Identity}}</td>
       <td>
-        <form method="POST" action="/ui/o/{{$org}}/members" style="display:flex;gap:4px;align-items:center">
+        <form method="POST" action="/o/{{$org}}/members" style="display:flex;gap:4px;align-items:center">
           {{csrfField}}
           <input type="hidden" name="identity" value="{{.Identity}}">
           <select name="role" class="form-input" style="width:auto;padding:2px 6px;font-size:12px">
@@ -49,7 +49,7 @@
       <td>{{.InvitedBy}}</td>
       <td>{{relTime .CreatedAt}}</td>
       <td>
-        <form method="POST" action="/ui/o/{{$org}}/members/{{.Identity}}/remove" style="display:inline">
+        <form method="POST" action="/o/{{$org}}/members/{{.Identity}}/remove" style="display:inline">
           {{csrfField}}
           <button type="submit" class="btn-danger-small">remove</button>
         </form>
@@ -61,7 +61,7 @@
   {{end}}
   <details style="margin-top:12px">
     <summary style="cursor:pointer;font-size:12px;color:var(--accent)">Add member</summary>
-    <form method="POST" action="/ui/o/{{.Org}}/members" style="padding:10px 0 4px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+    <form method="POST" action="/o/{{.Org}}/members" style="padding:10px 0 4px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
       {{csrfField}}
       <input type="text" name="identity" placeholder="identity (email)" required class="form-input" style="flex:1;min-width:180px">
       <select name="role" class="form-input" style="width:auto">
@@ -88,7 +88,7 @@
       <td>{{.InvitedBy}}</td>
       <td>{{relTime .ExpiresAt}}</td>
       <td>
-        <form method="POST" action="/ui/o/{{$org}}/invites/{{.ID}}/revoke" style="display:inline">
+        <form method="POST" action="/o/{{$org}}/invites/{{.ID}}/revoke" style="display:inline">
           {{csrfField}}
           <button type="submit" class="btn-danger-small">revoke</button>
         </form>
@@ -100,7 +100,7 @@
   {{end}}
   <details style="margin-top:12px">
     <summary style="cursor:pointer;font-size:12px;color:var(--accent)">Create invite</summary>
-    <form method="POST" action="/ui/o/{{.Org}}/invites" style="padding:10px 0 4px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+    <form method="POST" action="/o/{{.Org}}/invites" style="padding:10px 0 4px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
       {{csrfField}}
       <input type="email" name="email" placeholder="email address" required class="form-input" style="flex:1;min-width:180px">
       <select name="role" class="form-input" style="width:auto">
@@ -117,7 +117,7 @@
   <details>
     <summary style="cursor:pointer;font-size:0.9em;color:var(--bad)">Delete this organisation</summary>
     <p style="font-size:0.85em;color:var(--text-dim);margin:8px 0">This permanently deletes the org and cannot be undone. The org must have no repos.</p>
-    <form method="POST" action="/ui/o/{{.Org}}/delete" style="padding:4px 0">
+    <form method="POST" action="/o/{{.Org}}/delete" style="padding:4px 0">
       {{csrfField}}
       <label style="font-size:0.85em;display:block;margin-bottom:4px">Type <strong>{{.Org}}</strong> to confirm:</label>
       <input type="text" name="confirm" placeholder="{{.Org}}" required

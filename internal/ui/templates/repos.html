@@ -1,14 +1,14 @@
 {{define "content"}}
 <h1>Repos</h1>
 <div style="margin-bottom:12px">
-  <a href="/ui/orgs/new"><button>New org</button></a>
-  <a href="/ui/repos/new" style="margin-left:8px"><button>New repo</button></a>
+  <a href="/orgs/new"><button>New org</button></a>
+  <a href="/repos/new" style="margin-left:8px"><button>New repo</button></a>
 </div>
 {{if .MyOrgs}}
 <h2>Your orgs</h2>
 <div class="row-list" style="margin-bottom:24px">
   {{range .MyOrgs}}
-  <a href="/ui/o/{{.Name}}">
+  <a href="/o/{{.Name}}">
     <span>{{.Name}}</span>
     <span class="meta">
       <span class="badge">{{.Role}}</span>
@@ -21,17 +21,17 @@
 <div class="card" style="text-align:center; padding:32px; margin-bottom:24px">
   <h2 style="margin-top:0">Get started</h2>
   <p style="color:var(--text-dim)">You don't belong to any orgs yet. Create one to start hosting repos.</p>
-  <a href="/ui/orgs/new"><button>Create your first org</button></a>
+  <a href="/orgs/new"><button>Create your first org</button></a>
 </div>
 {{end}}
 {{if .Orgs}}
 <h2>All orgs</h2>
 {{range .Orgs}}
 <div class="card">
-  <h2><a href="/ui/o/{{.Name}}">{{.Name}}</a></h2>
+  <h2><a href="/o/{{.Name}}">{{.Name}}</a></h2>
   <div class="row-list">
     {{range .Repos}}
-    <a href="/ui/r/{{.Name}}">
+    <a href="/r/{{.Name}}">
       <span>{{.Name}}</span>
       <span class="meta">by {{.CreatedBy}} · {{relTime .CreatedAt}}</span>
     </a>

@@ -5,19 +5,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{.Title}} · docstore</title>
 <script>(function(){try{var t=localStorage.getItem("ds-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
-<link rel="stylesheet" href="/ui/static/styles.css">
+<link rel="stylesheet" href="/static/styles.css">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='2' fill='%234f6ef7'/%3E%3Ctext x='8' y='12' font-family='monospace' font-size='11' font-weight='bold' text-anchor='middle' fill='white'%3Ed%3C/text%3E%3C/svg%3E">
-<script defer src="/ui/static/poll.js"></script>
+<script defer src="/static/poll.js"></script>
 </head>
 <body>
 <nav class="top">
-  <a class="brand" href="/ui/">docstore</a>
+  <a class="brand" href="/">docstore</a>
   <span class="crumbs">
   {{range $i, $c := .Breadcrumbs}}{{if $i}}<span class="sep">›</span>{{end}}{{if $c.Href}}<a href="{{$c.Href}}">{{$c.Label}}</a>{{else}}{{$c.Label}}{{end}}{{end}}
   </span>
   <span class="spacer"></span>
   <a href="https://docs.docstore.dev" class="nav-docs" target="_blank" rel="noopener">Docs</a>
-  {{if .Identity}}<a href="/ui/u/{{.Identity}}" class="nav-identity" title="Signed in as {{.Identity}}">{{.Identity}}</a>{{end}}
+  {{if .Identity}}<a href="/u/{{.Identity}}" class="nav-identity" title="Signed in as {{.Identity}}">{{.Identity}}</a>{{end}}
   <button class="theme-toggle" data-theme-toggle type="button" aria-label="Toggle theme" title="Toggle theme"><span data-theme-icon-dark>☾</span><span data-theme-icon-light>☀</span></button>
 </nav>
 <main>

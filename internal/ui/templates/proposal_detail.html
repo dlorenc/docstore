@@ -1,12 +1,12 @@
 {{define "content"}}
 <nav class="repo-tabs">
-  <a href="/ui/r/{{.Repo.Name}}">branches</a>
-  <a href="/ui/r/{{.Repo.Name}}/issues">issues</a>
-  <a href="/ui/r/{{.Repo.Name}}/releases">releases</a>
-  <a href="/ui/r/{{.Repo.Name}}/proposals" class="active">proposals</a>
-  <a href="/ui/r/{{.Repo.Name}}/ci-jobs">ci-jobs</a>
-  <a href="/ui/r/{{.Repo.Name}}/log">log</a>
-  <a href="/ui/r/{{.Repo.Name}}/settings">settings</a>
+  <a href="/r/{{.Repo.Name}}">branches</a>
+  <a href="/r/{{.Repo.Name}}/issues">issues</a>
+  <a href="/r/{{.Repo.Name}}/releases">releases</a>
+  <a href="/r/{{.Repo.Name}}/proposals" class="active">proposals</a>
+  <a href="/r/{{.Repo.Name}}/ci-jobs">ci-jobs</a>
+  <a href="/r/{{.Repo.Name}}/log">log</a>
+  <a href="/r/{{.Repo.Name}}/settings">settings</a>
 </nav>
 
 <div class="headline">
@@ -15,7 +15,7 @@
 </div>
 
 <div class="meta" style="margin-bottom:14px">
-  by <a href="/ui/u/{{.Proposal.Author}}">{{.Proposal.Author}}</a> · opened {{relTime .Proposal.CreatedAt}} · updated {{relTime .Proposal.UpdatedAt}}
+  by <a href="/u/{{.Proposal.Author}}">{{.Proposal.Author}}</a> · opened {{relTime .Proposal.CreatedAt}} · updated {{relTime .Proposal.UpdatedAt}}
 </div>
 
 {{if .Err}}
@@ -32,7 +32,7 @@
   </div>
   <div class="row">
     <div><strong>branch</strong></div>
-    <div><a href="/ui/r/{{.Repo.Name}}/b/{{urlPathEscape .Proposal.Branch}}">{{.Proposal.Branch}}</a></div>
+    <div><a href="/r/{{.Repo.Name}}/b/{{urlPathEscape .Proposal.Branch}}">{{.Proposal.Branch}}</a></div>
   </div>
   <div class="row">
     <div><strong>id</strong></div>
@@ -55,7 +55,7 @@
   {{range .Issues}}
   <div class="row">
     <div>
-      <a href="/ui/r/{{$.Repo.Name}}/issues/{{.Number}}">#{{.Number}} {{.Title}}</a>
+      <a href="/r/{{$.Repo.Name}}/issues/{{.Number}}">#{{.Number}} {{.Title}}</a>
     </div>
     <span class="badge {{statusClass (printf "%s" .State)}}">{{.State}}</span>
   </div>
@@ -65,7 +65,7 @@
 
 <h2>Edit proposal</h2>
 <div class="card">
-  <form method="POST" action="/ui/r/{{.Repo.Name}}/proposals/{{.Proposal.ID}}/edit" style="padding:8px 4px 4px">
+  <form method="POST" action="/r/{{.Repo.Name}}/proposals/{{.Proposal.ID}}/edit" style="padding:8px 4px 4px">
     {{csrfField}}
     <div style="margin-bottom:10px">
       <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em">Title</label>
@@ -107,7 +107,7 @@
 
 <h2>Close proposal</h2>
 <div class="card">
-  <form method="POST" action="/ui/r/{{.Repo.Name}}/proposals/{{.Proposal.ID}}/close" style="padding:8px 4px 4px">
+  <form method="POST" action="/r/{{.Repo.Name}}/proposals/{{.Proposal.ID}}/close" style="padding:8px 4px 4px">
     {{csrfField}}
     <p style="margin:0 0 10px;color:var(--text-dim);font-size:12px">Closing this proposal marks it as closed and removes it from the open list.</p>
     <button type="submit" class="btn">Close proposal</button>

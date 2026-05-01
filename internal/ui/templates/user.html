@@ -11,7 +11,7 @@
     <tbody>
     {{range .Memberships}}
     <tr>
-      <td><a href="/ui/o/{{.Org}}">{{.Org}}</a></td>
+      <td><a href="/o/{{.Org}}">{{.Org}}</a></td>
       <td><span class="badge {{statusClass .Role}}">{{.Role}}</span></td>
       <td>{{.InvitedBy}}</td>
       <td>{{relTime .CreatedAt}}</td>
@@ -32,7 +32,7 @@
     <tbody>
     {{range .RepoRoles}}
     <tr>
-      <td><a href="/ui/r/{{.Repo}}">{{.Repo}}</a></td>
+      <td><a href="/r/{{.Repo}}">{{.Repo}}</a></td>
       <td><span class="badge neutral">{{.Role}}</span></td>
     </tr>
     {{end}}

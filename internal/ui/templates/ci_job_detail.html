@@ -1,12 +1,12 @@
 {{define "content"}}
 <nav class="repo-tabs">
-  <a href="/ui/r/{{.Repo.Name}}">branches</a>
-  <a href="/ui/r/{{.Repo.Name}}/issues">issues</a>
-  <a href="/ui/r/{{.Repo.Name}}/releases">releases</a>
-  <a href="/ui/r/{{.Repo.Name}}/proposals">proposals</a>
-  <a href="/ui/r/{{.Repo.Name}}/ci-jobs" class="active">ci-jobs</a>
-  <a href="/ui/r/{{.Repo.Name}}/log">log</a>
-  <a href="/ui/r/{{.Repo.Name}}/settings">settings</a>
+  <a href="/r/{{.Repo.Name}}">branches</a>
+  <a href="/r/{{.Repo.Name}}/issues">issues</a>
+  <a href="/r/{{.Repo.Name}}/releases">releases</a>
+  <a href="/r/{{.Repo.Name}}/proposals">proposals</a>
+  <a href="/r/{{.Repo.Name}}/ci-jobs" class="active">ci-jobs</a>
+  <a href="/r/{{.Repo.Name}}/log">log</a>
+  <a href="/r/{{.Repo.Name}}/settings">settings</a>
 </nav>
 
 <div class="headline">
@@ -30,7 +30,7 @@
   </div>
   <div class="row">
     <div><strong>branch</strong></div>
-    <div><a href="/ui/r/{{.Repo.Name}}/b/{{urlPathEscape .Job.Branch}}">{{.Job.Branch}}</a></div>
+    <div><a href="/r/{{.Repo.Name}}/b/{{urlPathEscape .Job.Branch}}">{{.Job.Branch}}</a></div>
   </div>
   <div class="row">
     <div><strong>sequence</strong></div>
@@ -47,7 +47,7 @@
   {{if .Job.TriggerBranch}}
   <div class="row">
     <div><strong>trigger branch</strong></div>
-    <div><a href="/ui/r/{{.Repo.Name}}/b/{{urlPathEscape .Job.TriggerBranch}}">{{.Job.TriggerBranch}}</a></div>
+    <div><a href="/r/{{.Repo.Name}}/b/{{urlPathEscape .Job.TriggerBranch}}">{{.Job.TriggerBranch}}</a></div>
   </div>
   {{end}}
   {{if .Job.TriggerBaseBranch}}
@@ -59,7 +59,7 @@
   {{if .Job.TriggerProposalID}}
   <div class="row">
     <div><strong>trigger proposal</strong></div>
-    <div><a href="/ui/r/{{.Repo.Name}}/proposals/{{.Job.TriggerProposalID}}">{{.Job.TriggerProposalID}}</a></div>
+    <div><a href="/r/{{.Repo.Name}}/proposals/{{.Job.TriggerProposalID}}">{{.Job.TriggerProposalID}}</a></div>
   </div>
   {{end}}
   {{if .Job.WorkerPod}}

@@ -4,7 +4,7 @@
   {{if .Err}}
   <div class="row"><span class="badge bad">{{.Err}}</span></div>
   {{end}}
-  <form method="POST" action="/ui/orgs/new" style="padding:14px 12px 4px">
+  <form method="POST" action="/orgs/new" style="padding:14px 12px 4px">
     {{csrfField}}
     <div class="row">
       <label for="name">Name</label>

@@ -11,7 +11,7 @@
       <strong>{{.Author}}</strong>
       <span class="meta">@ seq {{.Sequence}} · {{relTime .CreatedAt}}</span>
     </div>
-    <form method="POST" action="/ui/r/{{$.RepoName}}/b/{{urlPathEscape $.Branch}}/comment/{{.ID}}/delete" style="display:inline">
+    <form method="POST" action="/r/{{$.RepoName}}/b/{{urlPathEscape $.Branch}}/comment/{{.ID}}/delete" style="display:inline">
       {{csrfField}}
       <button type="submit" class="btn-link" style="color:var(--text-muted)">delete</button>
     </form>

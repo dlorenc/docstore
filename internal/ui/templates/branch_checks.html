@@ -13,7 +13,7 @@
   <div class="check-row-actions">
     {{if .LogURL}}<a href="{{.LogURL}}" target="_blank" rel="noopener" class="open-log">logs →</a>{{end}}
     <button class="btn-history"
-      hx-get="/ui/_/r/{{$.Branch.Repo}}/b/{{urlPathEscape $.Branch.Name}}/check-history?check={{.CheckName}}"
+      hx-get="/_/r/{{$.Branch.Repo}}/b/{{urlPathEscape $.Branch.Name}}/check-history?check={{.CheckName}}"
       hx-swap="afterend"
       hx-target="closest .check-row">history ▾</button>
   </div>

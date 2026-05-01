@@ -1,12 +1,12 @@
 {{define "content"}}
 <nav class="repo-tabs">
-  <a href="/ui/r/{{.Repo.Name}}">branches</a>
-  <a href="/ui/r/{{.Repo.Name}}/issues" class="active">issues</a>
-  <a href="/ui/r/{{.Repo.Name}}/releases">releases</a>
-  <a href="/ui/r/{{.Repo.Name}}/proposals">proposals</a>
-  <a href="/ui/r/{{.Repo.Name}}/ci-jobs">ci-jobs</a>
-  <a href="/ui/r/{{.Repo.Name}}/log">log</a>
-  <a href="/ui/r/{{.Repo.Name}}/settings">settings</a>
+  <a href="/r/{{.Repo.Name}}">branches</a>
+  <a href="/r/{{.Repo.Name}}/issues" class="active">issues</a>
+  <a href="/r/{{.Repo.Name}}/releases">releases</a>
+  <a href="/r/{{.Repo.Name}}/proposals">proposals</a>
+  <a href="/r/{{.Repo.Name}}/ci-jobs">ci-jobs</a>
+  <a href="/r/{{.Repo.Name}}/log">log</a>
+  <a href="/r/{{.Repo.Name}}/settings">settings</a>
 </nav>
 
 <h1>New Issue</h1>
@@ -18,7 +18,7 @@
 {{end}}
 
 <div class="card">
-  <form method="POST" action="/ui/r/{{.Repo.Name}}/issues/new" style="padding:8px 4px 4px">
+  <form method="POST" action="/r/{{.Repo.Name}}/issues/new" style="padding:8px 4px 4px">
     {{csrfField}}
     <div style="margin-bottom:12px">
       <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em">Title</label>
@@ -33,7 +33,7 @@
       <input name="labels" type="text" value="{{.FormLabels}}" class="form-input">
     </div>
     <button type="submit" class="btn">Create Issue</button>
-    <a href="/ui/r/{{.Repo.Name}}/issues" style="margin-left:12px;font-size:12px">cancel</a>
+    <a href="/r/{{.Repo.Name}}/issues" style="margin-left:12px;font-size:12px">cancel</a>
   </form>
 </div>
 {{end}}

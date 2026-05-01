@@ -21,7 +21,7 @@
 <div class="card" style="margin-bottom:14px">
   <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:4px 0">
     {{if $ctx.Branch.Draft}}
-    <form method="POST" action="/ui/r/{{$page.Repo.Name}}/-/promote-branch" style="display:inline">
+    <form method="POST" action="/r/{{$page.Repo.Name}}/-/promote-branch" style="display:inline">
       {{csrfField}}
       <input type="hidden" name="branch" value="{{$ctx.Branch.Name}}">
       <input type="hidden" name="ref" value="detail">
@@ -64,7 +64,7 @@
       }).catch(function(e){ errDiv.textContent = String(e); errDiv.style.display = ''; btn.disabled = false; btn.textContent = 'rebase'; });
     })()">rebase</button>
     {{if $ctx.Branch.AutoMerge}}
-    <form method="POST" action="/ui/r/{{$page.Repo.Name}}/-/set-auto-merge" style="display:inline">
+    <form method="POST" action="/r/{{$page.Repo.Name}}/-/set-auto-merge" style="display:inline">
       {{csrfField}}
       <input type="hidden" name="branch" value="{{$ctx.Branch.Name}}">
       <input type="hidden" name="enable" value="0">
@@ -72,7 +72,7 @@
       <button type="submit">disable auto-merge</button>
     </form>
     {{else}}
-    <form method="POST" action="/ui/r/{{$page.Repo.Name}}/-/set-auto-merge" style="display:inline">
+    <form method="POST" action="/r/{{$page.Repo.Name}}/-/set-auto-merge" style="display:inline">
       {{csrfField}}
       <input type="hidden" name="branch" value="{{$ctx.Branch.Name}}">
       <input type="hidden" name="enable" value="1">
@@ -80,8 +80,8 @@
       <button type="submit">enable auto-merge</button>
     </form>
     {{end}}
-    <a href="/ui/r/{{$page.Repo.Name}}/b/{{urlPathEscape $ctx.Branch.Name}}/commit" class="btn" style="font-size:12px">new commit</a>
-    <form method="POST" action="/ui/r/{{$page.Repo.Name}}/-/delete-branch" style="display:inline">
+    <a href="/r/{{$page.Repo.Name}}/b/{{urlPathEscape $ctx.Branch.Name}}/commit" class="btn" style="font-size:12px">new commit</a>
+    <form method="POST" action="/r/{{$page.Repo.Name}}/-/delete-branch" style="display:inline">
       {{csrfField}}
       <input type="hidden" name="branch" value="{{$ctx.Branch.Name}}">
       <input type="hidden" name="ref" value="detail">
@@ -119,7 +119,7 @@
 <div class="two-col">
   <div>
     <h2>Checks ({{len $ctx.CheckRuns}})</h2>
-    <div class="card" data-poll-url="/ui/_/r/{{.Repo.Name}}/b/{{urlPathEscape $ctx.Branch.Name}}/checks" data-poll-interval="10000">
+    <div class="card" data-poll-url="/_/r/{{.Repo.Name}}/b/{{urlPathEscape $ctx.Branch.Name}}/checks" data-poll-interval="10000">
       {{template "branch_checks.html" $ctx}}
     </div>
     {{if $ctx.CheckRuns}}
@@ -152,7 +152,7 @@
           <div class="meta">@ seq {{.Sequence}} · {{relTime .CreatedAt}}</div>
         </div>
         <button class="btn-link"
-          hx-get="/ui/_/r/{{$page.Repo.Name}}/b/{{urlPathEscape $ctx.Branch.Name}}/comments"
+          hx-get="/_/r/{{$page.Repo.Name}}/b/{{urlPathEscape $ctx.Branch.Name}}/comments"
           hx-target="#review-comments"
           hx-swap="innerHTML">inline comments ▾</button>
       </div>
@@ -163,7 +163,7 @@
 
     <h2>Submit review</h2>
     <div class="card">
-      <form method="POST" action="/ui/r/{{$page.Repo.Name}}/b/{{urlPathEscape $ctx.Branch.Name}}/review" style="padding:14px 12px 4px">
+      <form method="POST" action="/r/{{$page.Repo.Name}}/b/{{urlPathEscape $ctx.Branch.Name}}/review" style="padding:14px 12px 4px">
         {{csrfField}}
         <div style="margin-bottom:10px">
           <label style="display:block;margin-bottom:4px;font-size:0.85em;color:var(--text-muted)">Status</label>
@@ -185,7 +185,7 @@
 
 <h2>Add comment</h2>
 <div class="card">
-  <form method="POST" action="/ui/r/{{$page.Repo.Name}}/b/{{urlPathEscape $ctx.Branch.Name}}/comment" style="padding:14px 12px 4px">
+  <form method="POST" action="/r/{{$page.Repo.Name}}/b/{{urlPathEscape $ctx.Branch.Name}}/comment" style="padding:14px 12px 4px">
     {{csrfField}}
     <div style="margin-bottom:10px">
       <label style="display:block;margin-bottom:4px;font-size:0.85em;color:var(--text-muted)">File path</label>
@@ -256,9 +256,9 @@
     <tbody>
     {{range $ctx.RecentCommits}}
     <tr>
-      <td><a href="/ui/r/{{$page.Repo.Name}}/b/{{urlPathEscape $ctx.Branch.Name}}/c/{{.Sequence}}">{{.Sequence}}</a></td>
+      <td><a href="/r/{{$page.Repo.Name}}/b/{{urlPathEscape $ctx.Branch.Name}}/c/{{.Sequence}}">{{.Sequence}}</a></td>
       <td>{{.Message}}</td>
-      <td><a href="/ui/u/{{.Author}}">{{.Author}}</a></td>
+      <td><a href="/u/{{.Author}}">{{.Author}}</a></td>
       <td class="meta">{{relTime .CreatedAt}}</td>
     </tr>
     {{end}}
