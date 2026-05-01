@@ -46,7 +46,7 @@ spec:
             privileged: true
           env:
           - name: DOCSTORE_URL
-            value: https://docstore-efuj4cj54a-uc.a.run.app
+            value: https://api.docstore.dev
           - name: CI_SCHEDULER_URL
             value: http://ci-scheduler.docstore-ci.svc.cluster.local:8080
           ports:

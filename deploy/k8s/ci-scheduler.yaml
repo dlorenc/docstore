@@ -41,7 +41,7 @@ spec:
         image: us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-scheduler:latest
         env:
         - name: DOCSTORE_URL
-          value: https://docstore-efuj4cj54a-uc.a.run.app
+          value: https://api.docstore.dev
         - name: DATABASE_URL
           valueFrom:
             secretKeyRef:
