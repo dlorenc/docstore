@@ -30,7 +30,7 @@ jobs:
       - name: Build docs site
         run: |
           mkdocs build
-          ln -s ../../../site cmd/docs/.kodata/site
+          cp -r site cmd/docs/.kodata/
       - name: Build and push image
         id: build
         env:
@@ -52,7 +52,7 @@ jobs:
             --port=8080
       - name: Create domain mapping (idempotent)
         run: |
-          gcloud run domain-mappings create \
+          gcloud beta run domain-mappings create \
             --service=docs \
             --domain=docs.docstore.dev \
             --region=us-central1 \
