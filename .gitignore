@@ -1,3 +1,4 @@
 bin/
-cmd/docs/.kodata/site
+cmd/docs/site/*
+!cmd/docs/site/.gitkeep
 site/

@@ -1,20 +1,20 @@
 package main
 
 import (
+	"embed"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
-var siteDir = func() string {
-	if v := os.Getenv("KO_DATA_PATH"); v != "" {
-		return v
-	}
-	return "cmd/docs/.kodata"
-}()
+// site is embedded at build time by running `mkdocs build -d cmd/docs/site`
+// before `ko build`. The `all:` prefix includes dot-files.
+//
+//go:embed all:site
+var siteEmbed embed.FS
 
 func main() {
 	port := "8080"
@@ -22,21 +22,26 @@ func main() {
 		port = p
 	}
 
-	sitePath := filepath.Join(siteDir, "site")
+	// Strip the "site/" prefix so the FS root is the MkDocs output directory.
+	siteFS, err := fs.Sub(siteEmbed, "site")
+	if err != nil {
+		slog.Error("sub fs", "err", err)
+		os.Exit(1)
+	}
 
 	mux := http.NewServeMux()
-	mux.Handle("/", handler(sitePath))
+	mux.Handle("/", handler(siteFS))
 
 	addr := fmt.Sprintf(":%s", port)
-	slog.Info("starting docs server", "addr", addr, "site", sitePath)
+	slog.Info("starting docs server", "addr", addr)
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		slog.Error("server error", "err", err)
 		os.Exit(1)
 	}
 }
 
-func handler(sitePath string) http.Handler {
-	fs := http.FileServer(http.Dir(sitePath))
+func handler(siteFS fs.FS) http.Handler {
+	fileServer := http.FileServer(http.FS(siteFS))
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Security headers on all responses.
@@ -52,15 +57,15 @@ func handler(sitePath string) http.Handler {
 
 		// Custom 404.
 		rw := &responseWriter{ResponseWriter: w}
-		fs.ServeHTTP(rw, r)
+		fileServer.ServeHTTP(rw, r)
 		if rw.status == http.StatusNotFound {
-			serve404(w, sitePath)
+			serve404(w, siteFS)
 		}
 	})
 }
 
-func serve404(w http.ResponseWriter, sitePath string) {
-	data, err := os.ReadFile(filepath.Join(sitePath, "404.html"))
+func serve404(w http.ResponseWriter, siteFS fs.FS) {
+	data, err := fs.ReadFile(siteFS, "404.html")
 	if err != nil {
 		http.Error(w, "404 not found", http.StatusNotFound)
 		return
