@@ -73,6 +73,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
       - uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: projects/320310132788/locations/global/workloadIdentityPools/github-actions/providers/github
@@ -86,28 +90,24 @@ jobs:
           location: us-central1
           project_id: dlorenc-chainguard
 
+      - uses: ko-build/setup-ko@v0.7
+
       - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
 
       - name: Build and push ci-scheduler image
         id: build
+        env:
+          KO_DOCKER_REPO: us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-scheduler
         run: |
-          SHA=$(git rev-parse --short HEAD)
-          docker buildx build --platform linux/amd64 \
-            -f Dockerfile.ci-scheduler \
-            -t us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-scheduler:latest \
-            -t us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-scheduler:${SHA} \
-            --push \
-            --metadata-file /tmp/ci-scheduler-metadata.json \
-            .
-          DIGEST=$(jq -r '."containerimage.digest"' /tmp/ci-scheduler-metadata.json)
-          echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
+          IMAGE=$(ko build --bare --tags latest,$(git rev-parse --short HEAD) ./cmd/ci-scheduler)
+          echo "image=$IMAGE" >> $GITHUB_OUTPUT
 
       - name: Deploy ci-scheduler to GKE
         run: |
           kubectl apply -f deploy/k8s/ci-scheduler.yaml
           kubectl set image deployment/ci-scheduler \
-            ci-scheduler=us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-scheduler@${{ steps.build.outputs.digest }} \
+            ci-scheduler=${{ steps.build.outputs.image }} \
             -n docstore-ci
           kubectl rollout status deployment/ci-scheduler -n docstore-ci --timeout=300s
 
@@ -188,6 +188,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
       - uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: projects/320310132788/locations/global/workloadIdentityPools/github-actions/providers/github
@@ -201,27 +205,23 @@ jobs:
           location: us-central1
           project_id: dlorenc-chainguard
 
+      - uses: ko-build/setup-ko@v0.7
+
       - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
 
       - name: Build and push ci-oidc image
         id: build
+        env:
+          KO_DOCKER_REPO: us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-oidc
         run: |
-          SHA=$(git rev-parse --short HEAD)
-          docker buildx build --platform linux/amd64 \
-            -f Dockerfile.ci-oidc \
-            -t us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-oidc:latest \
-            -t us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-oidc:${SHA} \
-            --push \
-            --metadata-file /tmp/ci-oidc-metadata.json \
-            .
-          DIGEST=$(jq -r '."containerimage.digest"' /tmp/ci-oidc-metadata.json)
-          echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
+          IMAGE=$(ko build --bare --tags latest,$(git rev-parse --short HEAD) ./cmd/ci-oidc)
+          echo "image=$IMAGE" >> $GITHUB_OUTPUT
 
       - name: Deploy ci-oidc (internal)
         run: |
           gcloud run deploy ci-oidc \
-            --image=us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-oidc@${{ steps.build.outputs.digest }} \
+            --image=${{ steps.build.outputs.image }} \
             --project=dlorenc-chainguard \
             --region=us-central1 \
             --service-account=ci-oidc@dlorenc-chainguard.iam.gserviceaccount.com \
@@ -255,7 +255,7 @@ jobs:
       - name: Deploy ci-oidc-public (public)
         run: |
           gcloud run deploy ci-oidc-public \
-            --image=us-central1-docker.pkg.dev/dlorenc-chainguard/images/ci-oidc@${{ steps.build.outputs.digest }} \
+            --image=${{ steps.build.outputs.image }} \
             --project=dlorenc-chainguard \
             --region=us-central1 \
             --service-account=ci-oidc-public@dlorenc-chainguard.iam.gserviceaccount.com \
