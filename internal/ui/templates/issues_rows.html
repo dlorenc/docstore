@@ -1,14 +1,14 @@
 {{define "issues_rows.html"}}
 <div class="card">
-  {{if not .Issues}}<div class="empty">no {{.State}} issues{{if .Label}} with label "{{.Label}}"{{end}}{{if eq .State "open"}} — <a href="/ui/r/{{.Repo.Name}}/issues/new">open one</a>{{end}}</div>{{else}}
+  {{if not .Issues}}<div class="empty">no {{.State}} issues{{if .Label}} with label "{{.Label}}"{{end}}{{if eq .State "open"}} — <a href="/r/{{.Repo.Name}}/issues/new">open one</a>{{end}}</div>{{else}}
   <table class="grid">
     <thead><tr><th>#</th><th>title</th><th>labels</th><th>author</th><th>state</th><th>opened</th></tr></thead>
     <tbody>
     {{range .Issues}}
     <tr>
-      <td><a href="/ui/r/{{$.Repo.Name}}/issues/{{.Number}}">#{{.Number}}</a></td>
-      <td><a href="/ui/r/{{$.Repo.Name}}/issues/{{.Number}}">{{.Title}}</a></td>
-      <td>{{range .Labels}}<a href="/ui/r/{{$.Repo.Name}}/issues?state={{$.State}}&label={{.}}" class="badge badge-label">{{.}}</a> {{end}}</td>
+      <td><a href="/r/{{$.Repo.Name}}/issues/{{.Number}}">#{{.Number}}</a></td>
+      <td><a href="/r/{{$.Repo.Name}}/issues/{{.Number}}">{{.Title}}</a></td>
+      <td>{{range .Labels}}<a href="/r/{{$.Repo.Name}}/issues?state={{$.State}}&label={{.}}" class="badge badge-label">{{.}}</a> {{end}}</td>
       <td>{{.Author}}</td>
       <td><span class="badge {{statusClass (printf "%s" .State)}}">{{.State}}</span></td>
       <td class="meta">{{relTime .CreatedAt}}</td>

@@ -5,7 +5,7 @@
   <span class="meta">
     {{if $page.File}}{{shortHash $page.File.ContentHash}}{{if $page.File.ContentType}} · {{$page.File.ContentType}}{{end}}<span class="dot">·</span>
     <a href="/repos/{{$page.Repo.Name}}/-/file/{{$page.Path}}?branch={{$page.Branch}}{{if $page.AtSeq}}&at={{$page.AtSeq}}{{end}}&format=raw" download>download</a><span class="dot">·</span>{{end}}
-    <select onchange="window.location='/ui/r/{{$page.Repo.Name}}/f/{{$page.Path}}?branch='+this.value">
+    <select onchange="window.location='/r/{{$page.Repo.Name}}/f/{{$page.Path}}?branch='+this.value">
       {{range $page.Branches}}<option value="{{.}}"{{if eq . $page.Branch}} selected{{end}}>{{.}}</option>{{end}}
     </select>
   </span>
@@ -13,12 +13,12 @@
 
 <div class="two-col">
   <div class="tree">
-    {{if $page.ParentDir}}<a class="item dir" href="/ui/r/{{$page.Repo.Name}}/f/{{$page.ParentDir}}?branch={{$page.Branch}}">..</a>{{end}}
+    {{if $page.ParentDir}}<a class="item dir" href="/r/{{$page.Repo.Name}}/f/{{$page.ParentDir}}?branch={{$page.Branch}}">..</a>{{end}}
     {{range $page.Tree}}
       {{if .IsDir}}
-        <a class="item dir" href="/ui/r/{{$page.Repo.Name}}/f/{{.Path}}?branch={{$page.Branch}}">{{.Name}}/</a>
+        <a class="item dir" href="/r/{{$page.Repo.Name}}/f/{{.Path}}?branch={{$page.Branch}}">{{.Name}}/</a>
       {{else}}
-        <a class="item file" href="/ui/r/{{$page.Repo.Name}}/f/{{.Path}}?branch={{$page.Branch}}">{{.Name}}</a>
+        <a class="item file" href="/r/{{$page.Repo.Name}}/f/{{.Path}}?branch={{$page.Branch}}">{{.Name}}</a>
       {{end}}
     {{end}}
     {{if not $page.Tree}}<div class="empty">empty</div>{{end}}
@@ -44,7 +44,7 @@
           <tbody>
           {{range $page.FileHistory}}
           <tr>
-            <td><a href="/ui/r/{{$page.Repo.Name}}/b/{{urlPathEscape $page.Branch}}/c/{{.Sequence}}">{{.Sequence}}</a></td>
+            <td><a href="/r/{{$page.Repo.Name}}/b/{{urlPathEscape $page.Branch}}/c/{{.Sequence}}">{{.Sequence}}</a></td>
             <td>{{.Message}}</td>
             <td>{{.Author}}</td>
             <td class="meta">{{relTime .CreatedAt}}</td>
