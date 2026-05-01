@@ -40,6 +40,7 @@ import (
 	"github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/k8sproof"
 	"github.com/dlorenc/docstore/internal/model"
+	"github.com/dlorenc/docstore/internal/store"
 )
 
 // ---------------------------------------------------------------------------
@@ -57,6 +58,17 @@ type ciJobStore interface {
 	ReapStaleCIJobs(ctx context.Context) ([]model.CIJob, error)
 	CountQueuedCIJobs(ctx context.Context) (int64, error)
 	ListRepos(ctx context.Context) ([]model.Repo, error)
+	ListProposals(ctx context.Context, repo string, state *model.ProposalState, branch *string) ([]*model.Proposal, error)
+}
+
+// ---------------------------------------------------------------------------
+// docStoreReader is the minimal interface for reading branch and file data
+// directly from the store layer, bypassing HTTP.
+// ---------------------------------------------------------------------------
+
+type docStoreReader interface {
+	GetBranch(ctx context.Context, repo, branch string) (*store.BranchInfo, error)
+	GetFile(ctx context.Context, repo, branch, path string, atSequence *int64) (*store.FileContent, error)
 }
 
 // ---------------------------------------------------------------------------
@@ -160,45 +172,30 @@ type claimValidator interface {
 // ---------------------------------------------------------------------------
 
 type scheduler struct {
-	store             ciJobStore
-	webhookSecret     string
-	docstoreURL       string
-	httpClient        *http.Client
-	claimer           claimValidator // nil in local dev (no in-cluster K8s)
-	oidcTokenURL      string
-	cacheRegistryURL  string
+	store            ciJobStore
+	readStore        docStoreReader // nil → no CI config / branch-head filtering
+	webhookSecret    string
+	claimer          claimValidator // nil in local dev (no in-cluster K8s)
+	oidcTokenURL     string
+	cacheRegistryURL string
 }
 
 // fetchCIConfig fetches and parses .docstore/ci.yaml from the given repo/branch
-// at the given sequence. Returns nil if the file does not exist (no ci.yaml =
-// no filtering). Returns an error only for unexpected failures.
+// at the given sequence directly from the store. Returns nil if the file does
+// not exist (no ci.yaml = no filtering). Returns an error only for unexpected failures.
 func (s *scheduler) fetchCIConfig(ctx context.Context, repo, branch string, sequence int64) (*ciconfig.CIConfig, error) {
-	if s.docstoreURL == "" {
+	if s.readStore == nil {
 		return nil, nil
 	}
-	fileURL := fmt.Sprintf("%s/repos/%s/-/file/.docstore/ci.yaml?branch=%s&at=%d",
-		s.docstoreURL, repo, url.QueryEscape(branch), sequence)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fileURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("build config request: %w", err)
-	}
-	resp, err := s.httpClient.Do(req)
+	fc, err := s.readStore.GetFile(ctx, repo, branch, ".docstore/ci.yaml", &sequence)
 	if err != nil {
 		return nil, fmt.Errorf("fetch ci config: %w", err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
+	if fc == nil {
 		return nil, nil // no ci.yaml = no filtering
 	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetch ci config: unexpected status %d", resp.StatusCode)
-	}
-	var fileResp model.FileResponse
-	if err := json.NewDecoder(resp.Body).Decode(&fileResp); err != nil {
-		return nil, fmt.Errorf("decode ci config response: %w", err)
-	}
 	var cfg ciconfig.CIConfig
-	if err := yaml.Unmarshal(fileResp.Content, &cfg); err != nil {
+	if err := yaml.Unmarshal(fc.Content, &cfg); err != nil {
 		return nil, fmt.Errorf("parse ci.yaml: %w", err)
 	}
 	return &cfg, nil
@@ -206,26 +203,10 @@ func (s *scheduler) fetchCIConfig(ctx context.Context, repo, branch string, sequ
 
 // fetchOpenProposalForBranch returns the open proposal for a branch, or nil if none exists.
 func (s *scheduler) fetchOpenProposalForBranch(ctx context.Context, repo, branch string) (*model.Proposal, error) {
-	if s.docstoreURL == "" {
-		return nil, nil
-	}
-	proposalsURL := fmt.Sprintf("%s/repos/%s/-/proposals?state=open&branch=%s",
-		s.docstoreURL, repo, url.QueryEscape(branch))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, proposalsURL, nil)
+	openState := model.ProposalOpen
+	proposals, err := s.store.ListProposals(ctx, repo, &openState, &branch)
 	if err != nil {
-		return nil, fmt.Errorf("build proposals request: %w", err)
-	}
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("fetch proposals: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetch proposals: unexpected status %d", resp.StatusCode)
-	}
-	var proposals []*model.Proposal
-	if err := json.NewDecoder(resp.Body).Decode(&proposals); err != nil {
-		return nil, fmt.Errorf("decode proposals response: %w", err)
+		return nil, fmt.Errorf("list proposals: %w", err)
 	}
 	if len(proposals) == 0 {
 		return nil, nil
@@ -636,34 +617,19 @@ func newMux(sched *scheduler) *http.ServeMux {
 // Schedule-based cron runner
 // ---------------------------------------------------------------------------
 
-// fetchBranchHead fetches the head sequence for a named branch from docstore.
+// fetchBranchHead returns the head sequence for a named branch from the store.
 func (s *scheduler) fetchBranchHead(ctx context.Context, repo, branch string) (int64, error) {
-	if s.docstoreURL == "" {
-		return 0, fmt.Errorf("docstore URL not configured")
+	if s.readStore == nil {
+		return 0, fmt.Errorf("read store not configured")
 	}
-	branchesURL := fmt.Sprintf("%s/repos/%s/-/branches", s.docstoreURL, repo)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, branchesURL, nil)
+	b, err := s.readStore.GetBranch(ctx, repo, branch)
 	if err != nil {
-		return 0, fmt.Errorf("build branches request: %w", err)
+		return 0, fmt.Errorf("fetch branch head: %w", err)
 	}
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return 0, fmt.Errorf("fetch branches: %w", err)
+	if b == nil {
+		return 0, fmt.Errorf("branch %q not found in repo %q", branch, repo)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("fetch branches: unexpected status %d", resp.StatusCode)
-	}
-	var branches []model.Branch
-	if err := json.NewDecoder(resp.Body).Decode(&branches); err != nil {
-		return 0, fmt.Errorf("decode branches response: %w", err)
-	}
-	for _, b := range branches {
-		if b.Name == branch {
-			return b.HeadSequence, nil
-		}
-	}
-	return 0, fmt.Errorf("branch %q not found in repo %q", branch, repo)
+	return b.HeadSequence, nil
 }
 
 // fetchAllRepos returns all repo names from the database.
@@ -771,19 +737,11 @@ func startReaper(ctx context.Context, store ciJobStore, interval time.Duration) 
 
 func main() {
 	port := flag.String("port", "8080", "HTTP listen port")
-	docstoreURL := flag.String("docstore-url", "", "Base URL of the docstore server")
-	schedulerURL := flag.String("scheduler-url", "", "Public URL of this ci-scheduler (used to register webhook subscription)")
 	webhookSecret := flag.String("webhook-secret", "", "Shared HMAC secret for webhook signature verification")
 	oidcTokenURL := flag.String("oidc-token-url", "", "URL of the CI OIDC token endpoint (returned to workers on /claim)")
 	flag.Parse()
 
 	// Also accept env-var overrides so the binary is container-friendly.
-	if *docstoreURL == "" {
-		*docstoreURL = os.Getenv("DOCSTORE_URL")
-	}
-	if *schedulerURL == "" {
-		*schedulerURL = os.Getenv("RUNNER_URL") // backward-compat name used by ci-runner
-	}
 	if *webhookSecret == "" {
 		*webhookSecret = os.Getenv("WEBHOOK_SECRET")
 	}
@@ -824,15 +782,14 @@ func main() {
 	}
 	defer database.Close()
 
-	store := db.NewStore(database)
+	dbStore := db.NewStore(database)
+	rs := store.New(database)
 
 	serverCtx, serverCancel := context.WithCancel(context.Background())
 	defer serverCancel()
 
 	// Start stale job reaper.
-	startReaper(serverCtx, store, 30*time.Second)
-
-	httpClient := &http.Client{Timeout: 30 * time.Second}
+	startReaper(serverCtx, dbStore, 30*time.Second)
 
 	// Build K8s in-cluster client for pod provenance checks.
 	// Log a warning and disable provenance (allow all claims) if not in cluster.
@@ -850,10 +807,9 @@ func main() {
 	}
 
 	sched := &scheduler{
-		store:            store,
+		store:            dbStore,
+		readStore:        rs,
 		webhookSecret:    *webhookSecret,
-		docstoreURL:      strings.TrimRight(*docstoreURL, "/"),
-		httpClient:       httpClient,
 		claimer:          claimer,
 		oidcTokenURL:     *oidcTokenURL,
 		cacheRegistryURL: cacheRegistryURL,
@@ -880,12 +836,9 @@ func main() {
 		}
 	}()
 
-	// Register webhook subscription after server is up.
-	if *schedulerURL != "" && *webhookSecret != "" && *docstoreURL != "" {
-		regCtx, regCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer regCancel()
-		registerWebhookSubscription(regCtx, &http.Client{}, *docstoreURL, *schedulerURL, *webhookSecret)
-	}
+	// Webhook subscription must be pre-registered via the ds CLI.
+	// Automatic registration at startup has been removed; use `ds webhook register` instead.
+	slog.Warn("webhook subscription must be pre-registered via the ds CLI; automatic registration at startup is disabled")
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
