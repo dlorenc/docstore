@@ -36,7 +36,7 @@ func TestRegistry_PingRequiresAuth(t *testing.T) {
 	}))
 	defer jwksSrv.Close()
 
-	h := New(NewMemoryHandler(), jwksSrv.URL, "ci-registry", "https://oidc.test")
+	h := New(NewMemoryHandler(), nil, jwksSrv.URL, "ci-registry", "https://oidc.test")
 
 	req := httptest.NewRequest(http.MethodGet, "/v2/", nil)
 	rec := httptest.NewRecorder()
@@ -59,7 +59,7 @@ func TestRegistry_PushPullBlob(t *testing.T) {
 	}))
 	defer jwksSrv.Close()
 
-	h := New(NewMemoryHandler(), jwksSrv.URL, "ci-registry", "https://oidc.test")
+	h := New(NewMemoryHandler(), nil, jwksSrv.URL, "ci-registry", "https://oidc.test")
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 
@@ -93,7 +93,7 @@ func TestRegistry_OrgIsolation(t *testing.T) {
 	}))
 	defer jwksSrv.Close()
 
-	h := New(NewMemoryHandler(), jwksSrv.URL, "ci-registry", "https://oidc.test")
+	h := New(NewMemoryHandler(), nil, jwksSrv.URL, "ci-registry", "https://oidc.test")
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 

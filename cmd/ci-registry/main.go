@@ -41,8 +41,10 @@ func main() {
 	}
 	defer gcsClient.Close()
 
-	blobHandler := registry.NewGCSHandler(gcsClient.Bucket(gcsBucket))
-	registryHandler := registry.New(blobHandler, jwksURL, audience, issuer)
+	bucket := gcsClient.Bucket(gcsBucket)
+	blobHandler := registry.NewGCSHandler(bucket)
+	manifestStore := registry.NewGCSManifestStore(bucket)
+	registryHandler := registry.New(blobHandler, manifestStore, jwksURL, audience, issuer)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {

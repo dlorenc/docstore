@@ -86,6 +86,7 @@ func authMiddleware(inner http.Handler, validate func(string) (*server.JobIdenti
 //	/v2/acme/myrepo/blobs/sha256:abc    → "acme/myrepo"
 //	/v2/acme/myrepo/manifests/latest    → "acme/myrepo"
 //	/v2/                                → "" (ping endpoint)
+//	/v2/_catalog                        → "" (registry-level endpoint)
 func imageNameFromPath(path string) string {
 	const prefix = "/v2/"
 	if !strings.HasPrefix(path, prefix) {
@@ -93,6 +94,10 @@ func imageNameFromPath(path string) string {
 	}
 	rest := strings.TrimPrefix(path, prefix)
 	if rest == "" || rest == "/" {
+		return ""
+	}
+	// _catalog is a registry-level endpoint, not scoped to a repo.
+	if rest == "_catalog" || strings.HasPrefix(rest, "_catalog?") {
 		return ""
 	}
 	// Find the action segment: blobs, manifests, tags, referrers, _catalog, uploads.
