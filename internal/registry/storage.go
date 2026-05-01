@@ -49,7 +49,13 @@ func NewMemoryHandler() *MemoryHandler {
 }
 
 func (m *MemoryHandler) Get(ctx context.Context, repo string, h v1.Hash) (io.ReadCloser, error) {
-	return m.inner.Get(ctx, repo, h)
+	rc, err := m.inner.Get(ctx, repo, h)
+	if err != nil {
+		// Normalize go-containerregistry's unexported errNotFound to ours so
+		// callers can use errors.Is(err, errNotFound) reliably.
+		return nil, errNotFound
+	}
+	return rc, nil
 }
 
 func (m *MemoryHandler) Stat(ctx context.Context, repo string, h v1.Hash) (int64, error) {
@@ -58,12 +64,17 @@ func (m *MemoryHandler) Stat(ctx context.Context, repo string, h v1.Hash) (int64
 		Stat(ctx context.Context, repo string, h v1.Hash) (int64, error)
 	}
 	if sh, ok := m.inner.(statHandler); ok {
-		return sh.Stat(ctx, repo, h)
+		size, err := sh.Stat(ctx, repo, h)
+		if err != nil {
+			// Normalize go-containerregistry's unexported errNotFound to ours.
+			return 0, errNotFound
+		}
+		return size, nil
 	}
 	// Fallback: read the blob to get size.
 	rc, err := m.inner.Get(ctx, repo, h)
 	if err != nil {
-		return 0, err
+		return 0, errNotFound
 	}
 	defer rc.Close()
 	n, err := io.Copy(io.Discard, rc)
