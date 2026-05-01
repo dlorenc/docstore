@@ -36,7 +36,7 @@ spec:
         - name: JWKS_URL
           value: https://oidc.docstore.dev/.well-known/jwks.json
         - name: OIDC_AUDIENCE
-          value: docstore
+          value: ci-registry
         - name: OIDC_ISSUER
           value: https://oidc.docstore.dev
         - name: PORT
