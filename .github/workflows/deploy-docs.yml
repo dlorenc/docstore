@@ -30,9 +30,7 @@ jobs:
       - name: Configure ko registry
         run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
       - name: Build docs site
-        run: |
-          mkdocs build
-          cp -r site cmd/docs/.kodata/
+        run: mkdocs build -d cmd/docs/site
       - name: Build and push image
         id: build
         env:
