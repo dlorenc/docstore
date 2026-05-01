@@ -119,9 +119,22 @@ func NewGCSHandler(bucket *storage.BucketHandle) *GCSHandler {
 	}
 }
 
+// normalizeRepo strips a trailing "/blobs" suffix from repo when present.
+//
+// go-containerregistry extracts the repo name differently depending on whether
+// the request is a blob HEAD/GET or a blob upload (PUT):
+//   - HEAD/GET /v2/{name}/blobs/{digest}   → repo = {name}
+//   - PUT /v2/{name}/blobs/uploads/{uuid}  → repo = {name}/blobs
+//
+// Normalizing ensures all GCS keys use the same prefix regardless of which
+// operation produced the repo string.
+func normalizeRepo(repo string) string {
+	return strings.TrimSuffix(repo, "/blobs")
+}
+
 // gcsKey returns the GCS object key for a blob in a repo.
 func gcsKey(repo string, h v1.Hash) string {
-	return repo + "/blobs/" + h.Algorithm + ":" + h.Hex
+	return normalizeRepo(repo) + "/blobs/" + h.Algorithm + ":" + h.Hex
 }
 
 func (g *GCSHandler) Get(ctx context.Context, repo string, h v1.Hash) (io.ReadCloser, error) {
