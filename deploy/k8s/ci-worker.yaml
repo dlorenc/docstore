@@ -45,8 +45,12 @@ spec:
           securityContext:
             privileged: true
           env:
+          # Use the direct Cloud Run URL (not api.docstore.dev) so that CI OIDC
+          # tokens and request_tokens bypass IAP at the app layer via
+          # JobTokenMiddleware. Requests via api.docstore.dev go through the
+          # Global HTTPS LB + IAP which rejects non-Google-issued tokens.
           - name: DOCSTORE_URL
-            value: https://api.docstore.dev
+            value: https://docstore-efuj4cj54a-uc.a.run.app
           - name: CI_SCHEDULER_URL
             value: http://ci-scheduler.docstore-ci.svc.cluster.local:8080
           ports:

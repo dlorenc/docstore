@@ -207,6 +207,12 @@ func (e *Executor) runCheck(ctx context.Context, source string, check Check, cac
 			Attrs: map[string]string{
 				"ref":               cacheRef,
 				"registry.insecure": "true",
+				// mode=max exports all intermediate layers, not just the
+				// final result. CI checks typically produce no output
+				// artifact, so mode=min would export nothing. mode=max
+				// caches base image layers (e.g. alpine) so subsequent
+				// runs skip the Docker Hub fetch entirely.
+				"mode": "max",
 			},
 		}}
 		solveOpt.CacheImports = []client.CacheOptionsEntry{{
