@@ -6,6 +6,8 @@ on:
       - 'docs/**'
       - 'mkdocs.yml'
       - 'cmd/docs/**'
+      - '.github/workflows/deploy-docs.yml'
+  workflow_dispatch:
 jobs:
   deploy:
     runs-on: ubuntu-latest
