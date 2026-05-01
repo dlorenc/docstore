@@ -2,9 +2,9 @@ package registry
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -29,48 +29,84 @@ import (
 // the provided JWKS endpoint, audience, and issuer.  The token's repo claim
 // is used to restrict access so that a token for org "acme" can only push/pull
 // images whose name starts with "acme/".
-// noStatBlobHandler wraps a BlobHandler and intentionally does NOT expose a
-// Stat method.  go-containerregistry type-asserts the blob handler to
-// gcrregistry.BlobStatHandler; if Stat is present and returns any error,
-// the registry responds 500 — including when the blob simply doesn't exist
-// in GCS.  By hiding Stat, go-containerregistry falls back to calling Get()
-// for HEAD requests, which returns errNotFound → proper 404 BLOB_UNKNOWN.
-//
-// We cannot use interface embedding here because embedding BlobHandler would
-// promote its Stat method, defeating the purpose.  Instead, each method is
-// explicitly delegated to the inner handler.
-type noStatBlobHandler struct {
-	inner BlobHandler
-}
-
-func (h *noStatBlobHandler) Get(ctx context.Context, repo string, hash v1.Hash) (io.ReadCloser, error) {
-	return h.inner.Get(ctx, repo, hash)
-}
-
-func (h *noStatBlobHandler) Put(ctx context.Context, repo string, hash v1.Hash, rc io.ReadCloser) error {
-	return h.inner.Put(ctx, repo, hash, rc)
-}
-
-func (h *noStatBlobHandler) Delete(ctx context.Context, repo string, hash v1.Hash) error {
-	return h.inner.Delete(ctx, repo, hash)
-}
-
-// Compile-time check: noStatBlobHandler satisfies gcrregistry.BlobHandler
-// (Get only) but does NOT satisfy gcrregistry.BlobStatHandler (no Stat).
-var _ gcrregistry.BlobHandler = (*noStatBlobHandler)(nil)
-
 func New(blobHandler BlobHandler, store ManifestStore, jwksURL, audience, issuer string) http.Handler {
 	validate := server.NewJobTokenValidator(jwksURL, audience, issuer)
 
 	inner := gcrregistry.New(
-		gcrregistry.WithBlobHandler(&noStatBlobHandler{inner: blobHandler}),
+		gcrregistry.WithBlobHandler(blobHandler),
 	)
 
 	var handler http.Handler = ociManifest404Middleware(inner)
 	if store != nil {
 		handler = manifestStoreMiddleware(store, inner)
 	}
+	// Intercept HEAD /v2/.../blobs/... before go-containerregistry handles it.
+	// go-containerregistry checks errors.Is(err, errNotFound) against its own
+	// unexported sentinel; our errNotFound is a different pointer so the check
+	// fails and it returns 500 instead of 404 for missing blobs.
+	handler = blobHeadMiddleware(blobHandler, handler)
 	return authMiddleware(handler, validate)
+}
+
+const blobUnknownBody = `{"errors":[{"code":"BLOB_UNKNOWN","message":"Unknown blob"}]}` + "\n"
+
+// blobHeadMiddleware intercepts HEAD /v2/{repo}/blobs/{digest} requests and
+// serves them directly using BlobHandler.Stat, returning the correct
+// 404 BLOB_UNKNOWN when a blob is absent rather than delegating to
+// go-containerregistry's blob handler which returns 500 for missing blobs.
+func blobHeadMiddleware(blobHandler BlobHandler, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodHead {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Match /v2/{repo}/blobs/{digest}
+		repo, dgst, ok := parseBlobPath(r.URL.Path)
+		if !ok {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		h, err := v1.NewHash(dgst)
+		if err != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		size, err := blobHandler.Stat(r.Context(), repo, h)
+		if errors.Is(err, errNotFound) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			http.Error(w, fmt.Sprintf("stat blob: %v", err), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+		w.Header().Set("Docker-Content-Digest", dgst)
+		w.WriteHeader(http.StatusOK)
+	})
+}
+
+// parseBlobPath extracts the repo name and digest from a path of the form
+// /v2/{repo}/blobs/{digest}.  Returns ok=false for any other path shape.
+func parseBlobPath(path string) (repo, dgst string, ok bool) {
+	rest, found := strings.CutPrefix(path, "/v2/")
+	if !found {
+		return "", "", false
+	}
+	idx := strings.Index(rest, "/blobs/")
+	if idx < 0 {
+		return "", "", false
+	}
+	repo = rest[:idx]
+	dgst = rest[idx+len("/blobs/"):]
+	if repo == "" || dgst == "" {
+		return "", "", false
+	}
+	return repo, dgst, true
 }
 
 // manifestStoreMiddleware intercepts OCI manifest, tags/list, and _catalog
