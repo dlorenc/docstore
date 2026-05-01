@@ -8,11 +8,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
+	"strings"
 	"sync"
 
 	"cloud.google.com/go/storage"
+	digest "github.com/opencontainers/go-digest"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	gcrregistry "github.com/google/go-containerregistry/pkg/registry"
+	"google.golang.org/api/iterator"
 )
 
 // BlobHandler handles blob storage for the OCI registry. It is a superset of
@@ -190,4 +194,241 @@ func (g *GCSHandler) Delete(ctx context.Context, repo string, h v1.Hash) error {
 // isGCSNotFound reports whether err is a GCS "not found" error.
 func isGCSNotFound(err error) bool {
 	return errors.Is(err, storage.ErrObjectNotExist)
+}
+
+// ManifestStore stores and retrieves OCI manifests by repository and reference
+// (tag or content digest). Implementations must be safe for concurrent use.
+type ManifestStore interface {
+	// Get retrieves a manifest by repo and reference (tag or digest).
+	// Returns content, mediaType, and errNotFound if absent.
+	Get(ctx context.Context, repo, ref string) (content []byte, mediaType string, err error)
+	// Put stores a manifest. When ref is a tag, the manifest is also stored
+	// under its content digest so digest-based lookups work.
+	Put(ctx context.Context, repo, ref, mediaType string, content []byte) error
+	// Delete removes a manifest by repo and reference.
+	Delete(ctx context.Context, repo, ref string) error
+	// Tags returns all tag names (not digest references) for a repository,
+	// sorted lexicographically.
+	Tags(ctx context.Context, repo string) ([]string, error)
+	// Repos returns all repository names that have at least one manifest,
+	// sorted lexicographically.
+	Repos(ctx context.Context) ([]string, error)
+}
+
+// isDigestRef reports whether a manifest reference is a content digest
+// (e.g. "sha256:abc..."). Tags are plain strings without a colon.
+func isDigestRef(ref string) bool {
+	return strings.Contains(ref, ":")
+}
+
+// manifestEntry holds a stored manifest's bytes and declared media type.
+type manifestEntry struct {
+	content   []byte
+	mediaType string
+}
+
+// MemoryManifestStore is a thread-safe in-memory ManifestStore. It is used as
+// the nil-safe fallback when no persistent store is configured.
+type MemoryManifestStore struct {
+	mu      sync.RWMutex
+	entries map[string]manifestEntry // key: repo + "\x00" + ref
+}
+
+// NewMemoryManifestStore returns an empty MemoryManifestStore.
+func NewMemoryManifestStore() *MemoryManifestStore {
+	return &MemoryManifestStore{entries: make(map[string]manifestEntry)}
+}
+
+func (m *MemoryManifestStore) entryKey(repo, ref string) string {
+	return repo + "\x00" + ref
+}
+
+func (m *MemoryManifestStore) Get(ctx context.Context, repo, ref string) ([]byte, string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	e, ok := m.entries[m.entryKey(repo, ref)]
+	if !ok {
+		return nil, "", errNotFound
+	}
+	cp := make([]byte, len(e.content))
+	copy(cp, e.content)
+	return cp, e.mediaType, nil
+}
+
+func (m *MemoryManifestStore) Put(ctx context.Context, repo, ref, mediaType string, content []byte) error {
+	d := digest.FromBytes(content)
+	cp := make([]byte, len(content))
+	copy(cp, content)
+	entry := manifestEntry{content: cp, mediaType: mediaType}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.entries[m.entryKey(repo, ref)] = entry
+	// Also index by digest so GET-by-digest works after a tag push.
+	if !isDigestRef(ref) {
+		m.entries[m.entryKey(repo, d.String())] = entry
+	}
+	return nil
+}
+
+func (m *MemoryManifestStore) Delete(ctx context.Context, repo, ref string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.entries, m.entryKey(repo, ref))
+	return nil
+}
+
+func (m *MemoryManifestStore) Tags(ctx context.Context, repo string) ([]string, error) {
+	prefix := repo + "\x00"
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var tags []string
+	for k := range m.entries {
+		if strings.HasPrefix(k, prefix) {
+			ref := k[len(prefix):]
+			if !isDigestRef(ref) {
+				tags = append(tags, ref)
+			}
+		}
+	}
+	sort.Strings(tags)
+	return tags, nil
+}
+
+func (m *MemoryManifestStore) Repos(ctx context.Context) ([]string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	repoSet := make(map[string]struct{})
+	for k := range m.entries {
+		repo, _, _ := strings.Cut(k, "\x00")
+		repoSet[repo] = struct{}{}
+	}
+	repos := make([]string, 0, len(repoSet))
+	for r := range repoSet {
+		repos = append(repos, r)
+	}
+	sort.Strings(repos)
+	return repos, nil
+}
+
+// GCSManifestStore implements ManifestStore backed by Google Cloud Storage.
+// Manifests are stored as objects at "<repo>/manifests/<ref>". The GCS object
+// ContentType field carries the OCI media type.
+type GCSManifestStore struct {
+	bucket *storage.BucketHandle
+}
+
+// NewGCSManifestStore returns a GCSManifestStore that stores manifests in the
+// given GCS bucket.
+func NewGCSManifestStore(bucket *storage.BucketHandle) *GCSManifestStore {
+	return &GCSManifestStore{bucket: bucket}
+}
+
+func gcsManifestKey(repo, ref string) string {
+	return repo + "/manifests/" + ref
+}
+
+func (g *GCSManifestStore) Get(ctx context.Context, repo, ref string) ([]byte, string, error) {
+	obj := g.bucket.Object(gcsManifestKey(repo, ref))
+	attrs, err := obj.Attrs(ctx)
+	if err != nil {
+		if isGCSNotFound(err) {
+			return nil, "", errNotFound
+		}
+		return nil, "", fmt.Errorf("gcs manifest attrs %s@%s: %w", repo, ref, err)
+	}
+	rc, err := obj.NewReader(ctx)
+	if err != nil {
+		if isGCSNotFound(err) {
+			return nil, "", errNotFound
+		}
+		return nil, "", fmt.Errorf("gcs manifest open %s@%s: %w", repo, ref, err)
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		return nil, "", fmt.Errorf("gcs manifest read %s@%s: %w", repo, ref, err)
+	}
+	return data, attrs.ContentType, nil
+}
+
+func (g *GCSManifestStore) Put(ctx context.Context, repo, ref, mediaType string, content []byte) error {
+	if err := g.writeObject(ctx, gcsManifestKey(repo, ref), mediaType, content); err != nil {
+		return err
+	}
+	// Also index by content digest when ref is a tag.
+	if !isDigestRef(ref) {
+		d := digest.FromBytes(content)
+		if err := g.writeObject(ctx, gcsManifestKey(repo, d.String()), mediaType, content); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (g *GCSManifestStore) writeObject(ctx context.Context, key, contentType string, data []byte) error {
+	wc := g.bucket.Object(key).NewWriter(ctx)
+	wc.ContentType = contentType
+	if _, err := wc.Write(data); err != nil {
+		_ = wc.Close()
+		return fmt.Errorf("gcs manifest write %s: %w", key, err)
+	}
+	if err := wc.Close(); err != nil {
+		return fmt.Errorf("gcs manifest close %s: %w", key, err)
+	}
+	return nil
+}
+
+func (g *GCSManifestStore) Delete(ctx context.Context, repo, ref string) error {
+	err := g.bucket.Object(gcsManifestKey(repo, ref)).Delete(ctx)
+	if err != nil && !isGCSNotFound(err) {
+		return fmt.Errorf("gcs manifest delete %s@%s: %w", repo, ref, err)
+	}
+	return nil
+}
+
+func (g *GCSManifestStore) Tags(ctx context.Context, repo string) ([]string, error) {
+	prefix := repo + "/manifests/"
+	it := g.bucket.Objects(ctx, &storage.Query{Prefix: prefix})
+	var tags []string
+	for {
+		attrs, err := it.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("gcs manifest tags %s: %w", repo, err)
+		}
+		ref := strings.TrimPrefix(attrs.Name, prefix)
+		if !isDigestRef(ref) {
+			tags = append(tags, ref)
+		}
+	}
+	sort.Strings(tags)
+	return tags, nil
+}
+
+func (g *GCSManifestStore) Repos(ctx context.Context) ([]string, error) {
+	it := g.bucket.Objects(ctx, &storage.Query{})
+	repoSet := make(map[string]struct{})
+	for {
+		attrs, err := it.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("gcs repos list: %w", err)
+		}
+		// Object keys: "<repo>/manifests/<ref>" or "<repo>/blobs/<digest>".
+		parts := strings.SplitN(attrs.Name, "/manifests/", 2)
+		if len(parts) == 2 {
+			repoSet[parts[0]] = struct{}{}
+		}
+	}
+	repos := make([]string, 0, len(repoSet))
+	for r := range repoSet {
+		repos = append(repos, r)
+	}
+	sort.Strings(repos)
+	return repos, nil
 }

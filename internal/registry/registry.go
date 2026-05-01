@@ -2,31 +2,197 @@ package registry
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
 
+	digest "github.com/opencontainers/go-digest"
 	gcrregistry "github.com/google/go-containerregistry/pkg/registry"
 
 	"github.com/dlorenc/docstore/internal/server"
 )
 
 // New creates an OCI Distribution Spec registry http.Handler using the given
-// blob handler for blob storage (manifests are stored in-memory).
+// blob handler for blob storage.
+//
+// When store is non-nil, manifests are persisted via the ManifestStore
+// (enabling consistent reads across multiple replicas). When store is nil,
+// go-containerregistry's default in-memory manifest storage is used
+// (suitable for tests and single-replica deployments).
 //
 // Every request is authenticated with a CI job OIDC token validated against
 // the provided JWKS endpoint, audience, and issuer.  The token's repo claim
 // is used to restrict access so that a token for org "acme" can only push/pull
 // images whose name starts with "acme/".
-func New(blobHandler BlobHandler, jwksURL, audience, issuer string) http.Handler {
+func New(blobHandler BlobHandler, store ManifestStore, jwksURL, audience, issuer string) http.Handler {
 	validate := server.NewJobTokenValidator(jwksURL, audience, issuer)
 
 	inner := gcrregistry.New(
 		gcrregistry.WithBlobHandler(blobHandler),
 	)
 
-	return authMiddleware(ociManifest404Middleware(inner), validate)
+	var handler http.Handler = ociManifest404Middleware(inner)
+	if store != nil {
+		handler = manifestStoreMiddleware(store, inner)
+	}
+	return authMiddleware(handler, validate)
+}
+
+// manifestStoreMiddleware intercepts OCI manifest, tags/list, and _catalog
+// HTTP routes and serves them using store.  All other routes (blobs, uploads,
+// ping) are passed through to next unchanged.
+//
+// This allows manifests to be stored in a shared durable backend (e.g. GCS)
+// so that multiple registry replicas always serve the same data.
+func manifestStoreMiddleware(store ManifestStore, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+
+		// /v2/<name>/manifests/<ref>
+		if repo, ref, ok := parseManifestPath(path); ok {
+			serveManifest(store, repo, ref, w, r)
+			return
+		}
+
+		// /v2/<name>/tags/list
+		if repo, ok := parseTagsListPath(path); ok {
+			serveTagsList(store, repo, w, r)
+			return
+		}
+
+		// /v2/_catalog
+		if path == "/v2/_catalog" {
+			serveCatalog(store, w, r)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// parseManifestPath parses paths of the form /v2/<name>/manifests/<ref>.
+func parseManifestPath(path string) (repo, ref string, ok bool) {
+	rest, found := strings.CutPrefix(path, "/v2/")
+	if !found {
+		return "", "", false
+	}
+	idx := strings.Index(rest, "/manifests/")
+	if idx < 0 {
+		return "", "", false
+	}
+	repo = rest[:idx]
+	ref = rest[idx+len("/manifests/"):]
+	if repo == "" || ref == "" {
+		return "", "", false
+	}
+	return repo, ref, true
+}
+
+// parseTagsListPath parses paths of the form /v2/<name>/tags/list.
+func parseTagsListPath(path string) (repo string, ok bool) {
+	rest, found := strings.CutPrefix(path, "/v2/")
+	if !found {
+		return "", false
+	}
+	repo, found = strings.CutSuffix(rest, "/tags/list")
+	if !found || repo == "" {
+		return "", false
+	}
+	return repo, true
+}
+
+// serveManifest handles GET, HEAD, PUT, and DELETE for a single manifest.
+func serveManifest(store ManifestStore, repo, ref string, w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet, http.MethodHead:
+		content, mediaType, err := store.Get(r.Context(), repo, ref)
+		if err != nil {
+			if errors.Is(err, errNotFound) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusNotFound)
+				if r.Method == http.MethodGet {
+					io.WriteString(w, manifestUnknownBody) //nolint:errcheck
+				}
+				return
+			}
+			http.Error(w, "manifest store error", http.StatusInternalServerError)
+			return
+		}
+		d := digest.FromBytes(content)
+		w.Header().Set("Content-Type", mediaType)
+		w.Header().Set("Docker-Content-Digest", d.String())
+		w.Header().Set("Content-Length", strconv.Itoa(len(content)))
+		w.WriteHeader(http.StatusOK)
+		if r.Method == http.MethodGet {
+			w.Write(content) //nolint:errcheck
+		}
+
+	case http.MethodPut:
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "read body", http.StatusBadRequest)
+			return
+		}
+		mediaType := r.Header.Get("Content-Type")
+		if err := store.Put(r.Context(), repo, ref, mediaType, body); err != nil {
+			http.Error(w, "manifest store error", http.StatusInternalServerError)
+			return
+		}
+		d := digest.FromBytes(body)
+		w.Header().Set("Docker-Content-Digest", d.String())
+		w.Header().Set("Location", "/v2/"+repo+"/manifests/"+d.String())
+		w.WriteHeader(http.StatusCreated)
+
+	case http.MethodDelete:
+		if err := store.Delete(r.Context(), repo, ref); err != nil {
+			http.Error(w, "manifest store error", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// serveTagsList handles GET /v2/<repo>/tags/list.
+func serveTagsList(store ManifestStore, repo string, w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	tags, err := store.Tags(r.Context(), repo)
+	if err != nil {
+		http.Error(w, "manifest store error", http.StatusInternalServerError)
+		return
+	}
+	resp := struct {
+		Name string   `json:"name"`
+		Tags []string `json:"tags"`
+	}{Name: repo, Tags: tags}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp) //nolint:errcheck
+}
+
+// serveCatalog handles GET /v2/_catalog.
+func serveCatalog(store ManifestStore, w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	repos, err := store.Repos(r.Context())
+	if err != nil {
+		http.Error(w, "manifest store error", http.StatusInternalServerError)
+		return
+	}
+	resp := struct {
+		Repos []string `json:"repositories"`
+	}{Repos: repos}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp) //nolint:errcheck
 }
 
 // responseRecorder is a minimal http.ResponseWriter that buffers the response
