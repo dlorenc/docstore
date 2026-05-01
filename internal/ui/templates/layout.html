@@ -16,6 +16,7 @@
   {{range $i, $c := .Breadcrumbs}}{{if $i}}<span class="sep">›</span>{{end}}{{if $c.Href}}<a href="{{$c.Href}}">{{$c.Label}}</a>{{else}}{{$c.Label}}{{end}}{{end}}
   </span>
   <span class="spacer"></span>
+  <a href="https://docs.docstore.dev" class="nav-docs" target="_blank" rel="noopener">Docs</a>
   {{if .Identity}}<a href="/ui/u/{{.Identity}}" class="nav-identity" title="Signed in as {{.Identity}}">{{.Identity}}</a>{{end}}
   <button class="theme-toggle" data-theme-toggle type="button" aria-label="Toggle theme" title="Toggle theme"><span data-theme-icon-dark>☾</span><span data-theme-icon-light>☀</span></button>
 </nav>
