@@ -1,33 +1,33 @@
 {{define "content"}}
 <div class="headline">
   <h1>{{.Repo.Name}} / issues</h1>
-  <a href="/ui/r/{{.Repo.Name}}/issues/new" class="btn">New Issue</a>
+  <a href="/r/{{.Repo.Name}}/issues/new" class="btn">New Issue</a>
 </div>
 
 <nav class="repo-tabs">
-  <a href="/ui/r/{{.Repo.Name}}">branches</a>
-  <a href="/ui/r/{{.Repo.Name}}/issues" class="active">issues</a>
-  <a href="/ui/r/{{.Repo.Name}}/releases">releases</a>
-  <a href="/ui/r/{{.Repo.Name}}/proposals">proposals</a>
-  <a href="/ui/r/{{.Repo.Name}}/ci-jobs">ci-jobs</a>
-  <a href="/ui/r/{{.Repo.Name}}/log">log</a>
-  <a href="/ui/r/{{.Repo.Name}}/settings">settings</a>
+  <a href="/r/{{.Repo.Name}}">branches</a>
+  <a href="/r/{{.Repo.Name}}/issues" class="active">issues</a>
+  <a href="/r/{{.Repo.Name}}/releases">releases</a>
+  <a href="/r/{{.Repo.Name}}/proposals">proposals</a>
+  <a href="/r/{{.Repo.Name}}/ci-jobs">ci-jobs</a>
+  <a href="/r/{{.Repo.Name}}/log">log</a>
+  <a href="/r/{{.Repo.Name}}/settings">settings</a>
 </nav>
 
 <div class="tab-bar" data-tab-group>
-  <a href="/ui/r/{{.Repo.Name}}/issues?state=open{{if .Label}}&label={{.Label}}{{end}}"
-     data-tab-url="/ui/_/r/{{.Repo.Name}}/issues?state=open{{if .Label}}&label={{.Label}}{{end}}"
+  <a href="/r/{{.Repo.Name}}/issues?state=open{{if .Label}}&label={{.Label}}{{end}}"
+     data-tab-url="/_/r/{{.Repo.Name}}/issues?state=open{{if .Label}}&label={{.Label}}{{end}}"
      data-tab-target="#issues-table"
      class="tab{{if eq .State "open"}} active{{end}}">Open</a>
-  <a href="/ui/r/{{.Repo.Name}}/issues?state=closed{{if .Label}}&label={{.Label}}{{end}}"
-     data-tab-url="/ui/_/r/{{.Repo.Name}}/issues?state=closed{{if .Label}}&label={{.Label}}{{end}}"
+  <a href="/r/{{.Repo.Name}}/issues?state=closed{{if .Label}}&label={{.Label}}{{end}}"
+     data-tab-url="/_/r/{{.Repo.Name}}/issues?state=closed{{if .Label}}&label={{.Label}}{{end}}"
      data-tab-target="#issues-table"
      class="tab{{if eq .State "closed"}} active{{end}}">Closed</a>
 </div>
 
 {{if .Label}}
 <div class="filter-chips">
-  <span class="chip">label: {{.Label}} <a href="/ui/r/{{.Repo.Name}}/issues?state={{.State}}" class="chip-clear" aria-label="clear label filter">&#x2715;</a></span>
+  <span class="chip">label: {{.Label}} <a href="/r/{{.Repo.Name}}/issues?state={{.State}}" class="chip-clear" aria-label="clear label filter">&#x2715;</a></span>
 </div>
 {{end}}
 

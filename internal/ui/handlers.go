@@ -306,7 +306,7 @@ func (h *Handler) handleRepos(w http.ResponseWriter, r *http.Request) {
 
 	h.render(w, r, h.tmpl.repos, "layout.html", pageData{
 		Title:       "Repos",
-		Breadcrumbs: []crumb{{Label: "repos", Href: "/ui/"}},
+		Breadcrumbs: []crumb{{Label: "repos", Href: "/"}},
 		Body:        reposPage{MyOrgs: myOrgs, Orgs: orgs, ShowGetStarted: showGetStarted},
 	})
 }
@@ -333,7 +333,7 @@ func (h *Handler) handleUserProfile(w http.ResponseWriter, r *http.Request) {
 
 	h.render(w, r, h.tmpl.userProfile, "layout.html", pageData{
 		Title:       identity,
-		Breadcrumbs: []crumb{{Label: "repos", Href: "/ui/"}, {Label: identity, Href: "/ui/u/" + url.PathEscape(identity)}},
+		Breadcrumbs: []crumb{{Label: "repos", Href: "/"}, {Label: identity, Href: "/u/" + url.PathEscape(identity)}},
 		Body: userProfilePage{
 			Identity:    identity,
 			Memberships: memberships,
@@ -647,8 +647,8 @@ func (h *Handler) handleFile(w http.ResponseWriter, r *http.Request) {
 	h.render(w, r, h.tmpl.fileView, "layout.html", pageData{
 		Title: repoName + " / " + path,
 		Breadcrumbs: []crumb{
-			{Label: "repos", Href: "/ui/"},
-			{Label: repoName, Href: "/ui/r/" + repoName},
+			{Label: "repos", Href: "/"},
+			{Label: repoName, Href: "/r/" + repoName},
 			{Label: branch + ":" + path, Href: ""},
 		},
 		Body: page,
@@ -690,8 +690,8 @@ func (h *Handler) handleIssues(w http.ResponseWriter, r *http.Request) {
 	h.render(w, r, h.tmpl.issues, "layout.html", pageData{
 		Title: repoName + " / issues",
 		Breadcrumbs: []crumb{
-			{Label: "repos", Href: "/ui/"},
-			{Label: repoName, Href: "/ui/r/" + repoName},
+			{Label: "repos", Href: "/"},
+			{Label: repoName, Href: "/r/" + repoName},
 			{Label: "issues", Href: ""},
 		},
 		Body: page,
@@ -821,9 +821,9 @@ func (h *Handler) handleIssueDetail(w http.ResponseWriter, r *http.Request) {
 	h.render(w, r, h.tmpl.issueDetail, "layout.html", pageData{
 		Title: repoName + " / issue #" + numberStr,
 		Breadcrumbs: []crumb{
-			{Label: "repos", Href: "/ui/"},
-			{Label: repoName, Href: "/ui/r/" + repoName},
-			{Label: "issues", Href: "/ui/r/" + repoName + "/issues"},
+			{Label: "repos", Href: "/"},
+			{Label: repoName, Href: "/r/" + repoName},
+			{Label: "issues", Href: "/r/" + repoName + "/issues"},
 			{Label: "#" + numberStr, Href: ""},
 		},
 		Body: page,
@@ -880,8 +880,8 @@ func (h *Handler) handleProposals(w http.ResponseWriter, r *http.Request) {
 	h.render(w, r, h.tmpl.proposals, "layout.html", pageData{
 		Title: repoName + " / proposals",
 		Breadcrumbs: []crumb{
-			{Label: "repos", Href: "/ui/"},
-			{Label: repoName, Href: "/ui/r/" + repoName},
+			{Label: "repos", Href: "/"},
+			{Label: repoName, Href: "/r/" + repoName},
 			{Label: "proposals", Href: ""},
 		},
 		Body: proposalsPage{Repo: *repo, Proposals: proposals, State: stateStr},
@@ -950,9 +950,9 @@ func (h *Handler) handleProposalDetail(w http.ResponseWriter, r *http.Request) {
 	h.render(w, r, h.tmpl.proposalDetail, "layout.html", pageData{
 		Title: repoName + " / proposals / " + id,
 		Breadcrumbs: []crumb{
-			{Label: "repos", Href: "/ui/"},
-			{Label: repoName, Href: "/ui/r/" + repoName},
-			{Label: "proposals", Href: "/ui/r/" + repoName + "/proposals"},
+			{Label: "repos", Href: "/"},
+			{Label: repoName, Href: "/r/" + repoName},
+			{Label: "proposals", Href: "/r/" + repoName + "/proposals"},
 			{Label: proposal.Title, Href: ""},
 		},
 		Body: proposalDetailPage{Repo: *repo, Proposal: proposal, Issues: linkedIssues},
@@ -997,9 +997,9 @@ func (h *Handler) handleReleaseDetail(w http.ResponseWriter, r *http.Request) {
 	h.render(w, r, h.tmpl.releaseDetail, "layout.html", pageData{
 		Title: repoName + " / releases / " + rname,
 		Breadcrumbs: []crumb{
-			{Label: "repos", Href: "/ui/"},
-			{Label: repoName, Href: "/ui/r/" + repoName},
-			{Label: "releases", Href: "/ui/r/" + repoName + "/releases"},
+			{Label: "repos", Href: "/"},
+			{Label: repoName, Href: "/r/" + repoName},
+			{Label: "releases", Href: "/r/" + repoName + "/releases"},
 			{Label: rname, Href: ""},
 		},
 		Body: releaseDetailPage{Repo: *repo, Release: release},
@@ -1041,8 +1041,8 @@ func (h *Handler) handleCIJobs(w http.ResponseWriter, r *http.Request) {
 	h.render(w, r, h.tmpl.ciJobs, "layout.html", pageData{
 		Title: repoName + " / ci-jobs",
 		Breadcrumbs: []crumb{
-			{Label: "repos", Href: "/ui/"},
-			{Label: repoName, Href: "/ui/r/" + repoName},
+			{Label: "repos", Href: "/"},
+			{Label: repoName, Href: "/r/" + repoName},
 			{Label: "ci-jobs", Href: ""},
 		},
 		Body: ciJobsPage{Repo: *repo, Jobs: jobs, Status: statusFilter},
@@ -1092,9 +1092,9 @@ func (h *Handler) handleCIJobDetail(w http.ResponseWriter, r *http.Request) {
 	h.render(w, r, h.tmpl.ciJobDetail, "layout.html", pageData{
 		Title: repoName + " / ci-jobs / " + id,
 		Breadcrumbs: []crumb{
-			{Label: "repos", Href: "/ui/"},
-			{Label: repoName, Href: "/ui/r/" + repoName},
-			{Label: "ci-jobs", Href: "/ui/r/" + repoName + "/ci-jobs"},
+			{Label: "repos", Href: "/"},
+			{Label: repoName, Href: "/r/" + repoName},
+			{Label: "ci-jobs", Href: "/r/" + repoName + "/ci-jobs"},
 			{Label: id[:8], Href: ""},
 		},
 		Body: ciJobDetailPage{Repo: *repo, Job: job, CheckName: checkName},
@@ -1142,11 +1142,11 @@ func siblingTreeRows(entries []store.TreeEntry, dir string) []treeRow {
 	return rows
 }
 
-// handleRepoLog redirects /ui/r/{owner}/{name}/log to the main branch log.
+// handleRepoLog redirects /r/{owner}/{name}/log to the main branch log.
 func (h *Handler) handleRepoLog(w http.ResponseWriter, r *http.Request) {
 	owner := r.PathValue("owner")
 	name := r.PathValue("name")
-	http.Redirect(w, r, "/ui/r/"+owner+"/"+name+"/b/main/log", http.StatusFound)
+	http.Redirect(w, r, "/r/"+owner+"/"+name+"/b/main/log", http.StatusFound)
 }
 
 // handleCommitLog renders the paginated commit log for a branch.
@@ -1203,9 +1203,9 @@ func (h *Handler) handleCommitLog(w http.ResponseWriter, r *http.Request) {
 	h.render(w, r, h.tmpl.commitLog, "layout.html", pageData{
 		Title: repoName + " / " + branch + " / log",
 		Breadcrumbs: []crumb{
-			{Label: "repos", Href: "/ui/"},
-			{Label: repoName, Href: "/ui/r/" + repoName},
-			{Label: branch, Href: "/ui/r/" + repoName + "/b/" + branch},
+			{Label: "repos", Href: "/"},
+			{Label: repoName, Href: "/r/" + repoName},
+			{Label: branch, Href: "/r/" + repoName + "/b/" + branch},
 			{Label: "log", Href: ""},
 		},
 		Body: logPage{
@@ -1319,10 +1319,10 @@ func (h *Handler) handleCommitDetail(w http.ResponseWriter, r *http.Request) {
 	h.render(w, r, h.tmpl.commitDetail, "layout.html", pageData{
 		Title: fmt.Sprintf("%s / %s / commit %d", repoName, branch, seq),
 		Breadcrumbs: []crumb{
-			{Label: "repos", Href: "/ui/"},
-			{Label: repoName, Href: "/ui/r/" + repoName},
-			{Label: branch, Href: "/ui/r/" + repoName + "/b/" + branch},
-			{Label: "log", Href: "/ui/r/" + repoName + "/b/" + branch + "/log"},
+			{Label: "repos", Href: "/"},
+			{Label: repoName, Href: "/r/" + repoName},
+			{Label: branch, Href: "/r/" + repoName + "/b/" + branch},
+			{Label: "log", Href: "/r/" + repoName + "/b/" + branch + "/log"},
 			{Label: fmt.Sprintf("seq %d", seq), Href: ""},
 		},
 		Body: commitDetailPage{
@@ -1337,7 +1337,7 @@ func (h *Handler) handleCommitDetail(w http.ResponseWriter, r *http.Request) {
 // handleCommitFileDiffPartial returns an HTML fragment with the inline diff
 // for a single file in a commit. The diff compares the file at sequence seq
 // against seq-1 (the previous commit that touched any file on the branch).
-// Route: GET /ui/_/r/{owner}/{name}/b/{branch}/c/{seq}/diff/{path...}
+// Route: GET /_/r/{owner}/{name}/b/{branch}/c/{seq}/diff/{path...}
 func (h *Handler) handleCommitFileDiffPartial(w http.ResponseWriter, r *http.Request) {
 	owner := r.PathValue("owner")
 	name := r.PathValue("name")
@@ -1403,7 +1403,7 @@ func (h *Handler) handleAcceptInvite(w http.ResponseWriter, r *http.Request) {
 		h.render(w, r, h.tmpl.acceptInvite, "layout.html", pageData{
 			Title: "Accept invitation · " + org,
 			Breadcrumbs: []crumb{
-				{Label: "repos", Href: "/ui/"},
+				{Label: "repos", Href: "/"},
 			},
 			Body: acceptInvitePage{
 				Org:   org,
@@ -1454,7 +1454,7 @@ func (h *Handler) handleAcceptInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, "/ui/o/"+org, http.StatusSeeOther)
+	http.Redirect(w, r, "/o/"+org, http.StatusSeeOther)
 }
 
 // generateInviteToken returns a 32-byte random hex string for use as an invite token.
@@ -1498,7 +1498,7 @@ func (h *Handler) renderOrgPage(w http.ResponseWriter, r *http.Request, org, err
 	h.render(w, r, h.tmpl.org, "layout.html", pageData{
 		Title: org,
 		Breadcrumbs: []crumb{
-			{Label: "repos", Href: "/ui/"},
+			{Label: "repos", Href: "/"},
 			{Label: org, Href: ""},
 		},
 		Body: orgPage{
@@ -1511,7 +1511,7 @@ func (h *Handler) renderOrgPage(w http.ResponseWriter, r *http.Request, org, err
 	})
 }
 
-// handleAddOrgMember processes POST /ui/o/{org}/members to add an org member.
+// handleAddOrgMember processes POST /o/{org}/members to add an org member.
 func (h *Handler) handleAddOrgMember(w http.ResponseWriter, r *http.Request) {
 	org := r.PathValue("org")
 	ctx := r.Context()
@@ -1551,10 +1551,10 @@ func (h *Handler) handleAddOrgMember(w http.ResponseWriter, r *http.Request) {
 		Role:     string(role),
 		AddedBy:  invitedBy,
 	})
-	http.Redirect(w, r, "/ui/o/"+org, http.StatusSeeOther)
+	http.Redirect(w, r, "/o/"+org, http.StatusSeeOther)
 }
 
-// handleRemoveOrgMember processes POST /ui/o/{org}/members/{identity}/remove.
+// handleRemoveOrgMember processes POST /o/{org}/members/{identity}/remove.
 func (h *Handler) handleRemoveOrgMember(w http.ResponseWriter, r *http.Request) {
 	org := r.PathValue("org")
 	identity := r.PathValue("identity")
@@ -1580,10 +1580,10 @@ func (h *Handler) handleRemoveOrgMember(w http.ResponseWriter, r *http.Request) 
 		Identity:  identity,
 		RemovedBy: removedBy,
 	})
-	http.Redirect(w, r, "/ui/o/"+org, http.StatusSeeOther)
+	http.Redirect(w, r, "/o/"+org, http.StatusSeeOther)
 }
 
-// handleCreateInvite processes POST /ui/o/{org}/invites to create an org invite.
+// handleCreateInvite processes POST /o/{org}/invites to create an org invite.
 func (h *Handler) handleCreateInvite(w http.ResponseWriter, r *http.Request) {
 	org := r.PathValue("org")
 	ctx := r.Context()
@@ -1625,10 +1625,10 @@ func (h *Handler) handleCreateInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, "/ui/o/"+org, http.StatusSeeOther)
+	http.Redirect(w, r, "/o/"+org, http.StatusSeeOther)
 }
 
-// handleRevokeInvite processes POST /ui/o/{org}/invites/{id}/revoke.
+// handleRevokeInvite processes POST /o/{org}/invites/{id}/revoke.
 func (h *Handler) handleRevokeInvite(w http.ResponseWriter, r *http.Request) {
 	org := r.PathValue("org")
 	inviteID := r.PathValue("id")
@@ -1645,7 +1645,7 @@ func (h *Handler) handleRevokeInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, "/ui/o/"+org, http.StatusSeeOther)
+	http.Redirect(w, r, "/o/"+org, http.StatusSeeOther)
 }
 
 // renderBranchesPage loads repo/branch/member/role data and renders the branches page with an optional error.
@@ -1713,8 +1713,8 @@ func (h *Handler) renderBranchesPage(w http.ResponseWriter, r *http.Request, own
 	h.render(w, r, h.tmpl.branches, "layout.html", pageData{
 		Title: repoName + " / branches",
 		Breadcrumbs: []crumb{
-			{Label: "repos", Href: "/ui/"},
-			{Label: repoName, Href: "/ui/r/" + repoName},
+			{Label: "repos", Href: "/"},
+			{Label: repoName, Href: "/r/" + repoName},
 		},
 		Body: page,
 	})
@@ -1750,15 +1750,15 @@ func (h *Handler) renderRepoSettingsPage(w http.ResponseWriter, r *http.Request,
 	h.render(w, r, h.tmpl.repoSettings, "layout.html", pageData{
 		Title: repoName + " / settings",
 		Breadcrumbs: []crumb{
-			{Label: "repos", Href: "/ui/"},
-			{Label: repoName, Href: "/ui/r/" + repoName},
+			{Label: "repos", Href: "/"},
+			{Label: repoName, Href: "/r/" + repoName},
 			{Label: "settings", Href: ""},
 		},
 		Body: repoSettingsPage{Repo: *repo, Roles: roles, Err: errMsg},
 	})
 }
 
-// handleSetRole processes POST /ui/r/{owner}/{name}/roles to grant or update a repo role.
+// handleSetRole processes POST /r/{owner}/{name}/roles to grant or update a repo role.
 func (h *Handler) handleSetRole(w http.ResponseWriter, r *http.Request) {
 	owner := r.PathValue("owner")
 	name := r.PathValue("name")
@@ -1799,10 +1799,10 @@ func (h *Handler) handleSetRole(w http.ResponseWriter, r *http.Request) {
 		Role:      string(role),
 		ChangedBy: changedBy,
 	})
-	http.Redirect(w, r, "/ui/r/"+repoName+"/settings", http.StatusSeeOther)
+	http.Redirect(w, r, "/r/"+repoName+"/settings", http.StatusSeeOther)
 }
 
-// handleDeleteRole processes POST /ui/r/{owner}/{name}/roles/{identity}/delete.
+// handleDeleteRole processes POST /r/{owner}/{name}/roles/{identity}/delete.
 func (h *Handler) handleDeleteRole(w http.ResponseWriter, r *http.Request) {
 	owner := r.PathValue("owner")
 	name := r.PathValue("name")
@@ -1831,7 +1831,7 @@ func (h *Handler) handleDeleteRole(w http.ResponseWriter, r *http.Request) {
 		Role:      "", // empty means removed
 		ChangedBy: changedBy,
 	})
-	http.Redirect(w, r, "/ui/r/"+repoName+"/settings", http.StatusSeeOther)
+	http.Redirect(w, r, "/r/"+repoName+"/settings", http.StatusSeeOther)
 }
 
 // renderReleasesPage loads releases for a repo and renders the releases page with an optional error.
@@ -1860,15 +1860,15 @@ func (h *Handler) renderReleasesPage(w http.ResponseWriter, r *http.Request, own
 	h.render(w, r, h.tmpl.releases, "layout.html", pageData{
 		Title: repoName + " / releases",
 		Breadcrumbs: []crumb{
-			{Label: "repos", Href: "/ui/"},
-			{Label: repoName, Href: "/ui/r/" + repoName},
+			{Label: "repos", Href: "/"},
+			{Label: repoName, Href: "/r/" + repoName},
 			{Label: "releases", Href: ""},
 		},
 		Body: releasesPage{Repo: *repo, Releases: releases, Err: errMsg},
 	})
 }
 
-// handleCreateRelease processes POST /ui/r/{owner}/{name}/releases to create a release.
+// handleCreateRelease processes POST /r/{owner}/{name}/releases to create a release.
 func (h *Handler) handleCreateRelease(w http.ResponseWriter, r *http.Request) {
 	owner := r.PathValue("owner")
 	name := r.PathValue("name")
@@ -1924,10 +1924,10 @@ func (h *Handler) handleCreateRelease(w http.ResponseWriter, r *http.Request) {
 		Sequence:  sequence,
 		CreatedBy: createdBy,
 	})
-	http.Redirect(w, r, "/ui/r/"+repoName+"/releases", http.StatusSeeOther)
+	http.Redirect(w, r, "/r/"+repoName+"/releases", http.StatusSeeOther)
 }
 
-// handleDeleteRelease processes POST /ui/r/{owner}/{name}/releases/{rname}/delete.
+// handleDeleteRelease processes POST /r/{owner}/{name}/releases/{rname}/delete.
 func (h *Handler) handleDeleteRelease(w http.ResponseWriter, r *http.Request) {
 	owner := r.PathValue("owner")
 	name := r.PathValue("name")
@@ -1955,7 +1955,7 @@ func (h *Handler) handleDeleteRelease(w http.ResponseWriter, r *http.Request) {
 		Name:      rname,
 		DeletedBy: deletedBy,
 	})
-	http.Redirect(w, r, "/ui/r/"+repoName+"/releases", http.StatusSeeOther)
+	http.Redirect(w, r, "/r/"+repoName+"/releases", http.StatusSeeOther)
 }
 
 // handleCreateOrg renders the new-org form (GET) and creates the org (POST).
@@ -1966,7 +1966,7 @@ func (h *Handler) handleCreateOrg(w http.ResponseWriter, r *http.Request) {
 		h.render(w, r, h.tmpl.createOrg, "layout.html", pageData{
 			Title: "New organisation",
 			Breadcrumbs: []crumb{
-				{Label: "repos", Href: "/ui/"},
+				{Label: "repos", Href: "/"},
 				{Label: "new org", Href: ""},
 			},
 			Body: createOrgPage{Name: name, Err: errMsg},
@@ -2001,7 +2001,7 @@ func (h *Handler) handleCreateOrg(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, "/ui/o/"+name, http.StatusSeeOther)
+	http.Redirect(w, r, "/o/"+name, http.StatusSeeOther)
 }
 
 // handleCreateRepo renders the new-repo form (GET) and creates the repo (POST).
@@ -2019,7 +2019,7 @@ func (h *Handler) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 		h.render(w, r, h.tmpl.createRepo, "layout.html", pageData{
 			Title: "New repository",
 			Breadcrumbs: []crumb{
-				{Label: "repos", Href: "/ui/"},
+				{Label: "repos", Href: "/"},
 				{Label: "new repo", Href: ""},
 			},
 			Body: createRepoPage{Owner: owner, Name: name, Orgs: orgs, Err: errMsg},
@@ -2059,12 +2059,12 @@ func (h *Handler) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, "/ui/r/"+owner+"/"+name, http.StatusSeeOther)
+	http.Redirect(w, r, "/r/"+owner+"/"+name, http.StatusSeeOther)
 }
 
 // issueURL returns the UI URL for a specific issue detail page.
 func issueURL(repoName, numberStr string) string {
-	return "/ui/r/" + repoName + "/issues/" + numberStr
+	return "/r/" + repoName + "/issues/" + numberStr
 }
 
 // handleNewIssue renders the new-issue form (GET) and creates an issue (POST).
@@ -2089,9 +2089,9 @@ func (h *Handler) handleNewIssue(w http.ResponseWriter, r *http.Request) {
 		h.render(w, r, h.tmpl.newIssue, "layout.html", pageData{
 			Title: repoName + " / new issue",
 			Breadcrumbs: []crumb{
-				{Label: "repos", Href: "/ui/"},
-				{Label: repoName, Href: "/ui/r/" + repoName},
-				{Label: "issues", Href: "/ui/r/" + repoName + "/issues"},
+				{Label: "repos", Href: "/"},
+				{Label: repoName, Href: "/r/" + repoName},
+				{Label: "issues", Href: "/r/" + repoName + "/issues"},
 				{Label: "new", Href: ""},
 			},
 			Body: newIssuePage{
@@ -2142,7 +2142,7 @@ func (h *Handler) handleNewIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, fmt.Sprintf("/ui/r/%s/issues/%d", repoName, iss.Number), http.StatusSeeOther)
+	http.Redirect(w, r, fmt.Sprintf("/r/%s/issues/%d", repoName, iss.Number), http.StatusSeeOther)
 }
 
 // handleEditIssue processes the edit-issue form POST, updating title/body/labels.
@@ -2439,13 +2439,13 @@ func (h *Handler) handleUICreateBranch(w http.ResponseWriter, r *http.Request) {
 	repoName := owner + "/" + name
 
 	if err := r.ParseForm(); err != nil {
-		http.Redirect(w, r, "/ui/r/"+repoName+"?err=invalid+form", http.StatusSeeOther)
+		http.Redirect(w, r, "/r/"+repoName+"?err=invalid+form", http.StatusSeeOther)
 		return
 	}
 
 	branchName := strings.TrimSpace(r.FormValue("branch_name"))
 	if branchName == "" {
-		http.Redirect(w, r, "/ui/r/"+repoName+"?err=branch+name+is+required", http.StatusSeeOther)
+		http.Redirect(w, r, "/r/"+repoName+"?err=branch+name+is+required", http.StatusSeeOther)
 		return
 	}
 
@@ -2458,7 +2458,7 @@ func (h *Handler) handleUICreateBranch(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		slog.Error("ui create branch", "repo", repoName, "branch", branchName, "error", err)
 		errMsg := "create failed: " + err.Error()
-		http.Redirect(w, r, "/ui/r/"+repoName+"?err="+url.QueryEscape(errMsg), http.StatusSeeOther)
+		http.Redirect(w, r, "/r/"+repoName+"?err="+url.QueryEscape(errMsg), http.StatusSeeOther)
 		return
 	}
 
@@ -2472,7 +2472,7 @@ func (h *Handler) handleUICreateBranch(w http.ResponseWriter, r *http.Request) {
 		BaseSequence: resp.BaseSequence,
 		CreatedBy:    identity,
 	})
-	http.Redirect(w, r, "/ui/r/"+repoName, http.StatusSeeOther)
+	http.Redirect(w, r, "/r/"+repoName, http.StatusSeeOther)
 }
 
 // handleUIDeleteBranch processes the delete-branch form on the branch list and detail pages.
@@ -2482,13 +2482,13 @@ func (h *Handler) handleUIDeleteBranch(w http.ResponseWriter, r *http.Request) {
 	repoName := owner + "/" + name
 
 	if err := r.ParseForm(); err != nil {
-		http.Redirect(w, r, "/ui/r/"+repoName+"?err=invalid+form", http.StatusSeeOther)
+		http.Redirect(w, r, "/r/"+repoName+"?err=invalid+form", http.StatusSeeOther)
 		return
 	}
 
 	branchName := strings.TrimSpace(r.FormValue("branch"))
 	if branchName == "" {
-		http.Redirect(w, r, "/ui/r/"+repoName+"?err=branch+name+is+required", http.StatusSeeOther)
+		http.Redirect(w, r, "/r/"+repoName+"?err=branch+name+is+required", http.StatusSeeOther)
 		return
 	}
 
@@ -2498,9 +2498,9 @@ func (h *Handler) handleUIDeleteBranch(w http.ResponseWriter, r *http.Request) {
 		// Redirect to detail page if coming from there, otherwise branch list.
 		ref := r.FormValue("ref")
 		if ref == "detail" {
-			http.Redirect(w, r, "/ui/r/"+repoName+"/b/"+url.PathEscape(branchName)+"?err="+url.QueryEscape(errMsg), http.StatusSeeOther)
+			http.Redirect(w, r, "/r/"+repoName+"/b/"+url.PathEscape(branchName)+"?err="+url.QueryEscape(errMsg), http.StatusSeeOther)
 		} else {
-			http.Redirect(w, r, "/ui/r/"+repoName+"?err="+url.QueryEscape(errMsg), http.StatusSeeOther)
+			http.Redirect(w, r, "/r/"+repoName+"?err="+url.QueryEscape(errMsg), http.StatusSeeOther)
 		}
 		return
 	}
@@ -2514,7 +2514,7 @@ func (h *Handler) handleUIDeleteBranch(w http.ResponseWriter, r *http.Request) {
 		Branch:      branchName,
 		AbandonedBy: identity,
 	})
-	http.Redirect(w, r, "/ui/r/"+repoName, http.StatusSeeOther)
+	http.Redirect(w, r, "/r/"+repoName, http.StatusSeeOther)
 }
 
 // handleUIPromoteBranch promotes a draft branch to active (sets draft=false).
@@ -2524,13 +2524,13 @@ func (h *Handler) handleUIPromoteBranch(w http.ResponseWriter, r *http.Request) 
 	repoName := owner + "/" + name
 
 	if err := r.ParseForm(); err != nil {
-		http.Redirect(w, r, "/ui/r/"+repoName+"?err=invalid+form", http.StatusSeeOther)
+		http.Redirect(w, r, "/r/"+repoName+"?err=invalid+form", http.StatusSeeOther)
 		return
 	}
 
 	branchName := strings.TrimSpace(r.FormValue("branch"))
 	if branchName == "" {
-		http.Redirect(w, r, "/ui/r/"+repoName+"?err=branch+name+is+required", http.StatusSeeOther)
+		http.Redirect(w, r, "/r/"+repoName+"?err=branch+name+is+required", http.StatusSeeOther)
 		return
 	}
 
@@ -2539,9 +2539,9 @@ func (h *Handler) handleUIPromoteBranch(w http.ResponseWriter, r *http.Request) 
 		errMsg := "promote failed: " + err.Error()
 		ref := r.FormValue("ref")
 		if ref == "detail" {
-			http.Redirect(w, r, "/ui/r/"+repoName+"/b/"+url.PathEscape(branchName)+"?err="+url.QueryEscape(errMsg), http.StatusSeeOther)
+			http.Redirect(w, r, "/r/"+repoName+"/b/"+url.PathEscape(branchName)+"?err="+url.QueryEscape(errMsg), http.StatusSeeOther)
 		} else {
-			http.Redirect(w, r, "/ui/r/"+repoName+"?err="+url.QueryEscape(errMsg), http.StatusSeeOther)
+			http.Redirect(w, r, "/r/"+repoName+"?err="+url.QueryEscape(errMsg), http.StatusSeeOther)
 		}
 		return
 	}
@@ -2558,9 +2558,9 @@ func (h *Handler) handleUIPromoteBranch(w http.ResponseWriter, r *http.Request) 
 	})
 	ref := r.FormValue("ref")
 	if ref == "detail" {
-		http.Redirect(w, r, "/ui/r/"+repoName+"/b/"+url.PathEscape(branchName), http.StatusSeeOther)
+		http.Redirect(w, r, "/r/"+repoName+"/b/"+url.PathEscape(branchName), http.StatusSeeOther)
 	} else {
-		http.Redirect(w, r, "/ui/r/"+repoName, http.StatusSeeOther)
+		http.Redirect(w, r, "/r/"+repoName, http.StatusSeeOther)
 	}
 }
 
@@ -2571,13 +2571,13 @@ func (h *Handler) handleUISetAutoMerge(w http.ResponseWriter, r *http.Request) {
 	repoName := owner + "/" + name
 
 	if err := r.ParseForm(); err != nil {
-		http.Redirect(w, r, "/ui/r/"+repoName+"?err=invalid+form", http.StatusSeeOther)
+		http.Redirect(w, r, "/r/"+repoName+"?err=invalid+form", http.StatusSeeOther)
 		return
 	}
 
 	branchName := strings.TrimSpace(r.FormValue("branch"))
 	if branchName == "" {
-		http.Redirect(w, r, "/ui/r/"+repoName+"?err=branch+name+is+required", http.StatusSeeOther)
+		http.Redirect(w, r, "/r/"+repoName+"?err=branch+name+is+required", http.StatusSeeOther)
 		return
 	}
 
@@ -2587,18 +2587,18 @@ func (h *Handler) handleUISetAutoMerge(w http.ResponseWriter, r *http.Request) {
 		errMsg := "auto-merge update failed: " + err.Error()
 		ref := r.FormValue("ref")
 		if ref == "detail" {
-			http.Redirect(w, r, "/ui/r/"+repoName+"/b/"+url.PathEscape(branchName)+"?err="+url.QueryEscape(errMsg), http.StatusSeeOther)
+			http.Redirect(w, r, "/r/"+repoName+"/b/"+url.PathEscape(branchName)+"?err="+url.QueryEscape(errMsg), http.StatusSeeOther)
 		} else {
-			http.Redirect(w, r, "/ui/r/"+repoName+"?err="+url.QueryEscape(errMsg), http.StatusSeeOther)
+			http.Redirect(w, r, "/r/"+repoName+"?err="+url.QueryEscape(errMsg), http.StatusSeeOther)
 		}
 		return
 	}
 
 	ref := r.FormValue("ref")
 	if ref == "detail" {
-		http.Redirect(w, r, "/ui/r/"+repoName+"/b/"+url.PathEscape(branchName), http.StatusSeeOther)
+		http.Redirect(w, r, "/r/"+repoName+"/b/"+url.PathEscape(branchName), http.StatusSeeOther)
 	} else {
-		http.Redirect(w, r, "/ui/r/"+repoName, http.StatusSeeOther)
+		http.Redirect(w, r, "/r/"+repoName, http.StatusSeeOther)
 	}
 
 }
@@ -2662,8 +2662,8 @@ func (h *Handler) renderBranchDetail(w http.ResponseWriter, r *http.Request, rep
 	h.render(w, r, h.tmpl.branchDetail, "layout.html", pageData{
 		Title: repoName + " / " + branch,
 		Breadcrumbs: []crumb{
-			{Label: "repos", Href: "/ui/"},
-			{Label: repoName, Href: "/ui/r/" + repoName},
+			{Label: "repos", Href: "/"},
+			{Label: repoName, Href: "/r/" + repoName},
 			{Label: branch, Href: ""},
 		},
 		Body: page,
@@ -2701,7 +2701,7 @@ func (h *Handler) handleSubmitReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, "/ui/r/"+repoName+"/b/"+branchURLPath(branch), http.StatusSeeOther)
+	http.Redirect(w, r, "/r/"+repoName+"/b/"+branchURLPath(branch), http.StatusSeeOther)
 }
 
 // handlePostComment processes a POST form to add an inline review comment.
@@ -2736,7 +2736,7 @@ func (h *Handler) handlePostComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, "/ui/r/"+repoName+"/b/"+branchURLPath(branch), http.StatusSeeOther)
+	http.Redirect(w, r, "/r/"+repoName+"/b/"+branchURLPath(branch), http.StatusSeeOther)
 }
 
 // handleDeleteComment processes a POST form to delete an inline review comment.
@@ -2754,7 +2754,7 @@ func (h *Handler) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
 	role := h.svc.GetRole(r.Context(), repoName, identity)
 	if err := h.svc.DeleteReviewComment(r.Context(), identity, role, repoName, id); err != nil {
 		if errors.Is(err, service.ErrForbidden) {
-			http.Redirect(w, r, "/ui/r/"+repoName+"/b/"+branchURLPath(branch)+"?err=forbidden", http.StatusSeeOther)
+			http.Redirect(w, r, "/r/"+repoName+"/b/"+branchURLPath(branch)+"?err=forbidden", http.StatusSeeOther)
 			return
 		}
 		slog.Error("ui delete review comment", "repo", repoName, "id", id, "error", err)
@@ -2762,7 +2762,7 @@ func (h *Handler) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, "/ui/r/"+repoName+"/b/"+branchURLPath(branch), http.StatusSeeOther)
+	http.Redirect(w, r, "/r/"+repoName+"/b/"+branchURLPath(branch), http.StatusSeeOther)
 }
 
 // handleCreateProposalUI processes a POST form to create a new proposal.
@@ -2797,8 +2797,8 @@ func (h *Handler) handleCreateProposalUI(w http.ResponseWriter, r *http.Request)
 		h.render(w, r, h.tmpl.proposals, "layout.html", pageData{
 			Title: repoName + " / proposals",
 			Breadcrumbs: []crumb{
-				{Label: "repos", Href: "/ui/"},
-				{Label: repoName, Href: "/ui/r/" + repoName},
+				{Label: "repos", Href: "/"},
+				{Label: repoName, Href: "/r/" + repoName},
 				{Label: "proposals", Href: ""},
 			},
 			Body: proposalsPage{Repo: *repo, Proposals: proposals, State: stateStr, Err: errMsg},
@@ -2822,7 +2822,7 @@ func (h *Handler) handleCreateProposalUI(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	http.Redirect(w, r, "/ui/r/"+repoName+"/proposals/"+proposal.ID, http.StatusSeeOther)
+	http.Redirect(w, r, "/r/"+repoName+"/proposals/"+proposal.ID, http.StatusSeeOther)
 }
 
 // handleEditProposal processes a POST form to update a proposal's title/description.
@@ -2850,9 +2850,9 @@ func (h *Handler) handleEditProposal(w http.ResponseWriter, r *http.Request) {
 		h.render(w, r, h.tmpl.proposalDetail, "layout.html", pageData{
 			Title: repoName + " / proposals / " + id,
 			Breadcrumbs: []crumb{
-				{Label: "repos", Href: "/ui/"},
-				{Label: repoName, Href: "/ui/r/" + repoName},
-				{Label: "proposals", Href: "/ui/r/" + repoName + "/proposals"},
+				{Label: "repos", Href: "/"},
+				{Label: repoName, Href: "/r/" + repoName},
+				{Label: "proposals", Href: "/r/" + repoName + "/proposals"},
 				{Label: proposal.Title, Href: ""},
 			},
 			Body: proposalDetailPage{Repo: *repo, Proposal: proposal, Err: errMsg},
@@ -2891,7 +2891,7 @@ func (h *Handler) handleEditProposal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, "/ui/r/"+repoName+"/proposals/"+updated.ID, http.StatusSeeOther)
+	http.Redirect(w, r, "/r/"+repoName+"/proposals/"+updated.ID, http.StatusSeeOther)
 }
 
 // handleCloseProposalUI processes a POST form to close a proposal.
@@ -2915,9 +2915,9 @@ func (h *Handler) handleCloseProposalUI(w http.ResponseWriter, r *http.Request) 
 				h.render(w, r, h.tmpl.proposalDetail, "layout.html", pageData{
 					Title: repoName + " / proposals / " + id,
 					Breadcrumbs: []crumb{
-						{Label: "repos", Href: "/ui/"},
-						{Label: repoName, Href: "/ui/r/" + repoName},
-						{Label: "proposals", Href: "/ui/r/" + repoName + "/proposals"},
+						{Label: "repos", Href: "/"},
+						{Label: repoName, Href: "/r/" + repoName},
+						{Label: "proposals", Href: "/r/" + repoName + "/proposals"},
 						{Label: proposal.Title, Href: ""},
 					},
 					Body: proposalDetailPage{Repo: *repo, Proposal: proposal, Err: "forbidden: must be proposal author or maintainer"},
@@ -2943,9 +2943,9 @@ func (h *Handler) handleCloseProposalUI(w http.ResponseWriter, r *http.Request) 
 		h.render(w, r, h.tmpl.proposalDetail, "layout.html", pageData{
 			Title: repoName + " / proposals / " + id,
 			Breadcrumbs: []crumb{
-				{Label: "repos", Href: "/ui/"},
-				{Label: repoName, Href: "/ui/r/" + repoName},
-				{Label: "proposals", Href: "/ui/r/" + repoName + "/proposals"},
+				{Label: "repos", Href: "/"},
+				{Label: repoName, Href: "/r/" + repoName},
+				{Label: "proposals", Href: "/r/" + repoName + "/proposals"},
 				{Label: proposal.Title, Href: ""},
 			},
 			Body: proposalDetailPage{Repo: *repo, Proposal: proposal, Err: "could not close proposal: " + err.Error()},
@@ -2953,10 +2953,10 @@ func (h *Handler) handleCloseProposalUI(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	http.Redirect(w, r, "/ui/r/"+repoName+"/proposals/"+id, http.StatusSeeOther)
+	http.Redirect(w, r, "/r/"+repoName+"/proposals/"+id, http.StatusSeeOther)
 }
 
-// handleUIDeleteOrg processes POST /ui/o/{org}/delete to delete an org.
+// handleUIDeleteOrg processes POST /o/{org}/delete to delete an org.
 // The form must include a "confirm" field matching the org name.
 func (h *Handler) handleUIDeleteOrg(w http.ResponseWriter, r *http.Request) {
 	org := r.PathValue("org")
@@ -2990,10 +2990,10 @@ func (h *Handler) handleUIDeleteOrg(w http.ResponseWriter, r *http.Request) {
 		deletedBy = h.identity(ctx)
 	}
 	h.emit(ctx, evtypes.OrgDeleted{Org: org, DeletedBy: deletedBy})
-	http.Redirect(w, r, "/ui/", http.StatusSeeOther)
+	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
-// handleUIDeleteRepo processes POST /ui/r/{owner}/{name}/-/delete-repo to delete a repo.
+// handleUIDeleteRepo processes POST /r/{owner}/{name}/-/delete-repo to delete a repo.
 // The form must include a "confirm" field matching the short repo name.
 func (h *Handler) handleUIDeleteRepo(w http.ResponseWriter, r *http.Request) {
 	owner := r.PathValue("owner")
@@ -3027,7 +3027,7 @@ func (h *Handler) handleUIDeleteRepo(w http.ResponseWriter, r *http.Request) {
 		deletedBy = h.identity(ctx)
 	}
 	h.emit(ctx, evtypes.RepoDeleted{Repo: repoName, DeletedBy: deletedBy})
-	http.Redirect(w, r, "/ui/", http.StatusSeeOther)
+	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
 // chainToLogRows filters and converts ChainEntries to commitLogRows.
@@ -3054,9 +3054,9 @@ func (h *Handler) handleNewCommit(w http.ResponseWriter, r *http.Request) {
 		h.render(w, r, h.tmpl.newCommit, "layout.html", pageData{
 			Title: repoName + " / " + branch + " / commit",
 			Breadcrumbs: []crumb{
-				{Label: "repos", Href: "/ui/"},
-				{Label: repoName, Href: "/ui/r/" + repoName},
-				{Label: branch, Href: "/ui/r/" + repoName + "/b/" + branchURLPath(branch)},
+				{Label: "repos", Href: "/"},
+				{Label: repoName, Href: "/r/" + repoName},
+				{Label: branch, Href: "/r/" + repoName + "/b/" + branchURLPath(branch)},
 				{Label: "commit", Href: ""},
 			},
 			Body: commitFormPage{
@@ -3113,7 +3113,7 @@ func (h *Handler) handleNewCommit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, "/ui/r/"+repoName+"/b/"+branchURLPath(branch), http.StatusSeeOther)
+	http.Redirect(w, r, "/r/"+repoName+"/b/"+branchURLPath(branch), http.StatusSeeOther)
 }
 
 // Only entries for the named branch are included.

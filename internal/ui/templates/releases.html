@@ -5,13 +5,13 @@
 </div>
 
 <nav class="repo-tabs">
-  <a href="/ui/r/{{.Repo.Name}}">branches</a>
-  <a href="/ui/r/{{.Repo.Name}}/issues">issues</a>
-  <a href="/ui/r/{{.Repo.Name}}/releases" class="active">releases</a>
-  <a href="/ui/r/{{.Repo.Name}}/proposals">proposals</a>
-  <a href="/ui/r/{{.Repo.Name}}/ci-jobs">ci-jobs</a>
-  <a href="/ui/r/{{.Repo.Name}}/log">log</a>
-  <a href="/ui/r/{{.Repo.Name}}/settings">settings</a>
+  <a href="/r/{{.Repo.Name}}">branches</a>
+  <a href="/r/{{.Repo.Name}}/issues">issues</a>
+  <a href="/r/{{.Repo.Name}}/releases" class="active">releases</a>
+  <a href="/r/{{.Repo.Name}}/proposals">proposals</a>
+  <a href="/r/{{.Repo.Name}}/ci-jobs">ci-jobs</a>
+  <a href="/r/{{.Repo.Name}}/log">log</a>
+  <a href="/r/{{.Repo.Name}}/settings">settings</a>
 </nav>
 
 {{if .Err}}
@@ -41,7 +41,7 @@
 
 <h2>Create release</h2>
 <div class="card">
-  <form method="POST" action="/ui/r/{{.Repo.Name}}/releases" style="padding:8px 4px 4px">
+  <form method="POST" action="/r/{{.Repo.Name}}/releases" style="padding:8px 4px 4px">
     {{csrfField}}
     <div style="margin-bottom:10px">
       <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em">Name <span style="text-transform:none;letter-spacing:normal">(required)</span></label>

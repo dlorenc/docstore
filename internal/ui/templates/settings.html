@@ -2,13 +2,13 @@
 <div class="headline"><h1>{{.Repo.Name}}</h1><span class="meta">owner {{.Repo.Owner}} · {{relTime .Repo.CreatedAt}}</span></div>
 
 <nav class="repo-tabs">
-  <a href="/ui/r/{{.Repo.Name}}">branches</a>
-  <a href="/ui/r/{{.Repo.Name}}/issues">issues</a>
-  <a href="/ui/r/{{.Repo.Name}}/releases">releases</a>
-  <a href="/ui/r/{{.Repo.Name}}/proposals">proposals</a>
-  <a href="/ui/r/{{.Repo.Name}}/ci-jobs">ci-jobs</a>
-  <a href="/ui/r/{{.Repo.Name}}/log">log</a>
-  <a href="/ui/r/{{.Repo.Name}}/settings" class="active">settings</a>
+  <a href="/r/{{.Repo.Name}}">branches</a>
+  <a href="/r/{{.Repo.Name}}/issues">issues</a>
+  <a href="/r/{{.Repo.Name}}/releases">releases</a>
+  <a href="/r/{{.Repo.Name}}/proposals">proposals</a>
+  <a href="/r/{{.Repo.Name}}/ci-jobs">ci-jobs</a>
+  <a href="/r/{{.Repo.Name}}/log">log</a>
+  <a href="/r/{{.Repo.Name}}/settings" class="active">settings</a>
 </nav>
 
 {{if .Err}}
@@ -28,7 +28,7 @@
       <td>{{.Identity}}</td>
       <td><span class="badge neutral">{{.Role}}</span></td>
       <td>
-        <form method="POST" action="/ui/r/{{$.Repo.Name}}/roles/{{.Identity}}/delete" style="display:inline">
+        <form method="POST" action="/r/{{$.Repo.Name}}/roles/{{.Identity}}/delete" style="display:inline">
           {{csrfField}}
           <button type="submit" class="btn-danger-small">revoke</button>
         </form>
@@ -40,7 +40,7 @@
   {{end}}
   <details style="margin-top:12px">
     <summary style="cursor:pointer;font-size:12px;color:var(--accent)">Grant role</summary>
-    <form method="POST" action="/ui/r/{{.Repo.Name}}/roles" style="padding:10px 0 4px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+    <form method="POST" action="/r/{{.Repo.Name}}/roles" style="padding:10px 0 4px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
       {{csrfField}}
       <input type="text" name="identity" placeholder="identity (email)" required class="form-input" style="flex:1;min-width:180px">
       <select name="role" class="form-input" style="width:auto">
@@ -59,7 +59,7 @@
   <details>
     <summary style="cursor:pointer;font-size:0.9em;color:var(--bad)">Delete this repository</summary>
     <p style="font-size:0.85em;color:var(--text-dim);margin:8px 0">This permanently deletes the repository and all its data. This cannot be undone.</p>
-    <form method="POST" action="/ui/r/{{.Repo.Name}}/-/delete-repo" style="padding:4px 0">
+    <form method="POST" action="/r/{{.Repo.Name}}/-/delete-repo" style="padding:4px 0">
       {{csrfField}}
       {{- $shortName := repoShortName .Repo.Name -}}
       <label style="font-size:0.85em;display:block;margin-bottom:4px">Type <strong>{{$shortName}}</strong> to confirm:</label>

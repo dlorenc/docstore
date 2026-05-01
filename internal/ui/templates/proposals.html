@@ -5,13 +5,13 @@
 </div>
 
 <nav class="repo-tabs">
-  <a href="/ui/r/{{.Repo.Name}}">branches</a>
-  <a href="/ui/r/{{.Repo.Name}}/issues">issues</a>
-  <a href="/ui/r/{{.Repo.Name}}/releases">releases</a>
-  <a href="/ui/r/{{.Repo.Name}}/proposals" class="active">proposals</a>
-  <a href="/ui/r/{{.Repo.Name}}/ci-jobs">ci-jobs</a>
-  <a href="/ui/r/{{.Repo.Name}}/log">log</a>
-  <a href="/ui/r/{{.Repo.Name}}/settings">settings</a>
+  <a href="/r/{{.Repo.Name}}">branches</a>
+  <a href="/r/{{.Repo.Name}}/issues">issues</a>
+  <a href="/r/{{.Repo.Name}}/releases">releases</a>
+  <a href="/r/{{.Repo.Name}}/proposals" class="active">proposals</a>
+  <a href="/r/{{.Repo.Name}}/ci-jobs">ci-jobs</a>
+  <a href="/r/{{.Repo.Name}}/log">log</a>
+  <a href="/r/{{.Repo.Name}}/settings">settings</a>
 </nav>
 
 {{if .Err}}
@@ -23,15 +23,15 @@
 <div class="tab-bar" data-tab-group>
   <a class="tab{{if eq .State "open"}} active{{end}}"
      href="?state=open"
-     data-tab-url="/ui/_/r/{{.Repo.Name}}/proposals?state=open"
+     data-tab-url="/_/r/{{.Repo.Name}}/proposals?state=open"
      data-tab-target="#proposals-list">open</a>
   <a class="tab{{if eq .State "closed"}} active{{end}}"
      href="?state=closed"
-     data-tab-url="/ui/_/r/{{.Repo.Name}}/proposals?state=closed"
+     data-tab-url="/_/r/{{.Repo.Name}}/proposals?state=closed"
      data-tab-target="#proposals-list">closed</a>
   <a class="tab{{if eq .State "merged"}} active{{end}}"
      href="?state=merged"
-     data-tab-url="/ui/_/r/{{.Repo.Name}}/proposals?state=merged"
+     data-tab-url="/_/r/{{.Repo.Name}}/proposals?state=merged"
      data-tab-target="#proposals-list">merged</a>
 </div>
 
@@ -41,7 +41,7 @@
 
 <h2>New proposal</h2>
 <div class="card">
-  <form method="POST" action="/ui/r/{{.Repo.Name}}/proposals" style="padding:8px 4px 4px">
+  <form method="POST" action="/r/{{.Repo.Name}}/proposals" style="padding:8px 4px 4px">
     {{csrfField}}
     <div style="margin-bottom:10px">
       <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em">Branch</label>

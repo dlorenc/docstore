@@ -5,13 +5,13 @@
 </div>
 
 <nav class="repo-tabs">
-  <a href="/ui/r/{{.Repo.Name}}">branches</a>
-  <a href="/ui/r/{{.Repo.Name}}/issues">issues</a>
-  <a href="/ui/r/{{.Repo.Name}}/releases">releases</a>
-  <a href="/ui/r/{{.Repo.Name}}/proposals">proposals</a>
-  <a href="/ui/r/{{.Repo.Name}}/ci-jobs" class="active">ci-jobs</a>
-  <a href="/ui/r/{{.Repo.Name}}/log">log</a>
-  <a href="/ui/r/{{.Repo.Name}}/settings">settings</a>
+  <a href="/r/{{.Repo.Name}}">branches</a>
+  <a href="/r/{{.Repo.Name}}/issues">issues</a>
+  <a href="/r/{{.Repo.Name}}/releases">releases</a>
+  <a href="/r/{{.Repo.Name}}/proposals">proposals</a>
+  <a href="/r/{{.Repo.Name}}/ci-jobs" class="active">ci-jobs</a>
+  <a href="/r/{{.Repo.Name}}/log">log</a>
+  <a href="/r/{{.Repo.Name}}/settings">settings</a>
 </nav>
 
 <div class="tab-bar">
@@ -39,7 +39,7 @@
   {{range .Jobs}}
   <tr>
     <td><a href="ci-jobs/{{.ID}}">{{slice .ID 0 8}}</a></td>
-    <td><a href="/ui/r/{{$.Repo.Name}}/b/{{urlPathEscape .Branch}}">{{.Branch}}</a></td>
+    <td><a href="/r/{{$.Repo.Name}}/b/{{urlPathEscape .Branch}}">{{.Branch}}</a></td>
     <td>{{.Sequence}}</td>
     <td class="meta">{{.TriggerType}}{{if .TriggerBranch}} / {{.TriggerBranch}}{{end}}</td>
     <td><span class="badge {{statusClass .Status}}">{{.Status}}</span></td>

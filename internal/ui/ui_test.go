@@ -344,7 +344,7 @@ func TestHandleRepos_RendersOrgsAndRepos(t *testing.T) {
 	}}
 	h := newTestHandler(t, &fakeRead{}, w, nil)
 
-	code, body := getStatusAndBody(t, h, "/ui/")
+	code, body := getStatusAndBody(t, h, "/")
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, want 200. body=%s", code, body)
 	}
@@ -357,7 +357,7 @@ func TestHandleRepos_RendersOrgsAndRepos(t *testing.T) {
 
 func TestHandleBranches_UnknownRepo_Returns404HTML(t *testing.T) {
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{miss: true}, nil)
-	code, body := getStatusAndBody(t, h, "/ui/r/unknown/unknown")
+	code, body := getStatusAndBody(t, h, "/r/unknown/unknown")
 	if code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", code)
 	}
@@ -379,7 +379,7 @@ func TestHandleBranches_RendersSections(t *testing.T) {
 	}}
 	h := newTestHandler(t, r, &fakeWrite{repos: repos}, nil)
 
-	code, body := getStatusAndBody(t, h, "/ui/r/acme/a")
+	code, body := getStatusAndBody(t, h, "/r/acme/a")
 	if code != http.StatusOK {
 		t.Fatalf("status = %d", code)
 	}
@@ -395,7 +395,7 @@ func TestHandleBranchDetail_RendersContext(t *testing.T) {
 	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now(), CreatedBy: "me"}}
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, newFakeAssembler("feat-x"))
 
-	code, body := getStatusAndBody(t, h, "/ui/r/acme/a/b/feat-x")
+	code, body := getStatusAndBody(t, h, "/r/acme/a/b/feat-x")
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", code, body)
 	}
@@ -409,7 +409,7 @@ func TestHandleBranchDetail_RendersContext(t *testing.T) {
 func TestHandleBranchDetail_BranchNotFound_Returns404(t *testing.T) {
 	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now(), CreatedBy: "me"}}
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, newFakeAssembler("only-feat"))
-	code, body := getStatusAndBody(t, h, "/ui/r/acme/a/b/does-not-exist")
+	code, body := getStatusAndBody(t, h, "/r/acme/a/b/does-not-exist")
 	if code != http.StatusNotFound {
 		t.Fatalf("status = %d, body=%s", code, body)
 	}
@@ -418,7 +418,7 @@ func TestHandleBranchDetail_BranchNotFound_Returns404(t *testing.T) {
 func TestHandleChecksPartial_ReturnsFragment(t *testing.T) {
 	repos := []model.Repo{{Name: "acme/a", Owner: "acme"}}
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, newFakeAssembler("feat-x"))
-	code, body := getStatusAndBody(t, h, "/ui/_/r/acme/a/b/feat-x/checks")
+	code, body := getStatusAndBody(t, h, "/_/r/acme/a/b/feat-x/checks")
 	if code != http.StatusOK {
 		t.Fatalf("status = %d", code)
 	}
@@ -435,13 +435,13 @@ func TestHandleCheckHistoryPartial_ReturnsFragment(t *testing.T) {
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, newFakeAssembler("feat-x"))
 
 	// Missing check param → 400
-	code, _ := getStatusAndBody(t, h, "/ui/_/r/acme/a/b/feat-x/check-history")
+	code, _ := getStatusAndBody(t, h, "/_/r/acme/a/b/feat-x/check-history")
 	if code != http.StatusBadRequest {
 		t.Fatalf("missing check param: status = %d, want 400", code)
 	}
 
 	// With check param → 200 fragment (no layout)
-	code, body := getStatusAndBody(t, h, "/ui/_/r/acme/a/b/feat-x/check-history?check=lint")
+	code, body := getStatusAndBody(t, h, "/_/r/acme/a/b/feat-x/check-history?check=lint")
 	if code != http.StatusOK {
 		t.Fatalf("status = %d", code)
 	}
@@ -467,7 +467,7 @@ func TestHandleFile_RendersTreeAndContent(t *testing.T) {
 	}
 	h := newTestHandler(t, r, &fakeWrite{repos: repos}, nil)
 
-	code, body := getStatusAndBody(t, h, "/ui/r/acme/a/f/docs/hello.md?branch=main")
+	code, body := getStatusAndBody(t, h, "/r/acme/a/f/docs/hello.md?branch=main")
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", code, body)
 	}
@@ -486,7 +486,7 @@ func TestHandleIssues_RendersTable(t *testing.T) {
 	}
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos, issues: issues}, nil)
 
-	code, body := getStatusAndBody(t, h, "/ui/r/acme/a/issues")
+	code, body := getStatusAndBody(t, h, "/r/acme/a/issues")
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", code, body)
 	}
@@ -501,7 +501,7 @@ func TestHandleIssues_DefaultsToOpen(t *testing.T) {
 	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now(), CreatedBy: "me"}}
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, nil)
 
-	code, body := getStatusAndBody(t, h, "/ui/r/acme/a/issues")
+	code, body := getStatusAndBody(t, h, "/r/acme/a/issues")
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", code, body)
 	}
@@ -513,7 +513,7 @@ func TestHandleIssues_DefaultsToOpen(t *testing.T) {
 
 func TestHandleIssues_UnknownRepo_Returns404(t *testing.T) {
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{miss: true}, nil)
-	code, _ := getStatusAndBody(t, h, "/ui/r/unknown/repo/issues")
+	code, _ := getStatusAndBody(t, h, "/r/unknown/repo/issues")
 	if code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", code)
 	}
@@ -526,7 +526,7 @@ func TestHandleIssuesPartial_ReturnsFragment(t *testing.T) {
 	}
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos, issues: issues}, nil)
 
-	code, body := getStatusAndBody(t, h, "/ui/_/r/acme/a/issues?state=closed")
+	code, body := getStatusAndBody(t, h, "/_/r/acme/a/issues?state=closed")
 	if code != http.StatusOK {
 		t.Fatalf("status = %d", code)
 	}
@@ -549,7 +549,7 @@ func TestHandleIssueDetail_RendersIssueAndComments(t *testing.T) {
 	}
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos, issues: issues, issueComments: comments}, nil)
 
-	code, body := getStatusAndBody(t, h, "/ui/r/acme/a/issues/7")
+	code, body := getStatusAndBody(t, h, "/r/acme/a/issues/7")
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", code, body)
 	}
@@ -564,7 +564,7 @@ func TestHandleIssueDetail_NotFound_Returns404(t *testing.T) {
 	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now(), CreatedBy: "me"}}
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, nil)
 
-	code, _ := getStatusAndBody(t, h, "/ui/r/acme/a/issues/999")
+	code, _ := getStatusAndBody(t, h, "/r/acme/a/issues/999")
 	if code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", code)
 	}
@@ -574,7 +574,7 @@ func TestHandleIssueDetail_InvalidNumber_Returns400(t *testing.T) {
 	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now(), CreatedBy: "me"}}
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, nil)
 
-	code, _ := getStatusAndBody(t, h, "/ui/r/acme/a/issues/notanumber")
+	code, _ := getStatusAndBody(t, h, "/r/acme/a/issues/notanumber")
 	if code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", code)
 	}
@@ -588,7 +588,7 @@ func TestHandleOrg_RendersReposMembersInvites(t *testing.T) {
 	}
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, nil)
 
-	code, body := getStatusAndBody(t, h, "/ui/o/acme")
+	code, body := getStatusAndBody(t, h, "/o/acme")
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, want 200. body=%s", code, body)
 	}
@@ -632,7 +632,7 @@ func TestHandleProposals_RendersList(t *testing.T) {
 	}
 	h := newTestHandler(t, &fakeRead{}, w, nil)
 
-	code, body := getStatusAndBody(t, h, "/ui/r/acme/a/proposals?state=open")
+	code, body := getStatusAndBody(t, h, "/r/acme/a/proposals?state=open")
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", code, body)
 	}
@@ -654,7 +654,7 @@ func TestHandleProposalsPartial_ReturnsFragment(t *testing.T) {
 	}
 	h := newTestHandler(t, &fakeRead{}, w, nil)
 
-	code, body := getStatusAndBody(t, h, "/ui/_/r/acme/a/proposals?state=open")
+	code, body := getStatusAndBody(t, h, "/_/r/acme/a/proposals?state=open")
 	if code != http.StatusOK {
 		t.Fatalf("status = %d", code)
 	}
@@ -677,7 +677,7 @@ func TestHandleProposalDetail_RendersDetail(t *testing.T) {
 	}
 	h := newTestHandler(t, &fakeRead{}, w, nil)
 
-	code, body := getStatusAndBody(t, h, "/ui/r/acme/a/proposals/p-abc")
+	code, body := getStatusAndBody(t, h, "/r/acme/a/proposals/p-abc")
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", code, body)
 	}
@@ -693,7 +693,7 @@ func TestHandleProposalDetail_NotFound_Returns404(t *testing.T) {
 	w := &fakeWrite{repos: repos}
 	h := newTestHandler(t, &fakeRead{}, w, nil)
 
-	code, _ := getStatusAndBody(t, h, "/ui/r/acme/a/proposals/nonexistent")
+	code, _ := getStatusAndBody(t, h, "/r/acme/a/proposals/nonexistent")
 	if code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", code)
 	}
@@ -709,7 +709,7 @@ func TestHandleReleases_RendersList(t *testing.T) {
 	}
 	h := newTestHandler(t, &fakeRead{}, w, nil)
 
-	code, body := getStatusAndBody(t, h, "/ui/r/acme/a/releases")
+	code, body := getStatusAndBody(t, h, "/r/acme/a/releases")
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", code, body)
 	}
@@ -730,7 +730,7 @@ func TestHandleReleaseDetail_RendersDetail(t *testing.T) {
 	}
 	h := newTestHandler(t, &fakeRead{}, w, nil)
 
-	code, body := getStatusAndBody(t, h, "/ui/r/acme/a/releases/v2.0.0")
+	code, body := getStatusAndBody(t, h, "/r/acme/a/releases/v2.0.0")
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", code, body)
 	}
@@ -746,7 +746,7 @@ func TestHandleReleaseDetail_NotFound_Returns404(t *testing.T) {
 	w := &fakeWrite{repos: repos}
 	h := newTestHandler(t, &fakeRead{}, w, nil)
 
-	code, _ := getStatusAndBody(t, h, "/ui/r/acme/a/releases/nonexistent")
+	code, _ := getStatusAndBody(t, h, "/r/acme/a/releases/nonexistent")
 	if code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", code)
 	}
@@ -774,7 +774,7 @@ func postForm(t *testing.T, h http.Handler, target string, vals url.Values) (int
 
 func TestHandleCreateOrg_GET_RendersForm(t *testing.T) {
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{}, nil)
-	code, body := getStatusAndBody(t, h, "/ui/orgs/new")
+	code, body := getStatusAndBody(t, h, "/orgs/new")
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", code, body)
 	}
@@ -787,18 +787,18 @@ func TestHandleCreateOrg_GET_RendersForm(t *testing.T) {
 
 func TestHandleCreateOrg_POST_RedirectsOnSuccess(t *testing.T) {
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{}, nil)
-	code, _, loc := postForm(t, h, "/ui/orgs/new", url.Values{"name": {"acme"}})
+	code, _, loc := postForm(t, h, "/orgs/new", url.Values{"name": {"acme"}})
 	if code != http.StatusSeeOther {
 		t.Fatalf("status = %d, want 303", code)
 	}
-	if loc != "/ui/o/acme" {
-		t.Errorf("location = %q, want /ui/o/acme", loc)
+	if loc != "/o/acme" {
+		t.Errorf("location = %q, want /o/acme", loc)
 	}
 }
 
 func TestHandleCreateOrg_POST_EmptyName_ReturnsError(t *testing.T) {
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{}, nil)
-	code, body, _ := postForm(t, h, "/ui/orgs/new", url.Values{"name": {""}})
+	code, body, _ := postForm(t, h, "/orgs/new", url.Values{"name": {""}})
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 with error", code)
 	}
@@ -809,7 +809,7 @@ func TestHandleCreateOrg_POST_EmptyName_ReturnsError(t *testing.T) {
 
 func TestHandleCreateOrg_POST_DuplicateName_ReturnsError(t *testing.T) {
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{miss: true}, nil)
-	code, body, _ := postForm(t, h, "/ui/orgs/new", url.Values{"name": {"acme"}})
+	code, body, _ := postForm(t, h, "/orgs/new", url.Values{"name": {"acme"}})
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 with error", code)
 	}
@@ -820,7 +820,7 @@ func TestHandleCreateOrg_POST_DuplicateName_ReturnsError(t *testing.T) {
 
 func TestHandleCreateRepo_GET_RendersForm(t *testing.T) {
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{}, nil)
-	code, body := getStatusAndBody(t, h, "/ui/repos/new")
+	code, body := getStatusAndBody(t, h, "/repos/new")
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", code, body)
 	}
@@ -833,18 +833,18 @@ func TestHandleCreateRepo_GET_RendersForm(t *testing.T) {
 
 func TestHandleCreateRepo_POST_RedirectsOnSuccess(t *testing.T) {
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{}, nil)
-	code, _, loc := postForm(t, h, "/ui/repos/new", url.Values{"owner": {"acme"}, "name": {"myrepo"}})
+	code, _, loc := postForm(t, h, "/repos/new", url.Values{"owner": {"acme"}, "name": {"myrepo"}})
 	if code != http.StatusSeeOther {
 		t.Fatalf("status = %d, want 303", code)
 	}
-	if loc != "/ui/r/acme/myrepo" {
-		t.Errorf("location = %q, want /ui/r/acme/myrepo", loc)
+	if loc != "/r/acme/myrepo" {
+		t.Errorf("location = %q, want /r/acme/myrepo", loc)
 	}
 }
 
 func TestHandleCreateRepo_POST_MissingFields_ReturnsError(t *testing.T) {
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{}, nil)
-	code, body, _ := postForm(t, h, "/ui/repos/new", url.Values{"owner": {"acme"}, "name": {""}})
+	code, body, _ := postForm(t, h, "/repos/new", url.Values{"owner": {"acme"}, "name": {""}})
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 with error", code)
 	}
@@ -855,7 +855,7 @@ func TestHandleCreateRepo_POST_MissingFields_ReturnsError(t *testing.T) {
 
 func TestHandleCreateRepo_POST_DuplicateRepo_ReturnsError(t *testing.T) {
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{miss: true}, nil)
-	code, body, _ := postForm(t, h, "/ui/repos/new", url.Values{"owner": {"acme"}, "name": {"myrepo"}})
+	code, body, _ := postForm(t, h, "/repos/new", url.Values{"owner": {"acme"}, "name": {"myrepo"}})
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 with error", code)
 	}
@@ -866,11 +866,11 @@ func TestHandleCreateRepo_POST_DuplicateRepo_ReturnsError(t *testing.T) {
 
 func TestHandleRepos_ShowsNewButtons(t *testing.T) {
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{}, nil)
-	code, body := getStatusAndBody(t, h, "/ui/")
+	code, body := getStatusAndBody(t, h, "/")
 	if code != http.StatusOK {
 		t.Fatalf("status = %d", code)
 	}
-	for _, want := range []string{"/ui/orgs/new", "/ui/repos/new"} {
+	for _, want := range []string{"/orgs/new", "/repos/new"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing link %q", want)
 		}
@@ -883,7 +883,7 @@ func TestHandleRepos_ShowsNewButtons(t *testing.T) {
 func TestHandleRepos_GetStartedShownForNewUser(t *testing.T) {
 	w := &fakeWrite{} // no memberships, no repoRoles
 	h := newTestHandlerWithIdentity(t, &fakeRead{}, w, "new@example.com")
-	_, body := getStatusAndBody(t, h, "/ui/")
+	_, body := getStatusAndBody(t, h, "/")
 	if !strings.Contains(body, "Get started") {
 		t.Errorf("expected 'Get started' card for new user, body: %.300s", body)
 	}
@@ -897,7 +897,7 @@ func TestHandleRepos_GetStartedHiddenForUserWithRepoRole(t *testing.T) {
 		repoRoles: []model.RepoRole{{Repo: "acme/myrepo", Role: model.RoleAdmin}},
 	}
 	h := newTestHandlerWithIdentity(t, &fakeRead{}, w, "creator@example.com")
-	_, body := getStatusAndBody(t, h, "/ui/")
+	_, body := getStatusAndBody(t, h, "/")
 	if strings.Contains(body, "Get started") {
 		t.Errorf("expected no 'Get started' card for user with repo role")
 	}
@@ -911,7 +911,7 @@ func TestHandleSubmitReview_RedirectsOnSuccess(t *testing.T) {
 	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now()}}
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, newFakeAssembler("feat-x"))
 
-	code, _, _ := postForm(t, h, "/ui/r/acme/a/b/feat-x/review", url.Values{
+	code, _, _ := postForm(t, h, "/r/acme/a/b/feat-x/review", url.Values{
 		"status": {"approved"},
 		"body": {"looks good"},
 	})
@@ -924,7 +924,7 @@ func TestHandleSubmitReview_MissingStatus_RerendersPage(t *testing.T) {
 	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now()}}
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, newFakeAssembler("feat-x"))
 
-	code, body, _ := postForm(t, h, "/ui/r/acme/a/b/feat-x/review", url.Values{})
+	code, body, _ := postForm(t, h, "/r/acme/a/b/feat-x/review", url.Values{})
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", code)
 	}
@@ -937,7 +937,7 @@ func TestHandlePostComment_RedirectsOnSuccess(t *testing.T) {
 	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now()}}
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, newFakeAssembler("feat-x"))
 
-	code, _, _ := postForm(t, h, "/ui/r/acme/a/b/feat-x/comment", url.Values{
+	code, _, _ := postForm(t, h, "/r/acme/a/b/feat-x/comment", url.Values{
 		"path": {"docs/hello.md"},
 		"version_id": {"v-abc"},
 		"body": {"nice file"},
@@ -951,7 +951,7 @@ func TestHandlePostComment_MissingFields_RerendersPage(t *testing.T) {
 	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now()}}
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, newFakeAssembler("feat-x"))
 
-	code, body, _ := postForm(t, h, "/ui/r/acme/a/b/feat-x/comment", url.Values{
+	code, body, _ := postForm(t, h, "/r/acme/a/b/feat-x/comment", url.Values{
 		"path": {"docs/hello.md"},
 		// missing version_id and body
 	})
@@ -967,7 +967,7 @@ func TestHandleDeleteComment_RedirectsOnSuccess(t *testing.T) {
 	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now()}}
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, newFakeAssembler("feat-x"))
 
-	code, _, _ := postForm(t, h, "/ui/r/acme/a/b/feat-x/comment/cmt-1/delete", nil)
+	code, _, _ := postForm(t, h, "/r/acme/a/b/feat-x/comment/cmt-1/delete", nil)
 	if code != http.StatusSeeOther {
 		t.Fatalf("status = %d, want 303 (redirect)", code)
 	}
@@ -977,7 +977,7 @@ func TestHandleCreateProposalUI_RedirectsOnSuccess(t *testing.T) {
 	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now()}}
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, nil)
 
-	code, _, _ := postForm(t, h, "/ui/r/acme/a/proposals", url.Values{
+	code, _, _ := postForm(t, h, "/r/acme/a/proposals", url.Values{
 		"branch": {"feat-x"},
 		"base_branch": {"main"},
 		"title": {"My proposal"},
@@ -991,7 +991,7 @@ func TestHandleCreateProposalUI_MissingFields_RerendersPage(t *testing.T) {
 	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now()}}
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, nil)
 
-	code, body, _ := postForm(t, h, "/ui/r/acme/a/proposals", url.Values{
+	code, body, _ := postForm(t, h, "/r/acme/a/proposals", url.Values{
 		"branch": {"feat-x"},
 		// missing base_branch and title
 	})
@@ -1014,7 +1014,7 @@ func TestHandleEditProposal_RedirectsOnSuccess(t *testing.T) {
 	}
 	h := newTestHandler(t, &fakeRead{}, w, nil)
 
-	code, _, _ := postForm(t, h, "/ui/r/acme/a/proposals/p-1/edit", url.Values{
+	code, _, _ := postForm(t, h, "/r/acme/a/proposals/p-1/edit", url.Values{
 		"title": {"New title"},
 		"description": {"updated description"},
 	})
@@ -1034,7 +1034,7 @@ func TestHandleCloseProposalUI_RedirectsOnSuccess(t *testing.T) {
 	}
 	h := newTestHandler(t, &fakeRead{}, w, nil)
 
-	code, _, _ := postForm(t, h, "/ui/r/acme/a/proposals/p-1/close", nil)
+	code, _, _ := postForm(t, h, "/r/acme/a/proposals/p-1/close", nil)
 	if code != http.StatusSeeOther {
 		t.Fatalf("status = %d, want 303 (redirect)", code)
 	}
@@ -1044,7 +1044,7 @@ func TestHandleNewCommit_GET_RendersForm(t *testing.T) {
 	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now(), CreatedBy: "me"}}
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, nil)
 
-	code, body := getStatusAndBody(t, h, "/ui/r/acme/a/b/feat-x/commit")
+	code, body := getStatusAndBody(t, h, "/r/acme/a/b/feat-x/commit")
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", code, body)
 	}
@@ -1059,7 +1059,7 @@ func TestHandleNewCommit_POST_RedirectsOnSuccess(t *testing.T) {
 	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now()}}
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, nil)
 
-	code, _, loc := postForm(t, h, "/ui/r/acme/a/b/feat-x/commit", url.Values{
+	code, _, loc := postForm(t, h, "/r/acme/a/b/feat-x/commit", url.Values{
 		"message":      {"add a file"},
 		"file_path":    {"docs/hello.md"},
 		"file_content": {"hello world"},
@@ -1067,8 +1067,8 @@ func TestHandleNewCommit_POST_RedirectsOnSuccess(t *testing.T) {
 	if code != http.StatusSeeOther {
 		t.Fatalf("status = %d, want 303 (redirect)", code)
 	}
-	if loc != "/ui/r/acme/a/b/feat-x" {
-		t.Errorf("location = %q, want /ui/r/acme/a/b/feat-x", loc)
+	if loc != "/r/acme/a/b/feat-x" {
+		t.Errorf("location = %q, want /r/acme/a/b/feat-x", loc)
 	}
 }
 
@@ -1076,7 +1076,7 @@ func TestHandleNewCommit_POST_MissingMessage_RerendersForm(t *testing.T) {
 	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now()}}
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, nil)
 
-	code, body, _ := postForm(t, h, "/ui/r/acme/a/b/feat-x/commit", url.Values{
+	code, body, _ := postForm(t, h, "/r/acme/a/b/feat-x/commit", url.Values{
 		"file_path":    {"docs/hello.md"},
 		"file_content": {"content"},
 		// message omitted
@@ -1093,7 +1093,7 @@ func TestHandleNewCommit_POST_MissingFilePath_RerendersForm(t *testing.T) {
 	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now()}}
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, nil)
 
-	code, body, _ := postForm(t, h, "/ui/r/acme/a/b/feat-x/commit", url.Values{
+	code, body, _ := postForm(t, h, "/r/acme/a/b/feat-x/commit", url.Values{
 		"message":      {"add something"},
 		"file_content": {"content"},
 		// file_path omitted
@@ -1108,7 +1108,7 @@ func TestHandleNewCommit_POST_MissingFilePath_RerendersForm(t *testing.T) {
 
 func TestHandleNewCommit_UnknownRepo_Returns404(t *testing.T) {
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{miss: true}, nil)
-	code, _ := getStatusAndBody(t, h, "/ui/r/unknown/repo/b/feat-x/commit")
+	code, _ := getStatusAndBody(t, h, "/r/unknown/repo/b/feat-x/commit")
 	if code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", code)
 	}
@@ -1118,7 +1118,7 @@ func TestHandleRepoSettings_RendersPage(t *testing.T) {
 	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now(), CreatedBy: "me"}}
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, nil)
 
-	code, body := getStatusAndBody(t, h, "/ui/r/acme/a/settings")
+	code, body := getStatusAndBody(t, h, "/r/acme/a/settings")
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", code, body)
 	}
@@ -1131,7 +1131,7 @@ func TestHandleRepoSettings_RendersPage(t *testing.T) {
 
 func TestHandleRepoSettings_UnknownRepo_Returns404(t *testing.T) {
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{miss: true}, nil)
-	code, _ := getStatusAndBody(t, h, "/ui/r/unknown/repo/settings")
+	code, _ := getStatusAndBody(t, h, "/r/unknown/repo/settings")
 	if code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", code)
 	}
@@ -1141,15 +1141,15 @@ func TestHandleSetRole_RedirectsToSettings(t *testing.T) {
 	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now()}}
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, nil)
 
-	code, _, loc := postForm(t, h, "/ui/r/acme/a/roles", url.Values{
+	code, _, loc := postForm(t, h, "/r/acme/a/roles", url.Values{
 		"identity": {"alice@example.com"},
 		"role":     {"reader"},
 	})
 	if code != http.StatusSeeOther {
 		t.Fatalf("status = %d, want 303", code)
 	}
-	if loc != "/ui/r/acme/a/settings" {
-		t.Errorf("location = %q, want /ui/r/acme/a/settings", loc)
+	if loc != "/r/acme/a/settings" {
+		t.Errorf("location = %q, want /r/acme/a/settings", loc)
 	}
 }
 
@@ -1157,18 +1157,18 @@ func TestHandleDeleteRole_RedirectsToSettings(t *testing.T) {
 	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now()}}
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, nil)
 
-	code, _, loc := postForm(t, h, "/ui/r/acme/a/roles/alice@example.com/delete", nil)
+	code, _, loc := postForm(t, h, "/r/acme/a/roles/alice@example.com/delete", nil)
 	if code != http.StatusSeeOther {
 		t.Fatalf("status = %d, want 303", code)
 	}
-	if loc != "/ui/r/acme/a/settings" {
-		t.Errorf("location = %q, want /ui/r/acme/a/settings", loc)
+	if loc != "/r/acme/a/settings" {
+		t.Errorf("location = %q, want /r/acme/a/settings", loc)
 	}
 }
 
 func TestHandleUserProfile_RendersPage(t *testing.T) {
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{}, nil)
-	code, body := getStatusAndBody(t, h, "/ui/u/alice@example.com")
+	code, body := getStatusAndBody(t, h, "/u/alice@example.com")
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, want 200. body=%s", code, body)
 	}
@@ -1187,7 +1187,7 @@ func TestHandleBranches_NoRolesOrDangerZone(t *testing.T) {
 	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now(), CreatedBy: "me"}}
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, nil)
 
-	_, body := getStatusAndBody(t, h, "/ui/r/acme/a")
+	_, body := getStatusAndBody(t, h, "/r/acme/a")
 	if strings.Contains(body, "Danger zone") {
 		t.Errorf("branches page should not contain Danger zone section")
 	}
@@ -1206,7 +1206,7 @@ func TestBranchRoutingSlashes_BranchDetail(t *testing.T) {
 	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now(), CreatedBy: "me"}}
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, newFakeAssembler("feature/auth"))
 
-	code, body := getStatusAndBody(t, h, "/ui/r/acme/a/b/feature/auth")
+	code, body := getStatusAndBody(t, h, "/r/acme/a/b/feature/auth")
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", code, body)
 	}
@@ -1221,7 +1221,7 @@ func TestBranchRoutingSlashes_CommitLog(t *testing.T) {
 
 	// /b/feature/auth/log should route to the commit log for branch "feature/auth".
 	// fakeRead.GetBranch returns nil (branch not found) so we expect 404, not 405.
-	code, _ := getStatusAndBody(t, h, "/ui/r/acme/a/b/feature/auth/log")
+	code, _ := getStatusAndBody(t, h, "/r/acme/a/b/feature/auth/log")
 	// 404 means the handler ran and did not find the branch — correct routing.
 	if code == http.StatusMethodNotAllowed || code == http.StatusMovedPermanently {
 		t.Fatalf("routing failed: status = %d", code)
@@ -1232,7 +1232,7 @@ func TestBranchRoutingSlashes_ChecksPartial(t *testing.T) {
 	repos := []model.Repo{{Name: "acme/a", Owner: "acme"}}
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, newFakeAssembler("feature/auth"))
 
-	code, body := getStatusAndBody(t, h, "/ui/_/r/acme/a/b/feature/auth/checks")
+	code, body := getStatusAndBody(t, h, "/_/r/acme/a/b/feature/auth/checks")
 	if code != http.StatusOK {
 		t.Fatalf("status = %d", code)
 	}
@@ -1245,7 +1245,7 @@ func TestBranchRoutingSlashes_CommitForm(t *testing.T) {
 	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now(), CreatedBy: "me"}}
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, nil)
 
-	code, body := getStatusAndBody(t, h, "/ui/r/acme/a/b/feature/auth/commit")
+	code, body := getStatusAndBody(t, h, "/r/acme/a/b/feature/auth/commit")
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", code, body)
 	}
@@ -1259,7 +1259,7 @@ func TestBranchRoutingSlashes_PostReview(t *testing.T) {
 	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now()}}
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, newFakeAssembler("feature/auth"))
 
-	code, _, _ := postForm(t, h, "/ui/r/acme/a/b/feature/auth/review", url.Values{
+	code, _, _ := postForm(t, h, "/r/acme/a/b/feature/auth/review", url.Values{
 		"status": {"approved"},
 		"body":   {"looks good"},
 	})
@@ -1272,7 +1272,7 @@ func TestBranchRoutingSlashes_DeleteComment(t *testing.T) {
 	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedAt: time.Now()}}
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{repos: repos}, newFakeAssembler("feature/auth"))
 
-	code, _, _ := postForm(t, h, "/ui/r/acme/a/b/feature/auth/comment/cmt-1/delete", nil)
+	code, _, _ := postForm(t, h, "/r/acme/a/b/feature/auth/comment/cmt-1/delete", nil)
 	if code != http.StatusSeeOther {
 		t.Fatalf("status = %d, want 303 (redirect)", code)
 	}
@@ -1286,7 +1286,7 @@ func TestCSRFMiddleware_MissingTokenReturns403(t *testing.T) {
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{}, nil)
 
 	// POST without any cookie or form field — must be rejected.
-	req := httptest.NewRequest(http.MethodPost, "/ui/orgs/new", strings.NewReader("name=acme"))
+	req := httptest.NewRequest(http.MethodPost, "/orgs/new", strings.NewReader("name=acme"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -1300,7 +1300,7 @@ func TestCSRFMiddleware_MismatchedTokenReturns403(t *testing.T) {
 
 	// Cookie token differs from form field token.
 	body := url.Values{csrfFieldName: {"token-a"}, "name": {"acme"}}.Encode()
-	req := httptest.NewRequest(http.MethodPost, "/ui/orgs/new", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/orgs/new", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.AddCookie(&http.Cookie{Name: csrfCookieName, Value: "token-b"})
 	rec := httptest.NewRecorder()
@@ -1314,7 +1314,7 @@ func TestCSRFMiddleware_GETSetsTokenCookie(t *testing.T) {
 	h := newTestHandler(t, &fakeRead{}, &fakeWrite{}, nil)
 
 	// GET request should succeed and set the CSRF cookie.
-	code, _ := getStatusAndBody(t, h, "/ui/orgs/new")
+	code, _ := getStatusAndBody(t, h, "/orgs/new")
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", code)
 	}
@@ -1325,7 +1325,7 @@ func TestCSRFMiddleware_FormContainsCsrfField(t *testing.T) {
 
 	// GET the form page: the rendered HTML must contain the hidden CSRF field.
 	// Because the test handler goes through CSRF middleware, a token is set.
-	code, body := getStatusAndBody(t, h, "/ui/orgs/new")
+	code, body := getStatusAndBody(t, h, "/orgs/new")
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", code)
 	}

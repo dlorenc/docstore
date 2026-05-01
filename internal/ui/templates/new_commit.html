@@ -11,7 +11,7 @@
 {{end}}
 
 <div class="card">
-  <form method="POST" action="/ui/r/{{.Repo.Name}}/b/{{urlPathEscape .Branch}}/commit" style="padding:8px 4px 4px">
+  <form method="POST" action="/r/{{.Repo.Name}}/b/{{urlPathEscape .Branch}}/commit" style="padding:8px 4px 4px">
     {{csrfField}}
     <div style="margin-bottom:12px">
       <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.08em">Branch</label>
@@ -30,7 +30,7 @@
       <textarea name="file_content" rows="10" class="form-input" style="font-family:var(--font-mono,monospace)">{{.FormFileContent}}</textarea>
     </div>
     <button type="submit" class="btn">Commit</button>
-    <a href="/ui/r/{{.Repo.Name}}/b/{{urlPathEscape .Branch}}" style="margin-left:12px;font-size:12px">cancel</a>
+    <a href="/r/{{.Repo.Name}}/b/{{urlPathEscape .Branch}}" style="margin-left:12px;font-size:12px">cancel</a>
   </form>
 </div>
 {{end}}
