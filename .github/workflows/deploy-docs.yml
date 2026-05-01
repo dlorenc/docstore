@@ -1,0 +1,60 @@
+name: Deploy Docs
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - 'cmd/docs/**'
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: ko-build/setup-ko@v0.7
+      - name: Set up Python + MkDocs
+        run: pip install mkdocs-material
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/320310132788/locations/global/workloadIdentityPools/github-actions/providers/github
+          service_account: docstore-deployer@dlorenc-chainguard.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Configure ko registry
+        run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+      - name: Build docs site
+        run: |
+          mkdocs build
+          ln -s ../../../site cmd/docs/.kodata/site
+      - name: Build and push image
+        id: build
+        env:
+          KO_DOCKER_REPO: us-central1-docker.pkg.dev/dlorenc-chainguard/images/docs
+        run: |
+          IMAGE=$(ko build --bare --tags latest,$(git rev-parse --short HEAD) ./cmd/docs)
+          echo "image=$IMAGE" >> $GITHUB_OUTPUT
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy docs \
+            --image=${{ steps.build.outputs.image }} \
+            --project=dlorenc-chainguard \
+            --region=us-central1 \
+            --service-account=docstore-server@dlorenc-chainguard.iam.gserviceaccount.com \
+            --ingress=all \
+            --allow-unauthenticated \
+            --min-instances=1 \
+            --max-instances=3 \
+            --port=8080
+      - name: Create domain mapping (idempotent)
+        run: |
+          gcloud run domain-mappings create \
+            --service=docs \
+            --domain=docs.docstore.dev \
+            --region=us-central1 \
+            --project=dlorenc-chainguard \
+            2>/dev/null || echo 'domain mapping already exists'
