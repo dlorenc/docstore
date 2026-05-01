@@ -48,7 +48,7 @@ jobs:
             --service-account=docstore-server@dlorenc-chainguard.iam.gserviceaccount.com \
             --add-cloudsql-instances=dlorenc-chainguard:us-central1:docstore-mvp \
             --update-secrets=DATABASE_URL=docstore-db-url:latest,IAP_CLIENT_SECRET=iap-oauth-client-secret:latest,ARCHIVE_HMAC_SECRET=archive-hmac-secret:latest \
-            --set-env-vars=ARCHIVE_BASE_URL=https://api.docstore.dev,OIDC_JWKS_URL=https://oidc.docstore.dev/.well-known/jwks.json,OIDC_AUDIENCE=docstore,OIDC_ISSUER=https://oidc.docstore.dev \
+            --set-env-vars=ARCHIVE_BASE_URL=https://docstore-efuj4cj54a-uc.a.run.app,OIDC_JWKS_URL=https://oidc.docstore.dev/.well-known/jwks.json,OIDC_AUDIENCE=docstore,OIDC_ISSUER=https://oidc.docstore.dev \
             --ingress=internal-and-cloud-load-balancing \
             --min-instances=1 \
             --max-instances=1 \
