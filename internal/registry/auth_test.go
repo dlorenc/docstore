@@ -179,6 +179,8 @@ func TestImageNameFromPath(t *testing.T) {
 		{"/v2/", ""},
 		{"/v2", ""},
 		{"/other/path", ""},
+		{"/v2/_catalog", ""},
+		{"/v2/_catalog?n=100", ""},
 	}
 	for _, tc := range tests {
 		got := imageNameFromPath(tc.path)

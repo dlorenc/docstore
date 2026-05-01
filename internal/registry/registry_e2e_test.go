@@ -61,7 +61,7 @@ func TestE2ECacheRoundTrip(t *testing.T) {
 	defer jwksSrv.Close()
 
 	// Start in-memory registry.
-	regSrv := httptest.NewServer(New(NewMemoryHandler(), jwksSrv.URL, "ci-registry", "https://oidc.test"))
+	regSrv := httptest.NewServer(New(NewMemoryHandler(), nil, jwksSrv.URL, "ci-registry", "https://oidc.test"))
 	defer regSrv.Close()
 
 	// Determine the address buildkitd (possibly in a container) can reach.
@@ -184,7 +184,7 @@ func TestE2ECrossOrgRejected(t *testing.T) {
 	}))
 	defer jwksSrv.Close()
 
-	regSrv := httptest.NewServer(New(NewMemoryHandler(), jwksSrv.URL, "ci-registry", "https://oidc.test"))
+	regSrv := httptest.NewServer(New(NewMemoryHandler(), nil, jwksSrv.URL, "ci-registry", "https://oidc.test"))
 	defer regSrv.Close()
 
 	// Token for the wrong org.
