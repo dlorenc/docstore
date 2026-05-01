@@ -2,6 +2,7 @@ package registry
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 	digest "github.com/opencontainers/go-digest"
 	gcrregistry "github.com/google/go-containerregistry/pkg/registry"
 
@@ -27,11 +29,41 @@ import (
 // the provided JWKS endpoint, audience, and issuer.  The token's repo claim
 // is used to restrict access so that a token for org "acme" can only push/pull
 // images whose name starts with "acme/".
+// noStatBlobHandler wraps a BlobHandler and intentionally does NOT expose a
+// Stat method.  go-containerregistry type-asserts the blob handler to
+// gcrregistry.BlobStatHandler; if Stat is present and returns any error,
+// the registry responds 500 — including when the blob simply doesn't exist
+// in GCS.  By hiding Stat, go-containerregistry falls back to calling Get()
+// for HEAD requests, which returns errNotFound → proper 404 BLOB_UNKNOWN.
+//
+// We cannot use interface embedding here because embedding BlobHandler would
+// promote its Stat method, defeating the purpose.  Instead, each method is
+// explicitly delegated to the inner handler.
+type noStatBlobHandler struct {
+	inner BlobHandler
+}
+
+func (h *noStatBlobHandler) Get(ctx context.Context, repo string, hash v1.Hash) (io.ReadCloser, error) {
+	return h.inner.Get(ctx, repo, hash)
+}
+
+func (h *noStatBlobHandler) Put(ctx context.Context, repo string, hash v1.Hash, rc io.ReadCloser) error {
+	return h.inner.Put(ctx, repo, hash, rc)
+}
+
+func (h *noStatBlobHandler) Delete(ctx context.Context, repo string, hash v1.Hash) error {
+	return h.inner.Delete(ctx, repo, hash)
+}
+
+// Compile-time check: noStatBlobHandler satisfies gcrregistry.BlobHandler
+// (Get only) but does NOT satisfy gcrregistry.BlobStatHandler (no Stat).
+var _ gcrregistry.BlobHandler = (*noStatBlobHandler)(nil)
+
 func New(blobHandler BlobHandler, store ManifestStore, jwksURL, audience, issuer string) http.Handler {
 	validate := server.NewJobTokenValidator(jwksURL, audience, issuer)
 
 	inner := gcrregistry.New(
-		gcrregistry.WithBlobHandler(blobHandler),
+		gcrregistry.WithBlobHandler(&noStatBlobHandler{inner: blobHandler}),
 	)
 
 	var handler http.Handler = ociManifest404Middleware(inner)
