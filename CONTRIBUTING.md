@@ -148,6 +148,28 @@ For repo-scoped endpoints, add a case in the `handleReposPrefix` dispatcher in `
 
 Add handler tests to `internal/server/integration_test.go`. Use the `newTestServer` helper to spin up a test server with a real database via testcontainers.
 
+## Documentation
+
+Documentation source lives in `docs/` as Markdown files, rendered by MkDocs with the Material theme.
+
+**Local preview:**
+
+```bash
+pip install mkdocs-material
+mkdocs serve
+```
+
+The live site reloads on each save at `http://127.0.0.1:8000`.
+
+**Test the Go server locally:**
+
+```bash
+mkdocs build
+KO_DATA_PATH=cmd/docs/.kodata go run ./cmd/docs
+```
+
+This builds the static site into `site/` and serves it via the Go server at `http://localhost:8080`.
+
 ## Before submitting a PR
 
 Run the full test suite and verify the build:
