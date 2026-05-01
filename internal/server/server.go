@@ -302,6 +302,9 @@ func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore Wri
 	outer := http.NewServeMux()
 	outer.HandleFunc("GET /healthz", handleHealth)
 	outer.HandleFunc("GET /.well-known/ds-config", s.handleDSConfig)
+	outer.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/ui/", http.StatusFound)
+	})
 
 	// All other routes require IAP authentication.
 	inner := http.NewServeMux()

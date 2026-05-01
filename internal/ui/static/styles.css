@@ -65,6 +65,8 @@ nav.top .crumbs a:hover { color: var(--text); text-decoration: none; }
 nav.top .crumbs .sep { margin: 0 8px; color: var(--text-dim); opacity: 0.5; }
 nav.top .spacer { flex: 1; }
 nav.top .nav-identity { font-size: 11px; color: var(--text-dim); opacity: 0.7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
+nav.top .nav-docs { font-size: 11px; color: var(--text-dim); opacity: 0.7; white-space: nowrap; text-decoration: none; }
+nav.top .nav-docs:hover { opacity: 1; color: var(--text); text-decoration: none; }
 nav.top .theme-toggle {
   background: transparent;
   color: var(--text-dim);
