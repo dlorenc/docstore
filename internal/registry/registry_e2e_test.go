@@ -77,6 +77,16 @@ func TestE2ECacheRoundTrip(t *testing.T) {
 	}
 	defer bkClient.Close()
 
+	// Detect the buildkitd worker platform so that llb.Image resolves the
+	// correct manifest from Docker Hub. Without this, llb.Image uses the Go
+	// test binary's host platform (e.g. darwin/arm64 on macOS) which has no
+	// Alpine manifest entry and causes "no match for platform in manifest".
+	workers, err := bkClient.ListWorkers(ctx)
+	if err != nil || len(workers) == 0 || len(workers[0].Platforms) == 0 {
+		t.Fatalf("list buildkit workers: %v", err)
+	}
+	workerPlatform := workers[0].Platforms[0]
+
 	cacheRef := regHost + "/testorg/cache:buildkit"
 
 	// Write a temp docker config with the OIDC token as Basic auth password so
@@ -94,12 +104,17 @@ func TestE2ECacheRoundTrip(t *testing.T) {
 	authSession := authprovider.NewDockerAuthProvider(ap)
 
 	// --- First build: export cache ---
-	def, err := llb.Image("alpine").Run(llb.Shlex("echo cache-test")).Root().Marshal(ctx)
+	// Use the buildkitd worker's platform so Alpine resolves a matching manifest.
+	def, err := llb.Image("alpine", llb.Platform(workerPlatform)).Run(llb.Shlex("echo cache-test")).Root().Marshal(ctx)
 	if err != nil {
 		t.Fatalf("marshal llb: %v", err)
 	}
 
 	_, err = bkClient.Build(ctx, client.SolveOpt{
+		// FrontendAttrs must be non-nil: BuildKit v0.29.0 calls maps.Clone on
+		// it and then maps.Copy(clone, cacheOpt.frontendAttrs), which panics
+		// when the clone is nil and cacheOpt.frontendAttrs is non-empty.
+		FrontendAttrs: map[string]string{},
 		CacheExports: []client.CacheOptionsEntry{{
 			Type: "registry",
 			Attrs: map[string]string{
@@ -132,6 +147,7 @@ func TestE2ECacheRoundTrip(t *testing.T) {
 	}()
 
 	_, err = bkClient.Build(ctx, client.SolveOpt{
+		FrontendAttrs: map[string]string{}, // see note on first build above
 		CacheImports: []client.CacheOptionsEntry{{
 			Type: "registry",
 			Attrs: map[string]string{
@@ -221,43 +237,10 @@ func hostAccessibleAddr(srv *httptest.Server) string {
 		// Buildkitd is running on the host.
 		return addr
 	}
-	// Buildkitd is a container — use host.docker.internal or local LAN IP.
+	// Buildkitd is a container (testcontainers). Docker Desktop injects
+	// host.docker.internal into every container's /etc/hosts, routing to the
+	// host loopback. We do NOT rely on host-side DNS resolution because Docker
+	// Desktop only adds this name inside containers, not to the macOS host.
 	_, port, _ := net.SplitHostPort(addr)
-	if addrs, err := net.LookupHost("host.docker.internal"); err == nil && len(addrs) > 0 {
-		return "host.docker.internal:" + port
-	}
-	if ip := localIP(); ip != "" {
-		return ip + ":" + port
-	}
-	return addr
-}
-
-// localIP returns the first non-loopback IPv4 address.
-func localIP() string {
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		return ""
-	}
-	for _, iface := range ifaces {
-		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
-			continue
-		}
-		addrs, err := iface.Addrs()
-		if err != nil {
-			continue
-		}
-		for _, a := range addrs {
-			var ip net.IP
-			switch v := a.(type) {
-			case *net.IPNet:
-				ip = v.IP
-			case *net.IPAddr:
-				ip = v.IP
-			}
-			if ip != nil && ip.To4() != nil && !ip.IsLoopback() {
-				return ip.String()
-			}
-		}
-	}
-	return ""
+	return "host.docker.internal:" + port
 }

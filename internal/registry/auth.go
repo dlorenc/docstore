@@ -37,17 +37,18 @@ func authMiddleware(inner http.Handler, validate func(string) (*server.JobIdenti
 		}
 
 		if tokenStr == "" {
-			// Send a Bearer realm challenge. BuildKit uses Bearer challenges
-			// to trigger its session auth provider (which falls back to Basic
-			// credentials from the docker config when the realm is not a URL).
-			w.Header().Set("WWW-Authenticate", `Bearer realm="ci-registry"`)
+			// Send a Basic realm challenge. BuildKit reads Basic credentials
+			// from the docker config (username "ci-worker", password = OIDC
+			// token). Bearer challenges cause BuildKit to POST to the realm
+			// as a token URL, which fails when the realm is not an HTTP URL.
+			w.Header().Set("WWW-Authenticate", `Basic realm="ci-registry"`)
 			http.Error(w, "authentication required", http.StatusUnauthorized)
 			return
 		}
 
 		identity, err := validate(tokenStr)
 		if err != nil {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="ci-registry"`)
+			w.Header().Set("WWW-Authenticate", `Basic realm="ci-registry"`)
 			http.Error(w, "invalid token", http.StatusUnauthorized)
 			return
 		}
