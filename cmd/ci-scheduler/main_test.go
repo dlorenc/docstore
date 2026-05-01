@@ -18,6 +18,7 @@ import (
 
 	"github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/model"
+	"github.com/dlorenc/docstore/internal/store"
 )
 
 // ---------------------------------------------------------------------------
@@ -25,20 +26,22 @@ import (
 // ---------------------------------------------------------------------------
 
 type stubStore struct {
-	insertedJobs  []*model.CIJob
-	getJob        *model.CIJob
-	getErr        error
-	reapJobs      []model.CIJob
-	reapErr       error
-	queueDepth    int64
-	claimJob      *model.CIJob
-	claimErr      error
-	lookupJob     *model.CIJob
-	lookupErr     error
-	tokenStored   bool
-	storeTokenErr error
-	reposList     []model.Repo
-	reposErr      error
+	insertedJobs    []*model.CIJob
+	getJob          *model.CIJob
+	getErr          error
+	reapJobs        []model.CIJob
+	reapErr         error
+	queueDepth      int64
+	claimJob        *model.CIJob
+	claimErr        error
+	lookupJob       *model.CIJob
+	lookupErr       error
+	tokenStored     bool
+	storeTokenErr   error
+	reposList       []model.Repo
+	reposErr        error
+	proposalList    []*model.Proposal
+	proposalListErr error
 }
 
 func (s *stubStore) InsertCIJob(_ context.Context, repo, branch string, sequence int64, triggerType, triggerBranch, triggerBaseBranch, triggerProposalID string) (*model.CIJob, error) {
@@ -94,6 +97,46 @@ func (s *stubStore) CountQueuedCIJobs(_ context.Context) (int64, error) {
 
 func (s *stubStore) ListRepos(_ context.Context) ([]model.Repo, error) {
 	return s.reposList, s.reposErr
+}
+
+func (s *stubStore) ListProposals(_ context.Context, _ string, _ *model.ProposalState, _ *string) ([]*model.Proposal, error) {
+	return s.proposalList, s.proposalListErr
+}
+
+// ---------------------------------------------------------------------------
+// stubReader is an in-memory docStoreReader for unit tests.
+// ---------------------------------------------------------------------------
+
+type stubReader struct {
+	branchResult *store.BranchInfo
+	branchErr    error
+	fileResult   *store.FileContent
+	fileErr      error
+	// fileFn overrides fileResult/fileErr when non-nil, receiving repo, branch, path.
+	fileFn func(repo, branch, path string) (*store.FileContent, error)
+}
+
+func (r *stubReader) GetBranch(_ context.Context, _, _ string) (*store.BranchInfo, error) {
+	return r.branchResult, r.branchErr
+}
+
+func (r *stubReader) GetFile(_ context.Context, repo, branch, path string, _ *int64) (*store.FileContent, error) {
+	if r.fileFn != nil {
+		return r.fileFn(repo, branch, path)
+	}
+	return r.fileResult, r.fileErr
+}
+
+// newStubReader builds a stubReader for schedule tests. If ciYAML is empty,
+// GetFile returns nil (no ci.yaml). headSeq is the HeadSequence for GetBranch.
+func newStubReader(headSeq int64, ciYAML string) *stubReader {
+	r := &stubReader{
+		branchResult: &store.BranchInfo{Name: "main", HeadSequence: headSeq},
+	}
+	if ciYAML != "" {
+		r.fileResult = &store.FileContent{Content: []byte(ciYAML)}
+	}
+	return r
 }
 
 // ---------------------------------------------------------------------------
@@ -439,38 +482,11 @@ func TestHandleWebhook_SetsTrigerTypePush(t *testing.T) {
 // Tests: on: block branch filtering in webhook handler
 // ---------------------------------------------------------------------------
 
-// newCIConfigServer returns a test HTTP server that serves the given ci.yaml content.
-// It validates that the request path ends with /-/file/.docstore/ci.yaml and that
-// the branch and at query params are present and non-empty; returns 404 otherwise.
-func newCIConfigServer(t *testing.T, ciYAML string) *httptest.Server {
-	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.Contains(r.URL.Path, "/-/file/.docstore/ci.yaml") ||
-			r.URL.Query().Get("branch") == "" ||
-			r.URL.Query().Get("at") == "" {
-			http.NotFound(w, r)
-			return
-		}
-		type fileResp struct {
-			Path    string `json:"path"`
-			Content []byte `json:"content"`
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(fileResp{Path: ".docstore/ci.yaml", Content: []byte(ciYAML)}) //nolint:errcheck
-	}))
-}
-
 func TestHandleWebhook_OnPushBranchFilter_SkipsNonMatchingBranch(t *testing.T) {
 	ciYAML := "on:\n  push:\n    branches:\n      - main\n"
-	srv := newCIConfigServer(t, ciYAML)
-	defer srv.Close()
-
+	reader := &stubReader{fileResult: &store.FileContent{Content: []byte(ciYAML)}}
 	stub := &stubStore{}
-	sched := &scheduler{
-		store:       stub,
-		docstoreURL: srv.URL,
-		httpClient:  &http.Client{},
-	}
+	sched := &scheduler{store: stub, readStore: reader}
 
 	// Event for branch "feature/foo" — should be filtered out.
 	body := commitCreatedEvent("myrepo", "feature/foo", 5)
@@ -489,15 +505,9 @@ func TestHandleWebhook_OnPushBranchFilter_SkipsNonMatchingBranch(t *testing.T) {
 
 func TestHandleWebhook_OnPushBranchFilter_AllowsMatchingBranch(t *testing.T) {
 	ciYAML := "on:\n  push:\n    branches:\n      - main\n"
-	srv := newCIConfigServer(t, ciYAML)
-	defer srv.Close()
-
+	reader := &stubReader{fileResult: &store.FileContent{Content: []byte(ciYAML)}}
 	stub := &stubStore{}
-	sched := &scheduler{
-		store:       stub,
-		docstoreURL: srv.URL,
-		httpClient:  &http.Client{},
-	}
+	sched := &scheduler{store: stub, readStore: reader}
 
 	// Event for branch "main" — should pass through.
 	body := commitCreatedEvent("myrepo", "main", 6)
@@ -515,18 +525,10 @@ func TestHandleWebhook_OnPushBranchFilter_AllowsMatchingBranch(t *testing.T) {
 }
 
 func TestHandleWebhook_NoCIYAML_AlwaysEnqueues(t *testing.T) {
-	// Server returns 404 for all requests (no ci.yaml configured).
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.NotFound(w, r)
-	}))
-	defer srv.Close()
-
+	// readStore returns nil for GetFile (no ci.yaml configured).
+	reader := &stubReader{fileResult: nil}
 	stub := &stubStore{}
-	sched := &scheduler{
-		store:       stub,
-		docstoreURL: srv.URL,
-		httpClient:  &http.Client{},
-	}
+	sched := &scheduler{store: stub, readStore: reader}
 
 	body := commitCreatedEvent("myrepo", "feature/anything", 7)
 	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(body))
@@ -542,52 +544,14 @@ func TestHandleWebhook_NoCIYAML_AlwaysEnqueues(t *testing.T) {
 	}
 }
 
-// newDocstoreServer builds a test server that handles both the ci.yaml file
-// endpoint and the proposals endpoint. ciYAML may be empty for no config.
-// proposals is a list of JSON-encodable proposal objects returned for ?state=open.
-func newDocstoreServer(t *testing.T, ciYAML string, branches []map[string]any, proposals []map[string]any) *httptest.Server {
-	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case strings.Contains(r.URL.Path, "/-/file/.docstore/ci.yaml"):
-			if ciYAML == "" {
-				http.NotFound(w, r)
-				return
-			}
-			type fileResp struct {
-				Path    string `json:"path"`
-				Content []byte `json:"content"`
-			}
-			json.NewEncoder(w).Encode(fileResp{Path: ".docstore/ci.yaml", Content: []byte(ciYAML)}) //nolint:errcheck
-		case strings.Contains(r.URL.Path, "/-/branches"):
-			// Bare array — must match real server format. See TestBranchesEndpointContract.
-			json.NewEncoder(w).Encode(branches) //nolint:errcheck
-		case strings.Contains(r.URL.Path, "/-/proposals"):
-			json.NewEncoder(w).Encode(proposals) //nolint:errcheck
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-}
 
 // ---------------------------------------------------------------------------
 // Tests: proposal.opened event handling
 // ---------------------------------------------------------------------------
 
 func TestHandleWebhook_ProposalOpened_EnqueuesJob(t *testing.T) {
-	branches := []map[string]any{
-		{"name": "feature/foo", "head_sequence": int64(10)},
-	}
-	srv := newDocstoreServer(t, "", branches, nil)
-	defer srv.Close()
-
 	stub := &stubStore{}
-	sched := &scheduler{
-		store:       stub,
-		docstoreURL: srv.URL,
-		httpClient:  &http.Client{},
-	}
+	sched := &scheduler{store: stub}
 
 	body := proposalOpenedEvent("myrepo", "feature/foo", "main", "proposal-uuid-1")
 	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(body))
@@ -612,18 +576,9 @@ func TestHandleWebhook_ProposalOpened_EnqueuesJob(t *testing.T) {
 
 func TestHandleWebhook_ProposalOpened_FilteredByOnBlock(t *testing.T) {
 	ciYAML := "on:\n  proposal:\n    base_branches:\n      - release/*\n"
-	branches := []map[string]any{
-		{"name": "feature/foo", "head_sequence": int64(10)},
-	}
-	srv := newDocstoreServer(t, ciYAML, branches, nil)
-	defer srv.Close()
-
+	reader := &stubReader{fileResult: &store.FileContent{Content: []byte(ciYAML)}}
 	stub := &stubStore{}
-	sched := &scheduler{
-		store:       stub,
-		docstoreURL: srv.URL,
-		httpClient:  &http.Client{},
-	}
+	sched := &scheduler{store: stub, readStore: reader}
 
 	// base_branch is "main" — does not match "release/*", so should be filtered.
 	body := proposalOpenedEvent("myrepo", "feature/foo", "main", "proposal-uuid-2")
@@ -663,21 +618,12 @@ func TestHandleWebhook_ProposalOpened_MissingRepo_Returns400(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleWebhook_CommitCreated_WithOpenProposal_EnqueuesBothJobs(t *testing.T) {
-	proposals := []map[string]any{
-		{"id": "prop-1", "repo": "myrepo", "branch": "feature/foo", "base_branch": "main", "state": "open"},
+	stub := &stubStore{
+		proposalList: []*model.Proposal{
+			{ID: "prop-1", Repo: "myrepo", Branch: "feature/foo", BaseBranch: "main", State: model.ProposalOpen},
+		},
 	}
-	branches := []map[string]any{
-		{"name": "feature/foo", "head_sequence": int64(5)},
-	}
-	srv := newDocstoreServer(t, "", branches, proposals)
-	defer srv.Close()
-
-	stub := &stubStore{}
-	sched := &scheduler{
-		store:       stub,
-		docstoreURL: srv.URL,
-		httpClient:  &http.Client{},
-	}
+	sched := &scheduler{store: stub}
 
 	body := commitCreatedEvent("myrepo", "feature/foo", 5)
 	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(body))
@@ -704,16 +650,8 @@ func TestHandleWebhook_CommitCreated_WithOpenProposal_EnqueuesBothJobs(t *testin
 }
 
 func TestHandleWebhook_CommitCreated_NoOpenProposal_EnqueuesOnlyPush(t *testing.T) {
-	// Proposals endpoint returns empty array.
-	srv := newDocstoreServer(t, "", nil, []map[string]any{})
-	defer srv.Close()
-
-	stub := &stubStore{}
-	sched := &scheduler{
-		store:       stub,
-		docstoreURL: srv.URL,
-		httpClient:  &http.Client{},
-	}
+	stub := &stubStore{} // proposalList nil → ListProposals returns nil, nil
+	sched := &scheduler{store: stub}
 
 	body := commitCreatedEvent("myrepo", "feature/foo", 5)
 	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(body))
@@ -786,69 +724,24 @@ func (s *countingStore) ListRepos(_ context.Context) ([]model.Repo, error) {
 	return nil, nil
 }
 
+func (s *countingStore) ListProposals(_ context.Context, _ string, _ *model.ProposalState, _ *string) ([]*model.Proposal, error) {
+	return nil, nil
+}
+
 func (s *countingStore) calls() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.reapCalls
 }
 
-// ---------------------------------------------------------------------------
-// newScheduleDocstoreServer creates a test docstore server for schedule tests.
-// It handles:
-//   - GET /repos/{repo}/-/branches                   → [{"name":"main",...}]
-//   - GET /repos/{repo}/-/file/.docstore/ci.yaml     → FileResponse (or 404 if ciYAML == "")
-//
-// Repos are no longer fetched via HTTP; callers must set stubStore.reposList instead.
-// ---------------------------------------------------------------------------
-
-func newScheduleDocstoreServer(t *testing.T, headSeq int64, ciYAML string) *httptest.Server {
-	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case strings.Contains(r.URL.Path, "/-/file/.docstore/ci.yaml"):
-			if ciYAML == "" {
-				http.NotFound(w, r)
-				return
-			}
-			type fileResp struct {
-				Path    string `json:"path"`
-				Content []byte `json:"content"`
-			}
-			json.NewEncoder(w).Encode(fileResp{Path: ".docstore/ci.yaml", Content: []byte(ciYAML)}) //nolint:errcheck
-		case strings.Contains(r.URL.Path, "/-/branches"):
-			// Bare array — must match real server format. See TestBranchesEndpointContract.
-			json.NewEncoder(w).Encode([]map[string]any{ //nolint:errcheck
-				{"name": "main", "head_sequence": headSeq},
-			})
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-}
 
 // ---------------------------------------------------------------------------
-// Tests: fetchBranchHead
+// Tests: fetchBranchHead (DB-backed)
 // ---------------------------------------------------------------------------
 
 func TestFetchBranchHead_HappyPath(t *testing.T) {
-	// NOTE: this mock returns a bare JSON array — NOT a wrapped struct like
-	// {"branches":[...]}. The format must match the real server handler in
-	// internal/server/handlers.go (handleBranches). TestBranchesEndpointContract
-	// in contract_test.go enforces this cross-package contract automatically.
-	// Regression: a previous commit decoded model.BranchesResponse here while
-	// the server was returning a bare array; both sides were wrong in sync so
-	// CI stayed green for months before the mismatch was discovered.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode([]map[string]any{ //nolint:errcheck
-			{"name": "feat", "head_sequence": int64(5)},
-			{"name": "main", "head_sequence": int64(99)},
-		})
-	}))
-	defer srv.Close()
-
-	sched := &scheduler{docstoreURL: srv.URL, httpClient: &http.Client{}}
+	reader := &stubReader{branchResult: &store.BranchInfo{Name: "main", HeadSequence: 99}}
+	sched := &scheduler{readStore: reader}
 	seq, err := sched.fetchBranchHead(context.Background(), "org/repo", "main")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -859,15 +752,8 @@ func TestFetchBranchHead_HappyPath(t *testing.T) {
 }
 
 func TestFetchBranchHead_BranchNotFound(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode([]map[string]any{ //nolint:errcheck
-			{"name": "other", "head_sequence": int64(1)},
-		})
-	}))
-	defer srv.Close()
-
-	sched := &scheduler{docstoreURL: srv.URL, httpClient: &http.Client{}}
+	reader := &stubReader{branchResult: nil} // nil means branch does not exist
+	sched := &scheduler{readStore: reader}
 	_, err := sched.fetchBranchHead(context.Background(), "org/repo", "main")
 	if err == nil {
 		t.Fatal("expected error for missing branch, got nil")
@@ -877,24 +763,121 @@ func TestFetchBranchHead_BranchNotFound(t *testing.T) {
 	}
 }
 
-func TestFetchBranchHead_NonOKStatus(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-	}))
-	defer srv.Close()
-
-	sched := &scheduler{docstoreURL: srv.URL, httpClient: &http.Client{}}
+func TestFetchBranchHead_StoreError(t *testing.T) {
+	reader := &stubReader{branchErr: errors.New("db unavailable")}
+	sched := &scheduler{readStore: reader}
 	_, err := sched.fetchBranchHead(context.Background(), "org/repo", "main")
 	if err == nil {
-		t.Fatal("expected error for non-200 status, got nil")
+		t.Fatal("expected error from store, got nil")
 	}
 }
 
-func TestFetchBranchHead_NoDocstoreURL(t *testing.T) {
-	sched := &scheduler{docstoreURL: "", httpClient: &http.Client{}}
+func TestFetchBranchHead_NilReadStore(t *testing.T) {
+	sched := &scheduler{readStore: nil}
 	_, err := sched.fetchBranchHead(context.Background(), "org/repo", "main")
 	if err == nil {
-		t.Fatal("expected error when docstore URL is empty, got nil")
+		t.Fatal("expected error when read store is nil, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests: fetchCIConfig (DB-backed)
+// ---------------------------------------------------------------------------
+
+func TestFetchCIConfig_HappyPath(t *testing.T) {
+	ciYAML := "on:\n  push:\n    branches:\n      - main\n"
+	reader := &stubReader{fileResult: &store.FileContent{Content: []byte(ciYAML)}}
+	stub := &stubStore{}
+	sched := &scheduler{store: stub, readStore: reader}
+	cfg, err := sched.fetchCIConfig(context.Background(), "org/repo", "main", 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg == nil {
+		t.Fatal("expected non-nil config")
+	}
+	if cfg.On == nil || cfg.On.Push == nil {
+		t.Fatal("expected on.push to be set")
+	}
+}
+
+func TestFetchCIConfig_NotFound(t *testing.T) {
+	reader := &stubReader{fileResult: nil} // nil = no ci.yaml
+	stub := &stubStore{}
+	sched := &scheduler{store: stub, readStore: reader}
+	cfg, err := sched.fetchCIConfig(context.Background(), "org/repo", "main", 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg != nil {
+		t.Fatal("expected nil config when no ci.yaml")
+	}
+}
+
+func TestFetchCIConfig_NilReadStore(t *testing.T) {
+	stub := &stubStore{}
+	sched := &scheduler{store: stub, readStore: nil}
+	cfg, err := sched.fetchCIConfig(context.Background(), "org/repo", "main", 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg != nil {
+		t.Fatal("expected nil config when read store is nil")
+	}
+}
+
+func TestFetchCIConfig_StoreError(t *testing.T) {
+	reader := &stubReader{fileErr: errors.New("db unavailable")}
+	stub := &stubStore{}
+	sched := &scheduler{store: stub, readStore: reader}
+	_, err := sched.fetchCIConfig(context.Background(), "org/repo", "main", 1)
+	if err == nil {
+		t.Fatal("expected error from store, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests: fetchOpenProposalForBranch (DB-backed)
+// ---------------------------------------------------------------------------
+
+func TestFetchOpenProposalForBranch_HappyPath(t *testing.T) {
+	openState := model.ProposalOpen
+	stub := &stubStore{
+		proposalList: []*model.Proposal{
+			{ID: "p1", Branch: "feat", BaseBranch: "main", State: openState},
+		},
+	}
+	sched := &scheduler{store: stub}
+	p, err := sched.fetchOpenProposalForBranch(context.Background(), "org/repo", "feat")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p == nil {
+		t.Fatal("expected non-nil proposal")
+	}
+	if p.ID != "p1" {
+		t.Errorf("proposal ID = %q, want p1", p.ID)
+	}
+}
+
+func TestFetchOpenProposalForBranch_NoProposal(t *testing.T) {
+	stub := &stubStore{} // proposalList nil → returns nil, nil
+	sched := &scheduler{store: stub}
+	p, err := sched.fetchOpenProposalForBranch(context.Background(), "org/repo", "feat")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p != nil {
+		t.Fatalf("expected nil proposal, got %+v", p)
+	}
+}
+
+func TestFetchOpenProposalForBranch_StoreError(t *testing.T) {
+	stub := &stubStore{proposalListErr: errors.New("db error")}
+	sched := &scheduler{store: stub}
+	_, err := sched.fetchOpenProposalForBranch(context.Background(), "org/repo", "feat")
+	if err == nil {
+		t.Fatal("expected error from store, got nil")
 	}
 }
 
@@ -954,11 +937,8 @@ func TestRunScheduledJobs_CronMatchesCurrentMinute_EnqueuesJob(t *testing.T) {
 	now := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
 	ciYAML := "on:\n  schedule:\n    - cron: \"30 14 * * *\"\n"
 
-	srv := newScheduleDocstoreServer(t, 10, ciYAML)
-	defer srv.Close()
-
 	stub := &stubStore{reposList: []model.Repo{{Name: "org/repo"}}}
-	sched := &scheduler{store: stub, docstoreURL: srv.URL, httpClient: &http.Client{}}
+	sched := &scheduler{store: stub, readStore: newStubReader(10, ciYAML)}
 
 	sched.runScheduledJobs(context.Background(), now)
 
@@ -987,11 +967,8 @@ func TestRunScheduledJobs_CronDoesNotMatchCurrentMinute_NoJob(t *testing.T) {
 	now := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
 	ciYAML := "on:\n  schedule:\n    - cron: \"0 0 * * *\"\n"
 
-	srv := newScheduleDocstoreServer(t, 10, ciYAML)
-	defer srv.Close()
-
 	stub := &stubStore{reposList: []model.Repo{{Name: "org/repo"}}}
-	sched := &scheduler{store: stub, docstoreURL: srv.URL, httpClient: &http.Client{}}
+	sched := &scheduler{store: stub, readStore: newStubReader(10, ciYAML)}
 
 	sched.runScheduledJobs(context.Background(), now)
 
@@ -1007,11 +984,8 @@ func TestRunScheduledJobs_InvalidCronExpression_NoJob(t *testing.T) {
 	now := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
 	ciYAML := "on:\n  schedule:\n    - cron: \"not-a-cron\"\n"
 
-	srv := newScheduleDocstoreServer(t, 10, ciYAML)
-	defer srv.Close()
-
 	stub := &stubStore{reposList: []model.Repo{{Name: "org/repo"}}}
-	sched := &scheduler{store: stub, docstoreURL: srv.URL, httpClient: &http.Client{}}
+	sched := &scheduler{store: stub, readStore: newStubReader(10, ciYAML)}
 
 	sched.runScheduledJobs(context.Background(), now)
 
@@ -1024,12 +998,9 @@ func TestRunScheduledJobs_InvalidCronExpression_NoJob(t *testing.T) {
 // are skipped — no schedule job is enqueued.
 func TestRunScheduledJobs_NoCIConfig_NoJob(t *testing.T) {
 	now := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
-	// Pass empty ciYAML so the server returns 404 for ci.yaml requests.
-	srv := newScheduleDocstoreServer(t, 10, "")
-	defer srv.Close()
 
 	stub := &stubStore{reposList: []model.Repo{{Name: "org/repo"}}}
-	sched := &scheduler{store: stub, docstoreURL: srv.URL, httpClient: &http.Client{}}
+	sched := &scheduler{store: stub, readStore: newStubReader(10, "")} // empty ciYAML → nil file
 
 	sched.runScheduledJobs(context.Background(), now)
 
@@ -1044,11 +1015,8 @@ func TestRunScheduledJobs_NoScheduleEntries_NoJob(t *testing.T) {
 	now := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
 	ciYAML := "on:\n  push:\n    branches:\n      - main\n"
 
-	srv := newScheduleDocstoreServer(t, 10, ciYAML)
-	defer srv.Close()
-
 	stub := &stubStore{reposList: []model.Repo{{Name: "org/repo"}}}
-	sched := &scheduler{store: stub, docstoreURL: srv.URL, httpClient: &http.Client{}}
+	sched := &scheduler{store: stub, readStore: newStubReader(10, ciYAML)}
 
 	sched.runScheduledJobs(context.Background(), now)
 
@@ -1064,30 +1032,18 @@ func TestRunScheduledJobs_MultipleRepos_OnlyMatchingEnqueues(t *testing.T) {
 	// 2024-01-15 14:30:00 UTC — "30 14 * * *" matches, "0 0 * * *" does not.
 	now := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case strings.Contains(r.URL.Path, "/-/file/.docstore/ci.yaml"):
+	reader := &stubReader{
+		branchResult: &store.BranchInfo{Name: "main", HeadSequence: 1},
+		fileFn: func(repo, _, _ string) (*store.FileContent, error) {
 			var ciYAML string
-			if strings.Contains(r.URL.Path, "org/matching") {
+			if repo == "org/matching" {
 				ciYAML = "on:\n  schedule:\n    - cron: \"30 14 * * *\"\n"
 			} else {
 				ciYAML = "on:\n  schedule:\n    - cron: \"0 0 * * *\"\n"
 			}
-			type fileResp struct {
-				Path    string `json:"path"`
-				Content []byte `json:"content"`
-			}
-			json.NewEncoder(w).Encode(fileResp{Path: ".docstore/ci.yaml", Content: []byte(ciYAML)}) //nolint:errcheck
-		case strings.Contains(r.URL.Path, "/-/branches"):
-			json.NewEncoder(w).Encode([]map[string]any{ //nolint:errcheck
-				{"name": "main", "head_sequence": int64(1)},
-			})
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
+			return &store.FileContent{Content: []byte(ciYAML)}, nil
+		},
+	}
 
 	stub := &stubStore{
 		reposList: []model.Repo{
@@ -1095,7 +1051,7 @@ func TestRunScheduledJobs_MultipleRepos_OnlyMatchingEnqueues(t *testing.T) {
 			{Name: "org/nomatch"},
 		},
 	}
-	sched := &scheduler{store: stub, docstoreURL: srv.URL, httpClient: &http.Client{}}
+	sched := &scheduler{store: stub, readStore: reader}
 
 	sched.runScheduledJobs(context.Background(), now)
 
@@ -1189,7 +1145,7 @@ func TestStartReaper_StopsOnContextCancellation(t *testing.T) {
 func TestStartCronRunner_StopsOnContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	stub := &stubStore{}
-	sched := &scheduler{store: stub, docstoreURL: "", httpClient: &http.Client{}}
+	sched := &scheduler{store: stub}
 
 	startCronRunner(ctx, sched)
 	// Cancel before the 1-minute ticker ever fires — goroutine should drain ctx.Done().
