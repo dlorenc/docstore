@@ -62,7 +62,7 @@ spec:
         - name: OIDC_TOKEN_URL
           value: ''  # set at deploy time by workflow via kubectl set env
         - name: CACHE_REGISTRY_URL
-          value: ''  # set at deploy time; empty = cache disabled
+          value: 'ci-registry.docstore-ci.svc.cluster.local'
         ports:
         - containerPort: 8080
         resources:
