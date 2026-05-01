@@ -37,6 +37,8 @@ type stubStore struct {
 	lookupErr     error
 	tokenStored   bool
 	storeTokenErr error
+	reposList     []model.Repo
+	reposErr      error
 }
 
 func (s *stubStore) InsertCIJob(_ context.Context, repo, branch string, sequence int64, triggerType, triggerBranch, triggerBaseBranch, triggerProposalID string) (*model.CIJob, error) {
@@ -88,6 +90,10 @@ func (s *stubStore) ReapStaleCIJobs(_ context.Context) ([]model.CIJob, error) {
 
 func (s *stubStore) CountQueuedCIJobs(_ context.Context) (int64, error) {
 	return s.queueDepth, nil
+}
+
+func (s *stubStore) ListRepos(_ context.Context) ([]model.Repo, error) {
+	return s.reposList, s.reposErr
 }
 
 // ---------------------------------------------------------------------------
@@ -776,6 +782,10 @@ func (s *countingStore) CountQueuedCIJobs(_ context.Context) (int64, error) {
 	return 0, nil
 }
 
+func (s *countingStore) ListRepos(_ context.Context) ([]model.Repo, error) {
+	return nil, nil
+}
+
 func (s *countingStore) calls() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -785,22 +795,17 @@ func (s *countingStore) calls() int {
 // ---------------------------------------------------------------------------
 // newScheduleDocstoreServer creates a test docstore server for schedule tests.
 // It handles:
-//   - GET /repos                                     → {"repos":[...]}
-//   - GET /repos/{repo}/-/branches                   → {"branches":[{"name":"main",...}]}
+//   - GET /repos/{repo}/-/branches                   → [{"name":"main",...}]
 //   - GET /repos/{repo}/-/file/.docstore/ci.yaml     → FileResponse (or 404 if ciYAML == "")
+//
+// Repos are no longer fetched via HTTP; callers must set stubStore.reposList instead.
 // ---------------------------------------------------------------------------
 
-func newScheduleDocstoreServer(t *testing.T, repoNames []string, headSeq int64, ciYAML string) *httptest.Server {
+func newScheduleDocstoreServer(t *testing.T, headSeq int64, ciYAML string) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case r.URL.Path == "/repos":
-			repos := make([]map[string]any, 0, len(repoNames))
-			for _, name := range repoNames {
-				repos = append(repos, map[string]any{"name": name})
-			}
-			json.NewEncoder(w).Encode(map[string]any{"repos": repos}) //nolint:errcheck
 		case strings.Contains(r.URL.Path, "/-/file/.docstore/ci.yaml"):
 			if ciYAML == "" {
 				http.NotFound(w, r)
@@ -898,18 +903,13 @@ func TestFetchBranchHead_NoDocstoreURL(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFetchAllRepos_HappyPath(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
-			"repos": []map[string]any{
-				{"name": "org/alpha"},
-				{"name": "org/beta"},
-			},
-		})
-	}))
-	defer srv.Close()
-
-	sched := &scheduler{docstoreURL: srv.URL, httpClient: &http.Client{}}
+	stub := &stubStore{
+		reposList: []model.Repo{
+			{Name: "org/alpha"},
+			{Name: "org/beta"},
+		},
+	}
+	sched := &scheduler{store: stub}
 	repos, err := sched.fetchAllRepos(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -922,27 +922,24 @@ func TestFetchAllRepos_HappyPath(t *testing.T) {
 	}
 }
 
-func TestFetchAllRepos_NonOKStatus(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "forbidden", http.StatusForbidden)
-	}))
-	defer srv.Close()
-
-	sched := &scheduler{docstoreURL: srv.URL, httpClient: &http.Client{}}
+func TestFetchAllRepos_StoreError(t *testing.T) {
+	stub := &stubStore{reposErr: errors.New("db unavailable")}
+	sched := &scheduler{store: stub}
 	_, err := sched.fetchAllRepos(context.Background())
 	if err == nil {
-		t.Fatal("expected error for non-200 status, got nil")
+		t.Fatal("expected error from store, got nil")
 	}
 }
 
-func TestFetchAllRepos_NoDocstoreURL(t *testing.T) {
-	sched := &scheduler{docstoreURL: "", httpClient: &http.Client{}}
+func TestFetchAllRepos_EmptyStore(t *testing.T) {
+	stub := &stubStore{}
+	sched := &scheduler{store: stub}
 	repos, err := sched.fetchAllRepos(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if repos != nil {
-		t.Errorf("expected nil repos for empty docstore URL, got %v", repos)
+	if len(repos) != 0 {
+		t.Errorf("expected empty repos, got %v", repos)
 	}
 }
 
@@ -957,10 +954,10 @@ func TestRunScheduledJobs_CronMatchesCurrentMinute_EnqueuesJob(t *testing.T) {
 	now := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
 	ciYAML := "on:\n  schedule:\n    - cron: \"30 14 * * *\"\n"
 
-	srv := newScheduleDocstoreServer(t, []string{"org/repo"}, 10, ciYAML)
+	srv := newScheduleDocstoreServer(t, 10, ciYAML)
 	defer srv.Close()
 
-	stub := &stubStore{}
+	stub := &stubStore{reposList: []model.Repo{{Name: "org/repo"}}}
 	sched := &scheduler{store: stub, docstoreURL: srv.URL, httpClient: &http.Client{}}
 
 	sched.runScheduledJobs(context.Background(), now)
@@ -990,10 +987,10 @@ func TestRunScheduledJobs_CronDoesNotMatchCurrentMinute_NoJob(t *testing.T) {
 	now := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
 	ciYAML := "on:\n  schedule:\n    - cron: \"0 0 * * *\"\n"
 
-	srv := newScheduleDocstoreServer(t, []string{"org/repo"}, 10, ciYAML)
+	srv := newScheduleDocstoreServer(t, 10, ciYAML)
 	defer srv.Close()
 
-	stub := &stubStore{}
+	stub := &stubStore{reposList: []model.Repo{{Name: "org/repo"}}}
 	sched := &scheduler{store: stub, docstoreURL: srv.URL, httpClient: &http.Client{}}
 
 	sched.runScheduledJobs(context.Background(), now)
@@ -1010,10 +1007,10 @@ func TestRunScheduledJobs_InvalidCronExpression_NoJob(t *testing.T) {
 	now := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
 	ciYAML := "on:\n  schedule:\n    - cron: \"not-a-cron\"\n"
 
-	srv := newScheduleDocstoreServer(t, []string{"org/repo"}, 10, ciYAML)
+	srv := newScheduleDocstoreServer(t, 10, ciYAML)
 	defer srv.Close()
 
-	stub := &stubStore{}
+	stub := &stubStore{reposList: []model.Repo{{Name: "org/repo"}}}
 	sched := &scheduler{store: stub, docstoreURL: srv.URL, httpClient: &http.Client{}}
 
 	sched.runScheduledJobs(context.Background(), now)
@@ -1028,10 +1025,10 @@ func TestRunScheduledJobs_InvalidCronExpression_NoJob(t *testing.T) {
 func TestRunScheduledJobs_NoCIConfig_NoJob(t *testing.T) {
 	now := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
 	// Pass empty ciYAML so the server returns 404 for ci.yaml requests.
-	srv := newScheduleDocstoreServer(t, []string{"org/repo"}, 10, "")
+	srv := newScheduleDocstoreServer(t, 10, "")
 	defer srv.Close()
 
-	stub := &stubStore{}
+	stub := &stubStore{reposList: []model.Repo{{Name: "org/repo"}}}
 	sched := &scheduler{store: stub, docstoreURL: srv.URL, httpClient: &http.Client{}}
 
 	sched.runScheduledJobs(context.Background(), now)
@@ -1047,10 +1044,10 @@ func TestRunScheduledJobs_NoScheduleEntries_NoJob(t *testing.T) {
 	now := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
 	ciYAML := "on:\n  push:\n    branches:\n      - main\n"
 
-	srv := newScheduleDocstoreServer(t, []string{"org/repo"}, 10, ciYAML)
+	srv := newScheduleDocstoreServer(t, 10, ciYAML)
 	defer srv.Close()
 
-	stub := &stubStore{}
+	stub := &stubStore{reposList: []model.Repo{{Name: "org/repo"}}}
 	sched := &scheduler{store: stub, docstoreURL: srv.URL, httpClient: &http.Client{}}
 
 	sched.runScheduledJobs(context.Background(), now)
@@ -1070,13 +1067,6 @@ func TestRunScheduledJobs_MultipleRepos_OnlyMatchingEnqueues(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case r.URL.Path == "/repos":
-			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
-				"repos": []map[string]any{
-					{"name": "org/matching"},
-					{"name": "org/nomatch"},
-				},
-			})
 		case strings.Contains(r.URL.Path, "/-/file/.docstore/ci.yaml"):
 			var ciYAML string
 			if strings.Contains(r.URL.Path, "org/matching") {
@@ -1099,7 +1089,12 @@ func TestRunScheduledJobs_MultipleRepos_OnlyMatchingEnqueues(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	stub := &stubStore{}
+	stub := &stubStore{
+		reposList: []model.Repo{
+			{Name: "org/matching"},
+			{Name: "org/nomatch"},
+		},
+	}
 	sched := &scheduler{store: stub, docstoreURL: srv.URL, httpClient: &http.Client{}}
 
 	sched.runScheduledJobs(context.Background(), now)

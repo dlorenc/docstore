@@ -56,6 +56,7 @@ type ciJobStore interface {
 	CompleteCIJob(ctx context.Context, id, status string, logURL, errorMessage *string) error
 	ReapStaleCIJobs(ctx context.Context) ([]model.CIJob, error)
 	CountQueuedCIJobs(ctx context.Context) (int64, error)
+	ListRepos(ctx context.Context) ([]model.Repo, error)
 }
 
 // ---------------------------------------------------------------------------
@@ -665,30 +666,14 @@ func (s *scheduler) fetchBranchHead(ctx context.Context, repo, branch string) (i
 	return 0, fmt.Errorf("branch %q not found in repo %q", branch, repo)
 }
 
-// fetchAllRepos fetches all repo names from docstore (GET /repos).
+// fetchAllRepos returns all repo names from the database.
 func (s *scheduler) fetchAllRepos(ctx context.Context) ([]string, error) {
-	if s.docstoreURL == "" {
-		return nil, nil
-	}
-	reposURL := s.docstoreURL + "/repos"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reposURL, nil)
+	repos, err := s.store.ListRepos(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("build repos request: %w", err)
+		return nil, fmt.Errorf("list repos: %w", err)
 	}
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("fetch repos: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetch repos: unexpected status %d", resp.StatusCode)
-	}
-	var result model.ReposResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decode repos response: %w", err)
-	}
-	names := make([]string, 0, len(result.Repos))
-	for _, r := range result.Repos {
+	names := make([]string, 0, len(repos))
+	for _, r := range repos {
 		names = append(names, r.Name)
 	}
 	return names, nil
