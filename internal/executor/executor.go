@@ -21,6 +21,7 @@ import (
 	gwclient "github.com/moby/buildkit/frontend/gateway/client"
 	"github.com/moby/buildkit/session"
 	"github.com/moby/buildkit/session/auth/authprovider"
+	"github.com/moby/buildkit/session/secrets/secretsprovider"
 	digest "github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 
@@ -47,6 +48,16 @@ type Config struct {
 	// the format "sha256:<hex>". When non-empty, passed to llb.HTTP so BuildKit
 	// verifies the downloaded archive before use. Not parsed from ci.yaml.
 	ArchiveChecksum string `json:"-" yaml:"-"`
+
+	// OIDCRequestToken and OIDCRequestURL are the per-job OIDC credentials.
+	// When set, they are exposed to check steps via BuildKit secret mounts at
+	// /run/secrets/docstore_oidc_request_token and
+	// /run/secrets/docstore_oidc_request_url respectively.
+	// Secrets are NOT part of the BuildKit cache key, so using secret mounts
+	// avoids busting the cache on every run (unlike env var injection).
+	// Not parsed from ci.yaml; populated by the CI worker at runtime.
+	OIDCRequestToken string `json:"-" yaml:"-"`
+	OIDCRequestURL   string `json:"-" yaml:"-"`
 }
 
 // Check is a single CI check configuration.
@@ -85,12 +96,9 @@ func New(buildkitAddr string) (*Executor, error) {
 //   - a local filesystem path — BuildKit uploads it via llb.Local (used by ds ci run)
 //   - "" — uses an empty scratch state (useful in tests that do not read source files)
 //
-// extraEnv is an optional list of additional KEY=VALUE environment variables to
-// inject into every check step (e.g. DOCSTORE_OIDC_REQUEST_TOKEN=...).
-//
 // Checks whose if: condition evaluates to false are skipped (omitted from results).
 // It returns once all checks have resolved.
-func (e *Executor) Run(ctx context.Context, source string, cfg Config, triggerCtx ciconfig.TriggerContext, extraEnv []string) ([]CheckResult, error) {
+func (e *Executor) Run(ctx context.Context, source string, cfg Config, triggerCtx ciconfig.TriggerContext) ([]CheckResult, error) {
 	// Pre-filter: evaluate if: conditions before launching goroutines.
 	type indexedCheck struct {
 		idx   int
@@ -130,7 +138,7 @@ func (e *Executor) Run(ctx context.Context, source string, cfg Config, triggerCt
 					}
 				}
 			}()
-			results[j] = e.runCheck(ctx, source, check, cfg.CacheRef, cfg.DockerConfigDir, cfg.ArchiveChecksum, extraEnv)
+			results[j] = e.runCheck(ctx, source, check, cfg.CacheRef, cfg.DockerConfigDir, cfg.ArchiveChecksum, cfg.OIDCRequestToken, cfg.OIDCRequestURL)
 		})
 	}
 	wg.Wait()
@@ -146,8 +154,9 @@ func (e *Executor) Close() error {
 // cacheRef, when non-empty, enables BuildKit registry cache export/import.
 // dockerConfigDir, when non-empty, overrides the Docker config directory for auth.
 // archiveChecksum, when non-empty, passes llb.Checksum to BuildKit for HTTP sources.
-// extraEnv is injected as additional environment variables into every step.
-func (e *Executor) runCheck(ctx context.Context, source string, check Check, cacheRef, dockerConfigDir, archiveChecksum string, extraEnv []string) CheckResult {
+// oidcToken and oidcURL, when non-empty, are exposed via BuildKit secret mounts so
+// they do not bust the cache key (unlike env var injection).
+func (e *Executor) runCheck(ctx context.Context, source string, check Check, cacheRef, dockerConfigDir, archiveChecksum, oidcToken, oidcURL string) CheckResult {
 	isHTTP := strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://")
 	isLocal := source != "" && !isHTTP
 
@@ -202,11 +211,21 @@ func (e *Executor) runCheck(ctx context.Context, source string, check Check, cac
 		ap.AuthConfigProvider = authprovider.LoadAuthConfig(dockerCfg)
 	}
 
+	sessionAttachables := []session.Attachable{authprovider.NewDockerAuthProvider(ap)}
+	if oidcToken != "" {
+		// Expose OIDC credentials as BuildKit secrets so they don't bust the
+		// cache key. Steps read from /run/secrets/docstore_oidc_request_token
+		// and /run/secrets/docstore_oidc_request_url.
+		secretMap := map[string][]byte{
+			"docstore_oidc_request_token": []byte(oidcToken),
+			"docstore_oidc_request_url":   []byte(oidcURL),
+		}
+		sessionAttachables = append(sessionAttachables, secretsprovider.FromMap(secretMap))
+	}
+
 	solveOpt := client.SolveOpt{
 		FrontendAttrs: map[string]string{},
-		Session: []session.Attachable{
-			authprovider.NewDockerAuthProvider(ap),
-		},
+		Session:       sessionAttachables,
 	}
 	if cacheRef != "" {
 		solveOpt.CacheExports = []client.CacheOptionsEntry{{
@@ -260,15 +279,8 @@ func (e *Executor) runCheck(ctx context.Context, source string, check Check, cac
 		// Inject DOCKER_HOST so docker:cli checks can reach the dockerd running
 		// in the Kata VM. Build containers run with --oci-worker-net=host so they
 		// share the host network namespace and can reach dockerd via TCP.
+		// DOCKER_HOST is cache-stable (same value every run) so env var is fine here.
 		envOpts = append(envOpts, llb.AddEnv("DOCKER_HOST", "tcp://localhost:2375"))
-
-		// Inject caller-supplied extra environment variables (e.g. OIDC tokens).
-		for _, kv := range extraEnv {
-			k, v, _ := strings.Cut(kv, "=")
-			if k != "" {
-				envOpts = append(envOpts, llb.AddEnv(k, v))
-			}
-		}
 
 		// Build the source mount based on the source type:
 		//   HTTP(S) URL → BuildKit fetches the tar directly; busybox extracts it to /src.
@@ -309,6 +321,12 @@ func (e *Executor) runCheck(ctx context.Context, source string, check Check, cac
 				llb.AddMount("/usr/local/cargo/registry", llb.Scratch(), llb.AsPersistentCacheDir("cargo-registry", llb.CacheMountShared)),
 			}
 			runOpts = append(runOpts, envOpts...)
+			if oidcToken != "" {
+				runOpts = append(runOpts,
+					llb.AddSecret("/run/secrets/docstore_oidc_request_token", llb.SecretID("docstore_oidc_request_token"), llb.SecretOptional),
+					llb.AddSecret("/run/secrets/docstore_oidc_request_url", llb.SecretID("docstore_oidc_request_url"), llb.SecretOptional),
+				)
+			}
 			exec := state.Run(runOpts...)
 			state = exec.Root()
 			srcMount = exec.GetMount("/src")
