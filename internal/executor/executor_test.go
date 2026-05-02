@@ -645,15 +645,22 @@ func TestE2ECacheWithChecksumAndSecrets(t *testing.T) {
 
 // cacheTestHostAddr returns the host:port of a test server that buildkitd
 // (possibly running as a container) can reach.
+//
+// When buildkitd runs on the host (BUILDKIT_ADDR is set) the test server's
+// local address is returned unchanged. Otherwise the host gateway IP is used so
+// that a containerised buildkitd running on Linux CI (where host.docker.internal
+// does not resolve) can still reach the test server. On Docker Desktop
+// (macOS/Windows) HostGatewayIP returns "host.docker.internal", which Docker
+// Desktop injects into every container's /etc/hosts.
 func cacheTestHostAddr(srv *httptest.Server) string {
 	addr := strings.TrimPrefix(srv.URL, "http://")
 	if os.Getenv("BUILDKIT_ADDR") != "" {
 		// Host-native buildkitd can reach localhost directly.
 		return addr
 	}
-	// Containerised buildkitd: use host.docker.internal to reach the test host.
+	// Containerised buildkitd: use the host gateway IP.
 	_, port, _ := net.SplitHostPort(addr)
-	return "host.docker.internal:" + port
+	return testutil.HostGatewayIP() + ":" + port
 }
 
 // cacheTestWriteDockerConfig writes a temporary Docker config.json with Basic
