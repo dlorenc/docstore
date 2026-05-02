@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -16,6 +18,7 @@ import (
 	"github.com/dlorenc/docstore/internal/model"
 	"github.com/dlorenc/docstore/internal/policy"
 	"github.com/dlorenc/docstore/internal/service"
+	"github.com/dlorenc/docstore/internal/store"
 )
 
 // stubJobTokenStore is a minimal jobTokenStore implementation for tests.
@@ -170,6 +173,103 @@ func containsAt(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// ---------------------------------------------------------------------------
+// Checksum tests
+// ---------------------------------------------------------------------------
+
+func buildPresignJob(t *testing.T, secret []byte, repo, branch string, seq int64) (plaintext string, jobStore *stubJobTokenStore) {
+	t.Helper()
+	var hashed string
+	var err error
+	plaintext, hashed, err = citoken.GenerateRequestToken()
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+	jobStore = &stubJobTokenStore{
+		lookupFn: func(_ context.Context, h string) (*model.CIJob, error) {
+			if h != hashed {
+				return nil, db.ErrTokenInvalid
+			}
+			return &model.CIJob{ID: "job-1", Repo: repo, Branch: branch, Sequence: seq}, nil
+		},
+	}
+	return
+}
+
+func TestHandleArchivePresign_ChecksumNilReadStore(t *testing.T) {
+	secret := []byte("test-secret")
+	plaintext, jobStore := buildPresignJob(t, secret, "org/myrepo", "feature", 42)
+
+	s := buildPresignServer(secret, jobStore)
+	// readStore is nil (buildPresignServer does not set it)
+	handler := s.buildHandler(devID, devID, s.commitStore)
+
+	req := httptest.NewRequest(http.MethodPost, "/repos/org/myrepo/-/archive/presign", nil)
+	req.Header.Set("Authorization", "Bearer "+plaintext)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["checksum"] != "" {
+		t.Fatalf("expected empty checksum when readStore is nil, got %q", resp["checksum"])
+	}
+}
+
+func TestHandleArchivePresign_ChecksumWithReadStore(t *testing.T) {
+	secret := []byte("test-secret")
+	plaintext, jobStore := buildPresignJob(t, secret, "org/myrepo", "feature", 42)
+
+	fileContent := []byte("hello world\n")
+	rs := &mockReadStore{
+		materializeTreeFn: func(_ context.Context, _, _ string, _ *int64, _ int, afterPath string) ([]store.TreeEntry, error) {
+			if afterPath == "" {
+				return []store.TreeEntry{{Path: "test.txt"}}, nil
+			}
+			return nil, nil
+		},
+		getFileFn: func(_ context.Context, _, _, _ string, _ *int64) (*store.FileContent, error) {
+			return &store.FileContent{Content: fileContent}, nil
+		},
+	}
+
+	s := buildPresignServer(secret, jobStore)
+	s.readStore = rs
+	handler := s.buildHandler(devID, devID, s.commitStore)
+
+	req := httptest.NewRequest(http.MethodPost, "/repos/org/myrepo/-/archive/presign", nil)
+	req.Header.Set("Authorization", "Bearer "+plaintext)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	checksum := resp["checksum"]
+	if !strings.HasPrefix(checksum, "sha256:") {
+		t.Fatalf("expected checksum to start with sha256:, got %q", checksum)
+	}
+
+	// Verify the checksum matches what writeArchive produces.
+	h := sha256.New()
+	if err := writeArchive(context.Background(), rs, h, "org/myrepo", "feature", 42); err != nil {
+		t.Fatalf("writeArchive: %v", err)
+	}
+	expected := "sha256:" + hex.EncodeToString(h.Sum(nil))
+	if checksum != expected {
+		t.Fatalf("checksum mismatch: got %q, want %q", checksum, expected)
+	}
 }
 
 // ---------------------------------------------------------------------------
