@@ -15,6 +15,10 @@
   --bad-bg: rgba(226, 106, 106, 0.15);
   --warn-bg: rgba(217, 178, 87, 0.15);
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --hl-keyword: #c19bff;
+  --hl-string:  #8fc7a1;
+  --hl-comment: #6f7787;
+  --hl-number:  #e0a87a;
 }
 
 :root[data-theme="light"] {
@@ -33,6 +37,10 @@
   --ok-bg: rgba(47, 122, 77, 0.14);
   --bad-bg: rgba(168, 60, 60, 0.16);
   --warn-bg: rgba(140, 106, 20, 0.16);
+  --hl-keyword: #6b4a9e;
+  --hl-string:  #2f7a4d;
+  --hl-comment: #8a8472;
+  --hl-number:  #a8632a;
 }
 
 * { box-sizing: border-box; }
@@ -267,6 +275,10 @@ pre.code .ln { display: grid; grid-template-columns: 40px 1fr; }
 pre.code .ln:hover { background: var(--bg-3); }
 pre.code .num { color: var(--text-dim); user-select: none; text-align: right; padding-right: 10px; margin-right: 10px; font-size: 11px; border-right: 1px solid var(--border); }
 pre.code .text { white-space: pre; padding-right: 12px; }
+pre.code .hl-k { color: var(--hl-keyword); }
+pre.code .hl-s { color: var(--hl-string); }
+pre.code .hl-c { color: var(--hl-comment); font-style: italic; }
+pre.code .hl-n { color: var(--hl-number); }
 
 .policy-row {
   display: flex;
