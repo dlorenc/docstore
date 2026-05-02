@@ -424,6 +424,24 @@ func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore Wri
 					writeAPIError(w, ErrCodeUnauthorized, http.StatusUnauthorized, "unauthenticated")
 					return
 				}
+				// SECURITY: Enforce that OIDC-authenticated jobs can only write to
+				// their own repo. Read-only requests (GET, HEAD) may access any
+				// accessible path. Write operations on repo-scoped paths must match
+				// the job token's repo claim. Write operations on non-repo-scoped
+				// paths (e.g. POST /repos, POST /orgs) are not permitted for job tokens.
+				if r.Method != http.MethodGet && r.Method != http.MethodHead {
+					urlRepo, _, ok := parseRepoPath(r.URL.Path)
+					if !ok || urlRepo == "" {
+						slog.Warn("job token non-repo write denied", "job_repo", jobID.Repo, "path", r.URL.Path, "method", r.Method)
+						writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, "forbidden: job token not permitted for this endpoint")
+						return
+					}
+					if jobID.Repo != urlRepo {
+						slog.Warn("job token repo mismatch", "job_repo", jobID.Repo, "url_repo", urlRepo, "path", r.URL.Path)
+						writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, "forbidden: job may only write to its own repo")
+						return
+					}
+				}
 				identity := "ci-job:" + jobID.JobID
 				if rl := requestLogFromContext(r.Context()); rl != nil {
 					rl.identity = identity

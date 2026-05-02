@@ -23,6 +23,9 @@ import (
 // handleReview implements POST /repos/:name/review
 func (s *server) handleReview(w http.ResponseWriter, r *http.Request) {
 	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
 	reviewer := IdentityFromContext(r.Context())
 
 	var req model.CreateReviewRequest
@@ -62,6 +65,9 @@ func (s *server) handleReview(w http.ResponseWriter, r *http.Request) {
 // handleCheck implements POST /repos/:name/check
 func (s *server) handleCheck(w http.ResponseWriter, r *http.Request) {
 	repo := r.PathValue("name")
+	if !s.validateRepo(w, r, repo) {
+		return
+	}
 	reporter := IdentityFromContext(r.Context())
 	// If the request was authenticated via a job OIDC token, prefer the job
 	// subject as the reporter so check runs record the precise job identity.
