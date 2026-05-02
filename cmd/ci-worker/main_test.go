@@ -30,7 +30,7 @@ type mockRunner struct {
 	err     error
 }
 
-func (m *mockRunner) Run(_ context.Context, _ string, _ executor.Config, _ ciconfig.TriggerContext, _ []string) ([]executor.CheckResult, error) {
+func (m *mockRunner) Run(_ context.Context, _ string, _ executor.Config, _ ciconfig.TriggerContext) ([]executor.CheckResult, error) {
 	return m.results, m.err
 }
 
@@ -501,7 +501,7 @@ func TestRunJob_NoCIYAML_ReturnsPassed(t *testing.T) {
 
 	status, logURL, errMsg := runJob(
 		context.Background(), srv.Client(), &mockRunner{},
-		srv.URL, testJob(), "", "", t.TempDir(), ciconfig.TriggerContext{Type: "push"}, nil, "", "",
+		srv.URL, testJob(), "", "", "", t.TempDir(), ciconfig.TriggerContext{Type: "push"}, "", "",
 	)
 	if status != "passed" {
 		t.Errorf("expected passed, got %q", status)
@@ -524,7 +524,7 @@ func TestRunJob_FetchConfigError_ReturnsFailed(t *testing.T) {
 
 	status, _, errMsg := runJob(
 		context.Background(), srv.Client(), &mockRunner{},
-		srv.URL, testJob(), "", "", t.TempDir(), ciconfig.TriggerContext{}, nil, "", "",
+		srv.URL, testJob(), "", "", "", t.TempDir(), ciconfig.TriggerContext{}, "", "",
 	)
 	if status != "failed" {
 		t.Errorf("expected failed, got %q", status)
@@ -544,7 +544,7 @@ func TestRunJob_ExecutorError_ReturnsFailed(t *testing.T) {
 	mockExec := &mockRunner{err: fmt.Errorf("buildkit unavailable")}
 	status, _, errMsg := runJob(
 		context.Background(), srv.Client(), mockExec,
-		srv.URL, testJob(), "", "", t.TempDir(), ciconfig.TriggerContext{}, nil, "", "",
+		srv.URL, testJob(), "", "", "", t.TempDir(), ciconfig.TriggerContext{}, "", "",
 	)
 	if status != "failed" {
 		t.Errorf("expected failed, got %q", status)
@@ -597,7 +597,7 @@ func TestRunJob_AllChecksPassed(t *testing.T) {
 
 	status, logURL, errMsg := runJob(
 		context.Background(), srv.Client(), mockExec,
-		srv.URL, testJob(), "test-request-token", "", t.TempDir(), ciconfig.TriggerContext{Type: "push"}, nil, "", "",
+		srv.URL, testJob(), "test-request-token", "", "", t.TempDir(), ciconfig.TriggerContext{Type: "push"}, "", "",
 	)
 	if status != "passed" {
 		t.Errorf("expected passed, got %q", status)
@@ -633,7 +633,7 @@ func TestRunJob_OneCheckFailed_OverallFailed(t *testing.T) {
 
 	status, _, errMsg := runJob(
 		context.Background(), srv.Client(), mockExec,
-		srv.URL, testJob(), "", "", t.TempDir(), ciconfig.TriggerContext{}, nil, "", "",
+		srv.URL, testJob(), "", "", "", t.TempDir(), ciconfig.TriggerContext{}, "", "",
 	)
 	if status != "failed" {
 		t.Errorf("expected failed, got %q", status)
@@ -677,7 +677,7 @@ func TestRunJob_LogUploadFails_StillPosts(t *testing.T) {
 
 	status, logURL, _ := runJob(
 		context.Background(), srv.Client(), mockExec,
-		srv.URL, testJob(), "", "", t.TempDir(), ciconfig.TriggerContext{}, nil, "", "",
+		srv.URL, testJob(), "", "", "", t.TempDir(), ciconfig.TriggerContext{}, "", "",
 	)
 	if status != "passed" {
 		t.Errorf("expected passed, got %q", status)
@@ -703,7 +703,7 @@ func TestRunJob_LogsWrittenToDir(t *testing.T) {
 	}}
 
 	logDir := t.TempDir()
-	runJob(context.Background(), srv.Client(), mockExec, srv.URL, testJob(), "", "", logDir, ciconfig.TriggerContext{}, nil, "", "") //nolint:errcheck
+	runJob(context.Background(), srv.Client(), mockExec, srv.URL, testJob(), "", "", "", logDir, ciconfig.TriggerContext{}, "", "") //nolint:errcheck
 
 	data, err := os.ReadFile(filepath.Join(logDir, "test.log"))
 	if err != nil {

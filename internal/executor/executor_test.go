@@ -49,7 +49,7 @@ func TestPass(t *testing.T) {
 		},
 	}
 
-	results, err := exec.Run(context.Background(), "", cfg, ciconfig.TriggerContext{}, nil)
+	results, err := exec.Run(context.Background(), "", cfg, ciconfig.TriggerContext{})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestFail(t *testing.T) {
 		},
 	}
 
-	results, err := exec.Run(context.Background(), "", cfg, ciconfig.TriggerContext{}, nil)
+	results, err := exec.Run(context.Background(), "", cfg, ciconfig.TriggerContext{})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestMultiCheck(t *testing.T) {
 		},
 	}
 
-	results, err := exec.Run(context.Background(), "", cfg, ciconfig.TriggerContext{}, nil)
+	results, err := exec.Run(context.Background(), "", cfg, ciconfig.TriggerContext{})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestIfConditionSkipsCheck(t *testing.T) {
 	}
 
 	// Trigger type is "proposal", so the push-only check must be skipped.
-	results, err := exec.Run(context.Background(), dir, cfg, ciconfig.TriggerContext{Type: "proposal"}, nil)
+	results, err := exec.Run(context.Background(), dir, cfg, ciconfig.TriggerContext{Type: "proposal"})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestIfConditionRunsCheck(t *testing.T) {
 		},
 	}
 
-	results, err := exec.Run(context.Background(), dir, cfg, ciconfig.TriggerContext{Type: "push"}, nil)
+	results, err := exec.Run(context.Background(), dir, cfg, ciconfig.TriggerContext{Type: "push"})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestIfConditionMixedChecks(t *testing.T) {
 		},
 	}
 
-	results, err := exec.Run(context.Background(), dir, cfg, ciconfig.TriggerContext{Type: "push"}, nil)
+	results, err := exec.Run(context.Background(), dir, cfg, ciconfig.TriggerContext{Type: "push"})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -246,7 +246,7 @@ func TestIfConditionBranchFilter(t *testing.T) {
 	}
 
 	// feature branch — should be skipped.
-	results, err := exec.Run(context.Background(), dir, cfg, ciconfig.TriggerContext{Type: "push", Branch: "feature"}, nil)
+	results, err := exec.Run(context.Background(), dir, cfg, ciconfig.TriggerContext{Type: "push", Branch: "feature"})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestIfConditionBranchFilter(t *testing.T) {
 	}
 
 	// main branch — should run.
-	results, err = exec.Run(context.Background(), dir, cfg, ciconfig.TriggerContext{Type: "push", Branch: "main"}, nil)
+	results, err = exec.Run(context.Background(), dir, cfg, ciconfig.TriggerContext{Type: "push", Branch: "main"})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -285,7 +285,7 @@ func TestIfConditionAndExpression(t *testing.T) {
 	}
 
 	// push to main — should run.
-	results, err := exec.Run(context.Background(), dir, cfg, ciconfig.TriggerContext{Type: "push", Branch: "main"}, nil)
+	results, err := exec.Run(context.Background(), dir, cfg, ciconfig.TriggerContext{Type: "push", Branch: "main"})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -294,7 +294,7 @@ func TestIfConditionAndExpression(t *testing.T) {
 	}
 
 	// push to feature — should be skipped (branch condition false).
-	results, err = exec.Run(context.Background(), dir, cfg, ciconfig.TriggerContext{Type: "push", Branch: "feature"}, nil)
+	results, err = exec.Run(context.Background(), dir, cfg, ciconfig.TriggerContext{Type: "push", Branch: "feature"})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -303,7 +303,7 @@ func TestIfConditionAndExpression(t *testing.T) {
 	}
 
 	// proposal to main — should be skipped (type condition false).
-	results, err = exec.Run(context.Background(), dir, cfg, ciconfig.TriggerContext{Type: "proposal", Branch: "main"}, nil)
+	results, err = exec.Run(context.Background(), dir, cfg, ciconfig.TriggerContext{Type: "proposal", Branch: "main"})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -330,7 +330,7 @@ func TestIfConditionOrExpression(t *testing.T) {
 	}
 
 	for _, triggerType := range []string{"push", "proposal"} {
-		results, err := exec.Run(context.Background(), dir, cfg, ciconfig.TriggerContext{Type: triggerType}, nil)
+		results, err := exec.Run(context.Background(), dir, cfg, ciconfig.TriggerContext{Type: triggerType})
 		if err != nil {
 			t.Fatalf("Run(%s): %v", triggerType, err)
 		}
@@ -340,7 +340,7 @@ func TestIfConditionOrExpression(t *testing.T) {
 	}
 
 	// schedule — neither condition matches, should be skipped.
-	results, err := exec.Run(context.Background(), dir, cfg, ciconfig.TriggerContext{Type: "schedule"}, nil)
+	results, err := exec.Run(context.Background(), dir, cfg, ciconfig.TriggerContext{Type: "schedule"})
 	if err != nil {
 		t.Fatalf("Run(schedule): %v", err)
 	}
@@ -362,7 +362,7 @@ func TestIfConditionAllSkipped(t *testing.T) {
 		},
 	}
 
-	results, err := exec.Run(context.Background(), dir, cfg, ciconfig.TriggerContext{Type: "schedule"}, nil)
+	results, err := exec.Run(context.Background(), dir, cfg, ciconfig.TriggerContext{Type: "schedule"})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -391,7 +391,7 @@ func TestLocalPathSource(t *testing.T) {
 		},
 	}
 
-	results, err := exec.Run(context.Background(), dir, cfg, ciconfig.TriggerContext{}, nil)
+	results, err := exec.Run(context.Background(), dir, cfg, ciconfig.TriggerContext{})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -424,7 +424,7 @@ func TestPathTraversalRejected(t *testing.T) {
 		"foo/../../bar",
 	}
 	for _, path := range badPaths {
-		results, err := exec.Run(context.Background(), path, cfg, ciconfig.TriggerContext{}, nil)
+		results, err := exec.Run(context.Background(), path, cfg, ciconfig.TriggerContext{})
 		if err != nil {
 			t.Fatalf("Run(%q): unexpected error: %v", path, err)
 		}
@@ -458,7 +458,7 @@ func TestLogCapture(t *testing.T) {
 		},
 	}
 
-	results, err := exec.Run(context.Background(), "", cfg, ciconfig.TriggerContext{}, nil)
+	results, err := exec.Run(context.Background(), "", cfg, ciconfig.TriggerContext{})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}

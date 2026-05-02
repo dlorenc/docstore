@@ -27,7 +27,7 @@ import (
 // runner executes CI checks against a source directory.
 // *executor.Executor satisfies this interface.
 type runner interface {
-	Run(ctx context.Context, sourceDir string, cfg executor.Config, triggerCtx ciconfig.TriggerContext, extraEnv []string) ([]executor.CheckResult, error)
+	Run(ctx context.Context, sourceDir string, cfg executor.Config, triggerCtx ciconfig.TriggerContext) ([]executor.CheckResult, error)
 }
 
 // heartbeatInterval is the delay between heartbeat updates.
@@ -533,10 +533,10 @@ func runJob(
 	docstoreURL string,
 	job *model.CIJob,
 	requestToken string,
+	oidcTokenURL string,
 	jwt string,
 	logDir string,
 	triggerCtx ciconfig.TriggerContext,
-	extraEnv []string,
 	cacheRef string,
 	dockerConfigDir string,
 ) (status string, logURL *string, errMsg *string) {
@@ -586,11 +586,13 @@ func runJob(
 	pendingWg.Wait()
 
 	// 4. Execute all checks.
-	// Set cache fields if configured (populated by the caller, not from ci.yaml).
+	// Set runtime fields on cfg (not from ci.yaml).
 	cfg.CacheRef = cacheRef
 	cfg.DockerConfigDir = dockerConfigDir
 	cfg.ArchiveChecksum = archiveChecksum
-	results, err := exec.Run(ctx, archiveURL, *cfg, triggerCtx, extraEnv)
+	cfg.OIDCRequestToken = requestToken
+	cfg.OIDCRequestURL = oidcTokenURL
+	results, err := exec.Run(ctx, archiveURL, *cfg, triggerCtx)
 	if err != nil {
 		return fail(fmt.Sprintf("executor: %v", err))
 	}
@@ -749,12 +751,6 @@ func main() {
 			triggerCtx.ProposalID = *job.TriggerProposalID
 		}
 
-		// Build OIDC env vars to inject into job steps.
-		extraEnv := []string{
-			"DOCSTORE_OIDC_REQUEST_TOKEN=" + requestToken,
-			"DOCSTORE_OIDC_REQUEST_URL=" + cr.OIDCTokenURL,
-		}
-
 		// Set up BuildKit registry cache if the scheduler provided a registry.
 		var cacheRef, cacheDockerConfigDir string
 		if cr.CacheRegistry != "" {
@@ -779,7 +775,7 @@ func main() {
 		}
 
 		// Execute the job.
-		jobStatus, jobLogURL, jobErrMsg := runJob(ctx, httpClient, exec, docstoreURL, job, requestToken, jwt, logDir, triggerCtx, extraEnv, cacheRef, cacheDockerConfigDir)
+		jobStatus, jobLogURL, jobErrMsg := runJob(ctx, httpClient, exec, docstoreURL, job, requestToken, cr.OIDCTokenURL, jwt, logDir, triggerCtx, cacheRef, cacheDockerConfigDir)
 
 		// Stop heartbeat and clear log dir.
 		close(hbDone)
