@@ -12,7 +12,7 @@ func TestStoreAndLookupRequestToken(t *testing.T) {
 	ctx := context.Background()
 
 	// Insert a job and claim it so its status becomes 'claimed'.
-	inserted, err := s.InsertCIJob(ctx, "org/repo", "feat", 5, "push", "feat", "", "")
+	inserted, err := s.InsertCIJob(ctx, "org/repo", "feat", 5, "push", "feat", "", "", nil)
 	if err != nil {
 		t.Fatalf("InsertCIJob: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestLookupRequestToken_Expired(t *testing.T) {
 	s, _ := newCIJobStore(t)
 	ctx := context.Background()
 
-	inserted, err := s.InsertCIJob(ctx, "org/repo", "feat", 5, "push", "feat", "", "")
+	inserted, err := s.InsertCIJob(ctx, "org/repo", "feat", 5, "push", "feat", "", "", nil)
 	if err != nil {
 		t.Fatalf("InsertCIJob: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestLookupRequestToken_WrongStatus(t *testing.T) {
 	ctx := context.Background()
 
 	// Insert a job but do NOT claim it — it stays 'queued'.
-	inserted, err := s.InsertCIJob(ctx, "org/repo", "feat", 5, "push", "feat", "", "")
+	inserted, err := s.InsertCIJob(ctx, "org/repo", "feat", 5, "push", "feat", "", "", nil)
 	if err != nil {
 		t.Fatalf("InsertCIJob: %v", err)
 	}

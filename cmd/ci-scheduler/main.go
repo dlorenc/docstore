@@ -48,7 +48,7 @@ import (
 // ---------------------------------------------------------------------------
 
 type ciJobStore interface {
-	InsertCIJob(ctx context.Context, repo, branch string, sequence int64, triggerType, triggerBranch, triggerBaseBranch, triggerProposalID string) (*model.CIJob, error)
+	InsertCIJob(ctx context.Context, repo, branch string, sequence int64, triggerType, triggerBranch, triggerBaseBranch, triggerProposalID string, permissions []string) (*model.CIJob, error)
 	GetCIJob(ctx context.Context, id string) (*model.CIJob, error)
 	ClaimCIJob(ctx context.Context, podName, podIP string) (*model.CIJob, error)
 	StoreRequestToken(ctx context.Context, jobID string, hashedToken string, exp time.Time) error
@@ -214,6 +214,31 @@ func (s *scheduler) fetchOpenProposalForBranch(ctx context.Context, repo, branch
 	return proposals[0], nil
 }
 
+// fetchPermissions extracts the effective permissions from the ci.yaml at the
+// given repo/branch/sequence. Returns the default set (["checks"]) on any error
+// or if no ci.yaml / permissions block is present.
+func (s *scheduler) fetchPermissions(ctx context.Context, repo, branch string, sequence int64) []string {
+	cfg, err := s.fetchCIConfig(ctx, repo, branch, sequence)
+	if err != nil || cfg == nil {
+		return []string{"checks"}
+	}
+	return cfg.EffectivePermissions()
+}
+
+// fetchPermissionsForBaseBranch fetches the effective permissions from the
+// target (base) branch's ci.yaml. This is used for proposal and
+// proposal_synchronized jobs to enforce the security invariant: a proposal
+// cannot escalate its own permissions by adding a permissions block to its
+// source branch.
+func (s *scheduler) fetchPermissionsForBaseBranch(ctx context.Context, repo, baseBranch string) []string {
+	headSeq, err := s.fetchBranchHead(ctx, repo, baseBranch)
+	if err != nil {
+		slog.Warn("permissions: could not fetch base branch head, using default", "repo", repo, "base_branch", baseBranch, "error", err)
+		return []string{"checks"}
+	}
+	return s.fetchPermissions(ctx, repo, baseBranch, headSeq)
+}
+
 // handleWebhook handles POST /webhook — receives CloudEvents from docstore outbox.
 func (s *scheduler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
@@ -278,7 +303,8 @@ func (s *scheduler) handleCommitCreated(w http.ResponseWriter, r *http.Request, 
 	}
 
 	if cfg == nil || cfg.MatchesPush(data.Branch) {
-		job, err := s.store.InsertCIJob(r.Context(), data.Repo, data.Branch, data.Sequence, "push", data.Branch, "", "")
+		perms := s.fetchPermissions(r.Context(), data.Repo, data.Branch, data.Sequence)
+		job, err := s.store.InsertCIJob(r.Context(), data.Repo, data.Branch, data.Sequence, "push", data.Branch, "", "", perms)
 		if err != nil {
 			slog.Error("insert ci job failed", "repo", data.Repo, "branch", data.Branch, "error", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
@@ -300,7 +326,9 @@ func (s *scheduler) handleCommitCreated(w http.ResponseWriter, r *http.Request, 
 			proposalCfgMatch = cfg.MatchesProposal(proposal.BaseBranch)
 		}
 		if proposalCfgMatch {
-			job, err := s.store.InsertCIJob(r.Context(), data.Repo, data.Branch, data.Sequence, "proposal_synchronized", data.Branch, proposal.BaseBranch, proposal.ID)
+			// Security: use base branch permissions for proposal jobs.
+			perms := s.fetchPermissionsForBaseBranch(r.Context(), data.Repo, proposal.BaseBranch)
+			job, err := s.store.InsertCIJob(r.Context(), data.Repo, data.Branch, data.Sequence, "proposal_synchronized", data.Branch, proposal.BaseBranch, proposal.ID, perms)
 			if err != nil {
 				slog.Error("insert proposal_synchronized ci job failed", "repo", data.Repo, "branch", data.Branch, "proposal_id", proposal.ID, "error", err)
 				http.Error(w, "internal error", http.StatusInternalServerError)
@@ -348,7 +376,9 @@ func (s *scheduler) handleProposalOpened(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	job, err := s.store.InsertCIJob(r.Context(), data.Repo, data.Branch, sequence, "proposal", data.Branch, data.BaseBranch, data.ProposalID)
+	// Security: use base branch permissions for proposal jobs.
+	perms := s.fetchPermissionsForBaseBranch(r.Context(), data.Repo, data.BaseBranch)
+	job, err := s.store.InsertCIJob(r.Context(), data.Repo, data.Branch, sequence, "proposal", data.Branch, data.BaseBranch, data.ProposalID, perms)
 	if err != nil {
 		slog.Error("insert proposal ci job failed", "repo", data.Repo, "branch", data.Branch, "proposal_id", data.ProposalID, "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -668,6 +698,7 @@ func (s *scheduler) runScheduledJobs(ctx context.Context, t time.Time) {
 		if cfg == nil || cfg.On == nil || len(cfg.On.Schedule) == 0 {
 			continue
 		}
+		perms := s.fetchPermissions(ctx, repo, "main", headSeq)
 		for _, entry := range cfg.On.Schedule {
 			sched, err := cron.ParseStandard(entry.Cron)
 			if err != nil {
@@ -677,7 +708,7 @@ func (s *scheduler) runScheduledJobs(ctx context.Context, t time.Time) {
 			// Check if the cron fires at this minute: the next fire time after
 			// (now - 1 minute) must equal now.
 			if sched.Next(now.Add(-time.Minute)).Equal(now) {
-				job, err := s.store.InsertCIJob(ctx, repo, "main", headSeq, "schedule", "main", "", "")
+				job, err := s.store.InsertCIJob(ctx, repo, "main", headSeq, "schedule", "main", "", "", perms)
 				if err != nil {
 					slog.Error("schedule runner: insert ci job failed", "repo", repo, "cron", entry.Cron, "error", err)
 					continue

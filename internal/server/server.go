@@ -155,7 +155,7 @@ type WriteStore interface {
 	ListCIJobs(ctx context.Context, repo string, branch, status *string, limit int) ([]model.CIJob, error)
 
 	// CI job management
-	InsertCIJob(ctx context.Context, repo, branch string, sequence int64, triggerType, triggerBranch, triggerBaseBranch, triggerProposalID string) (*model.CIJob, error)
+	InsertCIJob(ctx context.Context, repo, branch string, sequence int64, triggerType, triggerBranch, triggerBaseBranch, triggerProposalID string, permissions []string) (*model.CIJob, error)
 }
 
 // CommitStore is an alias for backward compatibility with tests.
@@ -292,6 +292,54 @@ func newServer(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, broke
 		s.readStore = rs
 	}
 	return s.buildHandler(devIdentity, bootstrapAdmin, writeStore)
+}
+
+// jobRequiredPermission returns the permission name required to call the given
+// endpoint via an OIDC job token. An empty string means the endpoint is not
+// reachable via a job token (deny by default).
+func jobRequiredPermission(endpoint string) string {
+	switch {
+	case endpoint == "check":
+		return "checks"
+	case endpoint == "commit" || endpoint == "merge" || endpoint == "rebase" || endpoint == "purge":
+		return "contents"
+	case endpoint == "branch" || strings.HasPrefix(endpoint, "branch/"):
+		return "contents"
+	case endpoint == "review":
+		return "proposals"
+	case endpoint == "comment" || strings.HasPrefix(endpoint, "comment/"):
+		return "proposals"
+	case endpoint == "proposals" || strings.HasPrefix(endpoint, "proposals/"):
+		return "proposals"
+	case endpoint == "issues" || strings.HasPrefix(endpoint, "issues/"):
+		return "issues"
+	case endpoint == "releases" || strings.HasPrefix(endpoint, "releases/"):
+		return "releases"
+	case endpoint == "ci/run":
+		return "ci"
+	default:
+		return ""
+	}
+}
+
+// jobEndpointAllowed reports whether a job with the given permissions is
+// allowed to call the endpoint. "checks" is always granted regardless of
+// the permissions slice (default permission). All other permissions must be
+// explicitly listed.
+func jobEndpointAllowed(endpoint string, permissions []string) bool {
+	required := jobRequiredPermission(endpoint)
+	if required == "" {
+		return false
+	}
+	if required == "checks" {
+		return true
+	}
+	for _, p := range permissions {
+		if p == required {
+			return true
+		}
+	}
+	return false
 }
 
 // buildHandler wires up all routes and middleware for the given server.
@@ -455,11 +503,12 @@ func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore Wri
 						writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, "forbidden: job may only write to its own repo")
 						return
 					}
-					// Allowlist: OIDC JWT job tokens may only call POST /-/check on
-					// their own repo. All other write endpoints are denied until a
-					// permissions system is in place.
-					if endpoint != "check" {
-						slog.Warn("job token endpoint not in allowlist", "job_repo", jobID.Repo, "endpoint", endpoint, "path", r.URL.Path)
+					// Permissions gate: check that the endpoint is permitted by
+					// the job's declared permissions. "checks" is always the
+					// default; additional endpoints are unlocked by the
+					// permissions block in .docstore/ci.yaml.
+					if !jobEndpointAllowed(endpoint, jobID.Permissions) {
+						slog.Warn("job token endpoint not permitted", "job_repo", jobID.Repo, "endpoint", endpoint, "path", r.URL.Path, "permissions", jobID.Permissions)
 						writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, "forbidden: job token not permitted for this endpoint")
 						return
 					}

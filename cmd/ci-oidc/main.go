@@ -158,6 +158,7 @@ func (s *server) handleToken(w http.ResponseWriter, r *http.Request) {
 		TriggeredBy: "",
 		JobID:       job.ID,
 		Sequence:    job.Sequence,
+		Permissions: job.Permissions,
 	}
 
 	// 7. Issue JWT.

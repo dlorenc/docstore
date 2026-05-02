@@ -128,7 +128,7 @@ func (s *server) handleTriggerCIRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	job, err := s.commitStore.InsertCIJob(r.Context(), repo, req.Branch, branchInfo.HeadSequence, "manual", req.Branch, "", "")
+	job, err := s.commitStore.InsertCIJob(r.Context(), repo, req.Branch, branchInfo.HeadSequence, "manual", req.Branch, "", "", nil)
 	if err != nil {
 		slog.Error("internal error", "op", "trigger_ci_run", "repo", repo, "branch", req.Branch, "error", err)
 		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "insert ci job failed")

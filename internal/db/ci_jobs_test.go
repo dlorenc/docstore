@@ -21,7 +21,7 @@ func TestInsertCIJob(t *testing.T) {
 	s, _ := newCIJobStore(t)
 	ctx := context.Background()
 
-	j, err := s.InsertCIJob(ctx, "org/repo", "main", 1, "push", "main", "", "")
+	j, err := s.InsertCIJob(ctx, "org/repo", "main", 1, "push", "main", "", "", nil)
 	if err != nil {
 		t.Fatalf("InsertCIJob: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestInsertCIJob_ProposalTrigger(t *testing.T) {
 	ctx := context.Background()
 
 	proposalID := "prop-42"
-	j, err := s.InsertCIJob(ctx, "org/repo", "feat", 3, "proposal", "feat", "main", proposalID)
+	j, err := s.InsertCIJob(ctx, "org/repo", "feat", 3, "proposal", "feat", "main", proposalID, nil)
 	if err != nil {
 		t.Fatalf("InsertCIJob: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestGetCIJob(t *testing.T) {
 	s, _ := newCIJobStore(t)
 	ctx := context.Background()
 
-	inserted, err := s.InsertCIJob(ctx, "org/repo", "main", 1, "push", "main", "", "")
+	inserted, err := s.InsertCIJob(ctx, "org/repo", "main", 1, "push", "main", "", "", nil)
 	if err != nil {
 		t.Fatalf("InsertCIJob: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestClaimCIJob(t *testing.T) {
 	s, _ := newCIJobStore(t)
 	ctx := context.Background()
 
-	inserted, err := s.InsertCIJob(ctx, "org/repo", "main", 1, "push", "main", "", "")
+	inserted, err := s.InsertCIJob(ctx, "org/repo", "main", 1, "push", "main", "", "", nil)
 	if err != nil {
 		t.Fatalf("InsertCIJob: %v", err)
 	}
@@ -153,10 +153,10 @@ func TestClaimCIJob_OnePodOneClaim(t *testing.T) {
 	ctx := context.Background()
 
 	// Insert two queued jobs.
-	if _, err := s.InsertCIJob(ctx, "org/repo", "main", 1, "push", "main", "", ""); err != nil {
+	if _, err := s.InsertCIJob(ctx, "org/repo", "main", 1, "push", "main", "", "", nil); err != nil {
 		t.Fatalf("InsertCIJob 1: %v", err)
 	}
-	if _, err := s.InsertCIJob(ctx, "org/repo", "main", 2, "push", "main", "", ""); err != nil {
+	if _, err := s.InsertCIJob(ctx, "org/repo", "main", 2, "push", "main", "", "", nil); err != nil {
 		t.Fatalf("InsertCIJob 2: %v", err)
 	}
 
@@ -201,7 +201,7 @@ func TestClaimCIJob_SkipLocked(t *testing.T) {
 	s, _ := newCIJobStore(t)
 	ctx := context.Background()
 
-	if _, err := s.InsertCIJob(ctx, "org/repo", "main", 1, "push", "main", "", ""); err != nil {
+	if _, err := s.InsertCIJob(ctx, "org/repo", "main", 1, "push", "main", "", "", nil); err != nil {
 		t.Fatalf("InsertCIJob: %v", err)
 	}
 
@@ -228,7 +228,7 @@ func TestHeartbeatCIJob(t *testing.T) {
 	s, d := newCIJobStore(t)
 	ctx := context.Background()
 
-	inserted, err := s.InsertCIJob(ctx, "org/repo", "main", 1, "push", "main", "", "")
+	inserted, err := s.InsertCIJob(ctx, "org/repo", "main", 1, "push", "main", "", "", nil)
 	if err != nil {
 		t.Fatalf("InsertCIJob: %v", err)
 	}
@@ -258,7 +258,7 @@ func TestCompleteCIJob_Passed(t *testing.T) {
 	s, _ := newCIJobStore(t)
 	ctx := context.Background()
 
-	inserted, err := s.InsertCIJob(ctx, "org/repo", "main", 1, "push", "main", "", "")
+	inserted, err := s.InsertCIJob(ctx, "org/repo", "main", 1, "push", "main", "", "", nil)
 	if err != nil {
 		t.Fatalf("InsertCIJob: %v", err)
 	}
@@ -288,7 +288,7 @@ func TestCompleteCIJob_Failed(t *testing.T) {
 	s, _ := newCIJobStore(t)
 	ctx := context.Background()
 
-	inserted, err := s.InsertCIJob(ctx, "org/repo", "main", 1, "push", "main", "", "")
+	inserted, err := s.InsertCIJob(ctx, "org/repo", "main", 1, "push", "main", "", "", nil)
 	if err != nil {
 		t.Fatalf("InsertCIJob: %v", err)
 	}
@@ -317,7 +317,7 @@ func TestReapStaleCIJobs(t *testing.T) {
 	ctx := context.Background()
 
 	// Insert a job and claim it.
-	inserted, err := s.InsertCIJob(ctx, "org/repo", "main", 1, "push", "main", "", "")
+	inserted, err := s.InsertCIJob(ctx, "org/repo", "main", 1, "push", "main", "", "", nil)
 	if err != nil {
 		t.Fatalf("InsertCIJob: %v", err)
 	}
@@ -370,7 +370,7 @@ func TestReapStaleCIJobs_FreshJobNotReaped(t *testing.T) {
 	ctx := context.Background()
 
 	// Claim a fresh job (heartbeat just now via claimed_at).
-	if _, err := s.InsertCIJob(ctx, "org/repo", "main", 1, "push", "main", "", ""); err != nil {
+	if _, err := s.InsertCIJob(ctx, "org/repo", "main", 1, "push", "main", "", "", nil); err != nil {
 		t.Fatalf("InsertCIJob: %v", err)
 	}
 	if _, err := s.ClaimCIJob(ctx, "pod-a", "1.1.1.1"); err != nil {
@@ -391,7 +391,7 @@ func TestReapStaleCIJobs_HeartbeatKeepsJobAlive(t *testing.T) {
 	s, d := newCIJobStore(t)
 	ctx := context.Background()
 
-	inserted, err := s.InsertCIJob(ctx, "org/repo", "main", 1, "push", "main", "", "")
+	inserted, err := s.InsertCIJob(ctx, "org/repo", "main", 1, "push", "main", "", "", nil)
 	if err != nil {
 		t.Fatalf("InsertCIJob: %v", err)
 	}
