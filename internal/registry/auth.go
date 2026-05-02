@@ -2,6 +2,7 @@ package registry
 
 import (
 	"encoding/base64"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -41,6 +42,7 @@ func authMiddleware(inner http.Handler, validate func(string) (*server.JobIdenti
 			// from the docker config (username "ci-worker", password = OIDC
 			// token). Bearer challenges cause BuildKit to POST to the realm
 			// as a token URL, which fails when the realm is not an HTTP URL.
+			slog.Warn("auth: missing token", "method", r.Method, "path", r.URL.Path)
 			w.Header().Set("WWW-Authenticate", `Basic realm="ci-registry"`)
 			http.Error(w, "authentication required", http.StatusUnauthorized)
 			return
@@ -48,6 +50,7 @@ func authMiddleware(inner http.Handler, validate func(string) (*server.JobIdenti
 
 		identity, err := validate(tokenStr)
 		if err != nil {
+			slog.Warn("auth: invalid token", "method", r.Method, "path", r.URL.Path, "error", err)
 			w.Header().Set("WWW-Authenticate", `Basic realm="ci-registry"`)
 			http.Error(w, "invalid token", http.StatusUnauthorized)
 			return
@@ -72,6 +75,7 @@ func authMiddleware(inner http.Handler, validate func(string) (*server.JobIdenti
 
 		// Check that the image belongs to the token's org.
 		if !strings.HasPrefix(imageName, org+"/") {
+			slog.Warn("auth: forbidden", "method", r.Method, "path", r.URL.Path, "org", org, "image", imageName)
 			http.Error(w, "forbidden: image not in token org", http.StatusForbidden)
 			return
 		}
