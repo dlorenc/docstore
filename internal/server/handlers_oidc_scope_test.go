@@ -219,6 +219,34 @@ func TestOIDC_CrossRepoCommitDenied(t *testing.T) {
 	}
 }
 
+// TestOIDC_OwnRepoNonCheckEndpointDenied verifies that a job token cannot POST to
+// endpoints other than /check on its own repo — the allowlist gate rejects them.
+func TestOIDC_OwnRepoNonCheckEndpointDenied(t *testing.T) {
+	ms := &mockStore{
+		getRepoFn: func(_ context.Context, name string) (*model.Repo, error) {
+			return &model.Repo{Name: name}, nil
+		},
+	}
+	handler, key := buildOIDCServer(t, ms)
+
+	// Token is for acme/myrepo; we POST to acme/myrepo/-/commit (own repo, wrong endpoint).
+	tok := oidcToken(t, key, "acme/myrepo", "main")
+	body, _ := json.Marshal(map[string]any{
+		"branch":  "main",
+		"message": "pwned",
+		"files":   []any{},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/repos/acme/myrepo/-/commit", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for own-repo non-check endpoint, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
 // TestOIDC_CrossRepoDeleteDenied verifies that a job token cannot DELETE a repo it
 // does not own. The bare /repos/:name DELETE path must also be repo-scoped.
 func TestOIDC_CrossRepoDeleteDenied(t *testing.T) {

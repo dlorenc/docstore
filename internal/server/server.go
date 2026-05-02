@@ -409,6 +409,19 @@ func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore Wri
 					return
 				}
 			}
+			// CI config fetch (worker → get .docstore/ci.yaml): auth via request_token.
+			if endpoint == "ci/config" && r.Method == http.MethodGet {
+				r.SetPathValue("name", repoName)
+				s.handleCIConfig(w, r)
+				return
+			}
+			// Check run (worker → post check result): auth via request_token.
+			// Only intercept when jobTokenStore is configured; fall through to OIDC/IAP otherwise.
+			if endpoint == "check" && r.Method == http.MethodPost && s.jobTokenStore != nil {
+				r.SetPathValue("name", repoName)
+				s.handleCICheck(w, r)
+				return
+			}
 		}
 
 		// Job OIDC token auth: if a Bearer token is present and OIDC is configured,
@@ -425,12 +438,13 @@ func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore Wri
 					return
 				}
 				// SECURITY: Enforce that OIDC-authenticated jobs can only write to
-				// their own repo. Read-only requests (GET, HEAD) may access any
-				// accessible path. Write operations on repo-scoped paths must match
-				// the job token's repo claim. Write operations on non-repo-scoped
-				// paths (e.g. POST /repos, POST /orgs) are not permitted for job tokens.
+				// their own repo via the allowlisted endpoint. Read-only requests
+				// (GET, HEAD) may access any accessible path. Write operations
+				// must target the job's own repo AND be on the allowlist.
+				// Write operations on non-repo-scoped paths (e.g. POST /repos,
+				// POST /orgs) are not permitted for job tokens.
 				if r.Method != http.MethodGet && r.Method != http.MethodHead {
-					urlRepo, _, ok := parseRepoPath(r.URL.Path)
+					urlRepo, endpoint, ok := parseRepoPath(r.URL.Path)
 					if !ok || urlRepo == "" {
 						slog.Warn("job token non-repo write denied", "job_repo", jobID.Repo, "path", r.URL.Path, "method", r.Method)
 						writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, "forbidden: job token not permitted for this endpoint")
@@ -439,6 +453,14 @@ func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore Wri
 					if jobID.Repo != urlRepo {
 						slog.Warn("job token repo mismatch", "job_repo", jobID.Repo, "url_repo", urlRepo, "path", r.URL.Path)
 						writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, "forbidden: job may only write to its own repo")
+						return
+					}
+					// Allowlist: OIDC JWT job tokens may only call POST /-/check on
+					// their own repo. All other write endpoints are denied until a
+					// permissions system is in place.
+					if endpoint != "check" {
+						slog.Warn("job token endpoint not in allowlist", "job_repo", jobID.Repo, "endpoint", endpoint, "path", r.URL.Path)
+						writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, "forbidden: job token not permitted for this endpoint")
 						return
 					}
 				}
