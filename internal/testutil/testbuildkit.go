@@ -12,19 +12,23 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
-// buildkitdConfig is the buildkitd.toml content used in tests.
-// It enables plain-HTTP access to registries commonly used in test setups
-// (host.docker.internal for containerised buildkitd reaching a host httptest
-// server, and localhost for host-native buildkitd).
-const buildkitdConfig = `
-[registry."host.docker.internal"]
+// buildkitdConfigContent returns the buildkitd.toml content used in tests.
+// It enables plain-HTTP access to the host gateway address (resolved via
+// HostGatewayIP) so that a containerised buildkitd can reach httptest servers
+// running on the test host.  On Linux this is typically 172.17.0.1; on Docker
+// Desktop (macOS/Windows) it is host.docker.internal.
+func buildkitdConfigContent() string {
+	gw := HostGatewayIP()
+	return fmt.Sprintf(`
+[registry."%s"]
   http = true
   insecure = true
 
 [registry."localhost"]
   http = true
   insecure = true
-`
+`, gw)
+}
 
 // StartBuildkit starts a buildkitd container for use in tests and returns the
 // BUILDKIT_ADDR (tcp://host:port) and a cleanup function.
@@ -43,7 +47,7 @@ func StartBuildkit() (addr string, cleanup func(), err error) {
 	if err != nil {
 		return "", func() {}, fmt.Errorf("create buildkitd config tempfile: %w", err)
 	}
-	if _, err := cfgFile.WriteString(buildkitdConfig); err != nil {
+	if _, err := cfgFile.WriteString(buildkitdConfigContent()); err != nil {
 		cfgFile.Close()
 		os.Remove(cfgFile.Name())
 		return "", func() {}, fmt.Errorf("write buildkitd config: %w", err)

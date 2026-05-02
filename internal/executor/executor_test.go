@@ -1,15 +1,26 @@
 package executor_test
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/dlorenc/docstore/internal/ciconfig"
+	"github.com/dlorenc/docstore/internal/citoken"
 	"github.com/dlorenc/docstore/internal/executor"
+	"github.com/dlorenc/docstore/internal/registry"
 	"github.com/dlorenc/docstore/internal/testutil"
 )
 
@@ -475,4 +486,220 @@ func TestLogCapture(t *testing.T) {
 	if !strings.Contains(r.Logs, "stderr-line") {
 		t.Errorf("expected stderr in logs, got: %s", r.Logs)
 	}
+}
+
+// TestE2ECacheWithChecksumAndSecrets verifies that BuildKit cache hits occur on
+// a second run when the source archive has the same checksum but a different URL,
+// and when OIDCRequestToken differs between runs.
+//
+// Run 1: source = /archive/v1, ArchiveChecksum = sha256:..., OIDCRequestToken = "test-token-1"
+// Run 2: source = /archive/v2 (different URL!), same checksum, OIDCRequestToken = "test-token-2"
+//
+// If the checksum is used as the cache key (content-addressed), run 2 should hit
+// the cache. If the URL is used as the cache key, run 2 will miss (CacheHits == 0),
+// which indicates the bug: distinct URLs produce cache misses even for identical content.
+func TestE2ECacheWithChecksumAndSecrets(t *testing.T) {
+	if pkgBuildkitAddr == "" {
+		t.Skip("no buildkitd available")
+	}
+
+	// --- Build a tar archive containing hello.txt ---
+	var tarBuf bytes.Buffer
+	tw := tar.NewWriter(&tarBuf)
+	fileContent := []byte("hello world")
+	hdr := &tar.Header{
+		Name: "hello.txt",
+		Mode: 0644,
+		Size: int64(len(fileContent)),
+	}
+	if err := tw.WriteHeader(hdr); err != nil {
+		t.Fatalf("write tar header: %v", err)
+	}
+	if _, err := tw.Write(fileContent); err != nil {
+		t.Fatalf("write tar content: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close tar: %v", err)
+	}
+	tarBytes := tarBuf.Bytes()
+
+	// Compute sha256 checksum in "sha256:<hex>" format.
+	sum := sha256.New()
+	sum.Write(tarBytes)
+	archiveChecksum := "sha256:" + hex.EncodeToString(sum.Sum(nil))
+	t.Logf("archive checksum: %s", archiveChecksum)
+
+	// --- HTTP server serving the archive at two different paths ---
+	// Bind to 0.0.0.0 so that a containerised buildkitd (e.g. on Linux CI)
+	// can reach the server via the host gateway IP (172.17.0.1), not just
+	// localhost.
+	archiveLn, err := net.Listen("tcp", "0.0.0.0:0")
+	if err != nil {
+		t.Fatalf("listen for archive server: %v", err)
+	}
+	archiveSrv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/archive/v1" || r.URL.Path == "/archive/v2" {
+			w.Header().Set("Content-Type", "application/x-tar")
+			w.Write(tarBytes) //nolint:errcheck
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	archiveSrv.Listener = archiveLn
+	archiveSrv.Start()
+	defer archiveSrv.Close()
+
+	// --- In-memory registry with OIDC auth ---
+	signer, err := citoken.NewLocalSigner()
+	if err != nil {
+		t.Fatalf("new signer: %v", err)
+	}
+
+	jwksSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := signer.PublicKeys(r.Context())
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(data) //nolint:errcheck
+	}))
+	defer jwksSrv.Close()
+
+	// Bind registry to 0.0.0.0 so containerised buildkitd can reach it for
+	// cache import/export.
+	regLn, err := net.Listen("tcp", "0.0.0.0:0")
+	if err != nil {
+		t.Fatalf("listen for registry server: %v", err)
+	}
+	regSrv := httptest.NewUnstartedServer(registry.New(registry.NewMemoryHandler(), nil, jwksSrv.URL, "ci-registry", "https://oidc.test"))
+	regSrv.Listener = regLn
+	regSrv.Start()
+	defer regSrv.Close()
+
+	// Determine the host:port that buildkitd (possibly in a container) can use.
+	regHost := cacheTestHostAddr(regSrv)
+	archiveBaseURL := "http://" + cacheTestHostAddr(archiveSrv)
+
+	// Issue a long-lived token for testorg (used for Docker config auth).
+	claims := citoken.JobClaims{
+		Issuer:   "https://oidc.test",
+		Subject:  "repo:testorg/cache:branch:main:check:test",
+		Audience: "ci-registry",
+		Repo:     "testorg/cache",
+		Branch:   "main",
+		JobID:    "cache-test-job",
+	}
+	tok, err := citoken.IssueJWT(context.Background(), signer, claims)
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+
+	// Write a temporary Docker config with Basic auth for the registry.
+	dockerConfigDir := cacheTestWriteDockerConfig(t, regHost, tok)
+	defer os.RemoveAll(dockerConfigDir)
+
+	cacheRef := regHost + "/testorg/cache:buildkit"
+
+	check := executor.Check{
+		Name:  "build",
+		Image: "alpine",
+		Steps: []string{`cat /src/hello.txt`},
+	}
+
+	exec := newExecutor(t)
+
+	// --- Run 1: cold start ---
+	t.Log("Run 1: cold start")
+	cfg1 := executor.Config{
+		Checks:           []executor.Check{check},
+		CacheRef:         cacheRef,
+		DockerConfigDir:  dockerConfigDir,
+		ArchiveChecksum:  archiveChecksum,
+		OIDCRequestToken: "test-token-1",
+	}
+	results1, err := exec.Run(context.Background(), archiveBaseURL+"/archive/v1", cfg1, ciconfig.TriggerContext{})
+	if err != nil {
+		t.Fatalf("Run 1: %v", err)
+	}
+	if len(results1) != 1 {
+		t.Fatalf("Run 1: expected 1 result, got %d", len(results1))
+	}
+	r1 := results1[0]
+	t.Logf("Run 1: status=%s cacheHits=%d logs=%q", r1.Status, r1.CacheHits, r1.Logs)
+	if r1.Status != "passed" {
+		t.Errorf("Run 1: expected passed, got %s (logs: %s)", r1.Status, r1.Logs)
+	}
+	// First run is a cold start; expect 0 cache hits.
+	if r1.CacheHits != 0 {
+		t.Logf("Run 1: unexpectedly got %d cache hits (may be stale buildkit state)", r1.CacheHits)
+	}
+
+	// --- Run 2: different URL, same checksum, different OIDCRequestToken ---
+	t.Log("Run 2: warm cache (different URL, same checksum)")
+	cfg2 := executor.Config{
+		Checks:           []executor.Check{check},
+		CacheRef:         cacheRef,
+		DockerConfigDir:  dockerConfigDir,
+		ArchiveChecksum:  archiveChecksum,
+		OIDCRequestToken: "test-token-2",
+	}
+	results2, err := exec.Run(context.Background(), archiveBaseURL+"/archive/v2", cfg2, ciconfig.TriggerContext{})
+	if err != nil {
+		t.Fatalf("Run 2: %v", err)
+	}
+	if len(results2) != 1 {
+		t.Fatalf("Run 2: expected 1 result, got %d", len(results2))
+	}
+	r2 := results2[0]
+	t.Logf("Run 2: status=%s cacheHits=%d logs=%q", r2.Status, r2.CacheHits, r2.Logs)
+	if r2.Status != "passed" {
+		t.Errorf("Run 2: expected passed, got %s (logs: %s)", r2.Status, r2.Logs)
+	}
+	if r2.CacheHits == 0 {
+		t.Errorf("Run 2: expected > 0 cache hits (same checksum, different URL), got 0 — "+
+			"this indicates the URL is used as the BuildKit cache key instead of the content checksum")
+	} else {
+		t.Logf("Run 2: got %d cache hits — content-addressed cache is working", r2.CacheHits)
+	}
+}
+
+// cacheTestHostAddr returns the host:port of a test server that buildkitd
+// (possibly running as a container) can reach.
+//
+// When buildkitd runs on the host (BUILDKIT_ADDR is set) the test server's
+// local address is returned unchanged. Otherwise the host gateway IP is used so
+// that a containerised buildkitd running on Linux CI (where host.docker.internal
+// does not resolve) can still reach the test server. On Docker Desktop
+// (macOS/Windows) HostGatewayIP returns "host.docker.internal", which Docker
+// Desktop injects into every container's /etc/hosts.
+func cacheTestHostAddr(srv *httptest.Server) string {
+	addr := strings.TrimPrefix(srv.URL, "http://")
+	if os.Getenv("BUILDKIT_ADDR") != "" {
+		// Host-native buildkitd can reach localhost directly.
+		return addr
+	}
+	// Containerised buildkitd: use the host gateway IP.
+	_, port, _ := net.SplitHostPort(addr)
+	return testutil.HostGatewayIP() + ":" + port
+}
+
+// cacheTestWriteDockerConfig writes a temporary Docker config.json with Basic
+// auth credentials for the given registry host, using token as the password.
+// The caller must remove the returned directory when done.
+func cacheTestWriteDockerConfig(t *testing.T, regHost, token string) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "ci-exec-docker-test-*")
+	if err != nil {
+		t.Fatalf("create docker config dir: %v", err)
+	}
+	creds := base64.StdEncoding.EncodeToString([]byte("ci-worker:" + token))
+	cfg := map[string]any{
+		"auths": map[string]any{
+			regHost: map[string]string{
+				"auth": creds,
+			},
+		},
+	}
+	data, _ := json.Marshal(cfg)
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), data, 0o600); err != nil {
+		t.Fatalf("write docker config: %v", err)
+	}
+	return dir
 }

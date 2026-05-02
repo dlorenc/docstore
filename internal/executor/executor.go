@@ -71,9 +71,10 @@ type Check struct {
 
 // CheckResult is the result of executing a single check.
 type CheckResult struct {
-	Name   string `json:"name"`
-	Status string `json:"status"` // "passed" or "failed"
-	Logs   string `json:"logs"`
+	Name      string `json:"name"`
+	Status    string `json:"status"` // "passed" or "failed"
+	Logs      string `json:"logs"`
+	CacheHits int    `json:"-"` // number of BuildKit vertexes served from cache
 }
 
 // Executor translates a Config into an LLB DAG and dispatches it to buildkitd.
@@ -175,6 +176,7 @@ func (e *Executor) runCheck(ctx context.Context, source string, check Check, cac
 	var logBuf bytes.Buffer
 	ch := make(chan *client.SolveStatus)
 
+	var cacheHits int
 	var collectWg sync.WaitGroup
 	collectWg.Go(func() {
 		for status := range ch {
@@ -182,10 +184,15 @@ func (e *Executor) runCheck(ctx context.Context, source string, check Check, cac
 				logBuf.Write(vlog.Data)
 			}
 			for _, v := range status.Vertexes {
+				if v.Cached {
+					cacheHits++
+					slog.Debug("vertex cached", "check", check.Name, "vertex", v.Name)
+				}
 				if v.Completed != nil && v.Started != nil {
 					slog.Info("vertex complete",
 						"check", check.Name,
 						"vertex", v.Name,
+						"cached", v.Cached,
 						"duration_ms", v.Completed.Sub(*v.Started).Milliseconds(),
 					)
 				}
@@ -361,5 +368,5 @@ func (e *Executor) runCheck(ctx context.Context, source string, check Check, cac
 		}
 	}
 
-	return CheckResult{Name: check.Name, Status: status, Logs: logs}
+	return CheckResult{Name: check.Name, Status: status, Logs: logs, CacheHits: cacheHits}
 }

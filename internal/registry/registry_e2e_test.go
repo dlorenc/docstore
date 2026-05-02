@@ -231,16 +231,18 @@ func writeTempDockerConfig(t *testing.T, regHost, token string) string {
 
 // hostAccessibleAddr returns the address of the test server that buildkitd
 // (possibly running as a container) can reach.
+//
+// When buildkitd runs on the host (BUILDKIT_ADDR is set) the test server's
+// local address is returned unchanged. Otherwise testutil.HostGatewayIP is
+// used so that containerised buildkitd on Linux CI (where host.docker.internal
+// does not resolve) can still reach the test server. On Docker Desktop
+// (macOS/Windows) HostGatewayIP returns "host.docker.internal".
 func hostAccessibleAddr(srv *httptest.Server) string {
 	addr := strings.TrimPrefix(srv.URL, "http://")
 	if os.Getenv("BUILDKIT_ADDR") != "" {
 		// Buildkitd is running on the host.
 		return addr
 	}
-	// Buildkitd is a container (testcontainers). Docker Desktop injects
-	// host.docker.internal into every container's /etc/hosts, routing to the
-	// host loopback. We do NOT rely on host-side DNS resolution because Docker
-	// Desktop only adds this name inside containers, not to the macOS host.
 	_, port, _ := net.SplitHostPort(addr)
-	return "host.docker.internal:" + port
+	return testutil.HostGatewayIP() + ":" + port
 }
