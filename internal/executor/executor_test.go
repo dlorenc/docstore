@@ -530,7 +530,14 @@ func TestE2ECacheWithChecksumAndSecrets(t *testing.T) {
 	t.Logf("archive checksum: %s", archiveChecksum)
 
 	// --- HTTP server serving the archive at two different paths ---
-	archiveSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Bind to 0.0.0.0 so that a containerised buildkitd (e.g. on Linux CI)
+	// can reach the server via the host gateway IP (172.17.0.1), not just
+	// localhost.
+	archiveLn, err := net.Listen("tcp", "0.0.0.0:0")
+	if err != nil {
+		t.Fatalf("listen for archive server: %v", err)
+	}
+	archiveSrv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/archive/v1" || r.URL.Path == "/archive/v2" {
 			w.Header().Set("Content-Type", "application/x-tar")
 			w.Write(tarBytes) //nolint:errcheck
@@ -538,6 +545,8 @@ func TestE2ECacheWithChecksumAndSecrets(t *testing.T) {
 		}
 		http.NotFound(w, r)
 	}))
+	archiveSrv.Listener = archiveLn
+	archiveSrv.Start()
 	defer archiveSrv.Close()
 
 	// --- In-memory registry with OIDC auth ---
@@ -553,7 +562,15 @@ func TestE2ECacheWithChecksumAndSecrets(t *testing.T) {
 	}))
 	defer jwksSrv.Close()
 
-	regSrv := httptest.NewServer(registry.New(registry.NewMemoryHandler(), nil, jwksSrv.URL, "ci-registry", "https://oidc.test"))
+	// Bind registry to 0.0.0.0 so containerised buildkitd can reach it for
+	// cache import/export.
+	regLn, err := net.Listen("tcp", "0.0.0.0:0")
+	if err != nil {
+		t.Fatalf("listen for registry server: %v", err)
+	}
+	regSrv := httptest.NewUnstartedServer(registry.New(registry.NewMemoryHandler(), nil, jwksSrv.URL, "ci-registry", "https://oidc.test"))
+	regSrv.Listener = regLn
+	regSrv.Start()
 	defer regSrv.Close()
 
 	// Determine the host:port that buildkitd (possibly in a container) can use.
