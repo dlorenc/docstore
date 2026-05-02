@@ -166,6 +166,7 @@ func (s *Store) ClaimCIJob(ctx context.Context, podName, podIP string) (*model.C
 		WHERE id = (
 			SELECT id FROM ci_jobs
 			WHERE status = 'queued'
+			  AND NOT EXISTS (SELECT 1 FROM ci_jobs c2 WHERE c2.worker_pod = $1 AND c2.status = 'claimed')
 			ORDER BY created_at
 			FOR UPDATE SKIP LOCKED
 			LIMIT 1

@@ -145,6 +145,40 @@ func TestClaimCIJob(t *testing.T) {
 	}
 }
 
+// TestClaimCIJob_OnePodOneClaim verifies that a pod which already holds a
+// claimed job cannot claim a second job, preventing SA-token-based queue drain.
+func TestClaimCIJob_OnePodOneClaim(t *testing.T) {
+	t.Parallel()
+	s, _ := newCIJobStore(t)
+	ctx := context.Background()
+
+	// Insert two queued jobs.
+	if _, err := s.InsertCIJob(ctx, "org/repo", "main", 1, "push", "main", "", ""); err != nil {
+		t.Fatalf("InsertCIJob 1: %v", err)
+	}
+	if _, err := s.InsertCIJob(ctx, "org/repo", "main", 2, "push", "main", "", ""); err != nil {
+		t.Fatalf("InsertCIJob 2: %v", err)
+	}
+
+	// First claim from the pod should succeed.
+	first, err := s.ClaimCIJob(ctx, "worker-pod-1", "10.0.0.1")
+	if err != nil {
+		t.Fatalf("first ClaimCIJob: %v", err)
+	}
+	if first == nil {
+		t.Fatal("expected first claim to succeed")
+	}
+
+	// Second claim from the same pod must return nil — the pod already owns one.
+	second, err := s.ClaimCIJob(ctx, "worker-pod-1", "10.0.0.1")
+	if err != nil {
+		t.Fatalf("second ClaimCIJob: %v", err)
+	}
+	if second != nil {
+		t.Errorf("expected second claim from same pod to return nil, got job %q", second.ID)
+	}
+}
+
 func TestClaimCIJob_NoQueued(t *testing.T) {
 	t.Parallel()
 	s, _ := newCIJobStore(t)
