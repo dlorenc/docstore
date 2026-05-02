@@ -60,6 +60,9 @@ func StartBuildkit() (addr string, cleanup func(), err error) {
 			hc.Privileged = true
 			// Bind-mount the config so buildkitd reads it at startup.
 			hc.Binds = append(hc.Binds, cfgPath+":/etc/buildkit/buildkitd.toml:ro")
+			// Ensure host.docker.internal resolves on Linux Docker Engine
+			// (it resolves automatically on Docker Desktop but not on plain Linux).
+			hc.ExtraHosts = append(hc.ExtraHosts, "host.docker.internal:host-gateway")
 		}),
 		testcontainers.WithWaitStrategy(
 			wait.ForListeningPort("1234/tcp").WithStartupTimeout(60*time.Second),
