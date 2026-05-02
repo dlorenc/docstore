@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -50,13 +51,13 @@ func New(blobHandler BlobHandler, store ManifestStore, jwksURL, audience, issuer
 
 const blobUnknownBody = `{"errors":[{"code":"BLOB_UNKNOWN","message":"Unknown blob"}]}` + "\n"
 
-// blobHeadMiddleware intercepts HEAD /v2/{repo}/blobs/{digest} requests and
-// serves them directly using BlobHandler.Stat, returning the correct
-// 404 BLOB_UNKNOWN when a blob is absent rather than delegating to
+// blobHeadMiddleware intercepts HEAD and GET /v2/{repo}/blobs/{digest} requests
+// and serves them directly using BlobHandler, returning the correct 404
+// BLOB_UNKNOWN when a blob is absent rather than delegating to
 // go-containerregistry's blob handler which returns 500 for missing blobs.
 func blobHeadMiddleware(blobHandler BlobHandler, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodHead {
+		if r.Method != http.MethodHead && r.Method != http.MethodGet {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -74,19 +75,47 @@ func blobHeadMiddleware(blobHandler BlobHandler, next http.Handler) http.Handler
 			return
 		}
 
+		if r.Method == http.MethodHead {
+			size, err := blobHandler.Stat(r.Context(), repo, h)
+			if errors.Is(err, errNotFound) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusNotFound)
+				io.WriteString(w, blobUnknownBody) //nolint:errcheck
+				return
+			}
+			if err != nil {
+				http.Error(w, fmt.Sprintf("stat blob: %v", err), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+			w.Header().Set("Docker-Content-Digest", dgst)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		// GET: stat for size then stream the blob.
 		size, err := blobHandler.Stat(r.Context(), repo, h)
 		if errors.Is(err, errNotFound) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusNotFound)
+			io.WriteString(w, blobUnknownBody) //nolint:errcheck
 			return
 		}
 		if err != nil {
 			http.Error(w, fmt.Sprintf("stat blob: %v", err), http.StatusInternalServerError)
 			return
 		}
+		rc, err := blobHandler.Get(r.Context(), repo, h)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("get blob: %v", err), http.StatusInternalServerError)
+			return
+		}
+		defer rc.Close()
+		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
 		w.Header().Set("Docker-Content-Digest", dgst)
 		w.WriteHeader(http.StatusOK)
+		io.Copy(w, rc) //nolint:errcheck
 	})
 }
 
@@ -179,6 +208,7 @@ func serveManifest(store ManifestStore, repo, ref string, w http.ResponseWriter,
 		content, mediaType, err := store.Get(r.Context(), repo, ref)
 		if err != nil {
 			if errors.Is(err, errNotFound) {
+				slog.Info("manifest not found", "method", r.Method, "repo", repo, "ref", ref)
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusNotFound)
 				if r.Method == http.MethodGet {
@@ -190,6 +220,7 @@ func serveManifest(store ManifestStore, repo, ref string, w http.ResponseWriter,
 			return
 		}
 		d := digest.FromBytes(content)
+		slog.Info("manifest served", "method", r.Method, "repo", repo, "ref", ref, "digest", d.String(), "media_type", mediaType)
 		w.Header().Set("Content-Type", mediaType)
 		w.Header().Set("Docker-Content-Digest", d.String())
 		w.Header().Set("Content-Length", strconv.Itoa(len(content)))
@@ -210,6 +241,7 @@ func serveManifest(store ManifestStore, repo, ref string, w http.ResponseWriter,
 			return
 		}
 		d := digest.FromBytes(body)
+		slog.Info("manifest stored", "method", r.Method, "repo", repo, "ref", ref, "digest", d.String(), "media_type", mediaType)
 		w.Header().Set("Docker-Content-Digest", d.String())
 		w.Header().Set("Location", "/v2/"+repo+"/manifests/"+d.String())
 		w.WriteHeader(http.StatusCreated)
