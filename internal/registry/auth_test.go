@@ -105,6 +105,31 @@ func TestAuthMiddleware_WrongOrg(t *testing.T) {
 	}
 }
 
+func TestAuthMiddleware_SameOrgDifferentRepo(t *testing.T) {
+	signer, err := citoken.NewLocalSigner()
+	if err != nil {
+		t.Fatalf("new signer: %v", err)
+	}
+	validate := makeValidator(t, signer)
+
+	inner := &okHandler{}
+	h := authMiddleware(inner, validate)
+
+	// Token is for acme/repo-a; request accesses acme/repo-b (same org, different repo).
+	tok := makeTestToken(t, signer, "acme/repo-a")
+	req := httptest.NewRequest(http.MethodGet, "/v2/acme/repo-b/manifests/latest", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for same-org cross-repo access, got %d", rec.Code)
+	}
+	if inner.called {
+		t.Error("inner handler should not be called on cross-repo request")
+	}
+}
+
 func TestAuthMiddleware_NoToken(t *testing.T) {
 	validate := server.NewJobTokenValidator("http://unused", "ci-registry", "https://oidc.test")
 
