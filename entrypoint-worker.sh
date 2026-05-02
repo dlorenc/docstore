@@ -33,11 +33,21 @@ else
   echo "loop-ext4 mounted at /var/lib/buildkit on $LOOP" >&2
 fi
 
+# Write buildkitd config so the ci-registry service (plain HTTP) is treated as insecure.
+# Without this, BuildKit attempts HTTPS for cache import/export auth challenges even though
+# ci-registry.docstore-ci.svc.cluster.local runs on plain HTTP.
+mkdir -p /etc/buildkit
+cat > /etc/buildkit/buildkitd.toml << 'TOML'
+[registry."ci-registry.docstore-ci.svc.cluster.local"]
+  http = true
+  insecure = true
+TOML
+
 # Start buildkitd in background (standard, non-rootless — runs natively inside Kata VM).
 # --oci-worker-net=host ensures build containers share the host network namespace so they
 # can reach dockerd at tcp://localhost:2375.
 # overlayfs snapshotter now works because /var/lib/buildkit is ext4 (supports upper dirs).
-buildkitd --addr tcp://localhost:1234 --oci-worker-net=host --oci-worker-snapshotter=overlayfs &
+buildkitd --addr tcp://localhost:1234 --oci-worker-net=host --oci-worker-snapshotter=overlayfs --config /etc/buildkit/buildkitd.toml &
 
 # Start dockerd in background.
 # -H tcp://127.0.0.1:2375 exposes dockerd over TCP so build containers running with
