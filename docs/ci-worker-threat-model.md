@@ -34,15 +34,21 @@ ci-worker binary (trusted)
 ## What the request_token can do
 
 The `request_token` is a short-lived opaque token bound to a single CI job. It
-is accepted by a narrow set of endpoints on the docstore server, all of which
-enforce that `job.Repo` matches the URL path repo:
+is accepted by endpoints on the docstore server and the ci-scheduler. All
+docstore endpoints enforce that `job.Repo` matches the URL path repo:
 
-| Endpoint | Purpose |
-|---|---|
-| `POST /repos/{repo}/-/archive/presign` | Get presigned source archive URL |
-| `POST /repos/{repo}/-/check/{name}/logs` | Upload check run log content |
-| `GET /repos/{repo}/-/ci/config` | Fetch `.docstore/ci.yaml` for the job's branch/sequence |
-| `POST /repos/{repo}/-/check` | Report check run status |
+| Server | Endpoint | Purpose |
+|---|---|---|
+| docstore | `POST /repos/{repo}/-/archive/presign` | Get presigned source archive URL |
+| docstore | `POST /repos/{repo}/-/check/{name}/logs` | Upload check run log content |
+| docstore | `GET /repos/{repo}/-/ci/config` | Fetch `.docstore/ci.yaml` for the job's branch/sequence |
+| docstore | `POST /repos/{repo}/-/check` | Report check run status |
+| ci-scheduler | `POST /jobs/{id}/heartbeat` | Keep job alive (cluster-internal only) |
+| ci-scheduler | `POST /jobs/{id}/complete` | Report job completion (cluster-internal only) |
+
+The ci-scheduler endpoints are only reachable from within the cluster
+(`ci-scheduler.docstore-ci.svc.cluster.local`). Both validate the request_token
+and enforce that the token's job ID matches the URL `{id}`.
 
 The request_token can also be exchanged at the ci-oidc endpoint for a
 short-lived OIDC JWT. The audience determines what the JWT can access:
@@ -77,6 +83,11 @@ proposal (PR) jobs, permissions are read from the *target branch* (base branch)
 ci.yaml, not the source branch. A PR cannot grant itself elevated permissions —
 they only take effect after the permission change is reviewed and merged. See
 [ci.md](ci.md) for details.
+
+The `on:` trigger filter (which controls whether CI runs at all for a given
+proposal) is evaluated from the *source branch* ci.yaml. A PR author can
+therefore suppress or expand which base branches trigger CI on their branch, but
+this does not affect permissions, which remain base-branch-gated.
 
 ## GCP metadata server
 
