@@ -1,7 +1,10 @@
 package server
 
 import (
+	"archive/tar"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -16,6 +19,7 @@ import (
 	"github.com/dlorenc/docstore/internal/model"
 	"github.com/dlorenc/docstore/internal/policy"
 	"github.com/dlorenc/docstore/internal/service"
+	"github.com/dlorenc/docstore/internal/store"
 )
 
 // stubJobTokenStore is a minimal jobTokenStore implementation for tests.
@@ -249,6 +253,165 @@ func TestHandlePresignedArchive_ValidSig_PassesHMACCheck(t *testing.T) {
 	// 403 would indicate HMAC failure; any other code means HMAC check passed.
 	if rec.Code == http.StatusForbidden {
 		t.Fatalf("HMAC check should have passed, got 403; body: %s", rec.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleArchivePresign checksum tests
+// ---------------------------------------------------------------------------
+
+// buildPresignServerWithReadStore creates a server with a readStore for checksum tests.
+func buildPresignServerWithReadStore(secret []byte, jobStore jobTokenStore, rs readStore) *server {
+	return &server{
+		commitStore:       &mockStore{},
+		archiveHMACSecret: secret,
+		archiveBaseURL:    "https://example.com",
+		jobTokenStore:     jobStore,
+		readStore:         rs,
+	}
+}
+
+// computeExpectedChecksum builds the same tar that writeArchive would produce
+// for the given entries/content and returns the "sha256:hex" digest.
+func computeExpectedChecksum(t *testing.T, files map[string][]byte) string {
+	t.Helper()
+	h := sha256.New()
+	tw := tar.NewWriter(h)
+	for path, content := range files {
+		hdr := &tar.Header{
+			Name:     path,
+			Size:     int64(len(content)),
+			Mode:     0644,
+			Typeflag: tar.TypeReg,
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatalf("write tar header: %v", err)
+		}
+		if _, err := tw.Write(content); err != nil {
+			t.Fatalf("write tar content: %v", err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close tar writer: %v", err)
+	}
+	return "sha256:" + hex.EncodeToString(h.Sum(nil))
+}
+
+func TestHandleArchivePresign_ChecksumPresent_WhenReadStoreSet(t *testing.T) {
+	secret := []byte("test-secret")
+	plaintext, hashed, err := citoken.GenerateRequestToken()
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+	jobStore := &stubJobTokenStore{
+		lookupFn: func(_ context.Context, h string) (*model.CIJob, error) {
+			if h != hashed {
+				return nil, db.ErrTokenInvalid
+			}
+			return &model.CIJob{
+				ID:       "job-1",
+				Repo:     "org/myrepo",
+				Branch:   "feature",
+				Sequence: 42,
+			}, nil
+		},
+	}
+
+	// Single file for the archive.
+	fileContent := []byte("hello world\n")
+	rs := &mockReadStore{
+		materializeTreeFn: func(_ context.Context, _, _ string, _ *int64, _ int, _ string) ([]store.TreeEntry, error) {
+			return []store.TreeEntry{{Path: "hello.txt", VersionID: "v1"}}, nil
+		},
+		getFileFn: func(_ context.Context, _, _, _ string, _ *int64) (*store.FileContent, error) {
+			return &store.FileContent{
+				Path:      "hello.txt",
+				VersionID: "v1",
+				Content:   fileContent,
+			}, nil
+		},
+	}
+
+	s := buildPresignServerWithReadStore(secret, jobStore, rs)
+	handler := s.buildHandler(devID, devID, s.commitStore)
+	req := httptest.NewRequest(http.MethodPost, "/repos/org/myrepo/-/archive/presign", nil)
+	req.Header.Set("Authorization", "Bearer "+plaintext)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["url"] == "" {
+		t.Fatal("expected non-empty url in response")
+	}
+	checksum := resp["checksum"]
+	if checksum == "" {
+		t.Fatal("expected non-empty checksum in response")
+	}
+	if !strings.HasPrefix(checksum, "sha256:") {
+		t.Errorf("expected checksum to start with 'sha256:', got %q", checksum)
+	}
+	if len(checksum) != len("sha256:")+64 {
+		t.Errorf("expected checksum to be sha256:<64 hex chars>, got %q", checksum)
+	}
+
+	// Verify the checksum matches the expected sha256 of the tar.
+	want := computeExpectedChecksum(t, map[string][]byte{"hello.txt": fileContent})
+	if checksum != want {
+		t.Errorf("checksum mismatch:\n  got  %q\n  want %q", checksum, want)
+	}
+}
+
+func TestHandleArchivePresign_ChecksumEmpty_WhenNoReadStore(t *testing.T) {
+	secret := []byte("test-secret")
+	plaintext, hashed, err := citoken.GenerateRequestToken()
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+	jobStore := &stubJobTokenStore{
+		lookupFn: func(_ context.Context, h string) (*model.CIJob, error) {
+			if h != hashed {
+				return nil, db.ErrTokenInvalid
+			}
+			return &model.CIJob{
+				ID:       "job-1",
+				Repo:     "org/myrepo",
+				Branch:   "feature",
+				Sequence: 42,
+			}, nil
+		},
+	}
+
+	// No readStore — should return empty checksum (backwards compat).
+	s := buildPresignServer(secret, jobStore)
+	handler := s.buildHandler(devID, devID, s.commitStore)
+	req := httptest.NewRequest(http.MethodPost, "/repos/org/myrepo/-/archive/presign", nil)
+	req.Header.Set("Authorization", "Bearer "+plaintext)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["url"] == "" {
+		t.Fatal("expected non-empty url in response")
+	}
+	// checksum field must be present but empty when readStore is nil.
+	checksum, ok := resp["checksum"]
+	if !ok {
+		t.Fatal("expected 'checksum' key in response JSON")
+	}
+	if checksum != "" {
+		t.Errorf("expected empty checksum when readStore is nil, got %q", checksum)
 	}
 }
 

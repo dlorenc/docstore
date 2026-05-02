@@ -1,9 +1,12 @@
 package server
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -62,8 +65,21 @@ func (s *server) handleArchivePresign(w http.ResponseWriter, r *http.Request) {
 		sig,
 	)
 
+	// Compute a content checksum so BuildKit can cache by content rather than
+	// URL (presigned URLs include an expiry timestamp and change every run).
+	// Skip if the read store is not configured.
+	checksum := ""
+	if s.readStore != nil {
+		h := sha256.New()
+		if err := writeArchive(r.Context(), s.readStore, h, job.Repo, job.Branch, job.Sequence); err != nil {
+			slog.Warn("presign: checksum computation failed", "repo", job.Repo, "branch", job.Branch, "error", err)
+		} else {
+			checksum = "sha256:" + hex.EncodeToString(h.Sum(nil))
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"url": presignedURL}) //nolint:errcheck
+	json.NewEncoder(w).Encode(map[string]string{"url": presignedURL, "checksum": checksum}) //nolint:errcheck
 }
 
 // handlePresignedArchive serves GET /repos/{repo}/-/archive when the sig and expires

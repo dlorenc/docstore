@@ -2,6 +2,9 @@ package server
 
 import (
 	"archive/tar"
+	"context"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -245,6 +248,46 @@ func (s *server) handleDiff(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// writeArchive streams a tar archive of all files in repo/branch at the given
+// sequence number to w. Individual file fetch errors are logged and skipped;
+// structural errors (tree materialization, tar write failures) are returned.
+func writeArchive(ctx context.Context, rs readStore, w io.Writer, repo, branch string, atSequence int64) error {
+	tw := tar.NewWriter(w)
+	defer tw.Close()
+
+	afterPath := ""
+	for {
+		entries, err := rs.MaterializeTree(ctx, repo, branch, &atSequence, 100, afterPath)
+		if err != nil {
+			return fmt.Errorf("archive: materialize tree: %w", err)
+		}
+		for _, entry := range entries {
+			fc, err := rs.GetFile(ctx, repo, branch, entry.Path, &atSequence)
+			if err != nil || fc == nil {
+				slog.Error("archive: get file error", "repo", repo, "branch", branch, "path", entry.Path, "error", err)
+				continue
+			}
+			hdr := &tar.Header{
+				Name:     entry.Path,
+				Size:     int64(len(fc.Content)),
+				Mode:     0644,
+				Typeflag: tar.TypeReg,
+			}
+			if err := tw.WriteHeader(hdr); err != nil {
+				return err
+			}
+			if _, err := tw.Write(fc.Content); err != nil {
+				return err
+			}
+		}
+		if len(entries) < 100 {
+			break
+		}
+		afterPath = entries[len(entries)-1].Path
+	}
+	return nil
+}
+
 // handleArchive implements GET /repos/:name/-/archive?branch=X
 // Streams all files for the given branch as a tar archive.
 func (s *server) handleArchive(w http.ResponseWriter, r *http.Request) {
@@ -285,40 +328,16 @@ func (s *server) handleArchive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/x-tar")
-	tw := tar.NewWriter(w)
-	defer tw.Close()
+	var seq int64
+	if atSequence != nil {
+		seq = *atSequence
+	} else {
+		seq = bi.HeadSequence
+	}
 
-	afterPath := ""
-	for {
-		entries, err := s.readStore.MaterializeTree(r.Context(), repo, branch, atSequence, 100, afterPath)
-		if err != nil {
-			slog.Error("archive: materialize tree error", "repo", repo, "branch", branch, "error", err)
-			return
-		}
-		for _, entry := range entries {
-			fc, err := s.readStore.GetFile(r.Context(), repo, branch, entry.Path, atSequence)
-			if err != nil || fc == nil {
-				slog.Error("archive: get file error", "repo", repo, "branch", branch, "path", entry.Path, "error", err)
-				continue
-			}
-			hdr := &tar.Header{
-				Name:     entry.Path,
-				Size:     int64(len(fc.Content)),
-				Mode:     0644,
-				Typeflag: tar.TypeReg,
-			}
-			if err := tw.WriteHeader(hdr); err != nil {
-				return
-			}
-			if _, err := tw.Write(fc.Content); err != nil {
-				return
-			}
-		}
-		if len(entries) < 100 {
-			break
-		}
-		afterPath = entries[len(entries)-1].Path
+	w.Header().Set("Content-Type", "application/x-tar")
+	if err := writeArchive(r.Context(), s.readStore, w, repo, branch, seq); err != nil {
+		slog.Error("archive: write error", "repo", repo, "branch", branch, "error", err)
 	}
 }
 
