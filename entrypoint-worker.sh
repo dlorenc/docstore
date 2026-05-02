@@ -43,6 +43,11 @@ cat > /etc/buildkit/buildkitd.toml << 'TOML'
   insecure = true
 TOML
 
+# Block the GCP instance metadata server before handing control to user-defined build
+# steps. Without this rule any build step can obtain a GCP service account access token
+# via the link-local metadata endpoint (169.254.169.254) without any credential.
+iptables -I OUTPUT -d 169.254.169.254 -j DROP
+
 # Start buildkitd in background (standard, non-rootless — runs natively inside Kata VM).
 # --oci-worker-net=host ensures build containers share the host network namespace so they
 # can reach dockerd at tcp://localhost:2375.

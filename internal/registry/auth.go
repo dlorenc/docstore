@@ -14,8 +14,9 @@ import (
 //
 //   - If no Authorization: Bearer <token> header is present, returns 401.
 //   - If the token is invalid, returns 401.
-//   - If the image name extracted from the URL path does not start with the
-//     org derived from the token's repo claim, returns 403.
+//   - If the image name extracted from the URL path does not exactly match the
+//     repo claim in the token, returns 403. This prevents a token for
+//     acme/repo-a from pushing or pulling acme/repo-b cache refs.
 //   - Otherwise the request is forwarded to the inner registry handler.
 func authMiddleware(inner http.Handler, validate func(string) (*server.JobIdentity, error)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -56,9 +57,8 @@ func authMiddleware(inner http.Handler, validate func(string) (*server.JobIdenti
 			return
 		}
 
-		// Derive the org from the repo claim: e.g. "acme/myrepo" → "acme".
-		org, _, _ := strings.Cut(identity.Repo, "/")
-		if org == "" {
+		// Validate that the repo claim contains the expected org/repo format.
+		if !strings.Contains(identity.Repo, "/") {
 			http.Error(w, "invalid token: missing org in repo claim", http.StatusForbidden)
 			return
 		}
@@ -73,10 +73,12 @@ func authMiddleware(inner http.Handler, validate func(string) (*server.JobIdenti
 			return
 		}
 
-		// Check that the image belongs to the token's org.
-		if !strings.HasPrefix(imageName, org+"/") {
-			slog.Warn("auth: forbidden", "method", r.Method, "path", r.URL.Path, "org", org, "image", imageName)
-			http.Error(w, "forbidden: image not in token org", http.StatusForbidden)
+		// Enforce repo-level scoping: the image must exactly match the token's
+		// repo claim. Org-level prefix matching is insufficient — it would allow
+		// a token for acme/repo-a to push/pull acme/repo-b cache refs.
+		if imageName != identity.Repo {
+			slog.Warn("auth: forbidden", "method", r.Method, "path", r.URL.Path, "repo", identity.Repo, "image", imageName)
+			http.Error(w, "forbidden: image does not match token repo", http.StatusForbidden)
 			return
 		}
 
