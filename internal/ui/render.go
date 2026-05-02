@@ -343,7 +343,7 @@ func funcMap() template.FuncMap {
 		"joinPath":    joinPath,
 		"safeContent": safeContent,
 		"hasPrefix":   strings.HasPrefix,
-		"lines":       splitLines,
+		"highlight":   highlight,
 		"dict":           dict,
 		"add":            func(a, b int) int { return a + b },
 		"urlPathEscape":  url.PathEscape,
@@ -496,24 +496,5 @@ func isProbablyText(b []byte) bool {
 		}
 	}
 	return true
-}
-
-// splitLines returns the file content split into lines, each annotated with
-// its 1-indexed line number, for numbered rendering.
-type numberedLine struct {
-	Num  int
-	Text string
-}
-
-func splitLines(b []byte) []numberedLine {
-	if len(b) == 0 {
-		return nil
-	}
-	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
-	out := make([]numberedLine, len(lines))
-	for i, l := range lines {
-		out[i] = numberedLine{Num: i + 1, Text: l}
-	}
-	return out
 }
 

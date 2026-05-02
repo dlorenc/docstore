@@ -27,7 +27,7 @@
   <div>
     {{if $page.File}}
     <pre class="code">
-    {{- range lines $page.File.Content}}<div class="ln"><span class="num">{{.Num}}</span><span class="text">{{.Text}}</span></div>{{end -}}
+    {{- range highlight $page.File.Content $page.Path}}<div class="ln"><span class="num">{{.Num}}</span><span class="text">{{.HTML}}</span></div>{{end -}}
     </pre>
     {{else if $page.Path}}
     <div class="card empty">file not found at this branch</div>
