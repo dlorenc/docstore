@@ -21,6 +21,7 @@ import (
 	gwclient "github.com/moby/buildkit/frontend/gateway/client"
 	"github.com/moby/buildkit/session"
 	"github.com/moby/buildkit/session/auth/authprovider"
+	digest "github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/dlorenc/docstore/internal/ciconfig"
@@ -41,6 +42,12 @@ type Config struct {
 	// registry authentication. When set, overrides DOCKER_CONFIG and the
 	// default ~/.docker directory. Not parsed from ci.yaml.
 	DockerConfigDir string `json:"-" yaml:"-"`
+
+	// ArchiveChecksum is an optional "sha256:<hex>" digest of the archive source.
+	// When set, passed to llb.HTTP via llb.Checksum() so BuildKit uses content-
+	// based caching rather than URL-based caching (presigned URLs change every run).
+	// Not parsed from ci.yaml; populated by the CI worker at runtime.
+	ArchiveChecksum string `json:"-" yaml:"-"`
 }
 
 // Check is a single CI check configuration.
@@ -124,7 +131,7 @@ func (e *Executor) Run(ctx context.Context, source string, cfg Config, triggerCt
 					}
 				}
 			}()
-			results[j] = e.runCheck(ctx, source, check, cfg.CacheRef, cfg.DockerConfigDir, extraEnv)
+			results[j] = e.runCheck(ctx, source, check, cfg.CacheRef, cfg.DockerConfigDir, cfg.ArchiveChecksum, extraEnv)
 		})
 	}
 	wg.Wait()
@@ -139,8 +146,9 @@ func (e *Executor) Close() error {
 // runCheck executes a single check and returns its result.
 // cacheRef, when non-empty, enables BuildKit registry cache export/import.
 // dockerConfigDir, when non-empty, overrides the Docker config directory for auth.
+// archiveChecksum, when non-empty, is passed to llb.HTTP for content-based caching.
 // extraEnv is injected as additional environment variables into every step.
-func (e *Executor) runCheck(ctx context.Context, source string, check Check, cacheRef, dockerConfigDir string, extraEnv []string) CheckResult {
+func (e *Executor) runCheck(ctx context.Context, source string, check Check, cacheRef, dockerConfigDir, archiveChecksum string, extraEnv []string) CheckResult {
 	isHTTP := strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://")
 	isLocal := source != "" && !isHTTP
 
@@ -269,7 +277,11 @@ func (e *Executor) runCheck(ctx context.Context, source string, check Check, cac
 		//   ""          → empty scratch state (tests that do not access source files).
 		var srcMount llb.State
 		if isHTTP {
-			httpSrc := llb.HTTP(source, llb.Filename("source.tar"))
+			httpOpts := []llb.HTTPOption{llb.Filename("source.tar")}
+			if archiveChecksum != "" {
+				httpOpts = append(httpOpts, llb.Checksum(digest.Digest(archiveChecksum)))
+			}
+			httpSrc := llb.HTTP(source, httpOpts...)
 			// /src must be declared as an explicit output mount (via llb.AddMount with
 			// llb.Scratch() as the base) so that GetMount("/src") returns the populated
 			// state. Without it, GetMount returns nil and the golang step sees an empty /src.

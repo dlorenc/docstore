@@ -16,6 +16,7 @@ import (
 	"github.com/dlorenc/docstore/internal/model"
 	"github.com/dlorenc/docstore/internal/policy"
 	"github.com/dlorenc/docstore/internal/service"
+	"github.com/dlorenc/docstore/internal/store"
 )
 
 // stubJobTokenStore is a minimal jobTokenStore implementation for tests.
@@ -156,6 +157,94 @@ func TestHandleArchivePresign_ValidToken(t *testing.T) {
 		if !containsStr(u, param) {
 			t.Errorf("expected URL to contain %q; got %q", param, u)
 		}
+	}
+}
+
+// TestHandleArchivePresign_ChecksumEmpty_WhenNoReadStore verifies that when the
+// server has no readStore configured, the presign response returns an empty
+// checksum (backwards-compatible behaviour).
+func TestHandleArchivePresign_ChecksumEmpty_WhenNoReadStore(t *testing.T) {
+	secret := []byte("test-secret")
+	plaintext, hashed, err := citoken.GenerateRequestToken()
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+	store := &stubJobTokenStore{
+		lookupFn: func(_ context.Context, h string) (*model.CIJob, error) {
+			if h != hashed {
+				return nil, db.ErrTokenInvalid
+			}
+			return &model.CIJob{ID: "job-1", Repo: "org/myrepo", Branch: "main", Sequence: 1}, nil
+		},
+	}
+	// buildPresignServer does not set readStore.
+	s := buildPresignServer(secret, store)
+	handler := s.buildHandler(devID, devID, s.commitStore)
+
+	req := httptest.NewRequest(http.MethodPost, "/repos/org/myrepo/-/archive/presign", nil)
+	req.Header.Set("Authorization", "Bearer "+plaintext)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["checksum"] != "" {
+		t.Errorf("expected empty checksum when readStore is nil, got %q", resp["checksum"])
+	}
+}
+
+// TestHandleArchivePresign_ChecksumPresent_WhenReadStoreSet verifies that when
+// the server has a readStore configured, the presign response includes a
+// non-empty "sha256:..." checksum field.
+func TestHandleArchivePresign_ChecksumPresent_WhenReadStoreSet(t *testing.T) {
+	secret := []byte("test-secret")
+	plaintext, hashed, err := citoken.GenerateRequestToken()
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+	js := &stubJobTokenStore{
+		lookupFn: func(_ context.Context, h string) (*model.CIJob, error) {
+			if h != hashed {
+				return nil, db.ErrTokenInvalid
+			}
+			return &model.CIJob{ID: "job-1", Repo: "org/myrepo", Branch: "main", Sequence: 1}, nil
+		},
+	}
+	s := buildPresignServer(secret, js)
+	// Wire a readStore that returns a single small file.
+	s.readStore = &mockReadStore{
+		materializeTreeFn: func(_ context.Context, _, _ string, _ *int64, _ int, _ string) ([]store.TreeEntry, error) {
+			return []store.TreeEntry{{Path: "README.md"}}, nil
+		},
+		getFileFn: func(_ context.Context, _, _, _ string, _ *int64) (*store.FileContent, error) {
+			return &store.FileContent{Content: []byte("hello world\n")}, nil
+		},
+	}
+	handler := s.buildHandler(devID, devID, s.commitStore)
+
+	req := httptest.NewRequest(http.MethodPost, "/repos/org/myrepo/-/archive/presign", nil)
+	req.Header.Set("Authorization", "Bearer "+plaintext)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	checksum := resp["checksum"]
+	if !strings.HasPrefix(checksum, "sha256:") {
+		t.Errorf("expected checksum to start with 'sha256:', got %q", checksum)
+	}
+	if len(checksum) != len("sha256:")+64 {
+		t.Errorf("expected sha256: + 64 hex chars, got %q (len %d)", checksum, len(checksum))
 	}
 }
 
