@@ -1,6 +1,8 @@
 package server
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -62,8 +64,20 @@ func (s *server) handleArchivePresign(w http.ResponseWriter, r *http.Request) {
 		sig,
 	)
 
+	// 4. Compute sha256 checksum by streaming the archive through a hasher.
+	// Skip if readStore is not configured (returns empty checksum).
+	var checksum string
+	if s.readStore != nil {
+		h := sha256.New()
+		if err := writeArchive(r.Context(), s.readStore, h, job.Repo, job.Branch, job.Sequence); err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		checksum = "sha256:" + hex.EncodeToString(h.Sum(nil))
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"url": presignedURL}) //nolint:errcheck
+	json.NewEncoder(w).Encode(map[string]string{"url": presignedURL, "checksum": checksum}) //nolint:errcheck
 }
 
 // handlePresignedArchive serves GET /repos/{repo}/-/archive when the sig and expires
