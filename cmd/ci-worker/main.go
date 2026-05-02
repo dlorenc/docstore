@@ -221,35 +221,38 @@ func heartbeat(ctx context.Context, schedulerURL, jobID, requestToken string, do
 // ---------------------------------------------------------------------------
 
 // getPresignedArchiveURL calls POST /repos/{repo}/-/archive/presign with the
-// request_token and returns the presigned URL for BuildKit to fetch the archive.
-// This endpoint bypasses IAP and uses the request_token for authentication.
-func getPresignedArchiveURL(ctx context.Context, docstoreURL, repo, requestToken string) (string, error) {
+// request_token and returns the presigned URL and checksum for BuildKit to fetch
+// the archive. checksum is "sha256:<hex>" when the server computed it, or ""
+// if the server did not provide one. This endpoint bypasses IAP and uses the
+// request_token for authentication.
+func getPresignedArchiveURL(ctx context.Context, docstoreURL, repo, requestToken string) (url, checksum string, err error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	u := fmt.Sprintf("%s/repos/%s/-/archive/presign", docstoreURL, repo)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, nil)
 	if err != nil {
-		return "", fmt.Errorf("build presign request: %w", err)
+		return "", "", fmt.Errorf("build presign request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+requestToken)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("presign request: %w", err)
+		return "", "", fmt.Errorf("presign request: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("presign: unexpected status %d", resp.StatusCode)
+		return "", "", fmt.Errorf("presign: unexpected status %d", resp.StatusCode)
 	}
 	var body struct {
-		URL string `json:"url"`
+		URL      string `json:"url"`
+		Checksum string `json:"checksum"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return "", fmt.Errorf("decode presign response: %w", err)
+		return "", "", fmt.Errorf("decode presign response: %w", err)
 	}
 	if body.URL == "" {
-		return "", fmt.Errorf("presign: empty URL in response")
+		return "", "", fmt.Errorf("presign: empty URL in response")
 	}
-	return body.URL, nil
+	return body.URL, body.Checksum, nil
 }
 
 // postCheckLogs uploads the logs for a check run to the docstore server via
@@ -559,7 +562,7 @@ func runJob(
 	}
 
 	// 2. Obtain a presigned archive URL for BuildKit to fetch the source.
-	archiveURL, err := getPresignedArchiveURL(ctx, docstoreURL, job.Repo, requestToken)
+	archiveURL, archiveChecksum, err := getPresignedArchiveURL(ctx, docstoreURL, job.Repo, requestToken)
 	if err != nil {
 		return fail(fmt.Sprintf("get presigned archive URL: %v", err))
 	}
@@ -586,6 +589,7 @@ func runJob(
 	// Set cache fields if configured (populated by the caller, not from ci.yaml).
 	cfg.CacheRef = cacheRef
 	cfg.DockerConfigDir = dockerConfigDir
+	cfg.ArchiveChecksum = archiveChecksum
 	results, err := exec.Run(ctx, archiveURL, *cfg, triggerCtx, extraEnv)
 	if err != nil {
 		return fail(fmt.Sprintf("executor: %v", err))
