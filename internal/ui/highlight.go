@@ -37,6 +37,20 @@ func (k tokenKind) class() string {
 	return ""
 }
 
+type token struct {
+	kind tokenKind
+	text string
+}
+
+// endsIdent reports whether the token's text ends in an identifier-continuation
+// byte. Used to decide if a digit run starts a number or extends an identifier.
+func (t token) endsIdent() bool {
+	if t.text == "" {
+		return false
+	}
+	return isIdentCont(t.text[len(t.text)-1])
+}
+
 type language struct {
 	keywords     map[string]struct{}
 	lineComments []string
@@ -282,15 +296,8 @@ func scanNumber(s string, i int) int {
 	return j
 }
 
-func tokenize(s string, l *language) []struct {
-	kind tokenKind
-	text string
-} {
-	type tok = struct {
-		kind tokenKind
-		text string
-	}
-	var out []tok
+func tokenize(s string, l *language) []token {
+	var out []token
 	emit := func(k tokenKind, t string) {
 		if t == "" {
 			return
@@ -300,7 +307,7 @@ func tokenize(s string, l *language) []struct {
 			out[len(out)-1].text += t
 			return
 		}
-		out = append(out, tok{k, t})
+		out = append(out, token{k, t})
 	}
 
 	i := 0
@@ -350,7 +357,7 @@ func tokenize(s string, l *language) []struct {
 		// Number.
 		if isNumStart(c) {
 			// Don't start a number inside an identifier (e.g. "foo123").
-			if len(out) == 0 || !endsIdent(out[len(out)-1]) {
+			if len(out) == 0 || !out[len(out)-1].endsIdent() {
 				end := scanNumber(s, i)
 				emit(tkNumber, s[i:end])
 				i = end
@@ -380,16 +387,6 @@ func tokenize(s string, l *language) []struct {
 		i++
 	}
 	return out
-}
-
-func endsIdent(t struct {
-	kind tokenKind
-	text string
-}) bool {
-	if t.text == "" {
-		return false
-	}
-	return isIdentCont(t.text[len(t.text)-1])
 }
 
 // highlight tokenizes content according to the language inferred from path
@@ -431,22 +428,24 @@ func highlight(content []byte, p string) []highlightedLine {
 		class := t.kind.class()
 		// Tokens may contain newlines (block comments, raw strings); split
 		// across lines so each line gets its own balanced span.
-		parts := strings.Split(t.text, "\n")
-		for pi, part := range parts {
-			if part != "" {
-				if class == "" {
-					buf.WriteString(template.HTMLEscapeString(part))
-				} else {
-					buf.WriteString(`<span class="`)
-					buf.WriteString(class)
-					buf.WriteString(`">`)
-					buf.WriteString(template.HTMLEscapeString(part))
-					buf.WriteString(`</span>`)
-				}
-			}
-			if pi < len(parts)-1 {
+		first := true
+		for part := range strings.SplitSeq(t.text, "\n") {
+			if !first {
 				flushLine()
 			}
+			first = false
+			if part == "" {
+				continue
+			}
+			if class == "" {
+				buf.WriteString(template.HTMLEscapeString(part))
+				continue
+			}
+			buf.WriteString(`<span class="`)
+			buf.WriteString(class)
+			buf.WriteString(`">`)
+			buf.WriteString(template.HTMLEscapeString(part))
+			buf.WriteString(`</span>`)
 		}
 	}
 	flushLine()
