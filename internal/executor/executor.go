@@ -352,9 +352,19 @@ func (e *Executor) runCheck(ctx context.Context, source string, check Check, cac
 			return nil, fmt.Errorf("marshal: %w", err)
 		}
 
-		return c.Solve(ctx, gwclient.SolveRequest{
+		req := gwclient.SolveRequest{
 			Definition: def.ToPB(),
-		})
+		}
+		if cacheRef != "" {
+			req.CacheImports = []gwclient.CacheOptionsEntry{{
+				Type: "registry",
+				Attrs: map[string]string{
+					"ref":               cacheRef,
+					"registry.insecure": "true",
+				},
+			}}
+		}
+		return c.Solve(ctx, req)
 	}, ch)
 
 	collectWg.Wait()
