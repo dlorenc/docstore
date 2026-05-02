@@ -27,7 +27,7 @@ import (
 // runner executes CI checks against a source directory.
 // *executor.Executor satisfies this interface.
 type runner interface {
-	Run(ctx context.Context, sourceDir string, cfg executor.Config, triggerCtx ciconfig.TriggerContext, extraEnv []string) ([]executor.CheckResult, error)
+	Run(ctx context.Context, sourceDir string, cfg executor.Config, triggerCtx ciconfig.TriggerContext) ([]executor.CheckResult, error)
 }
 
 // heartbeatInterval is the delay between heartbeat updates.
@@ -526,6 +526,8 @@ func (s *checkLogServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // posts check run results. Returns (overallStatus, firstLogURL, errorMessage).
 // jwt is the OIDC job token for authenticating requests to docstore; may be
 // empty when OIDC is not configured (local dev mode).
+// oidcTokenURL is the OIDC token endpoint; when non-empty it is passed to the
+// executor so build steps can obtain tokens via BuildKit secrets.
 func runJob(
 	ctx context.Context,
 	httpClient *http.Client,
@@ -536,7 +538,7 @@ func runJob(
 	jwt string,
 	logDir string,
 	triggerCtx ciconfig.TriggerContext,
-	extraEnv []string,
+	oidcTokenURL string,
 	cacheRef string,
 	dockerConfigDir string,
 ) (status string, logURL *string, errMsg *string) {
@@ -590,7 +592,11 @@ func runJob(
 	cfg.CacheRef = cacheRef
 	cfg.DockerConfigDir = dockerConfigDir
 	cfg.ArchiveChecksum = archiveChecksum
-	results, err := exec.Run(ctx, archiveURL, *cfg, triggerCtx, extraEnv)
+	// OIDC credentials are passed via Config fields so the executor can inject
+	// them as BuildKit secrets (not env vars), keeping the cache key stable.
+	cfg.OIDCRequestToken = requestToken
+	cfg.OIDCRequestURL = oidcTokenURL
+	results, err := exec.Run(ctx, archiveURL, *cfg, triggerCtx)
 	if err != nil {
 		return fail(fmt.Sprintf("executor: %v", err))
 	}
@@ -749,12 +755,6 @@ func main() {
 			triggerCtx.ProposalID = *job.TriggerProposalID
 		}
 
-		// Build OIDC env vars to inject into job steps.
-		extraEnv := []string{
-			"DOCSTORE_OIDC_REQUEST_TOKEN=" + requestToken,
-			"DOCSTORE_OIDC_REQUEST_URL=" + cr.OIDCTokenURL,
-		}
-
 		// Set up BuildKit registry cache if the scheduler provided a registry.
 		var cacheRef, cacheDockerConfigDir string
 		if cr.CacheRegistry != "" {
@@ -779,7 +779,7 @@ func main() {
 		}
 
 		// Execute the job.
-		jobStatus, jobLogURL, jobErrMsg := runJob(ctx, httpClient, exec, docstoreURL, job, requestToken, jwt, logDir, triggerCtx, extraEnv, cacheRef, cacheDockerConfigDir)
+		jobStatus, jobLogURL, jobErrMsg := runJob(ctx, httpClient, exec, docstoreURL, job, requestToken, jwt, logDir, triggerCtx, cr.OIDCTokenURL, cacheRef, cacheDockerConfigDir)
 
 		// Stop heartbeat and clear log dir.
 		close(hbDone)
