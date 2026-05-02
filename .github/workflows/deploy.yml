@@ -48,7 +48,7 @@ jobs:
             --service-account=docstore-server@dlorenc-chainguard.iam.gserviceaccount.com \
             --add-cloudsql-instances=dlorenc-chainguard:us-central1:docstore-mvp \
             --update-secrets=DATABASE_URL=docstore-db-url:latest,IAP_CLIENT_SECRET=iap-oauth-client-secret:latest,ARCHIVE_HMAC_SECRET=archive-hmac-secret:latest \
-            --set-env-vars=ARCHIVE_BASE_URL=https://docstore-efuj4cj54a-uc.a.run.app,OIDC_JWKS_URL=https://oidc.docstore.dev/.well-known/jwks.json,OIDC_AUDIENCE=docstore,OIDC_ISSUER=https://oidc.docstore.dev \
+            --set-env-vars=ARCHIVE_BASE_URL=https://docstore-efuj4cj54a-uc.a.run.app,OIDC_JWKS_URL=https://oidc.docstore.dev/.well-known/jwks.json,OIDC_AUDIENCE=docstore,OIDC_ISSUER=https://oidc.docstore.dev,LOG_STORE=gcs,LOG_BUCKET=docstore-ci-logs \
             --ingress=internal-and-cloud-load-balancing \
             --min-instances=1 \
             --max-instances=1 \
@@ -66,6 +66,13 @@ jobs:
             --project=dlorenc-chainguard \
             --member=allUsers \
             --role=roles/run.invoker || true
+
+      - name: Grant docstore server write access to CI log bucket
+        run: |
+          gcloud storage buckets add-iam-policy-binding gs://docstore-ci-logs \
+            --member=serviceAccount:docstore-server@dlorenc-chainguard.iam.gserviceaccount.com \
+            --role=roles/storage.objectAdmin \
+            --project=dlorenc-chainguard || true
 
   build-and-deploy-ci-scheduler:
     runs-on: ubuntu-latest
