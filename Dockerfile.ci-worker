@@ -17,6 +17,7 @@ COPY --from=docker-bins /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=docker-bins /usr/local/bin/dockerd /usr/local/bin/dockerd
 COPY --from=docker-bins /usr/local/bin/docker-proxy /usr/local/bin/docker-proxy
 COPY --from=docker-bins /usr/local/bin/containerd /usr/local/bin/containerd
+COPY --from=docker-bins /usr/local/bin/containerd-shim-runc-v2 /usr/local/bin/containerd-shim-runc-v2
 COPY --from=buildkit /usr/bin/buildkitd /usr/bin/buildkitd
 COPY --from=build /ci-worker /usr/bin/ci-worker
 COPY entrypoint-worker.sh /entrypoint-worker.sh
