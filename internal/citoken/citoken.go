@@ -45,6 +45,7 @@ type JobClaims struct {
 	TriggeredBy string
 	JobID       string
 	Sequence    int64
+	Permissions []string // effective permissions granted to this job
 }
 
 // GenerateRequestToken returns a (plaintext, hashedForStorage) pair.
@@ -74,6 +75,10 @@ func IssueJWT(ctx context.Context, signer Signer, claims JobClaims) (string, err
 	now := time.Now()
 	jti := uuid.New().String()
 
+	perms := claims.Permissions
+	if len(perms) == 0 {
+		perms = []string{"checks"}
+	}
 	c := map[string]any{
 		"iss":          claims.Issuer,
 		"sub":          claims.Subject,
@@ -89,6 +94,7 @@ func IssueJWT(ctx context.Context, signer Signer, claims JobClaims) (string, err
 		"triggered_by": claims.TriggeredBy,
 		"job_id":       claims.JobID,
 		"sequence":     claims.Sequence,
+		"permissions":  perms,
 	}
 
 	return signer.Sign(ctx, c)

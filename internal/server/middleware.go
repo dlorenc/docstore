@@ -371,10 +371,11 @@ const jobIdentityKey contextKey = "jobIdentity"
 
 // JobIdentity holds the identity of a CI job extracted from a validated OIDC token.
 type JobIdentity struct {
-	JobID   string
-	Repo    string
-	Branch  string
-	Subject string
+	JobID       string
+	Repo        string
+	Branch      string
+	Subject     string
+	Permissions []string // effective permissions granted to this job
 }
 
 // JobIdentityFromContext returns the job identity stored in the context by
@@ -487,13 +488,14 @@ func validateJobOIDCToken(tokenString string, fetchKey func(kid string) (crypto.
 		return nil, fmt.Errorf("decode payload: %w", err)
 	}
 	var claims struct {
-		Iss    string  `json:"iss"`
-		Sub    string  `json:"sub"`
-		Aud    any     `json:"aud"` // string or []interface{}
-		Exp    float64 `json:"exp"`
-		JobID  string  `json:"job_id"`
-		Repo   string  `json:"repo"`
-		Branch string  `json:"branch"`
+		Iss         string  `json:"iss"`
+		Sub         string  `json:"sub"`
+		Aud         any     `json:"aud"` // string or []interface{}
+		Exp         float64 `json:"exp"`
+		JobID       string  `json:"job_id"`
+		Repo        string  `json:"repo"`
+		Branch      string  `json:"branch"`
+		Permissions []string `json:"permissions"`
 	}
 	if err := json.Unmarshal(payloadJSON, &claims); err != nil {
 		return nil, fmt.Errorf("parse payload: %w", err)
@@ -519,10 +521,11 @@ func validateJobOIDCToken(tokenString string, fetchKey func(kid string) (crypto.
 	}
 
 	return &JobIdentity{
-		JobID:   claims.JobID,
-		Repo:    claims.Repo,
-		Branch:  claims.Branch,
-		Subject: claims.Sub,
+		JobID:       claims.JobID,
+		Repo:        claims.Repo,
+		Branch:      claims.Branch,
+		Subject:     claims.Sub,
+		Permissions: claims.Permissions,
 	}, nil
 }
 

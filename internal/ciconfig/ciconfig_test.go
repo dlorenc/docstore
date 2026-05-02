@@ -1,6 +1,9 @@
 package ciconfig
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestMatchesPush(t *testing.T) {
 	tests := []struct {
@@ -199,6 +202,65 @@ func TestMatchesProposal(t *testing.T) {
 			got := tt.cfg.MatchesProposal(tt.baseBranch)
 			if got != tt.want {
 				t.Errorf("MatchesProposal(%q) = %v, want %v", tt.baseBranch, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEffectivePermissions(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  CIConfig
+		want []string
+	}{
+		{
+			name: "no permissions block returns default checks",
+			cfg:  CIConfig{Permissions: nil},
+			want: []string{"checks"},
+		},
+		{
+			name: "empty permissions block returns nothing",
+			cfg:  CIConfig{Permissions: &Permissions{}},
+			want: nil,
+		},
+		{
+			name: "checks write only",
+			cfg:  CIConfig{Permissions: &Permissions{Checks: "write"}},
+			want: []string{"checks"},
+		},
+		{
+			name: "contents write only",
+			cfg:  CIConfig{Permissions: &Permissions{Contents: "write"}},
+			want: []string{"contents"},
+		},
+		{
+			name: "checks and contents",
+			cfg:  CIConfig{Permissions: &Permissions{Checks: "write", Contents: "write"}},
+			want: []string{"checks", "contents"},
+		},
+		{
+			name: "all permissions",
+			cfg: CIConfig{Permissions: &Permissions{
+				Checks:    "write",
+				Contents:  "write",
+				Proposals: "write",
+				Issues:    "write",
+				Releases:  "write",
+				CI:        "write",
+			}},
+			want: []string{"checks", "contents", "proposals", "issues", "releases", "ci"},
+		},
+		{
+			name: "non-write values are ignored",
+			cfg:  CIConfig{Permissions: &Permissions{Checks: "read", Contents: "write"}},
+			want: []string{"contents"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.cfg.EffectivePermissions()
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("EffectivePermissions() = %v, want %v", got, tt.want)
 			}
 		})
 	}

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/lib/pq"
+
 	"github.com/dlorenc/docstore/internal/model"
 )
 
@@ -17,7 +19,7 @@ var ErrTokenInvalid = errors.New("request token invalid or expired")
 // ciJobColumns is the ordered list of columns returned by SELECT * on ci_jobs.
 const ciJobColumns = `id, repo, branch, sequence, status, claimed_at, last_heartbeat_at,
 	worker_pod, worker_pod_ip, log_url, error_message, created_at, trigger_type, trigger_branch, trigger_base_branch, trigger_proposal_id,
-	request_token, request_token_exp`
+	request_token, request_token_exp, permissions`
 
 // scanCIJob scans a single ci_jobs row into a model.CIJob.
 func scanCIJob(row interface {
@@ -38,17 +40,21 @@ func scanCIJob(row interface {
 	// the public api.CIJob wire type; scan them into discard variables.
 	var requestToken sql.NullString
 	var requestTokenExp sql.NullTime
+	var permissions pq.StringArray
 	if err := row.Scan(
 		&j.ID, &j.Repo, &j.Branch, &j.Sequence, &j.Status,
 		&claimedAt, &lastHeartbeatAt, &workerPod, &workerPodIP,
 		&logURL, &errorMessage, &j.CreatedAt,
 		&triggerType, &triggerBranch, &triggerBaseBranch, &triggerProposalID,
-		&requestToken, &requestTokenExp,
+		&requestToken, &requestTokenExp, &permissions,
 	); err != nil {
 		return nil, err
 	}
 	_ = requestToken
 	_ = requestTokenExp
+	if len(permissions) > 0 {
+		j.Permissions = []string(permissions)
+	}
 	if claimedAt.Valid {
 		j.ClaimedAt = &claimedAt.Time
 	}
@@ -120,7 +126,9 @@ func (s *Store) LookupRequestToken(ctx context.Context, hashedToken string) (*mo
 // triggerBranch is the branch that caused the trigger (may be empty for some trigger types).
 // triggerBaseBranch is the base branch for proposal-triggered jobs (empty string for others).
 // triggerProposalID is the proposal ID for proposal-triggered jobs (empty string for others).
-func (s *Store) InsertCIJob(ctx context.Context, repo, branch string, sequence int64, triggerType, triggerBranch, triggerBaseBranch, triggerProposalID string) (*model.CIJob, error) {
+// permissions is the list of permission names granted to the job (e.g. "checks", "contents").
+// A nil or empty permissions slice defaults to {"checks"} at the DB level.
+func (s *Store) InsertCIJob(ctx context.Context, repo, branch string, sequence int64, triggerType, triggerBranch, triggerBaseBranch, triggerProposalID string, permissions []string) (*model.CIJob, error) {
 	var proposalID any
 	if triggerProposalID != "" {
 		proposalID = triggerProposalID
@@ -129,10 +137,13 @@ func (s *Store) InsertCIJob(ctx context.Context, repo, branch string, sequence i
 	if triggerBaseBranch != "" {
 		baseBranch = triggerBaseBranch
 	}
+	if len(permissions) == 0 {
+		permissions = []string{"checks"}
+	}
 	row := s.db.QueryRowContext(ctx,
-		`INSERT INTO ci_jobs (repo, branch, sequence, trigger_type, trigger_branch, trigger_base_branch, trigger_proposal_id)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING `+ciJobColumns,
-		repo, branch, sequence, triggerType, triggerBranch, baseBranch, proposalID,
+		`INSERT INTO ci_jobs (repo, branch, sequence, trigger_type, trigger_branch, trigger_base_branch, trigger_proposal_id, permissions)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING `+ciJobColumns,
+		repo, branch, sequence, triggerType, triggerBranch, baseBranch, proposalID, pq.Array(permissions),
 	)
 	j, err := scanCIJob(row)
 	if err != nil {

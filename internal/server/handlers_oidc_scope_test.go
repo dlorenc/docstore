@@ -314,3 +314,177 @@ func TestHandleReview_RepoNotFound(t *testing.T) {
 		t.Fatalf("expected 404 for non-existent repo in handleReview, got %d; body: %s", rec.Code, rec.Body.String())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// jobEndpointAllowed unit tests
+// ---------------------------------------------------------------------------
+
+func TestJobEndpointAllowed_DefaultChecksPermission(t *testing.T) {
+	// "check" is always allowed regardless of the permissions slice.
+	if !jobEndpointAllowed("check", nil) {
+		t.Error("check should be allowed with nil permissions")
+	}
+	if !jobEndpointAllowed("check", []string{}) {
+		t.Error("check should be allowed with empty permissions")
+	}
+	if !jobEndpointAllowed("check", []string{"contents"}) {
+		t.Error("check should be allowed with any permissions")
+	}
+}
+
+func TestJobEndpointAllowed_ContentsPermission(t *testing.T) {
+	contentsEndpoints := []string{"commit", "merge", "rebase", "purge", "branch", "branch/main", "branch/feat/foo"}
+	for _, ep := range contentsEndpoints {
+		if jobEndpointAllowed(ep, nil) {
+			t.Errorf("%q should be denied without contents permission", ep)
+		}
+		if jobEndpointAllowed(ep, []string{"checks"}) {
+			t.Errorf("%q should be denied with only checks permission", ep)
+		}
+		if !jobEndpointAllowed(ep, []string{"contents"}) {
+			t.Errorf("%q should be allowed with contents permission", ep)
+		}
+	}
+}
+
+func TestJobEndpointAllowed_ProposalsPermission(t *testing.T) {
+	proposalEndpoints := []string{"review", "comment", "comment/abc123", "proposals", "proposals/my-id", "proposals/my-id/close"}
+	for _, ep := range proposalEndpoints {
+		if jobEndpointAllowed(ep, nil) {
+			t.Errorf("%q should be denied without proposals permission", ep)
+		}
+		if !jobEndpointAllowed(ep, []string{"proposals"}) {
+			t.Errorf("%q should be allowed with proposals permission", ep)
+		}
+	}
+}
+
+func TestJobEndpointAllowed_IssuesPermission(t *testing.T) {
+	issueEndpoints := []string{"issues", "issues/1", "issues/1/close", "issues/1/comments"}
+	for _, ep := range issueEndpoints {
+		if jobEndpointAllowed(ep, nil) {
+			t.Errorf("%q should be denied without issues permission", ep)
+		}
+		if !jobEndpointAllowed(ep, []string{"issues"}) {
+			t.Errorf("%q should be allowed with issues permission", ep)
+		}
+	}
+}
+
+func TestJobEndpointAllowed_ReleasesPermission(t *testing.T) {
+	releaseEndpoints := []string{"releases", "releases/v1.0"}
+	for _, ep := range releaseEndpoints {
+		if jobEndpointAllowed(ep, nil) {
+			t.Errorf("%q should be denied without releases permission", ep)
+		}
+		if !jobEndpointAllowed(ep, []string{"releases"}) {
+			t.Errorf("%q should be allowed with releases permission", ep)
+		}
+	}
+}
+
+func TestJobEndpointAllowed_CIPermission(t *testing.T) {
+	if jobEndpointAllowed("ci/run", nil) {
+		t.Error("ci/run should be denied without ci permission")
+	}
+	if !jobEndpointAllowed("ci/run", []string{"ci"}) {
+		t.Error("ci/run should be allowed with ci permission")
+	}
+}
+
+func TestJobEndpointAllowed_UnknownEndpointDenied(t *testing.T) {
+	unknownEndpoints := []string{"", "admin", "roles", "chain", "tree"}
+	for _, ep := range unknownEndpoints {
+		if jobEndpointAllowed(ep, []string{"checks", "contents", "proposals", "issues", "releases", "ci"}) {
+			t.Errorf("%q should be denied even with all permissions", ep)
+		}
+	}
+}
+
+// TestOIDC_ContentsPermissionAllowsCommit verifies that a job with
+// "contents" permission in its JWT can POST /-/commit to its own repo.
+func TestOIDC_ContentsPermissionAllowsCommit(t *testing.T) {
+	// Use a mock that recognizes the repo but we send empty files so
+	// handleCommit returns 400 (before touching the service layer).
+	// The key assertion is that the permissions gate does NOT return 403.
+	ms := &mockStore{
+		getRepoFn: func(_ context.Context, name string) (*model.Repo, error) {
+			return &model.Repo{Name: name}, nil
+		},
+	}
+	handler, key := buildOIDCServer(t, ms)
+
+	// Build a token with permissions: ["checks", "contents"]
+	tok := makeJobJWTWithPermissions(t, key, "acme/myrepo", "main", []string{"checks", "contents"})
+	body, _ := json.Marshal(map[string]any{
+		"branch":  "main",
+		"message": "test commit",
+		"files":   []any{}, // empty files → 400 from handler (not 403 from gate)
+	})
+	req := httptest.NewRequest(http.MethodPost, "/repos/acme/myrepo/-/commit", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusForbidden {
+		t.Fatalf("expected commit to pass the permissions gate, got 403; body: %s", rec.Body.String())
+	}
+}
+
+// TestOIDC_NoContentsPermissionDeniesCommit verifies that a job without
+// "contents" permission cannot POST /-/commit even to its own repo.
+func TestOIDC_NoContentsPermissionDeniesCommit(t *testing.T) {
+	ms := &mockStore{
+		getRepoFn: func(_ context.Context, name string) (*model.Repo, error) {
+			return &model.Repo{Name: name}, nil
+		},
+	}
+	handler, key := buildOIDCServer(t, ms)
+
+	// Token has only the default "checks" permission (no contents).
+	tok := makeJobJWTWithPermissions(t, key, "acme/myrepo", "main", []string{"checks"})
+	body, _ := json.Marshal(map[string]any{
+		"branch":  "main",
+		"message": "test commit",
+		"files":   []any{},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/repos/acme/myrepo/-/commit", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for commit without contents permission, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// makeJobJWTWithPermissions creates a signed RS256 JWT with the given permissions claim.
+func makeJobJWTWithPermissions(t *testing.T, key *rsa.PrivateKey, repo, branch string, permissions []string) string {
+	t.Helper()
+	const kid = "oidc-test-key"
+	const issuer = "https://oidc.docstore.dev"
+	const audience = "docstore"
+	headerJSON, _ := json.Marshal(map[string]string{"alg": "RS256", "kid": kid, "typ": "JWT"})
+	payloadJSON, _ := json.Marshal(map[string]any{
+		"iss":         issuer,
+		"sub":         "repo:" + repo + ":branch:" + branch + ":check:",
+		"aud":         audience,
+		"exp":         time.Now().Add(time.Hour).Unix(),
+		"iat":         time.Now().Unix(),
+		"job_id":      "job-perm-test",
+		"repo":        repo,
+		"branch":      branch,
+		"permissions": permissions,
+	})
+	headerB64 := base64.RawURLEncoding.EncodeToString(headerJSON)
+	payloadB64 := base64.RawURLEncoding.EncodeToString(payloadJSON)
+	signingInput := headerB64 + "." + payloadB64
+	digest := sha256.Sum256([]byte(signingInput))
+	sig, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, digest[:])
+	if err != nil {
+		t.Fatalf("sign JWT: %v", err)
+	}
+	return signingInput + "." + base64.RawURLEncoding.EncodeToString(sig)
+}

@@ -44,7 +44,7 @@ type stubStore struct {
 	proposalListErr error
 }
 
-func (s *stubStore) InsertCIJob(_ context.Context, repo, branch string, sequence int64, triggerType, triggerBranch, triggerBaseBranch, triggerProposalID string) (*model.CIJob, error) {
+func (s *stubStore) InsertCIJob(_ context.Context, repo, branch string, sequence int64, triggerType, triggerBranch, triggerBaseBranch, triggerProposalID string, permissions []string) (*model.CIJob, error) {
 	j := &model.CIJob{
 		ID:                "test-uuid",
 		Repo:              repo,
@@ -54,6 +54,7 @@ func (s *stubStore) InsertCIJob(_ context.Context, repo, branch string, sequence
 		TriggerType:       triggerType,
 		TriggerBranch:     triggerBranch,
 		TriggerBaseBranch: triggerBaseBranch,
+		Permissions:       permissions,
 	}
 	if triggerProposalID != "" {
 		j.TriggerProposalID = &triggerProposalID
@@ -681,7 +682,7 @@ type countingStore struct {
 	reapErr   error
 }
 
-func (s *countingStore) InsertCIJob(_ context.Context, repo, branch string, sequence int64, triggerType, triggerBranch, triggerBaseBranch, triggerProposalID string) (*model.CIJob, error) {
+func (s *countingStore) InsertCIJob(_ context.Context, repo, branch string, sequence int64, triggerType, triggerBranch, triggerBaseBranch, triggerProposalID string, _ []string) (*model.CIJob, error) {
 	return &model.CIJob{ID: "test-uuid", Repo: repo, Branch: branch, Sequence: sequence, Status: "queued", TriggerType: triggerType}, nil
 }
 

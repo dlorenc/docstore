@@ -6,10 +6,53 @@ package ciconfig
 import "github.com/gobwas/glob"
 
 // CIConfig is the top-level structure of .docstore/ci.yaml.
-// Only the 'on:' block is parsed here; execution-related fields (checks, jobs)
-// are handled separately by the executor package.
+// Only the 'on:' and 'permissions:' blocks are parsed here; execution-related
+// fields (checks, jobs) are handled separately by the executor package.
 type CIConfig struct {
-	On *TriggerConfig `yaml:"on"`
+	On          *TriggerConfig `yaml:"on"`
+	Permissions *Permissions   `yaml:"permissions"`
+}
+
+// Permissions declares the elevated API permissions a CI job is granted.
+// All values are the literal string "write" when present; absent keys are not
+// granted. Default (no permissions block): only checks: write is effective.
+type Permissions struct {
+	Contents  string `yaml:"contents"`  // commit, branch, merge, rebase, purge
+	Checks    string `yaml:"checks"`    // check run reporting (default)
+	Proposals string `yaml:"proposals"` // create proposals, post reviews/comments
+	Issues    string `yaml:"issues"`    // create/close/comment on issues
+	Releases  string `yaml:"releases"`  // create/delete releases
+	CI        string `yaml:"ci"`        // trigger CI runs
+}
+
+// EffectivePermissions returns the list of permission names granted by this
+// config. If no Permissions block is declared, only "checks" is returned.
+// When a Permissions block is present, only explicitly declared "write"
+// permissions are included.
+func (cfg *CIConfig) EffectivePermissions() []string {
+	if cfg.Permissions == nil {
+		return []string{"checks"}
+	}
+	var perms []string
+	if cfg.Permissions.Checks == "write" {
+		perms = append(perms, "checks")
+	}
+	if cfg.Permissions.Contents == "write" {
+		perms = append(perms, "contents")
+	}
+	if cfg.Permissions.Proposals == "write" {
+		perms = append(perms, "proposals")
+	}
+	if cfg.Permissions.Issues == "write" {
+		perms = append(perms, "issues")
+	}
+	if cfg.Permissions.Releases == "write" {
+		perms = append(perms, "releases")
+	}
+	if cfg.Permissions.CI == "write" {
+		perms = append(perms, "ci")
+	}
+	return perms
 }
 
 // ScheduleEntry holds a single cron-based schedule trigger.
