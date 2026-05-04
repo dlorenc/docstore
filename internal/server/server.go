@@ -442,11 +442,11 @@ func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore Wri
 	if writeStore != nil {
 		routed = RBACMiddleware(writeStore, bootstrapAdmin)(inner)
 	}
-	iapHandler := GoogleAuthMiddleware(devIdentity, s.oauthClientID, s.sessionSecret)(routed)
+	authHandler := GoogleAuthMiddleware(devIdentity, s.oauthClientID, s.sessionSecret)(routed)
 
 	// Wrap the auth handler: intercept presign, HMAC-signed archive, and job
 	// OIDC token requests before Google ID token validation. Everything else falls through
-	// to iapHandler.
+	// to authHandler.
 	// Using "/" (not "/repos/") avoids the Go mux trailing-slash redirect that
 	// would turn POST /repos into a 307 → POST /repos/.
 	outer.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -494,7 +494,7 @@ func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore Wri
 		// Job OIDC token auth: if a Bearer token is present and OIDC is configured,
 		// validate it as a job OIDC JWT. On success, inject job identity into context
 		// and route directly to the inner mux (bypassing Google auth and RBAC).
-		// On failure, return 401. If no Bearer token, fall through to iapHandler.
+		// On failure, return 401. If no Bearer token, fall through to authHandler.
 		if s.oidcKeyCache != nil {
 			auth := r.Header.Get("Authorization")
 			if tok := strings.TrimPrefix(auth, "Bearer "); tok != "" && tok != auth {
@@ -543,7 +543,7 @@ func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore Wri
 			}
 		}
 
-		iapHandler.ServeHTTP(w, r)
+		authHandler.ServeHTTP(w, r)
 	}))
 	return RequestLogger(outer)
 }
@@ -740,7 +740,7 @@ func (s *server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, stateCookie)
 
 	conf := s.oauthConfig(r)
-	authURL := conf.AuthCodeURL(state, oauth2.AccessTypeOffline)
+	authURL := conf.AuthCodeURL(state, oauth2.AccessTypeOnline)
 	http.Redirect(w, r, authURL, http.StatusFound)
 }
 

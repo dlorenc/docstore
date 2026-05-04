@@ -29,7 +29,7 @@ if err != nil {
 |---|---|
 | `WithBearerToken(token string)` | Sets `Authorization: Bearer <token>` on every request. |
 | `WithIdentity(identity string)` | Sets `X-DocStore-Identity` header (dev mode only — server must have `DEV_IDENTITY` set). |
-| `WithHTTPClient(h *http.Client)` | Replaces the default `http.DefaultClient`. Use for custom timeouts, proxies, or an IAP-authenticated transport. |
+| `WithHTTPClient(h *http.Client)` | Replaces the default `http.DefaultClient`. Use for custom timeouts, proxies, or a custom transport. |
 | `WithUserAgent(ua string)` | Overrides the `User-Agent` header (default: `docstore-go-sdk/0.1`). |
 
 ## Repo-scoped operations

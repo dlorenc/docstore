@@ -229,14 +229,14 @@ func (m *mockRoleStore) HasAdmin(ctx context.Context, repo string) (bool, error)
 }
 
 // rbacTestServer creates a server with a fixed identity in context (simulating
-// post-IAP) and the given role store + bootstrap admin. Returns the mux handler
+// post-auth) and the given role store + bootstrap admin. Returns the mux handler
 // and a recorder factory.
 func rbacTestServer(store RoleStore, bootstrapAdmin, identity string) http.Handler {
 	inner := http.NewServeMux()
 	inner.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	// Inject identity into context (normally done by IAPMiddleware).
+	// Inject identity into context (normally done by GoogleAuthMiddleware).
 	identityInjector := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := context.WithValue(r.Context(), identityKey, identity)
@@ -746,7 +746,7 @@ func TestGoogleAuthMiddleware_InvalidIssuer(t *testing.T) {
 		map[string]any{
 			"email": "alice@example.com",
 			"exp":   time.Now().Add(time.Hour).Unix(),
-			"iss":   "https://cloud.google.com/iap", // IAP issuer, not direct Google
+			"iss":   "https://cloud.google.com/iap", // wrong issuer (IAP issuer, not accounts.google.com)
 			"aud":   testClientID,
 		},
 	)
@@ -762,7 +762,7 @@ func TestGoogleAuthMiddleware_InvalidIssuer(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401 for IAP issuer, got %d", rec.Code)
+		t.Fatalf("expected 401 for wrong issuer, got %d", rec.Code)
 	}
 }
 

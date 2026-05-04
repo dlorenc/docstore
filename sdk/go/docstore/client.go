@@ -48,14 +48,14 @@ func WithBearerToken(token string) ClientOption {
 }
 
 // WithIdentity sets the X-DocStore-Identity header on every request. The
-// server only honours this header in dev mode (no IAP); use it for local
+// server only honours this header in dev mode (no OAuth); use it for local
 // development and tests.
 func WithIdentity(identity string) ClientOption {
 	return func(c *Client) { c.identity = identity }
 }
 
 // WithHTTPClient replaces the *http.Client used for all requests. Use it to
-// inject timeouts, proxies, or an IAP-authenticated transport.
+// inject timeouts, proxies, or a custom transport.
 func WithHTTPClient(h *http.Client) ClientOption {
 	return func(c *Client) {
 		if h != nil {

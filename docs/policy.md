@@ -2,15 +2,15 @@
 
 DocStore has three layers of access control:
 
-1. **IAP authentication** — validates GCP Identity-Aware Proxy JWTs to establish identity.
+1. **Google OAuth authentication** — validates Google ID tokens to establish identity.
 2. **RBAC** — per-repo role assignments that gate which HTTP methods each identity can call.
 3. **OPA policy engine** — Rego-based merge gates that can require reviews, CI checks, and OWNERS approval.
 
-## Authentication (IAP)
+## Authentication (Google OAuth)
 
-The server validates the `X-Goog-IAP-JWT-Assertion` header on every request (except `GET /healthz`). The JWT is RS256-signed by Google. Public keys are fetched from `https://www.gstatic.com/iap/verify/public_key-jwk` and cached for 1 hour. The identity is extracted from the `email` claim.
+The server validates Google ID tokens on every request (except `GET /healthz`). For browser sessions, the server issues a signed cookie after completing the OAuth 2.0 authorization code flow (`/auth/login` → `/auth/callback`). For the CLI, `ds login` stores a Google ID token that is sent as a `Bearer` token. Tokens are RS256-signed by Google; public keys are fetched from `https://www.googleapis.com/oauth2/v3/certs` and cached. The identity is extracted from the `email` claim.
 
-**Local dev only:** Set `DEV_IDENTITY=you@example.com` (or `--dev-identity`) on the server to bypass JWT validation. All requests are treated as that identity. This must never be set in production — production uses real IAP JWTs at `https://docstore.dev`.
+**Local dev only:** Set `DEV_IDENTITY=you@example.com` (or `--dev-identity`) on the server to bypass JWT validation. All requests are treated as that identity. This must never be set in production — production uses real Google OAuth at `https://docstore.dev`.
 
 ## RBAC roles
 
