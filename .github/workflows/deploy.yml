@@ -39,11 +39,12 @@ jobs:
           IMAGE=$(ko build --bare --tags latest,$(git rev-parse --short HEAD) ./cmd/docstore)
           echo "image=$IMAGE" >> $GITHUB_OUTPUT
 
-      - name: Ensure session-secret exists in Secret Manager
+      - name: Verify session-secret exists in Secret Manager
+        # The secret must be pre-created before deploying. To create it:
+        #   gcloud secrets create session-secret --replication-policy=automatic --project=dlorenc-chainguard
+        #   openssl rand -base64 32 | gcloud secrets versions add session-secret --data-file=- --project=dlorenc-chainguard
         run: |
-          gcloud secrets describe session-secret --project=dlorenc-chainguard 2>/dev/null || \
-            openssl rand -base64 32 | gcloud secrets create session-secret \
-              --data-file=- --project=dlorenc-chainguard --replication-policy=automatic
+          gcloud secrets versions access latest --secret=session-secret --project=dlorenc-chainguard > /dev/null
 
       - name: Deploy to Cloud Run
         run: |
