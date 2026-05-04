@@ -4,11 +4,13 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -4111,5 +4113,303 @@ default reason = "all good"
 	}
 	if len(resp.Policies) == 0 {
 		t.Error("expected at least one policy result")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// OAuth handler tests (issue #438)
+// ---------------------------------------------------------------------------
+
+func TestSafeRedirect(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		// valid relative paths pass through unchanged
+		{"", "/ui/"},
+		{"/ui/", "/ui/"},
+		{"/ui/repos/acme/foo", "/ui/repos/acme/foo"},
+		{"/some/path?q=1", "/some/path?q=1"},
+		// absolute URLs must be rejected
+		{"https://evil.com", "/ui/"},
+		{"http://evil.com/path", "/ui/"},
+		{"ftp://evil.com", "/ui/"},
+		// protocol-relative URLs must be rejected
+		{"//evil.com", "/ui/"},
+		{"//evil.com/path", "/ui/"},
+		// URL-containing paths must be rejected
+		{"/path?next=https://evil.com", "/ui/"},
+		// missing leading slash
+		{"evil.com", "/ui/"},
+		{"relative/path", "/ui/"},
+	}
+	for _, tc := range cases {
+		got := safeRedirect(tc.input)
+		if got != tc.want {
+			t.Errorf("safeRedirect(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestIsSecureRequest(t *testing.T) {
+	// X-Forwarded-Proto: https
+	r := httptest.NewRequest("GET", "/", nil)
+	r.Header.Set("X-Forwarded-Proto", "https")
+	if !isSecureRequest(r) {
+		t.Error("expected true when X-Forwarded-Proto is https")
+	}
+
+	// X-Forwarded-Proto: http
+	r = httptest.NewRequest("GET", "/", nil)
+	r.Header.Set("X-Forwarded-Proto", "http")
+	if isSecureRequest(r) {
+		t.Error("expected false when X-Forwarded-Proto is http")
+	}
+
+	// No header, no TLS
+	r = httptest.NewRequest("GET", "/", nil)
+	if isSecureRequest(r) {
+		t.Error("expected false when no header and no TLS")
+	}
+
+	// No header, TLS set
+	r = httptest.NewRequest("GET", "/", nil)
+	r.TLS = &tls.ConnectionState{}
+	if !isSecureRequest(r) {
+		t.Error("expected true when r.TLS is set")
+	}
+
+	// X-Forwarded-Proto takes precedence over r.TLS
+	r = httptest.NewRequest("GET", "/", nil)
+	r.TLS = &tls.ConnectionState{}
+	r.Header.Set("X-Forwarded-Proto", "http")
+	if isSecureRequest(r) {
+		t.Error("expected false when X-Forwarded-Proto overrides TLS")
+	}
+}
+
+func TestOAuthConfig(t *testing.T) {
+	s := &server{
+		oauthClientID:     "client-id",
+		oauthClientSecret: "client-secret",
+	}
+
+	// HTTPS via X-Forwarded-Proto
+	r := httptest.NewRequest("GET", "/auth/login", nil)
+	r.Host = "example.com"
+	r.Header.Set("X-Forwarded-Proto", "https")
+	cfg := s.oauthConfig(r)
+	if cfg.RedirectURL != "https://example.com/auth/callback" {
+		t.Errorf("unexpected redirect URL: %q", cfg.RedirectURL)
+	}
+
+	// HTTP via X-Forwarded-Proto
+	r = httptest.NewRequest("GET", "/auth/login", nil)
+	r.Host = "example.com"
+	r.Header.Set("X-Forwarded-Proto", "http")
+	cfg = s.oauthConfig(r)
+	if cfg.RedirectURL != "http://example.com/auth/callback" {
+		t.Errorf("unexpected redirect URL: %q", cfg.RedirectURL)
+	}
+
+	// No header, no TLS -> http
+	r = httptest.NewRequest("GET", "/auth/login", nil)
+	r.Host = "localhost:8080"
+	cfg = s.oauthConfig(r)
+	if cfg.RedirectURL != "http://localhost:8080/auth/callback" {
+		t.Errorf("unexpected redirect URL: %q", cfg.RedirectURL)
+	}
+
+	// No header, TLS set -> https
+	r = httptest.NewRequest("GET", "/auth/login", nil)
+	r.Host = "secure.example.com"
+	r.TLS = &tls.ConnectionState{}
+	cfg = s.oauthConfig(r)
+	if cfg.RedirectURL != "https://secure.example.com/auth/callback" {
+		t.Errorf("unexpected redirect URL: %q", cfg.RedirectURL)
+	}
+
+	if cfg.ClientID != "client-id" {
+		t.Errorf("unexpected ClientID: %q", cfg.ClientID)
+	}
+}
+
+func TestHandleAuthLogin_NotConfigured(t *testing.T) {
+	s := &server{} // no oauth fields set
+	r := httptest.NewRequest("GET", "/auth/login", nil)
+	w := httptest.NewRecorder()
+	s.handleAuthLogin(w, r)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503, got %d", w.Code)
+	}
+}
+
+func TestHandleAuthLogin_SetsStateCookieAndRedirects(t *testing.T) {
+	s := &server{
+		oauthClientID:     "client-id",
+		oauthClientSecret: "client-secret",
+		sessionSecret:     []byte("test-secret-key-for-hmac"),
+	}
+	r := httptest.NewRequest("GET", "/auth/login?redirect=/ui/repos/", nil)
+	r.Host = "localhost:8080"
+	w := httptest.NewRecorder()
+	s.handleAuthLogin(w, r)
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("expected 302, got %d", w.Code)
+	}
+	// Must redirect to Google
+	loc := w.Header().Get("Location")
+	if !strings.HasPrefix(loc, "https://accounts.google.com") {
+		t.Errorf("expected Google auth URL, got %q", loc)
+	}
+	// State cookie must be set
+	var stateCookie *http.Cookie
+	for _, c := range w.Result().Cookies() {
+		if c.Name == oauthStateCookieName {
+			stateCookie = c
+		}
+	}
+	if stateCookie == nil {
+		t.Fatal("state cookie not set")
+	}
+	// Cookie value must encode the sanitized redirect
+	parts := strings.SplitN(stateCookie.Value, "|", 2)
+	if len(parts) != 2 {
+		t.Fatalf("malformed state cookie: %q", stateCookie.Value)
+	}
+	if parts[1] != "/ui/repos/" {
+		t.Errorf("expected redirect /ui/repos/ in cookie, got %q", parts[1])
+	}
+}
+
+func TestHandleAuthLogin_SanitizesRedirectParam(t *testing.T) {
+	s := &server{
+		oauthClientID:     "client-id",
+		oauthClientSecret: "client-secret",
+		sessionSecret:     []byte("test-secret-key-for-hmac"),
+	}
+	// Malicious absolute URL as redirect parameter
+	r := httptest.NewRequest("GET", "/auth/login?redirect=https://evil.com", nil)
+	r.Host = "localhost:8080"
+	w := httptest.NewRecorder()
+	s.handleAuthLogin(w, r)
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("expected 302, got %d", w.Code)
+	}
+	for _, c := range w.Result().Cookies() {
+		if c.Name == oauthStateCookieName {
+			parts := strings.SplitN(c.Value, "|", 2)
+			if len(parts) == 2 && parts[1] != "/ui/" {
+				t.Errorf("expected redirect sanitized to /ui/, got %q", parts[1])
+			}
+			return
+		}
+	}
+	t.Fatal("state cookie not set")
+}
+
+func TestHandleAuthCallback_NotConfigured(t *testing.T) {
+	s := &server{}
+	r := httptest.NewRequest("GET", "/auth/callback", nil)
+	w := httptest.NewRecorder()
+	s.handleAuthCallback(w, r)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503, got %d", w.Code)
+	}
+}
+
+func TestHandleAuthCallback_MissingStateCookie(t *testing.T) {
+	s := &server{
+		oauthClientID:     "client-id",
+		oauthClientSecret: "client-secret",
+		sessionSecret:     []byte("test-secret"),
+	}
+	r := httptest.NewRequest("GET", "/auth/callback?state=abc&code=xyz", nil)
+	w := httptest.NewRecorder()
+	s.handleAuthCallback(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestHandleAuthCallback_MalformedStateCookie(t *testing.T) {
+	s := &server{
+		oauthClientID:     "client-id",
+		oauthClientSecret: "client-secret",
+		sessionSecret:     []byte("test-secret"),
+	}
+	r := httptest.NewRequest("GET", "/auth/callback?state=abc&code=xyz", nil)
+	r.AddCookie(&http.Cookie{Name: oauthStateCookieName, Value: "no-pipe-separator"})
+	w := httptest.NewRecorder()
+	s.handleAuthCallback(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "malformed") {
+		t.Errorf("expected 'malformed' in body, got %q", w.Body.String())
+	}
+}
+
+func TestHandleAuthCallback_StateMismatch(t *testing.T) {
+	s := &server{
+		oauthClientID:     "client-id",
+		oauthClientSecret: "client-secret",
+		sessionSecret:     []byte("test-secret"),
+	}
+	r := httptest.NewRequest("GET", "/auth/callback?state=wrong-state&code=xyz", nil)
+	r.AddCookie(&http.Cookie{Name: oauthStateCookieName, Value: "correct-state|/ui/"})
+	w := httptest.NewRecorder()
+	s.handleAuthCallback(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "state mismatch") {
+		t.Errorf("expected 'state mismatch' in body, got %q", w.Body.String())
+	}
+}
+
+func TestHandleAuthCallback_MissingCode(t *testing.T) {
+	s := &server{
+		oauthClientID:     "client-id",
+		oauthClientSecret: "client-secret",
+		sessionSecret:     []byte("test-secret"),
+	}
+	r := httptest.NewRequest("GET", "/auth/callback?state=mystate", nil)
+	r.AddCookie(&http.Cookie{Name: oauthStateCookieName, Value: "mystate|/ui/"})
+	w := httptest.NewRecorder()
+	s.handleAuthCallback(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "missing authorization code") {
+		t.Errorf("expected 'missing authorization code' in body, got %q", w.Body.String())
+	}
+}
+
+func TestHandleAuthLogout(t *testing.T) {
+	s := &server{}
+	r := httptest.NewRequest("GET", "/auth/logout", nil)
+	r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "some-session-token"})
+	w := httptest.NewRecorder()
+	s.handleAuthLogout(w, r)
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("expected 302, got %d", w.Code)
+	}
+	loc := w.Header().Get("Location")
+	if loc != "/ui/" {
+		t.Errorf("expected redirect to /ui/, got %q", loc)
+	}
+	// Session cookie must be cleared (MaxAge=-1)
+	var cleared bool
+	for _, c := range w.Result().Cookies() {
+		if c.Name == sessionCookieName && c.MaxAge == -1 {
+			cleared = true
+		}
+	}
+	if !cleared {
+		t.Error("expected session cookie to be cleared with MaxAge=-1")
 	}
 }

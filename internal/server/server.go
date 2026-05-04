@@ -709,10 +709,7 @@ func (s *server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	redirect := r.URL.Query().Get("redirect")
-	if redirect == "" {
-		redirect = "/ui/"
-	}
+	redirect := safeRedirect(r.URL.Query().Get("redirect"))
 
 	stateBytes := make([]byte, 16)
 	if _, err := cryptorand.Read(stateBytes); err != nil {
@@ -808,10 +805,17 @@ func (s *server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	sessionCookie := createSessionCookie(email, expiry, s.sessionSecret, isSecureRequest(r))
 	http.SetCookie(w, sessionCookie)
 
-	if redirect == "" {
-		redirect = "/ui/"
+	http.Redirect(w, r, safeRedirect(redirect), http.StatusFound)
+}
+
+// safeRedirect validates that redirect is a safe relative path.
+// It must start with "/" and must not be a protocol-relative URL ("//...")
+// or contain "://" (absolute URL). Returns "/ui/" if the value is invalid.
+func safeRedirect(redirect string) string {
+	if redirect == "" || !strings.HasPrefix(redirect, "/") || strings.HasPrefix(redirect, "//") || strings.Contains(redirect, "://") {
+		return "/ui/"
 	}
-	http.Redirect(w, r, redirect, http.StatusFound)
+	return redirect
 }
 
 // handleAuthLogout clears the session cookie and redirects to the home page.
