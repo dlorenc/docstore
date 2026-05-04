@@ -22,9 +22,9 @@ import (
 )
 
 // Token holds OAuth2 credentials cached for a server URL.
-// IAP requires an OIDC ID token (IDToken), not the OAuth access token.
+// The server validates the Google ID token (IDToken) directly.
 type Token struct {
-	IDToken      string    `json:"id_token"`      // OIDC JWT — what IAP validates
+	IDToken      string    `json:"id_token"`      // Google OIDC ID token — what the server validates
 	AccessToken  string    `json:"access_token"`  // kept for reference / future use
 	RefreshToken string    `json:"refresh_token"`
 	Expiry       time.Time `json:"expiry"`
@@ -145,10 +145,10 @@ func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		t.mu.Unlock()
 	}
 
-	// IAP requires the OIDC ID token, not the OAuth access token.
+	// The server validates the Google OIDC ID token directly.
 	bearer := tok.IDToken
 	if bearer == "" {
-		bearer = tok.AccessToken // fallback for non-IAP servers
+		bearer = tok.AccessToken // fallback when no ID token available
 	}
 	reqCopy := req.Clone(req.Context())
 	reqCopy.Header.Set("Authorization", "Bearer "+bearer)
@@ -214,9 +214,11 @@ func (a *App) Login(serverURL, fallbackClientID, fallbackClientSecret string) er
 				fmt.Fprintln(a.Out, "Server does not require authentication")
 				return nil
 			}
-			if cfg.Auth.Type == "iap" && cfg.Auth.ClientID != "" {
+			if (cfg.Auth.Type == "oauth" || cfg.Auth.Type == "iap") && cfg.Auth.ClientID != "" {
 				clientID = cfg.Auth.ClientID
-				clientSecret = cfg.Auth.ClientSecret
+				if cfg.Auth.ClientSecret != "" {
+					clientSecret = cfg.Auth.ClientSecret
+				}
 			}
 		}
 	} else if resp != nil {
@@ -232,7 +234,7 @@ func (a *App) Login(serverURL, fallbackClientID, fallbackClientSecret string) er
 		return fmt.Errorf("oauth flow: %w", err)
 	}
 
-	// Extract the OIDC ID token — this is what IAP requires as the Bearer token.
+	// Extract the Google OIDC ID token — sent as the Bearer token to the server.
 	email := ""
 	idToken, _ := oauthTok.Extra("id_token").(string)
 	if idToken != "" {

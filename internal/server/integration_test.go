@@ -546,16 +546,16 @@ func TestIntegrationRebase_FullFlow(t *testing.T) {
 	}
 }
 
-// TestHTTP_AuthRequired verifies that write endpoints return 401 when no IAP JWT
+// TestHTTP_AuthRequired verifies that write endpoints return 401 when no Bearer token
 // is present and the server is not in dev mode.
 func TestHTTP_AuthRequired(t *testing.T) {
 	t.Parallel()
-	// No devIdentity → real IAP auth enforced.
+	// No devIdentity → real Google ID token auth enforced.
 	handler := server.New(nil, nil, "", "")
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
-	// POST /repos/default/default/-/commit without X-Goog-IAP-JWT-Assertion must return 401.
+	// POST /repos/default/default/-/commit without Authorization: Bearer must return 401.
 	resp, err := http.Post(srv.URL+"/repos/default/default/-/commit", "application/json",
 		strings.NewReader(`{"branch":"main","message":"m","files":[{"path":"a.txt","content":"YQ=="}]}`))
 	if err != nil {

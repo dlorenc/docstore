@@ -32,8 +32,8 @@ func TestDSConfigEndpoint_NoIAP(t *testing.T) {
 	}
 }
 
-func TestDSConfigEndpoint_WithIAP(t *testing.T) {
-	// Server with IAP client ID configured.
+func TestDSConfigEndpoint_WithOAuth(t *testing.T) {
+	// Server with OAuth client ID configured.
 	h := server.NewWithBroker(nil, nil, nil, nil, "dev@example.com", "", "test-client-id", "test-secret")
 	req := httptest.NewRequest("GET", "/.well-known/ds-config", nil)
 	w := httptest.NewRecorder()
@@ -50,46 +50,21 @@ func TestDSConfigEndpoint_WithIAP(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected auth object, got %T", got["auth"])
 	}
-	if auth["type"] != "iap" {
-		t.Errorf("expected type=iap, got %v", auth["type"])
+	if auth["type"] != "oauth" {
+		t.Errorf("expected type=oauth, got %v", auth["type"])
 	}
 	if auth["client_id"] != "test-client-id" {
 		t.Errorf("expected client_id=test-client-id, got %v", auth["client_id"])
 	}
-	if auth["client_secret"] != "test-secret" {
-		t.Errorf("expected client_secret=test-secret, got %v", auth["client_secret"])
-	}
-}
-
-func TestDSConfigEndpoint_WithIAPNoSecret(t *testing.T) {
-	// Server with IAP client ID but no client secret.
-	h := server.NewWithBroker(nil, nil, nil, nil, "dev@example.com", "", "test-client-id", "")
-	req := httptest.NewRequest("GET", "/.well-known/ds-config", nil)
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-	var got map[string]any
-	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	auth, ok := got["auth"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected auth object, got %T", got["auth"])
-	}
-	if auth["type"] != "iap" {
-		t.Errorf("expected type=iap, got %v", auth["type"])
-	}
+	// client_secret is not advertised in ds-config (it's a server-side secret).
 	if _, has := auth["client_secret"]; has {
-		t.Errorf("expected no client_secret field when secret is empty")
+		t.Errorf("expected no client_secret field in ds-config")
 	}
 }
 
 func TestDSConfigEndpoint_Unauthenticated(t *testing.T) {
-	// Endpoint must be accessible without auth (no IAP token required).
-	// Use a server without dev identity — real IAP mode — and verify 200 (not 401).
+	// Endpoint must be accessible without auth (no token required).
+	// Use a server without dev identity — real auth mode — and verify 200 (not 401).
 	h := server.NewWithBroker(nil, nil, nil, nil, "", "", "some-client-id", "")
 	req := httptest.NewRequest("GET", "/.well-known/ds-config", nil)
 	w := httptest.NewRecorder()

@@ -28,10 +28,11 @@ import (
 )
 
 func main() {
-	devIdentity := flag.String("dev-identity", "", "bypass IAP JWT validation and use this identity (local dev/testing only)")
+	devIdentity := flag.String("dev-identity", "", "bypass Google ID token validation and use this identity (local dev/testing only)")
 	bootstrapAdmin := flag.String("bootstrap-admin", "", "identity granted admin access to repos with no admin assigned yet")
-	iapClientID := flag.String("iap-client-id", "", "IAP OAuth client ID advertised via /.well-known/ds-config (overrides IAP_CLIENT_ID env var)")
-	iapClientSecret := flag.String("iap-client-secret", "", "IAP OAuth client secret advertised via /.well-known/ds-config (overrides IAP_CLIENT_SECRET env var)")
+	oauthClientID := flag.String("oauth-client-id", "", "Google OAuth 2.0 client ID advertised via /.well-known/ds-config (overrides OAUTH_CLIENT_ID env var)")
+	oauthClientSecret := flag.String("oauth-client-secret", "", "Google OAuth 2.0 client secret for the web OAuth callback handler (overrides OAUTH_CLIENT_SECRET env var)")
+	sessionSecretB64 := flag.String("session-secret", "", "base64-encoded HMAC secret for signing session cookies (overrides SESSION_SECRET env var)")
 	flag.Parse()
 
 	// Set up structured logger based on LOG_FORMAT and LOG_LEVEL env vars.
@@ -53,22 +54,25 @@ func main() {
 	logger := slog.New(handler)
 	slog.SetDefault(logger)
 
-	// Also accept DEV_IDENTITY and BOOTSTRAP_ADMIN env vars for container-based testing.
+	// Also accept env vars for container-based configuration.
 	if *devIdentity == "" {
 		*devIdentity = os.Getenv("DEV_IDENTITY")
 	}
 	if *bootstrapAdmin == "" {
 		*bootstrapAdmin = os.Getenv("BOOTSTRAP_ADMIN")
 	}
-	if *iapClientID == "" {
-		*iapClientID = os.Getenv("IAP_CLIENT_ID")
+	if *oauthClientID == "" {
+		*oauthClientID = os.Getenv("OAUTH_CLIENT_ID")
 	}
-	if *iapClientSecret == "" {
-		*iapClientSecret = os.Getenv("IAP_CLIENT_SECRET")
+	if *oauthClientSecret == "" {
+		*oauthClientSecret = os.Getenv("OAUTH_CLIENT_SECRET")
+	}
+	if *sessionSecretB64 == "" {
+		*sessionSecretB64 = os.Getenv("SESSION_SECRET")
 	}
 
 	if *devIdentity != "" {
-		logger.Warn("IAP JWT validation disabled", "dev_identity", *devIdentity)
+		logger.Warn("Google ID token validation disabled", "dev_identity", *devIdentity)
 	}
 	if *bootstrapAdmin != "" {
 		logger.Info("bootstrap admin configured", "identity", *bootstrapAdmin)
@@ -192,6 +196,19 @@ func main() {
 		logger.Warn("OIDC_JWKS_URL not set — job OIDC token authentication disabled")
 	}
 
+	// Decode session secret for signing web UI session cookies.
+	// SESSION_SECRET: base64-encoded raw HMAC secret bytes.
+	var sessionSecret []byte
+	if *sessionSecretB64 != "" {
+		sessionSecret, err = base64.StdEncoding.DecodeString(*sessionSecretB64)
+		if err != nil {
+			logger.Error("invalid SESSION_SECRET", "error", err)
+			os.Exit(1)
+		}
+	} else {
+		logger.Warn("SESSION_SECRET not set — web UI session cookie auth disabled")
+	}
+
 	// Initialize log store for CI check log uploads.
 	ls, err := logstore.NewFromEnv(context.Background())
 	if err != nil {
@@ -201,9 +218,9 @@ func main() {
 
 	jobStore := db.NewStore(database)
 	srv := server.NewWithOIDC(commitStore, database, bs, broker,
-		*devIdentity, *bootstrapAdmin, *iapClientID, *iapClientSecret,
+		*devIdentity, *bootstrapAdmin, *oauthClientID, *oauthClientSecret,
 		jobStore, archiveHMACSecret, archiveBaseURL,
-		oidcJWKSURL, oidcAudience, oidcIssuer, ls)
+		oidcJWKSURL, oidcAudience, oidcIssuer, ls, sessionSecret)
 
 	// Start the auto-merge worker. It subscribes to check.reported and
 	// review.submitted events and merges branches with auto_merge=true.
