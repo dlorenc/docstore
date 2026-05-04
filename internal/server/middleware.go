@@ -688,10 +688,11 @@ func validateGoogleIDToken(tokenString string, fetchKey func(kid string) (crypto
 		return "", fmt.Errorf("decode payload: %w", err)
 	}
 	var claims struct {
-		Email string  `json:"email"`
-		Exp   float64 `json:"exp"`
-		Iss   string  `json:"iss"`
-		Aud   any     `json:"aud"` // string or []interface{}
+		Email         string  `json:"email"`
+		EmailVerified bool    `json:"email_verified"`
+		Exp           float64 `json:"exp"`
+		Iss           string  `json:"iss"`
+		Aud           any     `json:"aud"` // string or []interface{}
 	}
 	if err := json.Unmarshal(payloadJSON, &claims); err != nil {
 		return "", fmt.Errorf("parse payload: %w", err)
@@ -714,6 +715,9 @@ func validateGoogleIDToken(tokenString string, fetchKey func(kid string) (crypto
 
 	if claims.Email == "" {
 		return "", fmt.Errorf("missing email claim")
+	}
+	if !claims.EmailVerified {
+		return "", fmt.Errorf("email not verified")
 	}
 	return claims.Email, nil
 }

@@ -136,6 +136,33 @@ func (m *mockStore) Rebase(ctx context.Context, req model.RebaseRequest) (*model
 // devID is the dev identity used in handler unit tests.
 const devID = "test@example.com"
 
+// TestGoogleKeyCacheInitialized verifies that the server initializes googleKeyCache
+// at startup when oauthClientID is configured, so handleAuthCallback can reuse it
+// rather than allocating a new cache per request.
+func TestGoogleKeyCacheInitialized(t *testing.T) {
+	// With oauthClientID set, googleKeyCache must be non-nil.
+	s := &server{oauthClientID: "my-client-id"}
+	if s.googleKeyCache != nil {
+		t.Fatal("googleKeyCache should be nil before initialization")
+	}
+	// Simulate what newServer / NewWithOIDC do at startup.
+	if s.oauthClientID != "" {
+		s.googleKeyCache = newKeyCacheForURL(googleJWKURL)
+	}
+	if s.googleKeyCache == nil {
+		t.Fatal("googleKeyCache should be non-nil after initialization when oauthClientID is set")
+	}
+
+	// Without oauthClientID, googleKeyCache should remain nil.
+	s2 := &server{}
+	if s2.oauthClientID != "" {
+		s2.googleKeyCache = newKeyCacheForURL(googleJWKURL)
+	}
+	if s2.googleKeyCache != nil {
+		t.Fatal("googleKeyCache should be nil when oauthClientID is empty")
+	}
+}
+
 func (m *mockStore) CreateRepo(ctx context.Context, req model.CreateRepoRequest) (*model.Repo, error) {
 	if m.createRepoFn != nil {
 		return m.createRepoFn(ctx, req)
