@@ -39,6 +39,12 @@ jobs:
           IMAGE=$(ko build --bare --tags latest,$(git rev-parse --short HEAD) ./cmd/docstore)
           echo "image=$IMAGE" >> $GITHUB_OUTPUT
 
+      - name: Ensure session-secret exists in Secret Manager
+        run: |
+          gcloud secrets describe session-secret --project=dlorenc-chainguard 2>/dev/null || \
+            openssl rand -base64 32 | gcloud secrets create session-secret \
+              --data-file=- --project=dlorenc-chainguard --replication-policy=automatic
+
       - name: Deploy to Cloud Run
         run: |
           gcloud run deploy docstore \
@@ -47,7 +53,7 @@ jobs:
             --region=us-central1 \
             --service-account=docstore-server@dlorenc-chainguard.iam.gserviceaccount.com \
             --add-cloudsql-instances=dlorenc-chainguard:us-central1:docstore-mvp \
-            --update-secrets=DATABASE_URL=docstore-db-url:latest,IAP_CLIENT_SECRET=iap-oauth-client-secret:latest,ARCHIVE_HMAC_SECRET=archive-hmac-secret:latest \
+            --update-secrets=DATABASE_URL=docstore-db-url:latest,OAUTH_CLIENT_ID=oauth-client-id:latest,OAUTH_CLIENT_SECRET=oauth-client-secret:latest,SESSION_SECRET=session-secret:latest,ARCHIVE_HMAC_SECRET=archive-hmac-secret:latest \
             --set-env-vars=ARCHIVE_BASE_URL=https://docstore-efuj4cj54a-uc.a.run.app,OIDC_JWKS_URL=https://oidc.docstore.dev/.well-known/jwks.json,OIDC_AUDIENCE=docstore,OIDC_ISSUER=https://oidc.docstore.dev,LOG_STORE=gcs,LOG_BUCKET=docstore-ci-logs \
             --ingress=internal-and-cloud-load-balancing \
             --min-instances=1 \
@@ -57,7 +63,7 @@ jobs:
             --network=default \
             --subnet=default \
             --vpc-egress=private-ranges-only \
-            --args=--bootstrap-admin=dlorenc@chainguard.dev,--iap-client-id=320310132788-md94jtp0d9fdcdlq2quma4mcpr0ul1qr.apps.googleusercontent.com
+            --args=--bootstrap-admin=dlorenc@chainguard.dev
 
       - name: Grant CI workers access to docstore internal URL
         run: |
