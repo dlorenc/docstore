@@ -38,11 +38,12 @@ func makeTestJWT(t *testing.T, key *rsa.PrivateKey, kid, email, clientID string,
 
 	headerJSON, _ := json.Marshal(map[string]string{"alg": "RS256", "kid": kid, "typ": "JWT"})
 	payloadJSON, _ := json.Marshal(map[string]any{
-		"email": email,
-		"exp":   exp.Unix(),
-		"iat":   time.Now().Unix(),
-		"iss":   "accounts.google.com",
-		"aud":   clientID,
+		"email":          email,
+		"email_verified": true,
+		"exp":            exp.Unix(),
+		"iat":            time.Now().Unix(),
+		"iss":            "accounts.google.com",
+		"aud":            clientID,
 	})
 
 	headerB64 := base64.RawURLEncoding.EncodeToString(headerJSON)
@@ -614,11 +615,12 @@ func TestGoogleAuthMiddleware_FutureIatIsAccepted(t *testing.T) {
 	token := buildJWT(t, key,
 		map[string]any{"alg": "RS256", "kid": kid, "typ": "JWT"},
 		map[string]any{
-			"email": "alice@example.com",
-			"exp":   time.Now().Add(time.Hour).Unix(),
-			"iat":   time.Now().Add(time.Hour).Unix(), // future iat
-			"iss":   "accounts.google.com",
-			"aud":   testClientID,
+			"email":          "alice@example.com",
+			"email_verified": true,
+			"exp":            time.Now().Add(time.Hour).Unix(),
+			"iat":            time.Now().Add(time.Hour).Unix(), // future iat
+			"iss":            "accounts.google.com",
+			"aud":            testClientID,
 		},
 	)
 
@@ -761,6 +763,66 @@ func TestGoogleAuthMiddleware_InvalidIssuer(t *testing.T) {
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 for IAP issuer, got %d", rec.Code)
+	}
+}
+
+func TestGoogleAuthMiddleware_EmailNotVerified(t *testing.T) {
+	key := generateTestKey(t)
+	kid := "test-key-1"
+	// email_verified explicitly false
+	token := buildJWT(t, key,
+		map[string]any{"alg": "RS256", "kid": kid, "typ": "JWT"},
+		map[string]any{
+			"email":          "alice@example.com",
+			"email_verified": false,
+			"exp":            time.Now().Add(time.Hour).Unix(),
+			"iss":            "accounts.google.com",
+			"aud":            testClientID,
+		},
+	)
+
+	mw := newGoogleAuthMiddleware("", testClientID, nil, staticKeyFetcher(kid, &key.PublicKey))
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/tree", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for unverified email, got %d", rec.Code)
+	}
+}
+
+func TestGoogleAuthMiddleware_EmailVerifiedMissing(t *testing.T) {
+	key := generateTestKey(t)
+	kid := "test-key-1"
+	// email_verified absent → defaults to false
+	token := buildJWT(t, key,
+		map[string]any{"alg": "RS256", "kid": kid, "typ": "JWT"},
+		map[string]any{
+			"email": "alice@example.com",
+			"exp":   time.Now().Add(time.Hour).Unix(),
+			"iss":   "accounts.google.com",
+			"aud":   testClientID,
+			// no email_verified field
+		},
+	)
+
+	mw := newGoogleAuthMiddleware("", testClientID, nil, staticKeyFetcher(kid, &key.PublicKey))
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/tree", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for missing email_verified, got %d", rec.Code)
 	}
 }
 

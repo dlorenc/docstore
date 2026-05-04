@@ -259,6 +259,9 @@ func NewWithOIDC(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, bro
 	if oidcJWKSURL != "" {
 		s.oidcKeyCache = newKeyCacheForURL(oidcJWKSURL)
 	}
+	if oauthClientID != "" {
+		s.googleKeyCache = newKeyCacheForURL(googleJWKURL)
+	}
 	if writeStore != nil {
 		var emitter service.EventEmitter
 		if broker != nil {
@@ -286,6 +289,9 @@ func newServer(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, broke
 		oauthClientID:     oauthClientID,
 		oauthClientSecret: oauthClientSecret,
 		sessionSecret:     sessionSecret,
+	}
+	if oauthClientID != "" {
+		s.googleKeyCache = newKeyCacheForURL(googleJWKURL)
 	}
 	if writeStore != nil {
 		var emitter service.EventEmitter
@@ -582,6 +588,9 @@ type server struct {
 	oidcAudience string
 	oidcIssuer   string
 	oidcKeyCache *keyCache
+	// googleKeyCache caches Google's public JWK keys for validating ID tokens
+	// during the OAuth callback. Initialized at startup when oauthClientID is set.
+	googleKeyCache *keyCache
 	// logStore writes CI check logs; used by POST /repos/:repo/-/check/:name/logs.
 	// nil means the endpoint is disabled (returns 503).
 	logStore logstore.LogStore
@@ -785,8 +794,7 @@ func (s *server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate the ID token and extract email.
-	cache := newKeyCacheForURL(googleJWKURL)
-	email, err := validateGoogleIDToken(idToken, cache.get, s.oauthClientID)
+	email, err := validateGoogleIDToken(idToken, s.googleKeyCache.get, s.oauthClientID)
 	if err != nil {
 		slog.Warn("oauth id_token invalid", "error", err)
 		http.Error(w, "invalid id token", http.StatusUnauthorized)
