@@ -728,7 +728,7 @@ func (s *server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		Path:     "/auth/",
 		MaxAge:   300, // 5 minutes
 		HttpOnly: true,
-		Secure:   r.TLS != nil,
+		Secure:   isSecureRequest(r),
 		SameSite: http.SameSiteLaxMode,
 	}
 	http.SetCookie(w, stateCookie)
@@ -800,12 +800,12 @@ func (s *server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		Path:     "/auth/",
 		MaxAge:   -1,
 		HttpOnly: true,
-		Secure:   r.TLS != nil,
+		Secure:   isSecureRequest(r),
 	})
 
 	// Set session cookie (valid for 24 hours).
 	expiry := time.Now().Add(24 * time.Hour)
-	sessionCookie := createSessionCookie(email, expiry, s.sessionSecret, r.TLS != nil)
+	sessionCookie := createSessionCookie(email, expiry, s.sessionSecret, isSecureRequest(r))
 	http.SetCookie(w, sessionCookie)
 
 	if redirect == "" {
@@ -822,16 +822,27 @@ func (s *server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		MaxAge:   -1,
 		HttpOnly: true,
-		Secure:   r.TLS != nil,
+		Secure:   isSecureRequest(r),
 	})
 	http.Redirect(w, r, "/ui/", http.StatusFound)
+}
+
+// isSecureRequest returns true if the request was made over HTTPS, checking
+// X-Forwarded-Proto first (for requests behind a TLS-terminating load balancer).
+func isSecureRequest(r *http.Request) bool {
+	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+		return proto == "https"
+	}
+	return r.TLS != nil
 }
 
 // oauthConfig returns an oauth2.Config for the server's OAuth client.
 // The redirect URL uses the request's scheme and host.
 func (s *server) oauthConfig(r *http.Request) *oauth2.Config {
 	scheme := "https"
-	if r.TLS == nil {
+	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+		scheme = proto
+	} else if r.TLS == nil {
 		scheme = "http"
 	}
 	redirectURL := fmt.Sprintf("%s://%s/auth/callback", scheme, r.Host)
