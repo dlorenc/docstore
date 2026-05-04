@@ -9,8 +9,8 @@ import (
 	"github.com/dlorenc/docstore/internal/server"
 )
 
-func TestDSConfigEndpoint_NoIAP(t *testing.T) {
-	// Server without IAP client ID configured.
+func TestDSConfigEndpoint_NoOAuth(t *testing.T) {
+	// Server without OAuth client ID configured.
 	h := server.NewWithReadStore(nil, nil, "dev@example.com", "")
 	req := httptest.NewRequest("GET", "/.well-known/ds-config", nil)
 	w := httptest.NewRecorder()

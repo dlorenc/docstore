@@ -28,16 +28,12 @@
 //
 // # Authentication
 //
-// WithBearerToken sets Authorization: Bearer <token>. This is forward-
-// compatible with the API-token feature tracked in issue #101 of the server
-// repo; today the server validates GCP IAP JWTs via the
-// X-Goog-IAP-JWT-Assertion header, which is typically terminated by a
-// reverse proxy. When calling the server directly (for example from within
-// the same VPC behind IAP), provide an IAP-authenticated *http.Client via
-// WithHTTPClient.
+// WithBearerToken sets Authorization: Bearer <token>. The server validates
+// Google ID tokens issued to the configured OAuth client. This is the standard
+// authentication path used by the ds CLI after `ds login`.
 //
 // WithIdentity sets the X-DocStore-Identity header, which the server
-// honours when running in dev mode (no IAP). Use it for local development
+// honours when running in dev mode (no OAuth). Use it for local development
 // and test fixtures.
 //
 // # Errors

@@ -223,7 +223,7 @@ func heartbeat(ctx context.Context, schedulerURL, jobID, requestToken string, do
 // getPresignedArchiveURL calls POST /repos/{repo}/-/archive/presign with the
 // request_token and returns the presigned URL and checksum for BuildKit to fetch
 // the archive. checksum is "sha256:<hex>" when the server computed it, or ""
-// if the server did not provide one. This endpoint bypasses IAP and uses the
+// if the server did not provide one. This endpoint bypasses OAuth and uses the
 // request_token for authentication.
 func getPresignedArchiveURL(ctx context.Context, docstoreURL, repo, requestToken string) (url, checksum string, err error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)

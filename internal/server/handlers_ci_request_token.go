@@ -16,7 +16,7 @@ import (
 // handleCIConfig implements GET /repos/:repo/-/ci/config.
 // Authenticated via request_token (Authorization: Bearer <plaintext>).
 // Returns the .docstore/ci.yaml file at the job's branch and sequence as a
-// JSON FileResponse, using the same wire format as the IAP-gated file endpoint.
+// JSON FileResponse, using the same wire format as the authenticated file endpoint.
 func (s *server) handleCIConfig(w http.ResponseWriter, r *http.Request) {
 	if s.jobTokenStore == nil || s.readStore == nil {
 		writeError(w, http.StatusServiceUnavailable, "ci config not available")
@@ -67,7 +67,7 @@ func (s *server) handleCIConfig(w http.ResponseWriter, r *http.Request) {
 
 // handleCICheck implements POST /repos/:repo/-/check via request_token authentication.
 // This is the worker-facing check-run endpoint, authenticated via request_token.
-// It mirrors handleCheck but bypasses IAP/RBAC and derives identity from the token.
+// It mirrors handleCheck but bypasses auth/RBAC and derives identity from the token.
 func (s *server) handleCICheck(w http.ResponseWriter, r *http.Request) {
 	if s.jobTokenStore == nil || s.commitStore == nil {
 		writeError(w, http.StatusServiceUnavailable, "ci check not available")

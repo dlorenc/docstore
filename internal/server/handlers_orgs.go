@@ -370,7 +370,7 @@ func (s *server) handleListInvites(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAcceptInvite implements POST /orgs/{org}/invites/{token}/accept
-// The IAP identity must match the invite email.
+// The authenticated identity must match the invite email.
 func (s *server) handleAcceptInvite(w http.ResponseWriter, r *http.Request) {
 	org := r.PathValue("org")
 	token := r.PathValue("token")

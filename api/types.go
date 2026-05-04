@@ -715,7 +715,7 @@ type CreateSubscriptionRequest struct {
 	Backend string `json:"backend"`
 	// Config is backend-specific: {"url":"https://...","secret":"..."}
 	Config json.RawMessage `json:"config"`
-	// CreatedBy is populated by the server from the IAP identity; not set by clients.
+	// CreatedBy is populated by the server from the authenticated identity; not set by clients.
 	CreatedBy string `json:"-"`
 }
 

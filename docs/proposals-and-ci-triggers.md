@@ -152,7 +152,7 @@ on:
     base_branches: [main]       # trigger when a proposal targeting main is opened
   schedule:
     - cron: '0 2 * * *'         # nightly at 2 AM UTC
-  # manual: trigger via POST /repos/:name/-/ci/run on docstore (IAP-protected, writer+) — no config needed, always enabled
+  # manual: trigger via POST /repos/:name/-/ci/run on docstore (requires writer role) — no config needed, always enabled
 
 checks:
   - name: ci/test
@@ -219,7 +219,7 @@ on:
 
 #### `manual`
 
-Always enabled. Trigger a run via the docstore server (IAP-protected, requires writer role):
+Always enabled. Trigger a run via the docstore server (requires writer role):
 
 ```bash
 curl -X POST https://docstore.dev/repos/acme/myrepo/-/ci/run \

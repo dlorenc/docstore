@@ -219,7 +219,7 @@ func TestHandleCheckLogs_MethodNotAllowed(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	// GET requests fall through to the IAP + inner mux, which won't match check/ci_build/logs.
+	// GET requests fall through to the auth + inner mux, which won't match check/ci_build/logs.
 	// We just verify it's not a 200.
 	if rec.Code == http.StatusOK {
 		t.Fatalf("expected non-200 for GET, got 200")
