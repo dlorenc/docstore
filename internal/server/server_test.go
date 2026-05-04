@@ -548,7 +548,7 @@ func (m *mockStore) InsertCIJob(_ context.Context, _, _ string, _ int64, _, _, _
 }
 
 func TestHealthEndpoint(t *testing.T) {
-	// /healthz is exempt from IAP auth, so devIdentity="" is fine here.
+	// /healthz is exempt from auth, so devIdentity="" is fine here.
 	srv := New(nil, nil, "", "")
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
