@@ -6,6 +6,7 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/hmac"
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
@@ -29,7 +30,7 @@ const identityKey contextKey = "identity"
 const roleKey contextKey = "role"
 
 // IdentityFromContext returns the authenticated identity stored in the context
-// by the IAP middleware. Returns empty string if not set.
+// by the auth middleware. Returns empty string if not set.
 func IdentityFromContext(ctx context.Context) string {
 	v, _ := ctx.Value(identityKey).(string)
 	return v
@@ -45,7 +46,7 @@ func RoleFromContext(ctx context.Context) model.RoleType {
 // --- Request logger ---
 
 // requestLog is a mutable capture placed in context by RequestLogger so that
-// inner middleware (IAPMiddleware) can write the authenticated identity back
+// inner middleware (GoogleAuthMiddleware) can write the authenticated identity back
 // for use in the access log.
 type requestLog struct {
 	identity string
@@ -99,7 +100,7 @@ func repoFromPath(path string) string {
 
 // RequestLogger returns an HTTP middleware that logs one structured line per
 // request on completion. It uses a requestLog capture in the context so that
-// IAPMiddleware can write back the authenticated identity.
+// GoogleAuthMiddleware can write back the authenticated identity.
 func RequestLogger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -142,7 +143,7 @@ type RoleStore interface {
 }
 
 // RBACMiddleware returns an HTTP middleware that enforces role-based access
-// control for repo-scoped routes. It must run after IAPMiddleware so that
+// control for repo-scoped routes. It must run after GoogleAuthMiddleware so that
 // the identity is already in context.
 //
 // bootstrapAdmin, if non-empty, is granted full admin access for any repo
@@ -389,7 +390,7 @@ func JobIdentityFromContext(ctx context.Context) *JobIdentity {
 // JobTokenMiddleware validates a CI job OIDC JWT (issued by oidc.docstore.dev)
 // and extracts the job context. If the token is valid, it sets the identity
 // in context so the request proceeds. If invalid, returns 401.
-// If no Authorization header is present, falls through (allows IAP to handle it).
+// If no Authorization header is present, falls through (allows GoogleAuthMiddleware to handle it).
 func JobTokenMiddleware(jwksURL, audience, issuer string) func(http.Handler) http.Handler {
 	cache := newKeyCacheForURL(jwksURL)
 	return newJobTokenMiddlewareWithKeyFetcher(cache.get, audience, issuer)
@@ -545,18 +546,21 @@ func jwtAudienceContains(aud any, target string) bool {
 	return false
 }
 
-// IAPMiddleware returns an HTTP middleware that validates GCP IAP JWTs from the
-// X-Goog-IAP-JWT-Assertion header. If devIdentity is non-empty, JWT validation is
-// skipped and devIdentity is used directly (for local dev/testing).
-func IAPMiddleware(devIdentity string) func(http.Handler) http.Handler {
-	cache := newKeyCache()
-	return newMiddleware(devIdentity, cache.get)
+// GoogleAuthMiddleware returns an HTTP middleware that validates Google ID tokens
+// from the Authorization: Bearer header, or a signed session cookie for web UI
+// requests. If devIdentity is non-empty, all validation is skipped and devIdentity
+// is used directly (for local dev/testing).
+//
+// clientID is the OAuth 2.0 client ID used to validate the audience claim of
+// Google ID tokens. sessionSecret is the HMAC key for signing session cookies;
+// nil disables session cookie auth.
+func GoogleAuthMiddleware(devIdentity, clientID string, sessionSecret []byte) func(http.Handler) http.Handler {
+	cache := newKeyCacheForURL(googleJWKURL)
+	return newGoogleAuthMiddleware(devIdentity, clientID, sessionSecret, cache.get)
 }
 
-
-// newMiddleware is the testable core of IAPMiddleware. fetchKey is called with a
-// key ID and returns the corresponding RSA public key.
-func newMiddleware(devIdentity string, fetchKey func(kid string) (crypto.PublicKey, error)) func(http.Handler) http.Handler {
+// newGoogleAuthMiddleware is the testable core of GoogleAuthMiddleware.
+func newGoogleAuthMiddleware(devIdentity, clientID string, sessionSecret []byte, fetchKey func(kid string) (crypto.PublicKey, error)) func(http.Handler) http.Handler {
 	if devIdentity != "" {
 		return func(next http.Handler) http.Handler {
 			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -570,29 +574,51 @@ func newMiddleware(devIdentity string, fetchKey func(kid string) (crypto.PublicK
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			token := r.Header.Get("X-Goog-IAP-JWT-Assertion")
-			if token == "" {
-				slog.Warn("auth failed", "reason", "missing_token", "path", r.URL.Path)
-				writeAPIError(w, ErrCodeUnauthorized, http.StatusUnauthorized, "unauthenticated")
+			// Try Bearer token first (CLI and direct API use).
+			auth := r.Header.Get("Authorization")
+			if bearerToken := strings.TrimPrefix(auth, "Bearer "); bearerToken != "" && bearerToken != auth {
+				email, err := validateGoogleIDToken(bearerToken, fetchKey, clientID)
+				if err != nil {
+					slog.Warn("auth failed", "reason", "invalid_id_token", "path", r.URL.Path, "error", err)
+					writeAPIError(w, ErrCodeUnauthorized, http.StatusUnauthorized, "unauthenticated")
+					return
+				}
+				if rl := requestLogFromContext(r.Context()); rl != nil {
+					rl.identity = email
+				}
+				ctx := context.WithValue(r.Context(), identityKey, email)
+				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
-			email, err := validateIAPJWT(token, fetchKey)
-			if err != nil {
-				slog.Warn("auth failed", "reason", "invalid_jwt", "path", r.URL.Path, "error", err)
-				writeAPIError(w, ErrCodeUnauthorized, http.StatusUnauthorized, "unauthenticated")
+
+			// Try session cookie (web UI use).
+			if len(sessionSecret) > 0 {
+				if email := sessionEmailFromRequest(r, sessionSecret); email != "" {
+					if rl := requestLogFromContext(r.Context()); rl != nil {
+						rl.identity = email
+					}
+					ctx := context.WithValue(r.Context(), identityKey, email)
+					next.ServeHTTP(w, r.WithContext(ctx))
+					return
+				}
+			}
+
+			// No valid auth. Redirect browsers to login; return 401 for API clients.
+			if strings.Contains(r.Header.Get("Accept"), "text/html") {
+				loginURL := "/auth/login?redirect=" + r.URL.RequestURI()
+				http.Redirect(w, r, loginURL, http.StatusFound)
 				return
 			}
-			if rl := requestLogFromContext(r.Context()); rl != nil {
-				rl.identity = email
-			}
-			ctx := context.WithValue(r.Context(), identityKey, email)
-			next.ServeHTTP(w, r.WithContext(ctx))
+
+			slog.Warn("auth failed", "reason", "missing_token", "path", r.URL.Path)
+			writeAPIError(w, ErrCodeUnauthorized, http.StatusUnauthorized, "unauthenticated")
 		})
 	}
 }
 
-// validateIAPJWT parses and validates an IAP JWT (RS256 or ES256), returning the email claim.
-func validateIAPJWT(tokenString string, fetchKey func(kid string) (crypto.PublicKey, error)) (string, error) {
+// validateGoogleIDToken parses and validates a Google ID token (RS256 or ES256),
+// returning the email claim. The clientID is matched against the audience claim.
+func validateGoogleIDToken(tokenString string, fetchKey func(kid string) (crypto.PublicKey, error), clientID string) (string, error) {
 	parts := strings.SplitN(tokenString, ".", 3)
 	if len(parts) != 3 {
 		return "", fmt.Errorf("invalid JWT format")
@@ -664,6 +690,8 @@ func validateIAPJWT(tokenString string, fetchKey func(kid string) (crypto.Public
 	var claims struct {
 		Email string  `json:"email"`
 		Exp   float64 `json:"exp"`
+		Iss   string  `json:"iss"`
+		Aud   any     `json:"aud"` // string or []interface{}
 	}
 	if err := json.Unmarshal(payloadJSON, &claims); err != nil {
 		return "", fmt.Errorf("parse payload: %w", err)
@@ -674,29 +702,97 @@ func validateIAPJWT(tokenString string, fetchKey func(kid string) (crypto.Public
 		return "", fmt.Errorf("token expired")
 	}
 
+	// Validate issuer — Google ID tokens use either form.
+	if claims.Iss != "accounts.google.com" && claims.Iss != "https://accounts.google.com" {
+		return "", fmt.Errorf("invalid issuer: %q", claims.Iss)
+	}
+
+	// Validate audience against the configured OAuth client ID (if provided).
+	if clientID != "" && !jwtAudienceContains(claims.Aud, clientID) {
+		return "", fmt.Errorf("invalid audience")
+	}
+
 	if claims.Email == "" {
 		return "", fmt.Errorf("missing email claim")
 	}
 	return claims.Email, nil
 }
 
+// --- Session cookie management ---
+
+const sessionCookieName = "ds_session"
+
+// createSessionCookie creates a signed HMAC session cookie for the given email.
+// The cookie value format is: base64url(json) + "." + base64url(hmac_sha256).
+func createSessionCookie(email string, expiry time.Time, secret []byte, secure bool) *http.Cookie {
+	payload, _ := json.Marshal(map[string]any{
+		"email": email,
+		"exp":   expiry.Unix(),
+	})
+	payloadB64 := base64.RawURLEncoding.EncodeToString(payload)
+	mac := hmac.New(sha256.New, secret)
+	mac.Write([]byte(payloadB64))
+	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	return &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    payloadB64 + "." + sig,
+		Path:     "/",
+		Expires:  expiry,
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+	}
+}
+
+// sessionEmailFromRequest validates the session cookie in r and returns the email.
+// Returns "" if the cookie is missing, malformed, or expired.
+func sessionEmailFromRequest(r *http.Request, secret []byte) string {
+	cookie, err := r.Cookie(sessionCookieName)
+	if err != nil {
+		return ""
+	}
+	dot := strings.LastIndex(cookie.Value, ".")
+	if dot < 0 {
+		return ""
+	}
+	payloadB64 := cookie.Value[:dot]
+	sigB64 := cookie.Value[dot+1:]
+
+	// Verify HMAC.
+	mac := hmac.New(sha256.New, secret)
+	mac.Write([]byte(payloadB64))
+	expectedSig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	if !hmac.Equal([]byte(sigB64), []byte(expectedSig)) {
+		return ""
+	}
+
+	payload, err := base64.RawURLEncoding.DecodeString(payloadB64)
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Email string  `json:"email"`
+		Exp   float64 `json:"exp"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return ""
+	}
+	if time.Now().Unix() > int64(claims.Exp) {
+		return ""
+	}
+	return claims.Email
+}
+
 // --- JWK key cache ---
 
-const iapJWKURL = "https://www.gstatic.com/iap/verify/public_key-jwk"
+const googleJWKURL = "https://www.googleapis.com/oauth2/v3/certs"
 
 type keyCache struct {
-	url       string // JWKS URL to fetch; defaults to iapJWKURL if empty
+	url       string // JWKS URL to fetch; defaults to googleJWKURL if empty
 	mu        sync.RWMutex
 	keys      map[string]crypto.PublicKey
 	fetchedAt time.Time
 	ttl       time.Duration
-}
-
-func newKeyCache() *keyCache {
-	return &keyCache{
-		url: iapJWKURL,
-		ttl: time.Hour,
-	}
 }
 
 // newKeyCacheForURL returns a keyCache that fetches JWKS from the given URL.
@@ -742,7 +838,7 @@ func (c *keyCache) get(kid string) (crypto.PublicKey, error) {
 func (c *keyCache) refresh() error {
 	url := c.url
 	if url == "" {
-		url = iapJWKURL
+		url = googleJWKURL
 	}
 	resp, err := http.Get(url) //nolint:noctx
 	if err != nil {

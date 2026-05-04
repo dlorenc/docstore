@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,7 +32,8 @@ func generateTestKey(t *testing.T) *rsa.PrivateKey {
 }
 
 // makeTestJWT returns a signed RS256 JWT with the given claims.
-func makeTestJWT(t *testing.T, key *rsa.PrivateKey, kid, email string, exp time.Time) string {
+// clientID is used as the audience claim (matches Google ID token format).
+func makeTestJWT(t *testing.T, key *rsa.PrivateKey, kid, email, clientID string, exp time.Time) string {
 	t.Helper()
 
 	headerJSON, _ := json.Marshal(map[string]string{"alg": "RS256", "kid": kid, "typ": "JWT"})
@@ -39,7 +41,8 @@ func makeTestJWT(t *testing.T, key *rsa.PrivateKey, kid, email string, exp time.
 		"email": email,
 		"exp":   exp.Unix(),
 		"iat":   time.Now().Unix(),
-		"iss":   "https://cloud.google.com/iap",
+		"iss":   "accounts.google.com",
+		"aud":   clientID,
 	})
 
 	headerB64 := base64.RawURLEncoding.EncodeToString(headerJSON)
@@ -76,16 +79,18 @@ func (c *identityCapture) handler() http.HandlerFunc {
 	}
 }
 
-func TestIAPMiddleware_ValidJWT(t *testing.T) {
+const testClientID = "test-client-id"
+
+func TestGoogleAuthMiddleware_ValidJWT(t *testing.T) {
 	key := generateTestKey(t)
 	kid := "test-key-1"
-	mw := newMiddleware("", staticKeyFetcher(kid, &key.PublicKey))
+	mw := newGoogleAuthMiddleware("", testClientID, nil, staticKeyFetcher(kid, &key.PublicKey))
 	cap := &identityCapture{}
 	handler := mw(cap.handler())
 
-	token := makeTestJWT(t, key, kid, "alice@example.com", time.Now().Add(time.Hour))
+	token := makeTestJWT(t, key, kid, "alice@example.com", testClientID, time.Now().Add(time.Hour))
 	req := httptest.NewRequest(http.MethodGet, "/tree", nil)
-	req.Header.Set("X-Goog-IAP-JWT-Assertion", token)
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -94,15 +99,15 @@ func TestIAPMiddleware_ValidJWT(t *testing.T) {
 	}
 }
 
-func TestIAPMiddleware_MissingHeader(t *testing.T) {
-	mw := newMiddleware("", func(kid string) (crypto.PublicKey, error) {
+func TestGoogleAuthMiddleware_MissingToken(t *testing.T) {
+	mw := newGoogleAuthMiddleware("", testClientID, nil, func(kid string) (crypto.PublicKey, error) {
 		return nil, fmt.Errorf("should not be called")
 	})
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/tree", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/something", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -119,19 +124,19 @@ func TestIAPMiddleware_MissingHeader(t *testing.T) {
 	}
 }
 
-func TestIAPMiddleware_InvalidSignature(t *testing.T) {
+func TestGoogleAuthMiddleware_InvalidSignature(t *testing.T) {
 	signingKey := generateTestKey(t)
 	verifyKey := generateTestKey(t) // different key — signature will not match
 	kid := "test-key-1"
 
-	mw := newMiddleware("", staticKeyFetcher(kid, &verifyKey.PublicKey))
+	mw := newGoogleAuthMiddleware("", testClientID, nil, staticKeyFetcher(kid, &verifyKey.PublicKey))
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	token := makeTestJWT(t, signingKey, kid, "alice@example.com", time.Now().Add(time.Hour))
+	token := makeTestJWT(t, signingKey, kid, "alice@example.com", testClientID, time.Now().Add(time.Hour))
 	req := httptest.NewRequest(http.MethodGet, "/tree", nil)
-	req.Header.Set("X-Goog-IAP-JWT-Assertion", token)
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -140,17 +145,17 @@ func TestIAPMiddleware_InvalidSignature(t *testing.T) {
 	}
 }
 
-func TestIAPMiddleware_ExpiredToken(t *testing.T) {
+func TestGoogleAuthMiddleware_ExpiredToken(t *testing.T) {
 	key := generateTestKey(t)
 	kid := "test-key-1"
-	mw := newMiddleware("", staticKeyFetcher(kid, &key.PublicKey))
+	mw := newGoogleAuthMiddleware("", testClientID, nil, staticKeyFetcher(kid, &key.PublicKey))
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	token := makeTestJWT(t, key, kid, "alice@example.com", time.Now().Add(-time.Hour))
+	token := makeTestJWT(t, key, kid, "alice@example.com", testClientID, time.Now().Add(-time.Hour))
 	req := httptest.NewRequest(http.MethodGet, "/tree", nil)
-	req.Header.Set("X-Goog-IAP-JWT-Assertion", token)
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -159,9 +164,9 @@ func TestIAPMiddleware_ExpiredToken(t *testing.T) {
 	}
 }
 
-func TestIAPMiddleware_DevMode(t *testing.T) {
-	// Dev mode: no key fetcher needed, no JWT header needed.
-	mw := newMiddleware("alice@example.com", nil)
+func TestGoogleAuthMiddleware_DevMode(t *testing.T) {
+	// Dev mode: no key fetcher needed, no token header needed.
+	mw := newGoogleAuthMiddleware("alice@example.com", "", nil, nil)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -175,18 +180,18 @@ func TestIAPMiddleware_DevMode(t *testing.T) {
 	}
 }
 
-func TestIAPMiddleware_IdentityInContext(t *testing.T) {
+func TestGoogleAuthMiddleware_IdentityInContext(t *testing.T) {
 	key := generateTestKey(t)
 	kid := "test-key-1"
 	const email = "alice@example.com"
 
-	mw := newMiddleware("", staticKeyFetcher(kid, &key.PublicKey))
+	mw := newGoogleAuthMiddleware("", testClientID, nil, staticKeyFetcher(kid, &key.PublicKey))
 	cap := &identityCapture{}
 	handler := mw(cap.handler())
 
-	token := makeTestJWT(t, key, kid, email, time.Now().Add(time.Hour))
+	token := makeTestJWT(t, key, kid, email, testClientID, time.Now().Add(time.Hour))
 	req := httptest.NewRequest(http.MethodGet, "/tree", nil)
-	req.Header.Set("X-Goog-IAP-JWT-Assertion", token)
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -444,8 +449,8 @@ func buildJWT(t *testing.T, key *rsa.PrivateKey, header, payload map[string]any)
 	return signingInput + "." + base64.RawURLEncoding.EncodeToString(sig)
 }
 
-func TestIAPMiddleware_MalformedToken(t *testing.T) {
-	mw := newMiddleware("", func(kid string) (crypto.PublicKey, error) {
+func TestGoogleAuthMiddleware_MalformedToken(t *testing.T) {
+	mw := newGoogleAuthMiddleware("", testClientID, nil, func(kid string) (crypto.PublicKey, error) {
 		return nil, fmt.Errorf("should not be reached")
 	})
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -454,7 +459,7 @@ func TestIAPMiddleware_MalformedToken(t *testing.T) {
 
 	for _, token := range []string{"notajwt", "only.two"} {
 		req := httptest.NewRequest(http.MethodGet, "/tree", nil)
-		req.Header.Set("X-Goog-IAP-JWT-Assertion", token)
+		req.Header.Set("Authorization", "Bearer "+token)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusUnauthorized {
@@ -463,21 +468,21 @@ func TestIAPMiddleware_MalformedToken(t *testing.T) {
 	}
 }
 
-func TestIAPMiddleware_WrongAlgorithm(t *testing.T) {
+func TestGoogleAuthMiddleware_WrongAlgorithm(t *testing.T) {
 	key := generateTestKey(t)
 	kid := "test-key-1"
 	token := buildJWT(t, key,
 		map[string]any{"alg": "HS256", "kid": kid, "typ": "JWT"},
-		map[string]any{"email": "alice@example.com", "exp": time.Now().Add(time.Hour).Unix()},
+		map[string]any{"email": "alice@example.com", "exp": time.Now().Add(time.Hour).Unix(), "iss": "accounts.google.com", "aud": testClientID},
 	)
 
-	mw := newMiddleware("", staticKeyFetcher(kid, &key.PublicKey))
+	mw := newGoogleAuthMiddleware("", testClientID, nil, staticKeyFetcher(kid, &key.PublicKey))
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/tree", nil)
-	req.Header.Set("X-Goog-IAP-JWT-Assertion", token)
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -486,14 +491,14 @@ func TestIAPMiddleware_WrongAlgorithm(t *testing.T) {
 	}
 }
 
-func TestIAPMiddleware_MissingKid(t *testing.T) {
+func TestGoogleAuthMiddleware_MissingKid(t *testing.T) {
 	key := generateTestKey(t)
 	token := buildJWT(t, key,
 		map[string]any{"alg": "RS256", "typ": "JWT"}, // no kid
-		map[string]any{"email": "alice@example.com", "exp": time.Now().Add(time.Hour).Unix()},
+		map[string]any{"email": "alice@example.com", "exp": time.Now().Add(time.Hour).Unix(), "iss": "accounts.google.com", "aud": testClientID},
 	)
 
-	mw := newMiddleware("", func(kid string) (crypto.PublicKey, error) {
+	mw := newGoogleAuthMiddleware("", testClientID, nil, func(kid string) (crypto.PublicKey, error) {
 		return nil, fmt.Errorf("should not be reached")
 	})
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -501,7 +506,7 @@ func TestIAPMiddleware_MissingKid(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/tree", nil)
-	req.Header.Set("X-Goog-IAP-JWT-Assertion", token)
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -510,19 +515,19 @@ func TestIAPMiddleware_MissingKid(t *testing.T) {
 	}
 }
 
-func TestIAPMiddleware_UnknownKid(t *testing.T) {
+func TestGoogleAuthMiddleware_UnknownKid(t *testing.T) {
 	key := generateTestKey(t)
 
-	mw := newMiddleware("", func(kid string) (crypto.PublicKey, error) {
+	mw := newGoogleAuthMiddleware("", testClientID, nil, func(kid string) (crypto.PublicKey, error) {
 		return nil, fmt.Errorf("key %q not found", kid)
 	})
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	token := makeTestJWT(t, key, "unknown-kid", "alice@example.com", time.Now().Add(time.Hour))
+	token := makeTestJWT(t, key, "unknown-kid", "alice@example.com", testClientID, time.Now().Add(time.Hour))
 	req := httptest.NewRequest(http.MethodGet, "/tree", nil)
-	req.Header.Set("X-Goog-IAP-JWT-Assertion", token)
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -531,21 +536,21 @@ func TestIAPMiddleware_UnknownKid(t *testing.T) {
 	}
 }
 
-func TestIAPMiddleware_MissingEmailClaim(t *testing.T) {
+func TestGoogleAuthMiddleware_MissingEmailClaim(t *testing.T) {
 	key := generateTestKey(t)
 	kid := "test-key-1"
 	token := buildJWT(t, key,
 		map[string]any{"alg": "RS256", "kid": kid, "typ": "JWT"},
-		map[string]any{"exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Unix()}, // no email
+		map[string]any{"exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Unix(), "iss": "accounts.google.com", "aud": testClientID}, // no email
 	)
 
-	mw := newMiddleware("", staticKeyFetcher(kid, &key.PublicKey))
+	mw := newGoogleAuthMiddleware("", testClientID, nil, staticKeyFetcher(kid, &key.PublicKey))
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/tree", nil)
-	req.Header.Set("X-Goog-IAP-JWT-Assertion", token)
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -554,21 +559,21 @@ func TestIAPMiddleware_MissingEmailClaim(t *testing.T) {
 	}
 }
 
-func TestIAPMiddleware_EmptyEmailClaim(t *testing.T) {
+func TestGoogleAuthMiddleware_EmptyEmailClaim(t *testing.T) {
 	key := generateTestKey(t)
 	kid := "test-key-1"
 	token := buildJWT(t, key,
 		map[string]any{"alg": "RS256", "kid": kid, "typ": "JWT"},
-		map[string]any{"email": "", "exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Unix()},
+		map[string]any{"email": "", "exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Unix(), "iss": "accounts.google.com", "aud": testClientID},
 	)
 
-	mw := newMiddleware("", staticKeyFetcher(kid, &key.PublicKey))
+	mw := newGoogleAuthMiddleware("", testClientID, nil, staticKeyFetcher(kid, &key.PublicKey))
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/tree", nil)
-	req.Header.Set("X-Goog-IAP-JWT-Assertion", token)
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -577,22 +582,22 @@ func TestIAPMiddleware_EmptyEmailClaim(t *testing.T) {
 	}
 }
 
-func TestIAPMiddleware_MissingExpClaim(t *testing.T) {
+func TestGoogleAuthMiddleware_MissingExpClaim(t *testing.T) {
 	// A JWT with no exp defaults to zero (epoch), which is in the past.
 	key := generateTestKey(t)
 	kid := "test-key-1"
 	token := buildJWT(t, key,
 		map[string]any{"alg": "RS256", "kid": kid, "typ": "JWT"},
-		map[string]any{"email": "alice@example.com", "iat": time.Now().Unix()}, // no exp
+		map[string]any{"email": "alice@example.com", "iat": time.Now().Unix(), "iss": "accounts.google.com", "aud": testClientID}, // no exp
 	)
 
-	mw := newMiddleware("", staticKeyFetcher(kid, &key.PublicKey))
+	mw := newGoogleAuthMiddleware("", testClientID, nil, staticKeyFetcher(kid, &key.PublicKey))
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/tree", nil)
-	req.Header.Set("X-Goog-IAP-JWT-Assertion", token)
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -602,7 +607,7 @@ func TestIAPMiddleware_MissingExpClaim(t *testing.T) {
 	}
 }
 
-func TestIAPMiddleware_FutureIatIsAccepted(t *testing.T) {
+func TestGoogleAuthMiddleware_FutureIatIsAccepted(t *testing.T) {
 	// A token with future iat is still valid: the implementation checks only exp.
 	key := generateTestKey(t)
 	kid := "test-key-1"
@@ -612,21 +617,151 @@ func TestIAPMiddleware_FutureIatIsAccepted(t *testing.T) {
 			"email": "alice@example.com",
 			"exp":   time.Now().Add(time.Hour).Unix(),
 			"iat":   time.Now().Add(time.Hour).Unix(), // future iat
+			"iss":   "accounts.google.com",
+			"aud":   testClientID,
 		},
 	)
 
-	mw := newMiddleware("", staticKeyFetcher(kid, &key.PublicKey))
+	mw := newGoogleAuthMiddleware("", testClientID, nil, staticKeyFetcher(kid, &key.PublicKey))
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/tree", nil)
-	req.Header.Set("X-Goog-IAP-JWT-Assertion", token)
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200 for future iat with valid exp, got %d", rec.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Session cookie tests
+// ---------------------------------------------------------------------------
+
+func TestSessionCookie_ValidCookie(t *testing.T) {
+	secret := []byte("test-session-secret-32bytes!!!!!")
+	email := "alice@example.com"
+	expiry := time.Now().Add(time.Hour)
+
+	cookie := createSessionCookie(email, expiry, secret, false)
+
+	req := httptest.NewRequest(http.MethodGet, "/ui/", nil)
+	req.AddCookie(cookie)
+
+	got := sessionEmailFromRequest(req, secret)
+	if got != email {
+		t.Errorf("expected %q, got %q", email, got)
+	}
+}
+
+func TestSessionCookie_ExpiredCookie(t *testing.T) {
+	secret := []byte("test-session-secret-32bytes!!!!!")
+	email := "alice@example.com"
+	expiry := time.Now().Add(-time.Hour)
+
+	cookie := createSessionCookie(email, expiry, secret, false)
+
+	req := httptest.NewRequest(http.MethodGet, "/ui/", nil)
+	req.AddCookie(cookie)
+
+	got := sessionEmailFromRequest(req, secret)
+	if got != "" {
+		t.Errorf("expected empty string for expired cookie, got %q", got)
+	}
+}
+
+func TestSessionCookie_TamperedCookie(t *testing.T) {
+	secret := []byte("test-session-secret-32bytes!!!!!")
+	email := "alice@example.com"
+	expiry := time.Now().Add(time.Hour)
+
+	cookie := createSessionCookie(email, expiry, secret, false)
+	cookie.Value = cookie.Value + "tampered"
+
+	req := httptest.NewRequest(http.MethodGet, "/ui/", nil)
+	req.AddCookie(cookie)
+
+	got := sessionEmailFromRequest(req, secret)
+	if got != "" {
+		t.Errorf("expected empty string for tampered cookie, got %q", got)
+	}
+}
+
+func TestGoogleAuthMiddleware_SessionCookieAuth(t *testing.T) {
+	secret := []byte("test-session-secret-32bytes!!!!!")
+	email := "alice@example.com"
+
+	mw := newGoogleAuthMiddleware("", testClientID, secret, func(kid string) (crypto.PublicKey, error) {
+		t.Error("key fetcher should not be called for session cookie auth")
+		return nil, fmt.Errorf("should not be reached")
+	})
+	cap := &identityCapture{}
+	handler := mw(cap.handler())
+
+	cookie := createSessionCookie(email, time.Now().Add(time.Hour), secret, false)
+	req := httptest.NewRequest(http.MethodGet, "/ui/repos", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if cap.identity != email {
+		t.Errorf("expected identity %q, got %q", email, cap.identity)
+	}
+}
+
+func TestGoogleAuthMiddleware_UIPathRedirectsToLogin(t *testing.T) {
+	mw := newGoogleAuthMiddleware("", testClientID, nil, func(kid string) (crypto.PublicKey, error) {
+		return nil, fmt.Errorf("should not be reached")
+	})
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/ui/repos", nil)
+	req.Header.Set("Accept", "text/html")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("expected 302 redirect for /ui/ path, got %d", rec.Code)
+	}
+	loc := rec.Header().Get("Location")
+	if !strings.HasPrefix(loc, "/auth/login") {
+		t.Errorf("expected redirect to /auth/login, got %q", loc)
+	}
+}
+
+func TestGoogleAuthMiddleware_InvalidIssuer(t *testing.T) {
+	key := generateTestKey(t)
+	kid := "test-key-1"
+	token := buildJWT(t, key,
+		map[string]any{"alg": "RS256", "kid": kid, "typ": "JWT"},
+		map[string]any{
+			"email": "alice@example.com",
+			"exp":   time.Now().Add(time.Hour).Unix(),
+			"iss":   "https://cloud.google.com/iap", // IAP issuer, not direct Google
+			"aud":   testClientID,
+		},
+	)
+
+	mw := newGoogleAuthMiddleware("", testClientID, nil, staticKeyFetcher(kid, &key.PublicKey))
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/tree", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for IAP issuer, got %d", rec.Code)
 	}
 }
 

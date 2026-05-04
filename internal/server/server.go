@@ -2,14 +2,20 @@ package server
 
 import (
 	"context"
+	cryptorand "crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"strings"
 	"time"
+
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
 
 	"github.com/dlorenc/docstore/internal/blob"
 	"github.com/dlorenc/docstore/internal/db"
@@ -181,28 +187,28 @@ func NewWithReadStore(ws WriteStore, rs ReadStore, devIdentity, bootstrapAdmin s
 	return s.buildHandler(devIdentity, bootstrapAdmin, ws)
 }
 
-
 // New returns an http.Handler with all routes registered.
-// devIdentity, if non-empty, bypasses IAP JWT validation (for local dev/testing).
+// devIdentity, if non-empty, bypasses Google ID token validation (for local dev/testing).
 // bootstrapAdmin, if non-empty, has admin access to any repo with no existing admin.
 // writeStore provides write operations; pass nil if only read/health endpoints are needed.
 // database provides read operations; pass nil if only write/health endpoints are needed.
 func New(writeStore WriteStore, database *sql.DB, devIdentity, bootstrapAdmin string) http.Handler {
-	return newServer(writeStore, database, nil, nil, devIdentity, bootstrapAdmin, "", "")
+	return newServer(writeStore, database, nil, nil, devIdentity, bootstrapAdmin, "", "", nil)
 }
 
 // NewWithBlobStore is like New but also wires a BlobStore into the read store
 // so that files stored externally can be fetched by the file endpoint.
 func NewWithBlobStore(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, devIdentity, bootstrapAdmin string) http.Handler {
-	return newServer(writeStore, database, bs, nil, devIdentity, bootstrapAdmin, "", "")
+	return newServer(writeStore, database, bs, nil, devIdentity, bootstrapAdmin, "", "", nil)
 }
 
 // NewWithBroker is like NewWithBlobStore but also wires an event Broker.
 // Use this in production so mutation handlers can emit events.
-// iapClientID and iapClientSecret are optional; when set they are advertised
-// via the /.well-known/ds-config endpoint so the CLI can perform the OAuth flow.
-func NewWithBroker(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, broker *events.Broker, devIdentity, bootstrapAdmin, iapClientID, iapClientSecret string) http.Handler {
-	return newServer(writeStore, database, bs, broker, devIdentity, bootstrapAdmin, iapClientID, iapClientSecret)
+// oauthClientID is optional; when set it is advertised via /.well-known/ds-config
+// so the CLI can perform the appropriate OAuth flow.
+// oauthClientSecret is used by the server-side OAuth callback handler.
+func NewWithBroker(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, broker *events.Broker, devIdentity, bootstrapAdmin, oauthClientID, oauthClientSecret string) http.Handler {
+	return newServer(writeStore, database, bs, broker, devIdentity, bootstrapAdmin, oauthClientID, oauthClientSecret, nil)
 }
 
 // NewWithPresign is like NewWithBroker but also enables presigned archive URLs.
@@ -210,35 +216,38 @@ func NewWithBroker(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, b
 // public server base URL used when constructing presigned URLs.
 // If archiveHMACSecret is nil, presigned archive URLs are disabled.
 func NewWithPresign(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, broker *events.Broker,
-	devIdentity, bootstrapAdmin, iapClientID, iapClientSecret string,
+	devIdentity, bootstrapAdmin, oauthClientID, oauthClientSecret string,
 	jobStore jobTokenStore, archiveHMACSecret []byte, archiveBaseURL string) http.Handler {
 	return NewWithOIDC(writeStore, database, bs, broker,
-		devIdentity, bootstrapAdmin, iapClientID, iapClientSecret,
+		devIdentity, bootstrapAdmin, oauthClientID, oauthClientSecret,
 		jobStore, archiveHMACSecret, archiveBaseURL,
-		"", "", "", nil)
+		"", "", "", nil, nil)
 }
 
 // NewWithOIDC is like NewWithPresign but also enables OIDC job token authentication
-// for worker-facing endpoints. Workers presenting a valid job OIDC JWT bypass IAP
-// and RBAC and are routed directly to the inner handler with their job identity.
+// for worker-facing endpoints. Workers presenting a valid job OIDC JWT bypass Google
+// ID token validation and RBAC and are routed directly to the inner handler with
+// their job identity.
 //
 // oidcJWKSURL is the JWKS endpoint of the OIDC issuer (e.g. https://oidc.docstore.dev/.well-known/jwks.json).
 // oidcAudience is the expected audience claim (e.g. "docstore").
 // oidcIssuer is the expected issuer claim (e.g. "https://oidc.docstore.dev").
 // If oidcJWKSURL is empty, OIDC job token auth is disabled.
 // ls is the LogStore used by POST /repos/:repo/-/check/:name/logs; if nil the endpoint returns 503.
+// sessionSecret is the HMAC key for signing session cookies; nil disables web UI session auth.
 func NewWithOIDC(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, broker *events.Broker,
-	devIdentity, bootstrapAdmin, iapClientID, iapClientSecret string,
+	devIdentity, bootstrapAdmin, oauthClientID, oauthClientSecret string,
 	jobStore jobTokenStore, archiveHMACSecret []byte, archiveBaseURL string,
-	oidcJWKSURL, oidcAudience, oidcIssuer string, ls logstore.LogStore) http.Handler {
+	oidcJWKSURL, oidcAudience, oidcIssuer string, ls logstore.LogStore, sessionSecret []byte) http.Handler {
 	pc := policy.NewCache()
 	s := &server{
 		commitStore:       writeStore,
 		policyCache:       pc,
 		broker:            broker,
 		globalAdmin:       bootstrapAdmin,
-		iapClientID:       iapClientID,
-		iapClientSecret:   iapClientSecret,
+		oauthClientID:     oauthClientID,
+		oauthClientSecret: oauthClientSecret,
+		sessionSecret:     sessionSecret,
 		archiveHMACSecret: archiveHMACSecret,
 		archiveBaseURL:    archiveBaseURL,
 		jobTokenStore:     jobStore,
@@ -267,15 +276,16 @@ func NewWithOIDC(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, bro
 	return s.buildHandler(devIdentity, bootstrapAdmin, writeStore)
 }
 
-func newServer(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, broker *events.Broker, devIdentity, bootstrapAdmin, iapClientID, iapClientSecret string) http.Handler {
+func newServer(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, broker *events.Broker, devIdentity, bootstrapAdmin, oauthClientID, oauthClientSecret string, sessionSecret []byte) http.Handler {
 	pc := policy.NewCache()
 	s := &server{
-		commitStore:     writeStore,
-		policyCache:     pc,
-		broker:          broker,
-		globalAdmin:     bootstrapAdmin,
-		iapClientID:     iapClientID,
-		iapClientSecret: iapClientSecret,
+		commitStore:       writeStore,
+		policyCache:       pc,
+		broker:            broker,
+		globalAdmin:       bootstrapAdmin,
+		oauthClientID:     oauthClientID,
+		oauthClientSecret: oauthClientSecret,
+		sessionSecret:     sessionSecret,
 	}
 	if writeStore != nil {
 		var emitter service.EventEmitter
@@ -346,12 +356,18 @@ func jobEndpointAllowed(endpoint string, permissions []string) bool {
 // Extracted so tests can construct a server with injected dependencies and still
 // get the full middleware stack.
 func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore WriteStore) http.Handler {
-	// Health check and well-known config are exempt from auth.
+	// Health check, well-known config, and OAuth endpoints are exempt from auth.
 	outer := http.NewServeMux()
 	outer.HandleFunc("GET /healthz", handleHealth)
 	outer.HandleFunc("GET /.well-known/ds-config", s.handleDSConfig)
+	outer.HandleFunc("GET /auth/login", s.handleAuthLogin)
+	outer.HandleFunc("GET /auth/callback", s.handleAuthCallback)
+	outer.HandleFunc("GET /auth/logout", s.handleAuthLogout)
+	outer.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/ui/", http.StatusFound)
+	})
 
-	// All other routes require IAP authentication.
+	// All other routes require authentication.
 	inner := http.NewServeMux()
 
 	// Org management endpoints
@@ -383,7 +399,7 @@ func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore Wri
 	//   GET  /repos/acme/myrepo          (bare: GET/DELETE a repo)
 	inner.Handle("/repos/", http.HandlerFunc(s.handleReposPrefix))
 
-	// Minimal read-only web UI. Registered on `inner` so it shares IAP + RBAC
+	// Minimal read-only web UI. Registered on `inner` so it shares Google auth + RBAC
 	// middleware. Only wires up when both a read store and write store are
 	// present — read-only mode still works for browsing, but we need the write
 	// store for repo/org listings.
@@ -417,16 +433,16 @@ func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore Wri
 	// Global SSE stream (admin only).
 	inner.HandleFunc("GET /events", s.handleSSEGlobalEvents)
 
-	// Chain: IAPMiddleware → RBACMiddleware (when store present) → routes.
-	// IAP must run first to set identity in context before RBAC reads it.
+	// Chain: GoogleAuthMiddleware → RBACMiddleware (when store present) → routes.
+	// Auth must run first to set identity in context before RBAC reads it.
 	var routed http.Handler = inner
 	if writeStore != nil {
 		routed = RBACMiddleware(writeStore, bootstrapAdmin)(inner)
 	}
-	iapHandler := IAPMiddleware(devIdentity)(routed)
+	iapHandler := GoogleAuthMiddleware(devIdentity, s.oauthClientID, s.sessionSecret)(routed)
 
-	// Wrap the IAP handler: intercept presign, HMAC-signed archive, and job
-	// OIDC token requests before IAP validation. Everything else falls through
+	// Wrap the auth handler: intercept presign, HMAC-signed archive, and job
+	// OIDC token requests before Google ID token validation. Everything else falls through
 	// to iapHandler.
 	// Using "/" (not "/repos/") avoids the Go mux trailing-slash redirect that
 	// would turn POST /repos into a 307 → POST /repos/.
@@ -464,7 +480,7 @@ func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore Wri
 				return
 			}
 			// Check run (worker → post check result): auth via request_token.
-			// Only intercept when jobTokenStore is configured; fall through to OIDC/IAP otherwise.
+			// Only intercept when jobTokenStore is configured; fall through to OIDC/Google auth otherwise.
 			if endpoint == "check" && r.Method == http.MethodPost && s.jobTokenStore != nil {
 				r.SetPathValue("name", repoName)
 				s.handleCICheck(w, r)
@@ -474,7 +490,7 @@ func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore Wri
 
 		// Job OIDC token auth: if a Bearer token is present and OIDC is configured,
 		// validate it as a job OIDC JWT. On success, inject job identity into context
-		// and route directly to the inner mux (bypassing IAP and RBAC).
+		// and route directly to the inner mux (bypassing Google auth and RBAC).
 		// On failure, return 401. If no Bearer token, fall through to iapHandler.
 		if s.oidcKeyCache != nil {
 			auth := r.Header.Get("Authorization")
@@ -546,10 +562,16 @@ type server struct {
 	// globalAdmin is the identity that may manage global resources like
 	// event subscriptions. Corresponds to the --bootstrap-admin flag.
 	globalAdmin string
-	// iapClientID and iapClientSecret are advertised via /.well-known/ds-config
-	// so CLI tools can perform the IAP OAuth flow.
-	iapClientID     string
-	iapClientSecret string
+	// oauthClientID is the Google OAuth 2.0 client ID. Advertised via
+	// /.well-known/ds-config so CLI tools can perform the OAuth flow.
+	// Also used to validate the audience claim of Google ID tokens.
+	oauthClientID string
+	// oauthClientSecret is the Google OAuth 2.0 client secret used by
+	// the server-side /auth/callback handler to exchange authorization codes.
+	oauthClientSecret string
+	// sessionSecret is the HMAC key for signing session cookies.
+	// nil disables session cookie auth for the web UI.
+	sessionSecret []byte
 	// archiveHMACSecret is the raw HMAC key for presigned archive URLs.
 	// nil means the feature is disabled.
 	archiveHMACSecret []byte
@@ -572,18 +594,14 @@ type server struct {
 // It advertises the server's authentication configuration so CLI tools can
 // perform the appropriate OAuth flow.
 func (s *server) handleDSConfig(w http.ResponseWriter, r *http.Request) {
-	if s.iapClientID == "" {
+	if s.oauthClientID == "" {
 		writeJSON(w, http.StatusOK, map[string]any{"auth": map[string]string{"type": "none"}})
 		return
 	}
-	auth := map[string]any{
-		"type":      "iap",
-		"client_id": s.iapClientID,
-	}
-	if s.iapClientSecret != "" {
-		auth["client_secret"] = s.iapClientSecret
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"auth": auth})
+	writeJSON(w, http.StatusOK, map[string]any{"auth": map[string]any{
+		"type":      "oauth",
+		"client_id": s.oauthClientID,
+	}})
 }
 
 func (s *server) handleCommit(w http.ResponseWriter, r *http.Request) {
@@ -680,6 +698,164 @@ func (s *server) requireRepoReadAccess(w http.ResponseWriter, r *http.Request, r
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// --- OAuth2 web authentication handlers ---
+
+// oauthStateCookieName is the cookie used to carry the CSRF state during OAuth.
+const oauthStateCookieName = "ds_oauth_state"
+
+// handleAuthLogin redirects the browser to Google's OAuth consent page.
+func (s *server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
+	if s.oauthClientID == "" || s.oauthClientSecret == "" || len(s.sessionSecret) == 0 {
+		http.Error(w, "OAuth not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	redirect := r.URL.Query().Get("redirect")
+	if redirect == "" {
+		redirect = "/ui/"
+	}
+
+	stateBytes := make([]byte, 16)
+	if _, err := cryptorand.Read(stateBytes); err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	state := base64.RawURLEncoding.EncodeToString(stateBytes)
+
+	// Store state and post-auth redirect in a short-lived cookie.
+	stateCookie := &http.Cookie{
+		Name:     oauthStateCookieName,
+		Value:    state + "|" + redirect,
+		Path:     "/auth/",
+		MaxAge:   300, // 5 minutes
+		HttpOnly: true,
+		Secure:   isSecureRequest(r),
+		SameSite: http.SameSiteLaxMode,
+	}
+	http.SetCookie(w, stateCookie)
+
+	conf := s.oauthConfig(r)
+	authURL := conf.AuthCodeURL(state, oauth2.AccessTypeOffline)
+	http.Redirect(w, r, authURL, http.StatusFound)
+}
+
+// handleAuthCallback handles the OAuth2 authorization code callback from Google.
+func (s *server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
+	if s.oauthClientID == "" || s.oauthClientSecret == "" || len(s.sessionSecret) == 0 {
+		http.Error(w, "OAuth not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Validate state from cookie.
+	stateCookie, err := r.Cookie(oauthStateCookieName)
+	if err != nil {
+		http.Error(w, "missing state cookie", http.StatusBadRequest)
+		return
+	}
+	parts := strings.SplitN(stateCookie.Value, "|", 2)
+	if len(parts) != 2 {
+		http.Error(w, "malformed state cookie", http.StatusBadRequest)
+		return
+	}
+	expectedState, redirect := parts[0], parts[1]
+
+	if r.URL.Query().Get("state") != expectedState {
+		http.Error(w, "state mismatch", http.StatusBadRequest)
+		return
+	}
+
+	code := r.URL.Query().Get("code")
+	if code == "" {
+		http.Error(w, "missing authorization code", http.StatusBadRequest)
+		return
+	}
+
+	// Exchange code for tokens.
+	conf := s.oauthConfig(r)
+	tok, err := conf.Exchange(r.Context(), code)
+	if err != nil {
+		slog.Warn("oauth exchange failed", "error", err)
+		http.Error(w, "token exchange failed", http.StatusInternalServerError)
+		return
+	}
+
+	idToken, _ := tok.Extra("id_token").(string)
+	if idToken == "" {
+		http.Error(w, "no id_token in response", http.StatusInternalServerError)
+		return
+	}
+
+	// Validate the ID token and extract email.
+	cache := newKeyCacheForURL(googleJWKURL)
+	email, err := validateGoogleIDToken(idToken, cache.get, s.oauthClientID)
+	if err != nil {
+		slog.Warn("oauth id_token invalid", "error", err)
+		http.Error(w, "invalid id token", http.StatusUnauthorized)
+		return
+	}
+
+	// Clear the state cookie.
+	http.SetCookie(w, &http.Cookie{
+		Name:     oauthStateCookieName,
+		Value:    "",
+		Path:     "/auth/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   isSecureRequest(r),
+	})
+
+	// Set session cookie (valid for 24 hours).
+	expiry := time.Now().Add(24 * time.Hour)
+	sessionCookie := createSessionCookie(email, expiry, s.sessionSecret, isSecureRequest(r))
+	http.SetCookie(w, sessionCookie)
+
+	if redirect == "" {
+		redirect = "/ui/"
+	}
+	http.Redirect(w, r, redirect, http.StatusFound)
+}
+
+// handleAuthLogout clears the session cookie and redirects to the home page.
+func (s *server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   isSecureRequest(r),
+	})
+	http.Redirect(w, r, "/ui/", http.StatusFound)
+}
+
+// isSecureRequest returns true if the request was made over HTTPS, checking
+// X-Forwarded-Proto first (for requests behind a TLS-terminating load balancer).
+func isSecureRequest(r *http.Request) bool {
+	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+		return proto == "https"
+	}
+	return r.TLS != nil
+}
+
+// oauthConfig returns an oauth2.Config for the server's OAuth client.
+// The redirect URL uses the request's scheme and host.
+func (s *server) oauthConfig(r *http.Request) *oauth2.Config {
+	scheme := "https"
+	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+		scheme = proto
+	} else if r.TLS == nil {
+		scheme = "http"
+	}
+	redirectURL := fmt.Sprintf("%s://%s/auth/callback", scheme, r.Host)
+	return &oauth2.Config{
+		ClientID:     s.oauthClientID,
+		ClientSecret: s.oauthClientSecret,
+		RedirectURL:  redirectURL,
+		Scopes:       []string{"openid", "email"},
+		Endpoint:     google.Endpoint,
+	}
 }
 
 func notImplemented(w http.ResponseWriter, r *http.Request) {
