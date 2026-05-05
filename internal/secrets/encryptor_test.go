@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	kmspb "cloud.google.com/go/kms/apiv1/kmspb"
@@ -189,6 +190,7 @@ func TestLocalEncryptor_KeyNameUsesBasename(t *testing.T) {
 // and returns nonce||ct as the wrapped bytes — close enough to the real
 // thing to exercise our request/response handling without touching GCP.
 type fakeKMSClient struct {
+	mu         sync.Mutex
 	gcm        cipher.AEAD
 	expectName string
 	encryptErr error
@@ -215,6 +217,8 @@ func newFakeKMSClient(t *testing.T, expectName string) *fakeKMSClient {
 }
 
 func (f *fakeKMSClient) Encrypt(_ context.Context, req *kmspb.EncryptRequest, _ ...gax.CallOption) (*kmspb.EncryptResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.encryptN++
 	if f.encryptErr != nil {
 		return nil, f.encryptErr
@@ -232,6 +236,8 @@ func (f *fakeKMSClient) Encrypt(_ context.Context, req *kmspb.EncryptRequest, _ 
 }
 
 func (f *fakeKMSClient) Decrypt(_ context.Context, req *kmspb.DecryptRequest, _ ...gax.CallOption) (*kmspb.DecryptResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.decryptN++
 	if f.decryptErr != nil {
 		return nil, f.decryptErr
