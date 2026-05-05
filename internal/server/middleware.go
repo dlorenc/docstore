@@ -226,6 +226,17 @@ func roleAllows(role model.RoleType, method, subPath string, r *http.Request) bo
 		return role == model.RoleAdmin
 	}
 
+	// Secrets endpoints — admin only for writes/deletes; reads fall through
+	// to the generic reader+ GET branch below. Per docs/secrets-design.md,
+	// there is no GET /secrets/{name} (no read-value route), and write paths
+	// are PUT/DELETE on /secrets/{name}.
+	if subPath == "secrets" && method != http.MethodGet {
+		return role == model.RoleAdmin
+	}
+	if strings.HasPrefix(subPath, "secrets/") && (method == http.MethodPut || method == http.MethodDelete) {
+		return role == model.RoleAdmin
+	}
+
 	// DELETE /releases/<name> — admin only.
 	if method == http.MethodDelete && strings.HasPrefix(subPath, "releases/") {
 		return role == model.RoleAdmin
