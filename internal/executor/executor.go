@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -24,6 +26,7 @@ import (
 	"github.com/moby/buildkit/session/secrets/secretsprovider"
 	digest "github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
+	"gopkg.in/yaml.v3"
 
 	"github.com/dlorenc/docstore/internal/ciconfig"
 )
@@ -62,11 +65,123 @@ type Config struct {
 
 // Check is a single CI check configuration.
 type Check struct {
-	Name  string   `json:"name"  yaml:"name"`
-	Image string   `json:"image" yaml:"image"`
-	Steps []string `json:"steps" yaml:"steps"`
-	If    string   `json:"if,omitempty"    yaml:"if,omitempty"`    // expression; empty = always run
-	Needs []string `json:"needs,omitempty" yaml:"needs,omitempty"` // parsed but not yet implemented
+	Name    string          `json:"name"  yaml:"name"`
+	Image   string          `json:"image" yaml:"image"`
+	Steps   []string        `json:"steps" yaml:"steps"`
+	If      string          `json:"if,omitempty"      yaml:"if,omitempty"`      // expression; empty = always run
+	Needs   []string        `json:"needs,omitempty"   yaml:"needs,omitempty"`   // parsed but not yet implemented
+	Secrets []SecretRequest `json:"secrets,omitempty" yaml:"secrets,omitempty"` // per-check secrets allowlist
+}
+
+// SecretRequest is one entry in a check's secrets: allowlist.
+//
+// LocalName is the env-var-shaped name the secret is exposed as in the step's
+// container (e.g. /run/secrets/<LocalName>). RepoName is the name of the repo
+// secret to source from. When the user writes the simple form `- FOO` both
+// fields are "FOO". When they use the rename form `- LOCAL: REPO` the two
+// differ.
+//
+// JSON wire format mirrors the parsed shape: {"local_name":"...","repo_name":"..."}.
+// This keeps marshal/unmarshal symmetric and avoids needing a custom JSON decoder
+// for the polymorphic YAML form (the executor only sees structured JSON over the
+// wire — the heterogeneous shape is a YAML-only convenience).
+type SecretRequest struct {
+	LocalName string `json:"local_name" yaml:"-"`
+	RepoName  string `json:"repo_name"  yaml:"-"`
+}
+
+// UnmarshalYAML accepts either of:
+//
+//	- FOO              # scalar: LocalName == RepoName == "FOO"
+//	- LOCAL: REPO      # mapping with exactly one key: LocalName=LOCAL, RepoName=REPO
+//
+// Anything else (sequence, multi-key map, non-string values, empty entry) is
+// rejected with a clear error pointing at the source line.
+func (s *SecretRequest) UnmarshalYAML(node *yaml.Node) error {
+	switch node.Kind {
+	case yaml.ScalarNode:
+		if node.Tag != "" && node.Tag != "!!str" {
+			return fmt.Errorf("line %d: secrets entry must be a string or single-key mapping, got %s", node.Line, node.Tag)
+		}
+		if node.Value == "" {
+			return fmt.Errorf("line %d: secrets entry must not be empty", node.Line)
+		}
+		s.LocalName = node.Value
+		s.RepoName = node.Value
+		return nil
+	case yaml.MappingNode:
+		if len(node.Content) != 2 {
+			return fmt.Errorf("line %d: secrets entry mapping must have exactly one key (LOCAL: REPO), got %d", node.Line, len(node.Content)/2)
+		}
+		k, v := node.Content[0], node.Content[1]
+		if k.Kind != yaml.ScalarNode || (k.Tag != "" && k.Tag != "!!str") {
+			return fmt.Errorf("line %d: secrets entry key must be a string", k.Line)
+		}
+		if v.Kind != yaml.ScalarNode || (v.Tag != "" && v.Tag != "!!str") {
+			return fmt.Errorf("line %d: secrets entry value must be a string", v.Line)
+		}
+		if k.Value == "" || v.Value == "" {
+			return fmt.Errorf("line %d: secrets entry key and value must be non-empty", node.Line)
+		}
+		s.LocalName = k.Value
+		s.RepoName = v.Value
+		return nil
+	default:
+		return fmt.Errorf("line %d: secrets entry must be a string or single-key mapping", node.Line)
+	}
+}
+
+// secretNameRE matches POSIX-env-var-shaped names: leading uppercase letter,
+// followed by up to 63 uppercase/digit/underscore characters. Mirrors the repo
+// secret name pattern in docs/secrets-design.md.
+var secretNameRE = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,63}$`)
+
+// reservedSecretPrefix is the prefix reserved for built-in docstore secrets
+// (e.g. docstore_oidc_request_token). User-defined secrets in either the
+// LocalName or RepoName position must not start with this (case-insensitive).
+const reservedSecretPrefix = "DOCSTORE_"
+
+// ValidateSecretsAllowlist returns an error if any check in cfg references
+// secrets with an invalid local or repo name. This is a static check that
+// runs before scheduling — it cannot detect missing secrets (those are
+// resolved at dispatch time by the scheduler in phase 5).
+//
+// All problems across all checks are aggregated via errors.Join so a single
+// invocation surfaces every issue, not just the first.
+func ValidateSecretsAllowlist(cfg *Config) error {
+	if cfg == nil {
+		return nil
+	}
+	var errs []error
+	for _, check := range cfg.Checks {
+		seen := make(map[string]struct{}, len(check.Secrets))
+		for i, sec := range check.Secrets {
+			if err := validateSecretName("local name", sec.LocalName); err != nil {
+				errs = append(errs, fmt.Errorf("check %q secrets[%d]: %w", check.Name, i, err))
+			}
+			if err := validateSecretName("repo name", sec.RepoName); err != nil {
+				errs = append(errs, fmt.Errorf("check %q secrets[%d]: %w", check.Name, i, err))
+			}
+			if _, dup := seen[sec.LocalName]; dup && sec.LocalName != "" {
+				errs = append(errs, fmt.Errorf("check %q secrets[%d]: duplicate local name %q", check.Name, i, sec.LocalName))
+			}
+			seen[sec.LocalName] = struct{}{}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func validateSecretName(kind, name string) error {
+	if name == "" {
+		return fmt.Errorf("%s must not be empty", kind)
+	}
+	if !secretNameRE.MatchString(name) {
+		return fmt.Errorf("%s %q must match %s", kind, name, secretNameRE.String())
+	}
+	if strings.HasPrefix(strings.ToUpper(name), reservedSecretPrefix) {
+		return fmt.Errorf("%s %q must not use reserved prefix %q", kind, name, reservedSecretPrefix)
+	}
+	return nil
 }
 
 // CheckResult is the result of executing a single check.
