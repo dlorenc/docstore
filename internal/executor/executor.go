@@ -61,6 +61,18 @@ type Config struct {
 	// Not parsed from ci.yaml; populated by the CI worker at runtime.
 	OIDCRequestToken string `json:"-" yaml:"-"`
 	OIDCRequestURL   string `json:"-" yaml:"-"`
+
+	// UserSecrets maps a check's LocalName → resolved plaintext bytes for
+	// every repo secret requested by any check in this Config. Populated by
+	// the CI worker after calling /repos/{repo}/-/secrets/reveal on the
+	// docstore server. The unexported `json:"-" yaml:"-"` tags keep these
+	// values out of any wire format — they are runtime-only and must never
+	// be marshalled or logged.
+	//
+	// Phase 4 (this field) only stores the resolved values. Phase 5 wires
+	// them into the BuildKit DAG via secretsprovider.FromMap and
+	// llb.AddSecret on a per-check basis using the check's Secrets allowlist.
+	UserSecrets map[string][]byte `json:"-" yaml:"-"`
 }
 
 // Check is a single CI check configuration.
