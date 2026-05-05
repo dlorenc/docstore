@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dlorenc/docstore/internal/citoken"
+	"github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/model"
 	"github.com/dlorenc/docstore/internal/secrets"
 )
@@ -444,4 +447,400 @@ func (b *threadSafeBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.buf.String()
+}
+
+// ---------------------------------------------------------------------------
+// Reveal — POST /repos/{owner}/{name}/-/secrets/reveal
+// ---------------------------------------------------------------------------
+
+// buildRevealServer wires a *server with a fake secrets.Service, a stub
+// jobTokenStore, and a mockStore (for GetProposal/ListOrgMembers). The
+// returned handler is the full http chain so the outer interception fires.
+func buildRevealServer(t *testing.T, fake *fakeSecretsService, jobStore jobTokenStore, ms *mockStore) http.Handler {
+	t.Helper()
+	if ms == nil {
+		ms = &mockStore{}
+	}
+	s := &server{
+		commitStore:   ms,
+		secrets:       fake,
+		jobTokenStore: jobStore,
+	}
+	return s.buildHandler(devID, devID, ms)
+}
+
+// revealJobLookup returns a stubJobTokenStore that resolves the given
+// plaintext token to job and rejects everything else as ErrTokenInvalid.
+func revealJobLookup(t *testing.T, plaintext string, job *model.CIJob) *stubJobTokenStore {
+	t.Helper()
+	wantHashed := citoken.HashRequestToken(plaintext)
+	return &stubJobTokenStore{
+		lookupFn: func(_ context.Context, h string) (*model.CIJob, error) {
+			if h != wantHashed {
+				return nil, db.ErrTokenInvalid
+			}
+			return job, nil
+		},
+	}
+}
+
+// postReveal is a small helper for issuing reveal requests with a bearer token.
+func postReveal(t *testing.T, h http.Handler, ctx context.Context, repo, token, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/repos/"+repo+"/-/secrets/reveal", strings.NewReader(body))
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestRevealSecrets_HappyPath_PushTrigger(t *testing.T) {
+	const repo = "org/myrepo"
+	plaintext, _, err := citoken.GenerateRequestToken()
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+
+	var revealCalled, touchedRepo string
+	var revealNames []string
+	fake := &fakeSecretsService{
+		revealFn: func(_ context.Context, gotRepo string, names []string) (map[string][]byte, []string, error) {
+			revealCalled = "yes"
+			touchedRepo = gotRepo
+			revealNames = append(revealNames, names...)
+			return map[string][]byte{
+				"DOCKERHUB_TOKEN": []byte("dh-secret"),
+				"SLACK_INCOMING":  []byte("sl-secret\x00bin"), // include a NUL to prove base64 round-trips
+			}, nil, nil
+		},
+	}
+	jobStore := revealJobLookup(t, plaintext, &model.CIJob{
+		ID:          "job-1",
+		Repo:        repo,
+		Branch:      "main",
+		TriggerType: "push",
+	})
+
+	h := buildRevealServer(t, fake, jobStore, nil)
+	ctx := t.Context()
+	rec := postReveal(t, h, ctx, repo, plaintext,
+		`{"names":["DOCKERHUB_TOKEN","SLACK_INCOMING"]}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	if revealCalled != "yes" {
+		t.Fatal("Reveal was not invoked on the service")
+	}
+	if touchedRepo != repo {
+		t.Errorf("Reveal got repo %q, want %q", touchedRepo, repo)
+	}
+	if len(revealNames) != 2 || revealNames[0] != "DOCKERHUB_TOKEN" || revealNames[1] != "SLACK_INCOMING" {
+		t.Errorf("Reveal got names %v", revealNames)
+	}
+
+	var resp revealResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Values) != 2 {
+		t.Fatalf("expected 2 values, got %d", len(resp.Values))
+	}
+	got, err := base64.StdEncoding.DecodeString(resp.Values["DOCKERHUB_TOKEN"])
+	if err != nil {
+		t.Fatalf("decode DOCKERHUB_TOKEN: %v", err)
+	}
+	if string(got) != "dh-secret" {
+		t.Errorf("decoded DOCKERHUB_TOKEN = %q, want %q", got, "dh-secret")
+	}
+	got, err = base64.StdEncoding.DecodeString(resp.Values["SLACK_INCOMING"])
+	if err != nil {
+		t.Fatalf("decode SLACK_INCOMING: %v", err)
+	}
+	if string(got) != "sl-secret\x00bin" {
+		t.Errorf("decoded SLACK_INCOMING = %q", got)
+	}
+	if len(resp.Missing) != 0 {
+		t.Errorf("expected empty missing, got %v", resp.Missing)
+	}
+}
+
+func TestRevealSecrets_HappyPath_ProposalByMember(t *testing.T) {
+	const repo = "org/myrepo"
+	plaintext, _, _ := citoken.GenerateRequestToken()
+
+	propID := "prop-42"
+	ms := &mockStore{
+		getProposalFn: func(_ context.Context, gotRepo, gotID string) (*model.Proposal, error) {
+			if gotRepo != repo || gotID != propID {
+				t.Errorf("GetProposal repo=%q id=%q", gotRepo, gotID)
+			}
+			return &model.Proposal{ID: propID, Author: "alice@example.com"}, nil
+		},
+		listOrgMembersFn: func(_ context.Context, org string) ([]model.OrgMember, error) {
+			if org != "org" {
+				t.Errorf("ListOrgMembers org=%q", org)
+			}
+			return []model.OrgMember{
+				{Org: "org", Identity: "bob@example.com"},
+				{Org: "org", Identity: "alice@example.com"},
+			}, nil
+		},
+	}
+	fake := &fakeSecretsService{
+		revealFn: func(_ context.Context, _ string, _ []string) (map[string][]byte, []string, error) {
+			return map[string][]byte{"X": []byte("v")}, nil, nil
+		},
+	}
+	jobStore := revealJobLookup(t, plaintext, &model.CIJob{
+		ID:                "job-2",
+		Repo:              repo,
+		TriggerType:       "proposal",
+		TriggerProposalID: &propID,
+	})
+
+	h := buildRevealServer(t, fake, jobStore, ms)
+	rec := postReveal(t, h, t.Context(), repo, plaintext, `{"names":["X"]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRevealSecrets_Denied_ProposalByNonMember(t *testing.T) {
+	const repo = "org/myrepo"
+	plaintext, _, _ := citoken.GenerateRequestToken()
+
+	propID := "prop-9"
+	ms := &mockStore{
+		getProposalFn: func(_ context.Context, _, _ string) (*model.Proposal, error) {
+			return &model.Proposal{ID: propID, Author: "outsider@example.com"}, nil
+		},
+		listOrgMembersFn: func(_ context.Context, _ string) ([]model.OrgMember, error) {
+			return []model.OrgMember{{Org: "org", Identity: "alice@example.com"}}, nil
+		},
+	}
+	fake := &fakeSecretsService{
+		revealFn: func(_ context.Context, _ string, _ []string) (map[string][]byte, []string, error) {
+			t.Fatal("Reveal must not be called when policy denies the request")
+			return nil, nil, nil
+		},
+	}
+	jobStore := revealJobLookup(t, plaintext, &model.CIJob{
+		ID:                "job-3",
+		Repo:              repo,
+		TriggerType:       "proposal_synchronized",
+		TriggerProposalID: &propID,
+	})
+
+	// Capture logs to verify we don't leak secret names.
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	var buf threadSafeBuffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
+	h := buildRevealServer(t, fake, jobStore, ms)
+	rec := postReveal(t, h, t.Context(), repo, plaintext, `{"names":["DOCKERHUB_TOKEN"]}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "secrets_blocked") {
+		t.Errorf("expected secrets_blocked in body, got %s", body)
+	}
+	if !strings.Contains(body, "non_member_proposal") {
+		t.Errorf("expected non_member_proposal reason in body, got %s", body)
+	}
+
+	logs := buf.String()
+	if strings.Contains(logs, "DOCKERHUB_TOKEN") {
+		t.Errorf("logs leak requested secret name:\n%s", logs)
+	}
+}
+
+func TestRevealSecrets_Denied_UnknownTrigger(t *testing.T) {
+	const repo = "org/myrepo"
+	plaintext, _, _ := citoken.GenerateRequestToken()
+
+	for _, trigger := range []string{"", "unknown_trigger"} {
+		t.Run(trigger, func(t *testing.T) {
+			fake := &fakeSecretsService{
+				revealFn: func(_ context.Context, _ string, _ []string) (map[string][]byte, []string, error) {
+					t.Fatal("Reveal must not be called for denied trigger")
+					return nil, nil, nil
+				},
+			}
+			jobStore := revealJobLookup(t, plaintext, &model.CIJob{
+				ID: "j", Repo: repo, TriggerType: trigger,
+			})
+			h := buildRevealServer(t, fake, jobStore, nil)
+			rec := postReveal(t, h, t.Context(), repo, plaintext, `{"names":["X"]}`)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("expected 403 for trigger %q, got %d; body: %s", trigger, rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "secrets_blocked") {
+				t.Errorf("expected secrets_blocked reason, got %s", rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestRevealSecrets_SomeMissing(t *testing.T) {
+	const repo = "org/myrepo"
+	plaintext, _, _ := citoken.GenerateRequestToken()
+
+	fake := &fakeSecretsService{
+		revealFn: func(_ context.Context, _ string, names []string) (map[string][]byte, []string, error) {
+			if len(names) != 3 {
+				t.Errorf("expected 3 names, got %d", len(names))
+			}
+			return map[string][]byte{
+				"A": []byte("a-val"),
+				"B": []byte("b-val"),
+			}, []string{"C"}, nil
+		},
+	}
+	jobStore := revealJobLookup(t, plaintext, &model.CIJob{
+		ID: "j", Repo: repo, TriggerType: "manual",
+	})
+
+	h := buildRevealServer(t, fake, jobStore, nil)
+	rec := postReveal(t, h, t.Context(), repo, plaintext, `{"names":["A","B","C"]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	var resp revealResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Values) != 2 {
+		t.Errorf("expected 2 values, got %d", len(resp.Values))
+	}
+	if len(resp.Missing) != 1 || resp.Missing[0] != "C" {
+		t.Errorf("expected Missing=[C], got %v", resp.Missing)
+	}
+}
+
+func TestRevealSecrets_RepoMismatch_404(t *testing.T) {
+	plaintext, _, _ := citoken.GenerateRequestToken()
+	jobStore := revealJobLookup(t, plaintext, &model.CIJob{
+		ID: "j", Repo: "acme/api", TriggerType: "push",
+	})
+	fake := &fakeSecretsService{
+		revealFn: func(_ context.Context, _ string, _ []string) (map[string][]byte, []string, error) {
+			t.Fatal("Reveal must not be called on repo mismatch")
+			return nil, nil, nil
+		},
+	}
+	h := buildRevealServer(t, fake, jobStore, nil)
+	rec := postReveal(t, h, t.Context(), "acme/other", plaintext, `{"names":["X"]}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRevealSecrets_BadToken_401(t *testing.T) {
+	jobStore := &stubJobTokenStore{
+		lookupFn: func(_ context.Context, _ string) (*model.CIJob, error) {
+			return nil, db.ErrTokenInvalid
+		},
+	}
+	fake := &fakeSecretsService{}
+	h := buildRevealServer(t, fake, jobStore, nil)
+
+	// No Authorization header at all.
+	rec := postReveal(t, h, t.Context(), "org/myrepo", "", `{"names":["X"]}`)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for missing token, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	// Bearer token present but invalid.
+	rec = postReveal(t, h, t.Context(), "org/myrepo", "garbage", `{"names":["X"]}`)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for invalid token, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRevealSecrets_EmptyNames_400(t *testing.T) {
+	plaintext, _, _ := citoken.GenerateRequestToken()
+	jobStore := revealJobLookup(t, plaintext, &model.CIJob{
+		ID: "j", Repo: "org/myrepo", TriggerType: "push",
+	})
+	fake := &fakeSecretsService{
+		revealFn: func(_ context.Context, _ string, _ []string) (map[string][]byte, []string, error) {
+			t.Fatal("Reveal must not be called with empty names")
+			return nil, nil, nil
+		},
+	}
+	h := buildRevealServer(t, fake, jobStore, nil)
+	rec := postReveal(t, h, t.Context(), "org/myrepo", plaintext, `{"names":[]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for empty names, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRevealSecrets_InvalidName_400(t *testing.T) {
+	plaintext, _, _ := citoken.GenerateRequestToken()
+	jobStore := revealJobLookup(t, plaintext, &model.CIJob{
+		ID: "j", Repo: "org/myrepo", TriggerType: "push",
+	})
+	fake := &fakeSecretsService{
+		revealFn: func(_ context.Context, _ string, _ []string) (map[string][]byte, []string, error) {
+			t.Fatal("Reveal must not be called with invalid name")
+			return nil, nil, nil
+		},
+	}
+	h := buildRevealServer(t, fake, jobStore, nil)
+	for _, bad := range []string{"lowercase", "WITH-DASH", "1LEADING_DIGIT", "WITH SPACE", strings.Repeat("A", 65)} {
+		t.Run(bad, func(t *testing.T) {
+			body := fmt.Sprintf(`{"names":[%q]}`, bad)
+			rec := postReveal(t, h, t.Context(), "org/myrepo", plaintext, body)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400 for %q, got %d; body: %s", bad, rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestRevealSecrets_ServiceError_500_NoLeak(t *testing.T) {
+	plaintext, _, _ := citoken.GenerateRequestToken()
+
+	// The realistic case: decrypt fails with a generic KMS error. We assert
+	// (a) 500, (b) the requested secret NAME does not leak into logs (the
+	// design forbids logging names, only the op + repo + job_id + trigger),
+	// and (c) the response body is the generic 500 message — no name, no
+	// value, no internal error string.
+	const requestedName = "DOCKERHUB_TOKEN"
+	fake := &fakeSecretsService{
+		revealFn: func(_ context.Context, _ string, _ []string) (map[string][]byte, []string, error) {
+			return nil, nil, errors.New("kms unavailable")
+		},
+	}
+	jobStore := revealJobLookup(t, plaintext, &model.CIJob{
+		ID: "j", Repo: "org/myrepo", TriggerType: "push",
+	})
+	h := buildRevealServer(t, fake, jobStore, nil)
+
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	var buf threadSafeBuffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
+	rec := postReveal(t, h, t.Context(), "org/myrepo", plaintext,
+		fmt.Sprintf(`{"names":[%q]}`, requestedName))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), requestedName) {
+		t.Errorf("response leaks requested secret name: %s", rec.Body.String())
+	}
+	logs := buf.String()
+	if strings.Contains(logs, requestedName) {
+		t.Fatalf("logs leak requested secret name:\n%s", logs)
+	}
+	if !strings.Contains(logs, "reveal_secrets") {
+		t.Errorf("expected op=reveal_secrets in logs, got:\n%s", logs)
+	}
 }

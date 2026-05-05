@@ -493,6 +493,15 @@ func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore Wri
 				s.handleCICheck(w, r)
 				return
 			}
+			// Reveal secrets (scheduler → decrypt repo secrets at dispatch time):
+			// auth via request_token. Bypasses Google auth and RBAC because the
+			// bearer token IS the credential. The handler enforces its own
+			// gating policy on top.
+			if endpoint == "secrets/reveal" && r.Method == http.MethodPost && s.jobTokenStore != nil {
+				r.SetPathValue("name", repoName)
+				s.handleRevealSecrets(w, r)
+				return
+			}
 		}
 
 		// Job OIDC token auth: if a Bearer token is present and OIDC is configured,
