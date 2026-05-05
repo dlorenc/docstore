@@ -51,6 +51,11 @@ commands:
   comment --path <path> --body <body> [--branch <name>]  Add an inline file comment
   comments [--path <path>] [--branch <name>]      List inline file comments
   import-git <path> [--mode squash|replay]        Import a git repo into docstore main
+  secrets list                                    List repo secrets (metadata only)
+  secrets set <NAME> -                            Set a secret; reads value from stdin
+  secrets set <NAME> --from-file=<path>           Set a secret from a file
+  secrets set <NAME> ... [--description=<text>]   Optional description for the secret
+  secrets unset <NAME>                            Delete a secret
   tui                                             Launch the terminal UI
   purge --older-than <Nd> [--dry-run]             Purge old merged/abandoned branches
 
@@ -417,6 +422,9 @@ func main() {
 			}
 		}
 		err = app.ImportGit(repoPath, mode)
+
+	case "secrets":
+		err = runSecrets(app, args)
 
 	case "tui":
 		err = app.TUI()
@@ -1262,4 +1270,110 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: %s\n", err)
 		os.Exit(1)
 	}
+}
+
+// secretsUsage is the help text for the `ds secrets` family.
+const secretsUsage = `usage:
+  ds secrets list
+  ds secrets set <NAME> -                       Read value from stdin
+  ds secrets set <NAME> --from-file=<path>      Read value from a file
+  ds secrets set <NAME> ... [--description=<text>]
+  ds secrets unset <NAME>
+
+Note: --value=... is intentionally not supported. Plaintext must not appear in
+argv (shell history, ps listings).`
+
+// runSecrets parses and dispatches `ds secrets <subcommand>`. It returns an
+// error for runtime failures; usage problems print to stderr and call
+// os.Exit(2) to keep the rest of main() untouched.
+func runSecrets(app *cli.App, args []string) error {
+	if len(args) < 2 {
+		fmt.Fprintln(os.Stderr, secretsUsage)
+		os.Exit(2)
+	}
+	switch args[1] {
+	case "list":
+		return app.SecretsList()
+	case "set":
+		return runSecretsSet(app, args[2:])
+	case "unset":
+		if len(args) != 3 {
+			fmt.Fprintln(os.Stderr, "usage: ds secrets unset <NAME>")
+			os.Exit(2)
+		}
+		return app.SecretsUnset(args[2])
+	default:
+		fmt.Fprintf(os.Stderr, "unknown secrets subcommand: %s\n", args[1])
+		fmt.Fprintln(os.Stderr, secretsUsage)
+		os.Exit(2)
+	}
+	return nil
+}
+
+// runSecretsSet parses `ds secrets set <NAME> [...]` and calls SecretsSet.
+// rest is the slice after "secrets set", i.e. starting with NAME.
+func runSecretsSet(app *cli.App, rest []string) error {
+	if len(rest) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: ds secrets set <NAME> [-|--from-file=<path>] [--description=<text>]")
+		os.Exit(2)
+	}
+	name := rest[0]
+	var (
+		fromFile    string
+		fromStdin   bool
+		description string
+	)
+	for i := 1; i < len(rest); i++ {
+		arg := rest[i]
+		switch {
+		case arg == "-":
+			fromStdin = true
+		case arg == "--from-file":
+			if i+1 >= len(rest) {
+				fmt.Fprintln(os.Stderr, "error: --from-file requires a path")
+				os.Exit(2)
+			}
+			fromFile = rest[i+1]
+			i++
+		case strings.HasPrefix(arg, "--from-file="):
+			fromFile = strings.TrimPrefix(arg, "--from-file=")
+		case arg == "--description":
+			if i+1 >= len(rest) {
+				fmt.Fprintln(os.Stderr, "error: --description requires text")
+				os.Exit(2)
+			}
+			description = rest[i+1]
+			i++
+		case strings.HasPrefix(arg, "--description="):
+			description = strings.TrimPrefix(arg, "--description=")
+		case arg == "--value" || strings.HasPrefix(arg, "--value="):
+			fmt.Fprintln(os.Stderr, "error: --value is not supported (plaintext must not appear in argv)")
+			fmt.Fprintln(os.Stderr, secretsUsage)
+			os.Exit(2)
+		default:
+			fmt.Fprintf(os.Stderr, "unknown argument: %s\n", arg)
+			fmt.Fprintln(os.Stderr, secretsUsage)
+			os.Exit(2)
+		}
+	}
+	if fromStdin && fromFile != "" {
+		fmt.Fprintln(os.Stderr, "error: cannot combine '-' with --from-file")
+		os.Exit(2)
+	}
+	if !fromStdin && fromFile == "" {
+		fmt.Fprintln(os.Stderr, "error: must specify '-' (stdin) or --from-file=<path>")
+		fmt.Fprintln(os.Stderr, secretsUsage)
+		os.Exit(2)
+	}
+
+	var reader = os.Stdin
+	if fromFile != "" {
+		f, err := os.Open(fromFile)
+		if err != nil {
+			return fmt.Errorf("opening secret file: %w", err)
+		}
+		defer f.Close()
+		reader = f
+	}
+	return app.SecretsSet(name, reader, description)
 }

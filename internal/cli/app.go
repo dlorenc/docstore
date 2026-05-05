@@ -17,9 +17,11 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"text/tabwriter"
 	"time"
 	"unicode/utf8"
 
@@ -3453,4 +3455,160 @@ func (a *App) IssueTie(number int64, refType, refID string) error {
 	}
 	fmt.Fprintf(a.Out, "Tied %s %s to issue #%d\n", refType, refID, number)
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Repo-level secrets
+// ---------------------------------------------------------------------------
+
+// SecretMetadata is the JSON shape returned by the secrets list/set endpoints.
+// Plaintext is never returned by any read path; this struct intentionally has
+// no Value field.
+type SecretMetadata struct {
+	ID          string     `json:"id"`
+	Name        string     `json:"name"`
+	Description string     `json:"description"`
+	SizeBytes   int        `json:"size_bytes"`
+	CreatedBy   string     `json:"created_by"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedBy   *string    `json:"updated_by,omitempty"`
+	UpdatedAt   *time.Time `json:"updated_at,omitempty"`
+	LastUsedAt  *time.Time `json:"last_used_at,omitempty"`
+}
+
+// secretNamePattern enforces the POSIX env-var shape from the design doc:
+// uppercase letter followed by up to 63 uppercase letters, digits, or
+// underscores.
+var secretNamePattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,63}$`)
+
+// maxSecretValueBytes caps secret payloads at 32 KiB. Larger values belong in
+// object storage, not in the secrets table.
+const maxSecretValueBytes = 32 * 1024
+
+// reservedSecretPrefix is forbidden at write time; reserved for built-in
+// secrets injected by docstore (e.g. docstore_oidc_request_token in its
+// uppercased form).
+const reservedSecretPrefix = "DOCSTORE_"
+
+// validateSecretName checks the name pattern and reserved-prefix rule. It
+// never includes the value in any error message.
+func validateSecretName(name string) error {
+	if !secretNamePattern.MatchString(name) {
+		return fmt.Errorf("invalid secret name %q: must match [A-Z][A-Z0-9_]{0,63}", name)
+	}
+	if strings.HasPrefix(name, reservedSecretPrefix) {
+		return fmt.Errorf("invalid secret name %q: %s prefix is reserved", name, reservedSecretPrefix)
+	}
+	return nil
+}
+
+// SecretsList prints repo secret metadata (never plaintext values) as a
+// tab-separated table.
+func (a *App) SecretsList() error {
+	cfg, err := a.loadConfig()
+	if err != nil {
+		return err
+	}
+	resp, err := a.httpGet(cfg, repoBase(cfg)+"/secrets")
+	if err != nil {
+		return fmt.Errorf("listing secrets: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return a.readError(resp)
+	}
+	var secrets []SecretMetadata
+	if err := json.NewDecoder(resp.Body).Decode(&secrets); err != nil {
+		return fmt.Errorf("decoding response: %w", err)
+	}
+
+	tw := tabwriter.NewWriter(a.Out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "NAME\tSIZE\tUPDATED\tLAST_USED\tDESCRIPTION")
+	for _, s := range secrets {
+		updated := s.CreatedAt.Format(time.RFC3339)
+		if s.UpdatedAt != nil {
+			updated = s.UpdatedAt.Format(time.RFC3339)
+		}
+		lastUsed := "-"
+		if s.LastUsedAt != nil {
+			lastUsed = s.LastUsedAt.Format(time.RFC3339)
+		}
+		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\n",
+			s.Name, s.SizeBytes, updated, lastUsed, s.Description)
+	}
+	return tw.Flush()
+}
+
+// SecretsSet sets the named secret to the contents of valueReader. The caller
+// is responsible for sourcing valueReader (stdin or a file). description may
+// be empty. Errors never include the secret value.
+func (a *App) SecretsSet(name string, valueReader io.Reader, description string) error {
+	if err := validateSecretName(name); err != nil {
+		return err
+	}
+	if valueReader == nil {
+		return fmt.Errorf("secret value reader is required")
+	}
+	// Read at most maxSecretValueBytes+1 so we can detect oversized values
+	// without buffering arbitrarily large input.
+	limited := io.LimitReader(valueReader, int64(maxSecretValueBytes)+1)
+	value, err := io.ReadAll(limited)
+	if err != nil {
+		return fmt.Errorf("reading secret value: %w", err)
+	}
+	if len(value) == 0 {
+		return fmt.Errorf("secret value is empty")
+	}
+	if len(value) > maxSecretValueBytes {
+		return fmt.Errorf("secret value exceeds maximum size of %d bytes", maxSecretValueBytes)
+	}
+
+	cfg, err := a.loadConfig()
+	if err != nil {
+		return err
+	}
+
+	body := struct {
+		Value       string `json:"value"`
+		Description string `json:"description,omitempty"`
+	}{
+		Value:       string(value),
+		Description: description,
+	}
+	resp, err := a.doPUTJSON(repoBase(cfg)+"/secrets/"+name, body)
+	if err != nil {
+		// Wrap network-level errors generically; never echo the value.
+		return fmt.Errorf("setting secret %s: %w", name, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		return a.readError(resp)
+	}
+	fmt.Fprintf(a.Out, "Set %s (%d bytes)\n", name, len(value))
+	return nil
+}
+
+// SecretsUnset deletes the named secret.
+func (a *App) SecretsUnset(name string) error {
+	if err := validateSecretName(name); err != nil {
+		return err
+	}
+	cfg, err := a.loadConfig()
+	if err != nil {
+		return err
+	}
+	resp, err := a.doDELETE(repoBase(cfg) + "/secrets/" + name)
+	if err != nil {
+		return fmt.Errorf("unsetting secret %s: %w", name, err)
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusNoContent, http.StatusOK:
+		fmt.Fprintf(a.Out, "Unset %s\n", name)
+		return nil
+	case http.StatusNotFound:
+		return fmt.Errorf("secret %s not found", name)
+	default:
+		return a.readError(resp)
+	}
 }
