@@ -23,6 +23,7 @@ import (
 	"github.com/dlorenc/docstore/internal/logstore"
 	"github.com/dlorenc/docstore/internal/model"
 	"github.com/dlorenc/docstore/internal/policy"
+	"github.com/dlorenc/docstore/internal/secrets"
 	"github.com/dlorenc/docstore/internal/service"
 	"github.com/dlorenc/docstore/internal/store"
 	"github.com/dlorenc/docstore/internal/ui"
@@ -221,7 +222,7 @@ func NewWithPresign(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, 
 	return NewWithOIDC(writeStore, database, bs, broker,
 		devIdentity, bootstrapAdmin, oauthClientID, oauthClientSecret,
 		jobStore, archiveHMACSecret, archiveBaseURL,
-		"", "", "", nil, nil)
+		"", "", "", nil, nil, nil)
 }
 
 // NewWithOIDC is like NewWithPresign but also enables OIDC job token authentication
@@ -235,10 +236,12 @@ func NewWithPresign(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, 
 // If oidcJWKSURL is empty, OIDC job token auth is disabled.
 // ls is the LogStore used by POST /repos/:repo/-/check/:name/logs; if nil the endpoint returns 503.
 // sessionSecret is the HMAC key for signing session cookies; nil disables web UI session auth.
+// secretsSvc is the repo-secrets service used by /-/secrets endpoints; nil disables them (503).
 func NewWithOIDC(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, broker *events.Broker,
 	devIdentity, bootstrapAdmin, oauthClientID, oauthClientSecret string,
 	jobStore jobTokenStore, archiveHMACSecret []byte, archiveBaseURL string,
-	oidcJWKSURL, oidcAudience, oidcIssuer string, ls logstore.LogStore, sessionSecret []byte) http.Handler {
+	oidcJWKSURL, oidcAudience, oidcIssuer string, ls logstore.LogStore, sessionSecret []byte,
+	secretsSvc secrets.Service) http.Handler {
 	pc := policy.NewCache()
 	s := &server{
 		commitStore:       writeStore,
@@ -255,6 +258,7 @@ func NewWithOIDC(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, bro
 		oidcAudience:      oidcAudience,
 		oidcIssuer:        oidcIssuer,
 		logStore:          ls,
+		secrets:           secretsSvc,
 	}
 	if oidcJWKSURL != "" {
 		s.oidcKeyCache = newKeyCacheForURL(oidcJWKSURL)
@@ -594,6 +598,9 @@ type server struct {
 	// logStore writes CI check logs; used by POST /repos/:repo/-/check/:name/logs.
 	// nil means the endpoint is disabled (returns 503).
 	logStore logstore.LogStore
+	// secrets is the repo-level secrets service. nil disables the
+	// /-/secrets endpoints (returns 503).
+	secrets secrets.Service
 }
 
 // handleDSConfig serves GET /.well-known/ds-config — unauthenticated.

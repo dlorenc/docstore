@@ -23,6 +23,7 @@ import (
 	"github.com/dlorenc/docstore/internal/events"
 	"github.com/dlorenc/docstore/internal/logstore"
 	"github.com/dlorenc/docstore/internal/policy"
+	"github.com/dlorenc/docstore/internal/secrets"
 	"github.com/dlorenc/docstore/internal/server"
 	"github.com/dlorenc/docstore/internal/store"
 )
@@ -217,10 +218,46 @@ func main() {
 	}
 
 	jobStore := db.NewStore(database)
+
+	// Build the repo-secrets encryptor + service. Dev mode (DEV_IDENTITY set)
+	// uses a local AES key persisted under ~/.docstore/dev-encryption-key.
+	// Production requires DOCSTORE_SECRETS_KMS_KEY pointing at a Cloud KMS
+	// resource — fail loud at startup if it is missing.
+	var secretsSvc secrets.Service
+	if *devIdentity != "" {
+		home, homeErr := os.UserHomeDir()
+		if homeErr != nil {
+			logger.Error("cannot resolve home directory for dev encryption key", "error", homeErr)
+			os.Exit(1)
+		}
+		keyPath := home + "/.docstore/dev-encryption-key"
+		enc, encErr := secrets.NewLocalEncryptor(keyPath)
+		if encErr != nil {
+			logger.Error("failed to create local secrets encryptor", "error", encErr, "path", keyPath)
+			os.Exit(1)
+		}
+		logger.Warn("DEV MODE — secrets sealed by local key, NOT KMS", "key_path", keyPath)
+		secretsSvc = secrets.NewService(enc, commitStore)
+	} else {
+		kmsKey := os.Getenv("DOCSTORE_SECRETS_KMS_KEY")
+		if kmsKey == "" {
+			logger.Error("DOCSTORE_SECRETS_KMS_KEY is required in non-dev mode")
+			os.Exit(1)
+		}
+		enc, encErr := secrets.NewKMSEncryptor(context.Background(), kmsKey)
+		if encErr != nil {
+			logger.Error("failed to create KMS secrets encryptor", "error", encErr, "key", kmsKey)
+			os.Exit(1)
+		}
+		logger.Info("secrets encryptor configured", "backend", "kms", "key", kmsKey)
+		secretsSvc = secrets.NewService(enc, commitStore)
+	}
+
 	srv := server.NewWithOIDC(commitStore, database, bs, broker,
 		*devIdentity, *bootstrapAdmin, *oauthClientID, *oauthClientSecret,
 		jobStore, archiveHMACSecret, archiveBaseURL,
-		oidcJWKSURL, oidcAudience, oidcIssuer, ls, sessionSecret)
+		oidcJWKSURL, oidcAudience, oidcIssuer, ls, sessionSecret,
+		secretsSvc)
 
 	// Start the auto-merge worker. It subscribes to check.reported and
 	// review.submitted events and merges branches with auto_merge=true.
