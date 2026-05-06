@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -196,6 +197,52 @@ func validateSecretName(kind, name string) error {
 	return nil
 }
 
+// buildSecretMap composes the BuildKit secrets map for one check session.
+// OIDC built-ins are keyed by their fixed SecretIDs; user secrets are keyed
+// by their LocalName. The reserved-prefix policy enforced by internal/secrets
+// guarantees these two keyspaces cannot collide, so a flat merge is safe and
+// no defensive overwrite logic is needed.
+//
+// Returns nil when there is nothing to attach so callers can skip wiring up
+// a secrets provider entirely.
+func buildSecretMap(oidcToken, oidcURL string, userSecrets map[string][]byte) map[string][]byte {
+	if oidcToken == "" && len(userSecrets) == 0 {
+		return nil
+	}
+	out := make(map[string][]byte, len(userSecrets)+2)
+	if oidcToken != "" {
+		out["docstore_oidc_request_token"] = []byte(oidcToken)
+		out["docstore_oidc_request_url"] = []byte(oidcURL)
+	}
+	maps.Copy(out, userSecrets)
+	return out
+}
+
+// scrubLogs returns a copy of buf with every non-empty value in secrets
+// replaced by `***`. It is a verbatim-substring backstop for accidental
+// `echo $TOKEN` style leaks; values that have been transformed in transit
+// (base64, hex, etc.) are NOT caught.
+//
+// Empty values are skipped — replacing the empty string would inject `***`
+// at every byte boundary and corrupt the buffer. Order is map-iteration order
+// (non-deterministic). With distinct user-supplied secret values that is
+// fine; a value that contains another value as a substring is the only case
+// where order is observable, and either replacement choice is acceptable
+// (both produce a buffer that no longer contains the inner value verbatim).
+func scrubLogs(buf []byte, secrets map[string][]byte) []byte {
+	if len(secrets) == 0 || len(buf) == 0 {
+		return buf
+	}
+	out := buf
+	for _, v := range secrets {
+		if len(v) == 0 {
+			continue
+		}
+		out = bytes.ReplaceAll(out, v, []byte("***"))
+	}
+	return out
+}
+
 // CheckResult is the result of executing a single check.
 type CheckResult struct {
 	Name      string `json:"name"`
@@ -266,7 +313,7 @@ func (e *Executor) Run(ctx context.Context, source string, cfg Config, triggerCt
 					}
 				}
 			}()
-			results[j] = e.runCheck(ctx, source, check, cfg.CacheRef, cfg.DockerConfigDir, cfg.ArchiveChecksum, cfg.OIDCRequestToken, cfg.OIDCRequestURL)
+			results[j] = e.runCheck(ctx, source, check, cfg.CacheRef, cfg.DockerConfigDir, cfg.ArchiveChecksum, cfg.OIDCRequestToken, cfg.OIDCRequestURL, cfg.UserSecrets)
 		})
 	}
 	wg.Wait()
@@ -284,7 +331,11 @@ func (e *Executor) Close() error {
 // archiveChecksum, when non-empty, passes llb.Checksum to BuildKit for HTTP sources.
 // oidcToken and oidcURL, when non-empty, are exposed via BuildKit secret mounts so
 // they do not bust the cache key (unlike env var injection).
-func (e *Executor) runCheck(ctx context.Context, source string, check Check, cacheRef, dockerConfigDir, archiveChecksum, oidcToken, oidcURL string) CheckResult {
+// userSecrets maps LocalName → plaintext for every repo secret resolved for this
+// job; entries are exposed to a step only if the check's Secrets allowlist
+// includes that LocalName. Like OIDC secrets these are mounted via BuildKit's
+// secrets provider and are NOT part of the cache key.
+func (e *Executor) runCheck(ctx context.Context, source string, check Check, cacheRef, dockerConfigDir, archiveChecksum, oidcToken, oidcURL string, userSecrets map[string][]byte) CheckResult {
 	isHTTP := strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://")
 	isLocal := source != "" && !isHTTP
 
@@ -346,14 +397,12 @@ func (e *Executor) runCheck(ctx context.Context, source string, check Check, cac
 	}
 
 	sessionAttachables := []session.Attachable{authprovider.NewDockerAuthProvider(ap)}
-	if oidcToken != "" {
-		// Expose OIDC credentials as BuildKit secrets so they don't bust the
-		// cache key. Steps read from /run/secrets/docstore_oidc_request_token
-		// and /run/secrets/docstore_oidc_request_url.
-		secretMap := map[string][]byte{
-			"docstore_oidc_request_token": []byte(oidcToken),
-			"docstore_oidc_request_url":   []byte(oidcURL),
-		}
+	// Compose OIDC built-in secrets and per-job user secrets into a single map
+	// for the BuildKit session. BuildKit secret mounts are excluded from the
+	// cache key by design, so adding user secrets does NOT bust the cache.
+	// The DOCSTORE_* reserved-prefix check in internal/secrets prevents key
+	// collisions between OIDC IDs and user LocalNames.
+	if secretMap := buildSecretMap(oidcToken, oidcURL, userSecrets); len(secretMap) > 0 {
 		sessionAttachables = append(sessionAttachables, secretsprovider.FromMap(secretMap))
 	}
 
@@ -461,6 +510,15 @@ func (e *Executor) runCheck(ctx context.Context, source string, check Check, cac
 					llb.AddSecret("/run/secrets/docstore_oidc_request_url", llb.SecretID("docstore_oidc_request_url"), llb.SecretOptional),
 				)
 			}
+			// Per-step user secret mounts. Each entry's LocalName is both the
+			// SecretID (looked up in the session secretMap) and the basename
+			// under /run/secrets. SecretOptional means an absent entry is a
+			// no-op rather than a step failure at LLB construction time.
+			for _, sec := range check.Secrets {
+				runOpts = append(runOpts,
+					llb.AddSecret("/run/secrets/"+sec.LocalName, llb.SecretID(sec.LocalName), llb.SecretOptional),
+				)
+			}
 			exec := state.Run(runOpts...)
 			state = exec.Root()
 			srcMount = exec.GetMount("/src")
@@ -496,8 +554,15 @@ func (e *Executor) runCheck(ctx context.Context, source string, check Check, cac
 
 	collectWg.Wait()
 
+	// Scrub user-secret values out of captured logs before stringifying.
+	// This is a backstop for `echo $TOKEN` style mistakes — it is NOT a
+	// security boundary. Anything that mutates the bytes in transit
+	// (base64, hex, gzip, etc.) will not be caught and callers should not
+	// expect it to be.
+	scrubbed := scrubLogs(logBuf.Bytes(), userSecrets)
+
 	status := "passed"
-	logs := logBuf.String()
+	logs := string(scrubbed)
 	if solveErr != nil {
 		status = "failed"
 		if logs == "" {
