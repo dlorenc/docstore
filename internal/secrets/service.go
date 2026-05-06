@@ -57,7 +57,11 @@ type Metadata struct {
 type Service interface {
 	Set(ctx context.Context, repo, name, description string, value []byte, actor string) (Metadata, error)
 	List(ctx context.Context, repo string) ([]Metadata, error)
-	Delete(ctx context.Context, repo, name string) error
+	// Delete removes the named secret and returns the metadata of the row as
+	// it existed at delete time. Returns ErrNotFound if the row did not exist.
+	// The metadata is returned (rather than discarded) so callers can emit
+	// audit events that include the row's id without an extra Get round-trip.
+	Delete(ctx context.Context, repo, name string) (Metadata, error)
 	// Reveal decrypts the named secrets for a repo and updates last_used_at.
 	// Used by the scheduler at CI dispatch time. Missing names are returned in
 	// missing rather than as an error so the caller can decide what to do.
@@ -71,7 +75,7 @@ type SecretStore interface {
 	SetRepoSecret(ctx context.Context, in db.RepoSecret) (db.RepoSecret, error)
 	GetRepoSecret(ctx context.Context, repo, name string) (db.RepoSecret, error)
 	ListRepoSecrets(ctx context.Context, repo string) ([]db.RepoSecret, error)
-	DeleteRepoSecret(ctx context.Context, repo, name string) error
+	DeleteRepoSecret(ctx context.Context, repo, name string) (db.RepoSecret, error)
 	TouchRepoSecretLastUsed(ctx context.Context, repo, name string) error
 }
 
@@ -144,15 +148,17 @@ func (s *service) List(ctx context.Context, repo string) ([]Metadata, error) {
 
 // Delete maps the store's ErrSecretNotFound onto the service-level ErrNotFound
 // so handlers can switch on a single sentinel without depending on the db
-// package.
-func (s *service) Delete(ctx context.Context, repo, name string) error {
-	if err := s.store.DeleteRepoSecret(ctx, repo, name); err != nil {
+// package. The deleted row's metadata is returned so callers can emit audit
+// events (the id is the only stable handle on a deleted row).
+func (s *service) Delete(ctx context.Context, repo, name string) (Metadata, error) {
+	row, err := s.store.DeleteRepoSecret(ctx, repo, name)
+	if err != nil {
 		if errors.Is(err, db.ErrSecretNotFound) {
-			return ErrNotFound
+			return Metadata{}, ErrNotFound
 		}
-		return fmt.Errorf("delete secret: %w", err)
+		return Metadata{}, fmt.Errorf("delete secret: %w", err)
 	}
-	return nil
+	return toMetadata(row), nil
 }
 
 // Reveal decrypts each requested name and records the access. Missing names

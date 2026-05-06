@@ -13,6 +13,7 @@ import (
 
 	"github.com/dlorenc/docstore/internal/citoken"
 	"github.com/dlorenc/docstore/internal/db"
+	evtypes "github.com/dlorenc/docstore/internal/events/types"
 	"github.com/dlorenc/docstore/internal/model"
 	"github.com/dlorenc/docstore/internal/secrets"
 )
@@ -139,6 +140,28 @@ func (s *server) handleSetSecret(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Info("secret set", "repo", repo, "name", secname, "by", actor, "size_bytes", meta.SizeBytes)
+
+	// Emit BEFORE writing the response. The emit helper swallows broker
+	// errors, so this never blocks the client. Distinguish create vs. update
+	// by Metadata.UpdatedAt — nil on insert, non-nil on conflict-update.
+	if meta.UpdatedAt == nil {
+		s.emit(r.Context(), evtypes.SecretCreated{
+			Repo:      repo,
+			Name:      secname,
+			ID:        meta.ID,
+			SizeBytes: meta.SizeBytes,
+			Actor:     actor,
+		})
+	} else {
+		s.emit(r.Context(), evtypes.SecretUpdated{
+			Repo:      repo,
+			Name:      secname,
+			ID:        meta.ID,
+			SizeBytes: meta.SizeBytes,
+			Actor:     actor,
+		})
+	}
+
 	writeJSON(w, http.StatusOK, secretMetadataFrom(meta))
 }
 
@@ -155,7 +178,7 @@ func (s *server) handleDeleteSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := s.secrets.Delete(r.Context(), repo, secname)
+	meta, err := s.secrets.Delete(r.Context(), repo, secname)
 	if err != nil {
 		switch {
 		case errors.Is(err, secrets.ErrNotFound):
@@ -167,7 +190,14 @@ func (s *server) handleDeleteSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slog.Info("secret deleted", "repo", repo, "name", secname, "by", IdentityFromContext(r.Context()))
+	actor := IdentityFromContext(r.Context())
+	slog.Info("secret deleted", "repo", repo, "name", secname, "by", actor)
+	s.emit(r.Context(), evtypes.SecretDeleted{
+		Repo:  repo,
+		Name:  secname,
+		ID:    meta.ID,
+		Actor: actor,
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -288,6 +318,28 @@ func (s *server) handleRevealSecrets(w http.ResponseWriter, r *http.Request) {
 	if missing == nil {
 		missing = []string{}
 	}
+
+	// Emit one secret.accessed per successfully revealed name. We do this
+	// before writing the response so the audit trail is consistent with the
+	// values the worker is about to receive — but the emit helper swallows
+	// broker errors so a misbehaving broker never delays the worker.
+	//
+	// Iterate the requested names (not the values map) so the event order is
+	// deterministic and matches the request. Missing names produce no event:
+	// they were never revealed.
+	for _, name := range req.Names {
+		if _, ok := values[name]; !ok {
+			continue
+		}
+		s.emit(r.Context(), evtypes.SecretAccessed{
+			Repo:     repoName,
+			Name:     name,
+			JobID:    job.ID,
+			Sequence: job.Sequence,
+			Branch:   job.Branch,
+		})
+	}
+
 	writeJSON(w, http.StatusOK, revealResponse{Values: encoded, Missing: missing})
 }
 

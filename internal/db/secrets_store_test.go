@@ -233,19 +233,27 @@ func TestRepoSecret_Delete(t *testing.T) {
 		t.Fatalf("set: %v", err)
 	}
 
-	if err := s.DeleteRepoSecret(ctx, in.Repo, in.Name); err != nil {
+	deleted, err := s.DeleteRepoSecret(ctx, in.Repo, in.Name)
+	if err != nil {
 		t.Fatalf("delete: %v", err)
+	}
+	if deleted.ID != in.ID {
+		t.Errorf("DeleteRepoSecret returned id %q, want %q", deleted.ID, in.ID)
+	}
+	if deleted.Repo != in.Repo || deleted.Name != in.Name {
+		t.Errorf("DeleteRepoSecret returned (%q, %q), want (%q, %q)",
+			deleted.Repo, deleted.Name, in.Repo, in.Name)
 	}
 
 	if _, err := s.GetRepoSecret(ctx, in.Repo, in.Name); !errors.Is(err, ErrSecretNotFound) {
 		t.Errorf("get after delete: got %v, want ErrSecretNotFound", err)
 	}
 
-	if err := s.DeleteRepoSecret(ctx, in.Repo, in.Name); !errors.Is(err, ErrSecretNotFound) {
+	if _, err := s.DeleteRepoSecret(ctx, in.Repo, in.Name); !errors.Is(err, ErrSecretNotFound) {
 		t.Errorf("delete missing: got %v, want ErrSecretNotFound", err)
 	}
 
-	if err := s.DeleteRepoSecret(ctx, "no/such", "NOPE"); !errors.Is(err, ErrSecretNotFound) {
+	if _, err := s.DeleteRepoSecret(ctx, "no/such", "NOPE"); !errors.Is(err, ErrSecretNotFound) {
 		t.Errorf("delete unknown repo: got %v, want ErrSecretNotFound", err)
 	}
 }
