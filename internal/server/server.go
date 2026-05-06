@@ -417,9 +417,9 @@ func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore Wri
 		var uiHandler *ui.Handler
 		var err error
 		if os.Getenv("DEV_UI") != "" {
-			uiHandler, err = ui.NewHandlerDev(s.readStore, writeStore, s.svc, assemble, IdentityFromContext)
+			uiHandler, err = ui.NewHandlerDev(s.readStore, writeStore, s.svc, s.secrets, assemble, IdentityFromContext)
 		} else {
-			uiHandler, err = ui.NewHandler(s.readStore, writeStore, s.svc, assemble, IdentityFromContext)
+			uiHandler, err = ui.NewHandler(s.readStore, writeStore, s.svc, s.secrets, assemble, IdentityFromContext)
 		}
 		if err != nil {
 			slog.Error("ui init failed", "error", err)
