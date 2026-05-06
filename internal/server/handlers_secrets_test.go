@@ -30,7 +30,7 @@ import (
 type fakeSecretsService struct {
 	setFn    func(ctx context.Context, repo, name, description string, value []byte, actor string) (secrets.Metadata, error)
 	listFn   func(ctx context.Context, repo string) ([]secrets.Metadata, error)
-	deleteFn func(ctx context.Context, repo, name string) error
+	deleteFn func(ctx context.Context, repo, name string) (secrets.Metadata, error)
 	revealFn func(ctx context.Context, repo string, names []string) (map[string][]byte, []string, error)
 }
 
@@ -48,11 +48,11 @@ func (f *fakeSecretsService) List(ctx context.Context, repo string) ([]secrets.M
 	return nil, nil
 }
 
-func (f *fakeSecretsService) Delete(ctx context.Context, repo, name string) error {
+func (f *fakeSecretsService) Delete(ctx context.Context, repo, name string) (secrets.Metadata, error) {
 	if f.deleteFn != nil {
 		return f.deleteFn(ctx, repo, name)
 	}
-	return errors.New("deleteFn not set")
+	return secrets.Metadata{}, errors.New("deleteFn not set")
 }
 
 func (f *fakeSecretsService) Reveal(ctx context.Context, repo string, names []string) (map[string][]byte, []string, error) {
@@ -346,12 +346,12 @@ func TestSecretsSet_ServiceError_500_NoValueInLogs(t *testing.T) {
 func TestSecretsDelete_OK(t *testing.T) {
 	called := false
 	fake := &fakeSecretsService{
-		deleteFn: func(_ context.Context, repo, name string) error {
+		deleteFn: func(_ context.Context, repo, name string) (secrets.Metadata, error) {
 			called = true
 			if repo != "org/myrepo" || name != "MY_SECRET" {
 				t.Errorf("unexpected args: repo=%q name=%q", repo, name)
 			}
-			return nil
+			return secrets.Metadata{ID: "secret-1", Repo: repo, Name: name}, nil
 		},
 	}
 	h, _ := buildSecretsServer(t, fake, nil)
@@ -371,8 +371,8 @@ func TestSecretsDelete_OK(t *testing.T) {
 
 func TestSecretsDelete_NotFound(t *testing.T) {
 	fake := &fakeSecretsService{
-		deleteFn: func(_ context.Context, _, _ string) error {
-			return secrets.ErrNotFound
+		deleteFn: func(_ context.Context, _, _ string) (secrets.Metadata, error) {
+			return secrets.Metadata{}, secrets.ErrNotFound
 		},
 	}
 	h, _ := buildSecretsServer(t, fake, nil)
@@ -410,9 +410,9 @@ func TestSecretsSet_NonAdminForbidden(t *testing.T) {
 
 func TestSecretsDelete_NonAdminForbidden(t *testing.T) {
 	fake := &fakeSecretsService{
-		deleteFn: func(_ context.Context, _, _ string) error {
+		deleteFn: func(_ context.Context, _, _ string) (secrets.Metadata, error) {
 			t.Fatal("Delete must not be reached when RBAC denies the request")
-			return nil
+			return secrets.Metadata{}, nil
 		},
 	}
 	ms := &mockStore{getRoleFn: maintainerRole}

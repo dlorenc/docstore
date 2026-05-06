@@ -173,7 +173,7 @@ Emit on the existing broker — names only, never values:
 - `secret.created` { repo, name, id, size_bytes, actor }
 - `secret.updated` { repo, name, id, size_bytes, actor }
 - `secret.deleted` { repo, name, id, actor }
-- `secret.accessed` { repo, name, id, job_id, sequence, branch }
+- `secret.accessed` { repo, name, job_id, sequence, branch }  *(v1: no `id`; (repo, name) is unique under the v1 UNIQUE constraint, so the pair is sufficient for SIEM correlation. `id` is deferred to v2 with secret versioning.)*
 
 The last one fires when the scheduler attaches a secret to a CI run. Wire
 through HMAC-signed webhooks (`docs/cryptographic-verifiability.md:159`),

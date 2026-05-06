@@ -610,6 +610,10 @@ type server struct {
 	// secrets is the repo-level secrets service. nil disables the
 	// /-/secrets endpoints (returns 503).
 	secrets secrets.Service
+	// emitter overrides the broker for event emission when non-nil. Used by
+	// tests to capture events without a real broker; production wiring leaves
+	// this nil and the broker handles delivery.
+	emitter eventEmitter
 }
 
 // handleDSConfig serves GET /.well-known/ds-config — unauthenticated.
@@ -678,9 +682,24 @@ func (s *server) handleCommit(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, resp)
 }
 
-// emit publishes an event to the broker if one is configured.
+// eventEmitter is the subset of *events.Broker the server uses to publish
+// domain events. Defining it as an interface lets tests inject an in-memory
+// recorder without spinning up a real broker / Postgres event_log.
+//
+// *events.Broker satisfies this interface.
+type eventEmitter interface {
+	Emit(ctx context.Context, e events.Event)
+}
+
+// emit publishes an event to the configured broker or test emitter, if any.
+// A non-nil emitter overrides the broker — production wiring leaves emitter
+// nil and uses the broker; tests that want to capture events without a real
+// broker set emitter directly.
 func (s *server) emit(ctx context.Context, e events.Event) {
-	if s.broker != nil {
+	switch {
+	case s.emitter != nil:
+		s.emitter.Emit(ctx, e)
+	case s.broker != nil:
 		s.broker.Emit(ctx, e)
 	}
 }
