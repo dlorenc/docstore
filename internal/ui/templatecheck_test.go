@@ -146,6 +146,9 @@ func TestTemplateTypes(t *testing.T) {
 	t.Run("repo_settings", func(t *testing.T) {
 		check(t, tmpl.repoSettings.Lookup("content"), repoSettingsPage{})
 	})
+	t.Run("repo_secrets", func(t *testing.T) {
+		check(t, tmpl.repoSecrets.Lookup("content"), repoSecretsPage{})
+	})
 	t.Run("user_profile", func(t *testing.T) {
 		check(t, tmpl.userProfile.Lookup("content"), userProfilePage{
 			Memberships: []model.OrgMember{{Role: model.OrgRoleMember}},

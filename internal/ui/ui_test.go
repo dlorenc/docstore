@@ -12,6 +12,7 @@ import (
 
 	"github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/model"
+	"github.com/dlorenc/docstore/internal/secrets"
 	"github.com/dlorenc/docstore/internal/service"
 	"github.com/dlorenc/docstore/internal/store"
 )
@@ -302,7 +303,7 @@ func strPtr(s string) *string { return &s }
 func newTestHandler(t *testing.T, r ReadStore, w *fakeWrite, a AssembleFn) http.Handler {
 	t.Helper()
 	svc := service.New(w, nil, nil)
-	h, err := NewHandler(r, w, svc, a, nil)
+	h, err := NewHandler(r, w, svc, nil, a, nil)
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
@@ -315,7 +316,7 @@ func newTestHandlerWithIdentity(t *testing.T, r ReadStore, w *fakeWrite, identit
 	t.Helper()
 	svc := service.New(w, nil, nil)
 	identFn := func(_ context.Context) string { return identity }
-	h, err := NewHandler(r, w, svc, nil, identFn)
+	h, err := NewHandler(r, w, svc, nil, nil, identFn)
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
@@ -1331,5 +1332,107 @@ func TestCSRFMiddleware_FormContainsCsrfField(t *testing.T) {
 	}
 	if !strings.Contains(body, `name="csrf_token"`) {
 		t.Errorf("rendered form does not contain csrf_token hidden field; body snippet: %.200s", body)
+	}
+}
+
+// fakeSecretsLister implements ui.SecretsLister for tests.
+type fakeSecretsLister struct {
+	rows []secrets.Metadata
+	err  error
+}
+
+func (f *fakeSecretsLister) List(_ context.Context, _ string) ([]secrets.Metadata, error) {
+	return f.rows, f.err
+}
+
+// newTestHandlerWithSecrets is like newTestHandler but injects a SecretsLister.
+func newTestHandlerWithSecrets(t *testing.T, w *fakeWrite, sl SecretsLister) http.Handler {
+	t.Helper()
+	svc := service.New(w, nil, nil)
+	h, err := NewHandler(&fakeRead{}, w, svc, sl, nil, nil)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	mux := http.NewServeMux()
+	h.Register(mux)
+	return mux
+}
+
+func TestHandleRepoSecrets_Empty(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedBy: "me", CreatedAt: time.Now()}}
+	h := newTestHandlerWithSecrets(t, &fakeWrite{repos: repos}, &fakeSecretsLister{})
+	code, body := getStatusAndBody(t, h, "/r/acme/a/secrets")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", code, body)
+	}
+	for _, want := range []string{
+		"acme/a",
+		"no secrets configured",
+		`href="/r/acme/a/secrets" class="active"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q", want)
+		}
+	}
+}
+
+func TestHandleRepoSecrets_RendersRows(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedBy: "me", CreatedAt: time.Now()}}
+	updatedAt := time.Now().Add(-1 * time.Hour)
+	updatedBy := "bob@example.com"
+	rows := []secrets.Metadata{
+		{
+			ID: "s1", Repo: "acme/a", Name: "DOCKERHUB_TOKEN",
+			Description: "deploy token", SizeBytes: 36,
+			CreatedBy: "alice@example.com", CreatedAt: time.Now().Add(-24 * time.Hour),
+		},
+		{
+			ID: "s2", Repo: "acme/a", Name: "SLACK_INCOMING",
+			SizeBytes: 80,
+			CreatedBy: "alice@example.com", CreatedAt: time.Now().Add(-48 * time.Hour),
+			UpdatedBy: &updatedBy, UpdatedAt: &updatedAt,
+		},
+	}
+	h := newTestHandlerWithSecrets(t, &fakeWrite{repos: repos}, &fakeSecretsLister{rows: rows})
+	code, body := getStatusAndBody(t, h, "/r/acme/a/secrets")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", code, body)
+	}
+	for _, want := range []string{
+		"DOCKERHUB_TOKEN",
+		"deploy token",
+		"SLACK_INCOMING",
+		"alice@example.com",
+		"bob@example.com",
+		"36 B",
+		"80 B",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q; body snippet: %.500s", want, body)
+		}
+	}
+	// Defense-in-depth: nothing in the page should hint at sealed bytes.
+	for _, banned := range []string{"ciphertext", "encrypted_dek", "kms_key_name"} {
+		if strings.Contains(body, banned) {
+			t.Errorf("page leaks internal field %q", banned)
+		}
+	}
+}
+
+func TestHandleRepoSecrets_NotConfigured_503(t *testing.T) {
+	repos := []model.Repo{{Name: "acme/a", Owner: "acme", CreatedBy: "me", CreatedAt: time.Now()}}
+	// No SecretsLister injected.
+	h := newTestHandlerWithSecrets(t, &fakeWrite{repos: repos}, nil)
+	code, _ := getStatusAndBody(t, h, "/r/acme/a/secrets")
+	if code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", code)
+	}
+}
+
+func TestHandleRepoSecrets_UnknownRepo_404(t *testing.T) {
+	h := newTestHandlerWithSecrets(t, &fakeWrite{miss: true}, &fakeSecretsLister{})
+	code, _ := getStatusAndBody(t, h, "/r/no/such/secrets")
+	if code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", code)
 	}
 }
