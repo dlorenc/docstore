@@ -32,6 +32,7 @@ nav:
     - Architecture: ci-architecture.md
     - Local Development: ci-local.md
     - Proposals & Triggers: proposals-and-ci-triggers.md
+    - Repo Secrets: secrets.md
   - API Reference: api-reference.md
   - Canonical URIs: canonical-resource-uris.md
   - Events: events.md
