@@ -161,24 +161,27 @@ func (s *Store) ListRepoSecrets(ctx context.Context, repo string) ([]RepoSecret,
 	return secrets, rows.Err()
 }
 
-// DeleteRepoSecret removes the repo secret keyed by (repo, name). Returns
-// ErrSecretNotFound if no row was deleted.
-func (s *Store) DeleteRepoSecret(ctx context.Context, repo, name string) error {
-	res, err := s.db.ExecContext(ctx,
-		`DELETE FROM repo_secrets WHERE repo = $1 AND name = $2`,
+// DeleteRepoSecret removes the repo secret keyed by (repo, name) and returns
+// the row as it existed at delete time. Returns ErrSecretNotFound if no row
+// was deleted.
+//
+// Returning the deleted row (rather than just a row count) lets the caller
+// emit a faithful audit event without a separate Get round-trip — the id is
+// stable across rotations but disappears with the row, so capturing it here
+// is the only way to keep the delete and the event consistent.
+func (s *Store) DeleteRepoSecret(ctx context.Context, repo, name string) (RepoSecret, error) {
+	row := s.db.QueryRowContext(ctx,
+		`DELETE FROM repo_secrets WHERE repo = $1 AND name = $2 RETURNING `+repoSecretColumns,
 		repo, name,
 	)
+	rs, err := scanRepoSecret(row)
 	if err != nil {
-		return fmt.Errorf("delete repo secret: %w", err)
+		if errors.Is(err, sql.ErrNoRows) {
+			return RepoSecret{}, ErrSecretNotFound
+		}
+		return RepoSecret{}, fmt.Errorf("delete repo secret: %w", err)
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("delete repo secret: rows affected: %w", err)
-	}
-	if n == 0 {
-		return ErrSecretNotFound
-	}
-	return nil
+	return rs, nil
 }
 
 // TouchRepoSecretLastUsed sets last_used_at = now() for (repo, name). It is

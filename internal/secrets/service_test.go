@@ -143,18 +143,19 @@ func (s *fakeStore) ListRepoSecrets(_ context.Context, repo string) ([]db.RepoSe
 	return out, nil
 }
 
-func (s *fakeStore) DeleteRepoSecret(_ context.Context, repo, name string) error {
+func (s *fakeStore) DeleteRepoSecret(_ context.Context, repo, name string) (db.RepoSecret, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	m, ok := s.rows[repo]
 	if !ok {
-		return db.ErrSecretNotFound
+		return db.RepoSecret{}, db.ErrSecretNotFound
 	}
-	if _, ok := m[name]; !ok {
-		return db.ErrSecretNotFound
+	row, ok := m[name]
+	if !ok {
+		return db.RepoSecret{}, db.ErrSecretNotFound
 	}
 	delete(m, name)
-	return nil
+	return row, nil
 }
 
 func (s *fakeStore) TouchRepoSecretLastUsed(_ context.Context, repo, name string) error {
@@ -372,7 +373,7 @@ func TestService_List_ReturnsMetadataOnly(t *testing.T) {
 func TestService_Delete_NotFound(t *testing.T) {
 	t.Parallel()
 	_, _, svc := newServiceForTest()
-	err := svc.Delete(t.Context(), "acme/widgets", "NOPE")
+	_, err := svc.Delete(t.Context(), "acme/widgets", "NOPE")
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("Delete missing: got %v, want ErrNotFound", err)
 	}
@@ -383,11 +384,19 @@ func TestService_Delete_HappyPath(t *testing.T) {
 	_, _, svc := newServiceForTest()
 	ctx := t.Context()
 
-	if _, err := svc.Set(ctx, "acme/widgets", "TOKEN", "", []byte("v"), "alice@x"); err != nil {
+	created, err := svc.Set(ctx, "acme/widgets", "TOKEN", "", []byte("v"), "alice@x")
+	if err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	if err := svc.Delete(ctx, "acme/widgets", "TOKEN"); err != nil {
+	deleted, err := svc.Delete(ctx, "acme/widgets", "TOKEN")
+	if err != nil {
 		t.Fatalf("Delete: %v", err)
+	}
+	if deleted.ID != created.ID {
+		t.Errorf("Delete returned id %q, want %q", deleted.ID, created.ID)
+	}
+	if deleted.Name != "TOKEN" {
+		t.Errorf("Delete returned name %q, want TOKEN", deleted.Name)
 	}
 	got, err := svc.List(ctx, "acme/widgets")
 	if err != nil {
