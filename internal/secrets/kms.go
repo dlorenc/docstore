@@ -27,6 +27,23 @@ type kmsClient interface {
 type KMSEncryptor struct {
 	client      kmsClient
 	keyResource string
+	// onOp is an optional observation hook fired after every Encrypt/Decrypt
+	// attempt. The package keeps this surface deliberately untyped (callback
+	// rather than a metrics import) so internal/secrets does not depend on
+	// internal/metrics. Production wires it via SetOpObserver.
+	onOp func(op, result string)
+}
+
+// SetOpObserver installs a callback fired after each KMS call with one of
+// op = "encrypt"|"decrypt" and result = "ok"|"error". Safe to call once at
+// startup; not safe for concurrent updates.
+func (e *KMSEncryptor) SetOpObserver(f func(op, result string)) { e.onOp = f }
+
+// observe is a no-op when no observer is installed.
+func (e *KMSEncryptor) observe(op, result string) {
+	if e.onOp != nil {
+		e.onOp(op, result)
+	}
 }
 
 // NewKMSEncryptor constructs a KMSEncryptor by opening a default KMS client.
@@ -86,8 +103,10 @@ func (e *KMSEncryptor) Encrypt(ctx context.Context, plaintext []byte) (Sealed, e
 		Plaintext: dek,
 	})
 	if err != nil {
+		e.observe("encrypt", "error")
 		return Sealed{}, fmt.Errorf("kms encrypt: wrap dek: %w", err)
 	}
+	e.observe("encrypt", "ok")
 
 	return Sealed{
 		Ciphertext:   ct,
@@ -115,8 +134,10 @@ func (e *KMSEncryptor) Decrypt(ctx context.Context, sealed Sealed) ([]byte, erro
 		Ciphertext: sealed.EncryptedDEK,
 	})
 	if err != nil {
+		e.observe("decrypt", "error")
 		return nil, fmt.Errorf("kms decrypt: unwrap dek: %w", err)
 	}
+	e.observe("decrypt", "ok")
 	dek := resp.GetPlaintext()
 	defer zero(dek)
 
