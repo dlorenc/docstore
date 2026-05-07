@@ -332,6 +332,62 @@ func TestKMSEncryptor_EncryptErrorPropagates(t *testing.T) {
 	}
 }
 
+func TestKMSEncryptor_ObserverHook(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	fake := newFakeKMSClient(t, testKMSKey)
+	enc := newKMSEncryptorWithClient(fake, testKMSKey)
+
+	type call struct{ op, result string }
+	var (
+		mu    sync.Mutex
+		calls []call
+	)
+	enc.SetOpObserver(func(op, result string) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls = append(calls, call{op, result})
+	})
+
+	// Successful Encrypt → ("encrypt","ok").
+	sealed, err := enc.Encrypt(ctx, []byte("hi"))
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+	// Successful Decrypt → ("decrypt","ok").
+	if _, err := enc.Decrypt(ctx, sealed); err != nil {
+		t.Fatalf("Decrypt: %v", err)
+	}
+	// Forced Decrypt failure → ("decrypt","error").
+	fake.decryptErr = errors.New("boom")
+	if _, err := enc.Decrypt(ctx, sealed); err == nil {
+		t.Fatal("Decrypt should have failed")
+	}
+	// Forced Encrypt failure → ("encrypt","error").
+	fake.decryptErr = nil
+	fake.encryptErr = errors.New("boom2")
+	if _, err := enc.Encrypt(ctx, []byte("y")); err == nil {
+		t.Fatal("Encrypt should have failed")
+	}
+
+	want := []call{
+		{"encrypt", "ok"},
+		{"decrypt", "ok"},
+		{"decrypt", "error"},
+		{"encrypt", "error"},
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != len(want) {
+		t.Fatalf("observer calls = %v, want %v", calls, want)
+	}
+	for i, w := range want {
+		if calls[i] != w {
+			t.Errorf("observer[%d] = %v, want %v", i, calls[i], w)
+		}
+	}
+}
+
 func TestKMSEncryptor_DecryptErrorPropagates(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

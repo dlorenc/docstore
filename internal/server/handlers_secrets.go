@@ -152,6 +152,7 @@ func (s *server) handleSetSecret(w http.ResponseWriter, r *http.Request) {
 			SizeBytes: meta.SizeBytes,
 			Actor:     actor,
 		})
+		s.metricsSecretsOp("created")
 	} else {
 		s.emit(r.Context(), evtypes.SecretUpdated{
 			Repo:      repo,
@@ -160,9 +161,19 @@ func (s *server) handleSetSecret(w http.ResponseWriter, r *http.Request) {
 			SizeBytes: meta.SizeBytes,
 			Actor:     actor,
 		})
+		s.metricsSecretsOp("updated")
 	}
 
 	writeJSON(w, http.StatusOK, secretMetadataFrom(meta))
+}
+
+// metricsSecretsOp is a tiny wrapper that increments the labeled counter
+// when metrics is configured. Centralized so call sites stay terse and the
+// nil check lives in one place.
+func (s *server) metricsSecretsOp(operation string) {
+	if s.metrics != nil {
+		s.metrics.SecretOps().WithLabelValues(operation).Inc()
+	}
 }
 
 // handleDeleteSecret implements DELETE /repos/{owner}/{name}/-/secrets/{secname}.
@@ -198,6 +209,7 @@ func (s *server) handleDeleteSecret(w http.ResponseWriter, r *http.Request) {
 		ID:    meta.ID,
 		Actor: actor,
 	})
+	s.metricsSecretsOp("deleted")
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -338,6 +350,7 @@ func (s *server) handleRevealSecrets(w http.ResponseWriter, r *http.Request) {
 			Sequence: job.Sequence,
 			Branch:   job.Branch,
 		})
+		s.metricsSecretsOp("accessed")
 	}
 
 	writeJSON(w, http.StatusOK, revealResponse{Values: encoded, Missing: missing})

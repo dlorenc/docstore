@@ -223,7 +223,7 @@ func NewWithPresign(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, 
 	return NewWithOIDC(writeStore, database, bs, broker,
 		devIdentity, bootstrapAdmin, oauthClientID, oauthClientSecret,
 		jobStore, archiveHMACSecret, archiveBaseURL,
-		"", "", "", nil, nil, nil)
+		"", "", "", nil, nil, nil, nil)
 }
 
 // NewWithOIDC is like NewWithPresign but also enables OIDC job token authentication
@@ -238,11 +238,13 @@ func NewWithPresign(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, 
 // ls is the LogStore used by POST /repos/:repo/-/check/:name/logs; if nil the endpoint returns 503.
 // sessionSecret is the HMAC key for signing session cookies; nil disables web UI session auth.
 // secretsSvc is the repo-secrets service used by /-/secrets endpoints; nil disables them (503).
+// reg is the Prometheus registry used to instrument HTTP and domain metrics; nil
+// disables instrumentation entirely (no /metrics endpoint, no middleware).
 func NewWithOIDC(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, broker *events.Broker,
 	devIdentity, bootstrapAdmin, oauthClientID, oauthClientSecret string,
 	jobStore jobTokenStore, archiveHMACSecret []byte, archiveBaseURL string,
 	oidcJWKSURL, oidcAudience, oidcIssuer string, ls logstore.LogStore, sessionSecret []byte,
-	secretsSvc secrets.Service) http.Handler {
+	secretsSvc secrets.Service, reg *metrics.Registry) http.Handler {
 	pc := policy.NewCache()
 	s := &server{
 		commitStore:       writeStore,
@@ -260,7 +262,7 @@ func NewWithOIDC(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, bro
 		oidcIssuer:        oidcIssuer,
 		logStore:          ls,
 		secrets:           secretsSvc,
-		metrics:           metrics.New(),
+		metrics:           reg,
 	}
 	if oidcJWKSURL != "" {
 		s.oidcKeyCache = newKeyCacheForURL(oidcJWKSURL)

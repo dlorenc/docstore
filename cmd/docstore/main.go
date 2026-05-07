@@ -22,6 +22,7 @@ import (
 	"github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/events"
 	"github.com/dlorenc/docstore/internal/logstore"
+	"github.com/dlorenc/docstore/internal/metrics"
 	"github.com/dlorenc/docstore/internal/policy"
 	"github.com/dlorenc/docstore/internal/secrets"
 	"github.com/dlorenc/docstore/internal/server"
@@ -219,6 +220,14 @@ func main() {
 
 	jobStore := db.NewStore(database)
 
+	// Construct the Prometheus registry once and pass it to the server.
+	// The KMS encryptor's per-call observer is wired below so we get
+	// kms_operations_total{op,result} from production traffic.
+	metricsReg := metrics.New()
+	kmsObserver := func(op, result string) {
+		metricsReg.KMSOps().WithLabelValues(op, result).Inc()
+	}
+
 	// Build the repo-secrets encryptor + service. Dev mode (DEV_IDENTITY set)
 	// uses a local AES key persisted under ~/.docstore/dev-encryption-key.
 	// Production requires DOCSTORE_SECRETS_KMS_KEY pointing at a Cloud KMS
@@ -249,6 +258,7 @@ func main() {
 			logger.Error("failed to create KMS secrets encryptor", "error", encErr, "key", kmsKey)
 			os.Exit(1)
 		}
+		enc.SetOpObserver(kmsObserver)
 		logger.Info("secrets encryptor configured", "backend", "kms", "key", kmsKey)
 		secretsSvc = secrets.NewService(enc, commitStore)
 	}
@@ -257,7 +267,7 @@ func main() {
 		*devIdentity, *bootstrapAdmin, *oauthClientID, *oauthClientSecret,
 		jobStore, archiveHMACSecret, archiveBaseURL,
 		oidcJWKSURL, oidcAudience, oidcIssuer, ls, sessionSecret,
-		secretsSvc)
+		secretsSvc, metricsReg)
 
 	// Start the auto-merge worker. It subscribes to check.reported and
 	// review.submitted events and merges branches with auto_merge=true.
