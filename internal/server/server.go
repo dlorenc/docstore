@@ -21,6 +21,7 @@ import (
 	"github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/events"
 	"github.com/dlorenc/docstore/internal/logstore"
+	"github.com/dlorenc/docstore/internal/metrics"
 	"github.com/dlorenc/docstore/internal/model"
 	"github.com/dlorenc/docstore/internal/policy"
 	"github.com/dlorenc/docstore/internal/secrets"
@@ -259,6 +260,7 @@ func NewWithOIDC(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, bro
 		oidcIssuer:        oidcIssuer,
 		logStore:          ls,
 		secrets:           secretsSvc,
+		metrics:           metrics.New(),
 	}
 	if oidcJWKSURL != "" {
 		s.oidcKeyCache = newKeyCacheForURL(oidcJWKSURL)
@@ -366,13 +368,20 @@ func jobEndpointAllowed(endpoint string, permissions []string) bool {
 // Extracted so tests can construct a server with injected dependencies and still
 // get the full middleware stack.
 func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore WriteStore) http.Handler {
-	// Health check, well-known config, and OAuth endpoints are exempt from auth.
+	// Health check, well-known config, OAuth endpoints, and Prometheus
+	// /metrics are exempt from auth. /metrics is unauthenticated at the app
+	// layer; in production the Cloud Run ingress restriction (internal-and-
+	// cloud-load-balancing) keeps it reachable only from the LB or from
+	// inside the project's network.
 	outer := http.NewServeMux()
 	outer.HandleFunc("GET /healthz", handleHealth)
 	outer.HandleFunc("GET /.well-known/ds-config", s.handleDSConfig)
 	outer.HandleFunc("GET /auth/login", s.handleAuthLogin)
 	outer.HandleFunc("GET /auth/callback", s.handleAuthCallback)
 	outer.HandleFunc("GET /auth/logout", s.handleAuthLogout)
+	if s.metrics != nil {
+		outer.Handle("GET /metrics", s.metrics.Handler())
+	}
 
 	// All other routes require authentication.
 	inner := http.NewServeMux()
@@ -558,7 +567,11 @@ func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore Wri
 
 		authHandler.ServeHTTP(w, r)
 	}))
-	return RequestLogger(outer)
+	var withMetrics http.Handler = outer
+	if s.metrics != nil {
+		withMetrics = s.metrics.Middleware(withMetrics)
+	}
+	return RequestLogger(withMetrics)
 }
 
 // jobTokenStore is the subset of db.Store needed for request_token validation.
@@ -614,6 +627,10 @@ type server struct {
 	// tests to capture events without a real broker; production wiring leaves
 	// this nil and the broker handles delivery.
 	emitter eventEmitter
+	// metrics is the Prometheus registry exposing /metrics. nil disables
+	// instrumentation; the HTTP middleware becomes a no-op and the endpoint
+	// is not registered.
+	metrics *metrics.Registry
 }
 
 // handleDSConfig serves GET /.well-known/ds-config — unauthenticated.
@@ -679,6 +696,9 @@ func (s *server) handleCommit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.metrics != nil {
+		s.metrics.CommitsTotal().Inc()
+	}
 	writeJSON(w, http.StatusCreated, resp)
 }
 
