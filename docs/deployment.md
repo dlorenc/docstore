@@ -43,7 +43,7 @@ This configures Workload Identity for the GKE cluster, creates the `docstore-ci`
 |---|---|---|---|
 | `DATABASE_URL` | yes | — | PostgreSQL DSN (`postgres://user:pass@host/db`) |
 | `PORT` | no | `8080` | HTTP listen port |
-| `DEV_IDENTITY` | no | — | Bypass IAP JWT validation (dev only) |
+| `DEV_IDENTITY` | no | — | Bypass OAuth JWT validation (dev only) |
 | `BOOTSTRAP_ADMIN` | no | — | Identity with admin access to repos with no admin yet |
 | `LOG_FORMAT` | no | `json` | Log format: `json` or `text` |
 | `LOG_LEVEL` | no | `info` | Log level: `debug`, `info`, `warn`, `error` |
@@ -98,17 +98,18 @@ gcloud run deploy docstore \
 
 The compiled-in default remote URL for `ds` is `https://docstore.dev` (set in `Makefile` as `DEFAULT_REMOTE`).
 
-## Authentication (Cloud IAP)
+## Authentication (Direct Google OAuth)
 
-Production traffic reaches the server exclusively through a Global HTTPS Load Balancer at `https://docstore.dev`. Google Cloud Identity-Aware Proxy (IAP) is enabled on the backend service — any Google account can sign in; no allowlist is required (`allAuthenticatedUsers` has `roles/iap.httpsResourceAccessor`).
+Production traffic reaches the server exclusively through a Global HTTPS Load Balancer at `https://docstore.dev`. Authentication is handled directly by the server using Google OAuth 2.0 — any Google account can sign in.
 
 ### How it works
 
 1. The client (browser or `ds` CLI) sends a request to `https://docstore.dev`.
 2. The Global HTTPS LB terminates TLS using the managed certificate `docstore-cert`.
-3. IAP validates the user's Google session and injects an `X-Goog-IAP-JWT-Assertion` header signed by Google.
-4. The request is forwarded to Cloud Run via the serverless NEG `docstore-neg`.
-5. The server's `IAPMiddleware` validates the JWT (RS256, keys from `https://www.gstatic.com/iap/verify/public_key-jwk`) and extracts the `email` claim as the caller's identity.
+3. The request is forwarded to Cloud Run via the serverless NEG `docstore-neg`.
+4. For browser clients: unauthenticated requests are redirected to `/auth/login`, which initiates the OAuth 2.0 authorization code flow. After Google authenticates the user, `/auth/callback` receives the code, exchanges it for a Google ID token, and sets a signed session cookie.
+5. For the CLI (`ds login`): the CLI performs the OAuth 2.0 authorization code flow locally (loopback redirect) and stores the Google ID token, which is sent as `Authorization: Bearer <id_token>` on subsequent requests.
+6. The server's `GoogleAuthMiddleware` validates the ID token (RS256, keys from `https://www.googleapis.com/oauth2/v3/certs`) and extracts the `email` claim as the caller's identity.
 
 Cloud Run ingress is set to `internal-and-cloud-load-balancing`, so direct requests to `*.run.app` are blocked. All traffic must go through the load balancer.
 
@@ -130,7 +131,7 @@ gcloud compute network-endpoint-groups create docstore-neg \
   --cloud-run-service=docstore \
   --project=dlorenc-chainguard
 
-# Backend service with IAP enabled
+# Backend service (no IAP — auth is handled by the server directly)
 gcloud compute backend-services create docstore-backend \
   --global \
   --protocol=HTTPS \
@@ -140,19 +141,6 @@ gcloud compute backend-services add-backend docstore-backend \
   --global \
   --network-endpoint-group=docstore-neg \
   --network-endpoint-group-region=us-central1 \
-  --project=dlorenc-chainguard
-
-# Enable IAP on the backend service
-gcloud iap web enable --resource-type=backend-services \
-  --service=docstore-backend \
-  --project=dlorenc-chainguard
-
-# Grant all Google accounts access via IAP
-gcloud iap web add-iam-policy-binding \
-  --resource-type=backend-services \
-  --service=docstore-backend \
-  --member=allAuthenticatedUsers \
-  --role=roles/iap.httpsResourceAccessor \
   --project=dlorenc-chainguard
 
 # URL map, managed SSL cert, HTTPS proxy, and forwarding rule
@@ -385,7 +373,7 @@ The deploy workflow (`deploy.yml`) also builds and deploys both CI binaries afte
    echo -n 'your-secret' | gcloud secrets versions add ci-runner-webhook-secret \
      --data-file=- --project=dlorenc-chainguard
    ```
-4. Provision the Global HTTPS LB + IAP infrastructure (see "One-time infrastructure" commands in the Authentication section above). This only needs to be done once per project.
+4. Provision the Global HTTPS LB infrastructure (see "One-time infrastructure" commands in the Authentication section above). This only needs to be done once per project.
 5. Create the OIDC KMS resources and secrets (see "One-time OIDC setup prerequisites" above):
    - KMS keyring and signing key
    - `ci-oidc-kms-key-version` secret in Secret Manager
@@ -420,20 +408,4 @@ The event broker persists all events to the `event_log` PostgreSQL table and use
 
 ### CLI authentication (ds login)
 
-After enabling IAP, add the Desktop app OAuth client to IAP's programmatic access allowlist so `ds login` works:
-
-```bash
-cat > /tmp/iap-settings.yaml << 'YAML'
-access_settings:
-  oauth_settings:
-    programmatic_clients:
-      - <DESKTOP_APP_CLIENT_ID>
-YAML
-
-gcloud iap settings set /tmp/iap-settings.yaml \
-  --project=<PROJECT> \
-  --resource-type=backend-services \
-  --service=<BACKEND_SERVICE_NAME>
-```
-
-This allows ID tokens with the Desktop app client's audience to pass through IAP. Without this step, IAP rejects CLI tokens with "Invalid JWT audience".
+`ds login` performs the Google OAuth 2.0 authorization code flow using the compiled-in Desktop app client credentials (`OAUTH_CLIENT_ID` / `OAUTH_CLIENT_SECRET` in the Makefile). The server accepts the resulting Google ID token as a `Bearer` token. No additional IAP configuration is required — the server validates the token directly.

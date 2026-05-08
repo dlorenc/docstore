@@ -21,8 +21,10 @@ import (
 	"github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/events"
 	"github.com/dlorenc/docstore/internal/logstore"
+	"github.com/dlorenc/docstore/internal/metrics"
 	"github.com/dlorenc/docstore/internal/model"
 	"github.com/dlorenc/docstore/internal/policy"
+	"github.com/dlorenc/docstore/internal/secrets"
 	"github.com/dlorenc/docstore/internal/service"
 	"github.com/dlorenc/docstore/internal/store"
 	"github.com/dlorenc/docstore/internal/ui"
@@ -219,9 +221,9 @@ func NewWithPresign(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, 
 	devIdentity, bootstrapAdmin, oauthClientID, oauthClientSecret string,
 	jobStore jobTokenStore, archiveHMACSecret []byte, archiveBaseURL string) http.Handler {
 	return NewWithOIDC(writeStore, database, bs, broker,
-		devIdentity, bootstrapAdmin, oauthClientID, oauthClientSecret,
+		devIdentity, bootstrapAdmin, oauthClientID, oauthClientSecret, "",
 		jobStore, archiveHMACSecret, archiveBaseURL,
-		"", "", "", nil, nil)
+		"", "", "", nil, nil, nil, nil)
 }
 
 // NewWithOIDC is like NewWithPresign but also enables OIDC job token authentication
@@ -235,10 +237,14 @@ func NewWithPresign(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, 
 // If oidcJWKSURL is empty, OIDC job token auth is disabled.
 // ls is the LogStore used by POST /repos/:repo/-/check/:name/logs; if nil the endpoint returns 503.
 // sessionSecret is the HMAC key for signing session cookies; nil disables web UI session auth.
+// secretsSvc is the repo-secrets service used by /-/secrets endpoints; nil disables them (503).
+// reg is the Prometheus registry used to instrument HTTP and domain metrics; nil
+// disables instrumentation entirely (no /metrics endpoint, no middleware).
 func NewWithOIDC(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, broker *events.Broker,
-	devIdentity, bootstrapAdmin, oauthClientID, oauthClientSecret string,
+	devIdentity, bootstrapAdmin, oauthClientID, oauthClientSecret, oauthCLIClientID string,
 	jobStore jobTokenStore, archiveHMACSecret []byte, archiveBaseURL string,
-	oidcJWKSURL, oidcAudience, oidcIssuer string, ls logstore.LogStore, sessionSecret []byte) http.Handler {
+	oidcJWKSURL, oidcAudience, oidcIssuer string, ls logstore.LogStore, sessionSecret []byte,
+	secretsSvc secrets.Service, reg *metrics.Registry) http.Handler {
 	pc := policy.NewCache()
 	s := &server{
 		commitStore:       writeStore,
@@ -246,6 +252,7 @@ func NewWithOIDC(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, bro
 		broker:            broker,
 		globalAdmin:       bootstrapAdmin,
 		oauthClientID:     oauthClientID,
+		oauthCLIClientID:  oauthCLIClientID,
 		oauthClientSecret: oauthClientSecret,
 		sessionSecret:     sessionSecret,
 		archiveHMACSecret: archiveHMACSecret,
@@ -255,9 +262,14 @@ func NewWithOIDC(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, bro
 		oidcAudience:      oidcAudience,
 		oidcIssuer:        oidcIssuer,
 		logStore:          ls,
+		secrets:           secretsSvc,
+		metrics:           reg,
 	}
 	if oidcJWKSURL != "" {
 		s.oidcKeyCache = newKeyCacheForURL(oidcJWKSURL)
+	}
+	if oauthClientID != "" || oauthCLIClientID != "" {
+		s.googleKeyCache = newKeyCacheForURL(googleJWKURL)
 	}
 	if writeStore != nil {
 		var emitter service.EventEmitter
@@ -286,6 +298,9 @@ func newServer(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, broke
 		oauthClientID:     oauthClientID,
 		oauthClientSecret: oauthClientSecret,
 		sessionSecret:     sessionSecret,
+	}
+	if oauthClientID != "" {
+		s.googleKeyCache = newKeyCacheForURL(googleJWKURL)
 	}
 	if writeStore != nil {
 		var emitter service.EventEmitter
@@ -356,7 +371,11 @@ func jobEndpointAllowed(endpoint string, permissions []string) bool {
 // Extracted so tests can construct a server with injected dependencies and still
 // get the full middleware stack.
 func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore WriteStore) http.Handler {
-	// Health check, well-known config, and OAuth endpoints are exempt from auth.
+	// Health check, well-known config, OAuth endpoints, and Prometheus
+	// /metrics are exempt from auth. /metrics is unauthenticated at the app
+	// layer; in production the Cloud Run ingress restriction (internal-and-
+	// cloud-load-balancing) keeps it reachable only from the LB or from
+	// inside the project's network.
 	outer := http.NewServeMux()
 	outer.HandleFunc("GET /healthz", handleHealth)
 	outer.HandleFunc("GET /.well-known/ds-config", s.handleDSConfig)
@@ -366,6 +385,9 @@ func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore Wri
 	outer.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/ui/", http.StatusFound)
 	})
+	if s.metrics != nil {
+		outer.Handle("GET /metrics", s.metrics.Handler())
+	}
 
 	// All other routes require authentication.
 	inner := http.NewServeMux()
@@ -410,9 +432,9 @@ func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore Wri
 		var uiHandler *ui.Handler
 		var err error
 		if os.Getenv("DEV_UI") != "" {
-			uiHandler, err = ui.NewHandlerDev(s.readStore, writeStore, s.svc, assemble, IdentityFromContext)
+			uiHandler, err = ui.NewHandlerDev(s.readStore, writeStore, s.svc, s.secrets, assemble, IdentityFromContext)
 		} else {
-			uiHandler, err = ui.NewHandler(s.readStore, writeStore, s.svc, assemble, IdentityFromContext)
+			uiHandler, err = ui.NewHandler(s.readStore, writeStore, s.svc, s.secrets, assemble, IdentityFromContext)
 		}
 		if err != nil {
 			slog.Error("ui init failed", "error", err)
@@ -439,11 +461,20 @@ func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore Wri
 	if writeStore != nil {
 		routed = RBACMiddleware(writeStore, bootstrapAdmin)(inner)
 	}
-	iapHandler := GoogleAuthMiddleware(devIdentity, s.oauthClientID, s.sessionSecret)(routed)
+	// Build the audience list: include the web client ID and, if configured,
+	// the CLI Desktop client ID so both sources of bearer tokens are accepted.
+	var googleAudiences []string
+	if s.oauthClientID != "" {
+		googleAudiences = append(googleAudiences, s.oauthClientID)
+	}
+	if s.oauthCLIClientID != "" {
+		googleAudiences = append(googleAudiences, s.oauthCLIClientID)
+	}
+	authHandler := GoogleAuthMiddleware(devIdentity, googleAudiences, s.sessionSecret)(routed)
 
 	// Wrap the auth handler: intercept presign, HMAC-signed archive, and job
 	// OIDC token requests before Google ID token validation. Everything else falls through
-	// to iapHandler.
+	// to authHandler.
 	// Using "/" (not "/repos/") avoids the Go mux trailing-slash redirect that
 	// would turn POST /repos into a 307 → POST /repos/.
 	outer.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -486,12 +517,21 @@ func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore Wri
 				s.handleCICheck(w, r)
 				return
 			}
+			// Reveal secrets (scheduler → decrypt repo secrets at dispatch time):
+			// auth via request_token. Bypasses Google auth and RBAC because the
+			// bearer token IS the credential. The handler enforces its own
+			// gating policy on top.
+			if endpoint == "secrets/reveal" && r.Method == http.MethodPost && s.jobTokenStore != nil {
+				r.SetPathValue("name", repoName)
+				s.handleRevealSecrets(w, r)
+				return
+			}
 		}
 
 		// Job OIDC token auth: if a Bearer token is present and OIDC is configured,
 		// validate it as a job OIDC JWT. On success, inject job identity into context
 		// and route directly to the inner mux (bypassing Google auth and RBAC).
-		// On failure, return 401. If no Bearer token, fall through to iapHandler.
+		// On failure, return 401. If no Bearer token, fall through to authHandler.
 		if s.oidcKeyCache != nil {
 			auth := r.Header.Get("Authorization")
 			if tok := strings.TrimPrefix(auth, "Bearer "); tok != "" && tok != auth {
@@ -540,9 +580,13 @@ func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore Wri
 			}
 		}
 
-		iapHandler.ServeHTTP(w, r)
+		authHandler.ServeHTTP(w, r)
 	}))
-	return RequestLogger(outer)
+	var withMetrics http.Handler = outer
+	if s.metrics != nil {
+		withMetrics = s.metrics.Middleware(withMetrics)
+	}
+	return RequestLogger(withMetrics)
 }
 
 // jobTokenStore is the subset of db.Store needed for request_token validation.
@@ -562,10 +606,15 @@ type server struct {
 	// globalAdmin is the identity that may manage global resources like
 	// event subscriptions. Corresponds to the --bootstrap-admin flag.
 	globalAdmin string
-	// oauthClientID is the Google OAuth 2.0 client ID. Advertised via
+	// oauthClientID is the Google OAuth 2.0 Web client ID. Advertised via
 	// /.well-known/ds-config so CLI tools can perform the OAuth flow.
-	// Also used to validate the audience claim of Google ID tokens.
+	// Also used to validate the audience claim of Google ID tokens from web sessions.
 	oauthClientID string
+	// oauthCLIClientID is an additional OAuth 2.0 client ID (Desktop app) accepted
+	// for bearer token audience validation. CLI tools obtain tokens using the Desktop
+	// OAuth client, which embeds a different client_id in the audience claim.
+	// When non-empty, both oauthClientID and oauthCLIClientID are accepted.
+	oauthCLIClientID string
 	// oauthClientSecret is the Google OAuth 2.0 client secret used by
 	// the server-side /auth/callback handler to exchange authorization codes.
 	oauthClientSecret string
@@ -585,9 +634,23 @@ type server struct {
 	oidcAudience string
 	oidcIssuer   string
 	oidcKeyCache *keyCache
+	// googleKeyCache caches Google's public JWK keys for validating ID tokens
+	// during the OAuth callback. Initialized at startup when oauthClientID is set.
+	googleKeyCache *keyCache
 	// logStore writes CI check logs; used by POST /repos/:repo/-/check/:name/logs.
 	// nil means the endpoint is disabled (returns 503).
 	logStore logstore.LogStore
+	// secrets is the repo-level secrets service. nil disables the
+	// /-/secrets endpoints (returns 503).
+	secrets secrets.Service
+	// emitter overrides the broker for event emission when non-nil. Used by
+	// tests to capture events without a real broker; production wiring leaves
+	// this nil and the broker handles delivery.
+	emitter eventEmitter
+	// metrics is the Prometheus registry exposing /metrics. nil disables
+	// instrumentation; the HTTP middleware becomes a no-op and the endpoint
+	// is not registered.
+	metrics *metrics.Registry
 }
 
 // handleDSConfig serves GET /.well-known/ds-config — unauthenticated.
@@ -653,12 +716,30 @@ func (s *server) handleCommit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.metrics != nil {
+		s.metrics.CommitsTotal().Inc()
+	}
 	writeJSON(w, http.StatusCreated, resp)
 }
 
-// emit publishes an event to the broker if one is configured.
+// eventEmitter is the subset of *events.Broker the server uses to publish
+// domain events. Defining it as an interface lets tests inject an in-memory
+// recorder without spinning up a real broker / Postgres event_log.
+//
+// *events.Broker satisfies this interface.
+type eventEmitter interface {
+	Emit(ctx context.Context, e events.Event)
+}
+
+// emit publishes an event to the configured broker or test emitter, if any.
+// A non-nil emitter overrides the broker — production wiring leaves emitter
+// nil and uses the broker; tests that want to capture events without a real
+// broker set emitter directly.
 func (s *server) emit(ctx context.Context, e events.Event) {
-	if s.broker != nil {
+	switch {
+	case s.emitter != nil:
+		s.emitter.Emit(ctx, e)
+	case s.broker != nil:
 		s.broker.Emit(ctx, e)
 	}
 }
@@ -712,10 +793,7 @@ func (s *server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	redirect := r.URL.Query().Get("redirect")
-	if redirect == "" {
-		redirect = "/ui/"
-	}
+	redirect := safeRedirect(r.URL.Query().Get("redirect"))
 
 	stateBytes := make([]byte, 16)
 	if _, err := cryptorand.Read(stateBytes); err != nil {
@@ -737,7 +815,7 @@ func (s *server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, stateCookie)
 
 	conf := s.oauthConfig(r)
-	authURL := conf.AuthCodeURL(state, oauth2.AccessTypeOffline)
+	authURL := conf.AuthCodeURL(state, oauth2.AccessTypeOnline)
 	http.Redirect(w, r, authURL, http.StatusFound)
 }
 
@@ -788,8 +866,7 @@ func (s *server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate the ID token and extract email.
-	cache := newKeyCacheForURL(googleJWKURL)
-	email, err := validateGoogleIDToken(idToken, cache.get, s.oauthClientID)
+	email, err := validateGoogleIDToken(idToken, s.googleKeyCache.get, []string{s.oauthClientID})
 	if err != nil {
 		slog.Warn("oauth id_token invalid", "error", err)
 		http.Error(w, "invalid id token", http.StatusUnauthorized)
@@ -811,10 +888,17 @@ func (s *server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	sessionCookie := createSessionCookie(email, expiry, s.sessionSecret, isSecureRequest(r))
 	http.SetCookie(w, sessionCookie)
 
-	if redirect == "" {
-		redirect = "/ui/"
+	http.Redirect(w, r, safeRedirect(redirect), http.StatusFound)
+}
+
+// safeRedirect validates that redirect is a safe relative path.
+// It must start with "/" and must not be a protocol-relative URL ("//...")
+// or contain "://" (absolute URL). Returns "/ui/" if the value is invalid.
+func safeRedirect(redirect string) string {
+	if redirect == "" || !strings.HasPrefix(redirect, "/") || strings.HasPrefix(redirect, "//") || strings.Contains(redirect, "://") {
+		return "/ui/"
 	}
-	http.Redirect(w, r, redirect, http.StatusFound)
+	return redirect
 }
 
 // handleAuthLogout clears the session cookie and redirects to the home page.

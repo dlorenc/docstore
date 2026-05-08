@@ -15,6 +15,7 @@ import (
 
 	"github.com/dlorenc/docstore/internal/events"
 	"github.com/dlorenc/docstore/internal/model"
+	"github.com/dlorenc/docstore/internal/secrets"
 	"github.com/dlorenc/docstore/internal/service"
 	"github.com/dlorenc/docstore/internal/store"
 )
@@ -119,11 +120,21 @@ var templatesFS embed.FS
 //go:embed static
 var staticFS embed.FS
 
+// SecretsLister is the minimal subset of secrets.Service the UI needs. The
+// metadata page calls List only — Set, Delete, and Reveal are never exposed
+// over the browser surface. Defining the type here keeps the UI from
+// depending on the full secrets.Service interface and makes the privilege
+// boundary explicit.
+type SecretsLister interface {
+	List(ctx context.Context, repo string) ([]secrets.Metadata, error)
+}
+
 // Handler renders the web UI.
 type Handler struct {
 	read      ReadStore
 	write     WriteStoreLite
 	svc       *service.Service
+	secrets   SecretsLister
 	assemble  AssembleFn
 	identity  IdentityFn
 	tmpl      *templateSet
@@ -144,7 +155,8 @@ func (h *Handler) emit(ctx context.Context, e events.Event) {
 
 // NewHandler constructs a UI handler wired to the given data sources.
 // svc is the service layer that enforces business logic for write operations.
-func NewHandler(read ReadStore, write WriteStoreLite, svc *service.Service, assemble AssembleFn, identity IdentityFn) (*Handler, error) {
+// secretsLister is optional — when nil, the secrets metadata page returns 503.
+func NewHandler(read ReadStore, write WriteStoreLite, svc *service.Service, secretsLister SecretsLister, assemble AssembleFn, identity IdentityFn) (*Handler, error) {
 	t, err := parseTemplates(templatesFS)
 	if err != nil {
 		return nil, err
@@ -157,6 +169,7 @@ func NewHandler(read ReadStore, write WriteStoreLite, svc *service.Service, asse
 		read:      read,
 		write:     write,
 		svc:       svc,
+		secrets:   secretsLister,
 		assemble:  assemble,
 		identity:  identity,
 		tmpl:      t,
@@ -169,7 +182,7 @@ func NewHandler(read ReadStore, write WriteStoreLite, svc *service.Service, asse
 // during development so template edits take effect on the next request without
 // recompiling. The server must be run from the repository root so that the
 // path "internal/ui" resolves correctly.
-func NewHandlerDev(read ReadStore, write WriteStoreLite, svc *service.Service, assemble AssembleFn, identity IdentityFn) (*Handler, error) {
+func NewHandlerDev(read ReadStore, write WriteStoreLite, svc *service.Service, secretsLister SecretsLister, assemble AssembleFn, identity IdentityFn) (*Handler, error) {
 	root := os.DirFS("internal/ui")
 	t, err := parseTemplates(root)
 	if err != nil {
@@ -183,6 +196,7 @@ func NewHandlerDev(read ReadStore, write WriteStoreLite, svc *service.Service, a
 		read:      read,
 		write:     write,
 		svc:       svc,
+		secrets:   secretsLister,
 		assemble:  assemble,
 		identity:  identity,
 		tmpl:      t,
@@ -210,6 +224,7 @@ func (h *Handler) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /o/{org}", h.handleOrg)
 	mux.HandleFunc("GET /r/{owner}/{name}", h.handleBranches)
 	mux.HandleFunc("GET /r/{owner}/{name}/settings", h.handleRepoSettings)
+	mux.HandleFunc("GET /r/{owner}/{name}/secrets", h.handleRepoSecrets)
 	mux.HandleFunc("GET /r/{owner}/{name}/log", h.handleRepoLog)
 	// Branch routes use {branch...} to support multi-segment branch names like
 	// "feature/auth". The dispatch handlers parse the trailing suffix to route

@@ -421,3 +421,23 @@ ds role delete <identity>
 ```
 
 Valid roles: `reader`, `writer`, `maintainer`, `admin`. See [policy.md](policy.md) for what each role permits.
+
+## Repo secrets
+
+Repo secrets are opaque key/value credentials surfaced to CI jobs as
+BuildKit secret mounts at `/run/secrets/<NAME>`. Plaintext is never
+returned through any read API. See [secrets.md](secrets.md) for the full
+model, threat model, and CI integration.
+
+```bash
+ds secrets list                                       # list metadata only
+ds secrets set <NAME> -                               # value from stdin
+ds secrets set <NAME> --from-file=<path>              # value from file
+ds secrets set <NAME> --description="<text>" -        # with description
+ds secrets unset <NAME>                               # delete
+```
+
+`--value=<plaintext>` is **refused** — plaintext from `argv` would land in
+shell history and `ps eww`. The `set` and `unset` subcommands require
+admin role on the repo. Names must match `^[A-Z][A-Z0-9_]{0,63}$` and may
+not use the reserved `DOCSTORE_` prefix; values are capped at 32 KiB.

@@ -196,8 +196,8 @@ type dsServerConfig struct {
 
 // Login authenticates with the given server and stores the credentials.
 // It first tries to discover OAuth client credentials via /.well-known/ds-config.
-// If that fails (e.g. the endpoint is behind IAP itself), it falls back to the
-// compiled-in fallbackClientID and fallbackClientSecret.
+// If that fails, it falls back to the compiled-in fallbackClientID and
+// fallbackClientSecret.
 func (a *App) Login(serverURL, fallbackClientID, fallbackClientSecret string) error {
 	serverURL = strings.TrimRight(serverURL, "/")
 
@@ -214,6 +214,7 @@ func (a *App) Login(serverURL, fallbackClientID, fallbackClientSecret string) er
 				fmt.Fprintln(a.Out, "Server does not require authentication")
 				return nil
 			}
+			// "iap" is kept for backward compatibility with older server configs.
 			if (cfg.Auth.Type == "oauth" || cfg.Auth.Type == "iap") && cfg.Auth.ClientID != "" {
 				clientID = cfg.Auth.ClientID
 				if cfg.Auth.ClientSecret != "" {

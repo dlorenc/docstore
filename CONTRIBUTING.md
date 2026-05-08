@@ -48,7 +48,7 @@ export DATABASE_URL="postgres://localhost/docstore?sslmode=disable"
 go run ./cmd/docstore --dev-identity you@example.com
 ```
 
-The server runs on port 8080. With `--dev-identity`, IAP JWT validation is bypassed and every request is treated as the given identity. **This flag is for local development only and must never be used in production.** Production is deployed at `https://docstore.dev` behind Google Cloud IAP, which handles authentication via `X-Goog-IAP-JWT-Assertion` headers.
+The server runs on port 8080. With `--dev-identity`, OAuth JWT validation is bypassed and every request is treated as the given identity. **This flag is for local development only and must never be used in production.** Production is deployed at `https://docstore.dev` with direct Google OAuth 2.0 authentication.
 
 ## Project structure
 

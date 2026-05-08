@@ -40,7 +40,7 @@ A lightweight HTTP service that:
 - Parses `com.docstore.commit.created` events and inserts a row into `ci_jobs`.
 - Serves job status at `GET /run/{id}`.
 - Proxies live logs at `GET /run/{id}/logs/{check}` — either reverse-proxying to the worker pod (while the job is claimed) or redirecting to the GCS log URL (after completion).
-- Manual CI triggers are handled by the main docstore server at `POST /repos/:name/-/ci/run` (IAP-protected, writer+ RBAC).
+- Manual CI triggers are handled by the main docstore server at `POST /repos/:name/-/ci/run` (writer+ RBAC).
 - Runs a stale-job reaper every 30 seconds to reclaim jobs that have missed their heartbeat.
 - Serves `POST /claim` — validates K8s projected SA tokens with pod provenance checks, claims the next queued job, and returns a `request_token`.
 - Serves `POST /jobs/{id}/heartbeat` — request_token authenticated; updates the job heartbeat.

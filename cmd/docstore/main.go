@@ -22,7 +22,9 @@ import (
 	"github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/events"
 	"github.com/dlorenc/docstore/internal/logstore"
+	"github.com/dlorenc/docstore/internal/metrics"
 	"github.com/dlorenc/docstore/internal/policy"
+	"github.com/dlorenc/docstore/internal/secrets"
 	"github.com/dlorenc/docstore/internal/server"
 	"github.com/dlorenc/docstore/internal/store"
 )
@@ -30,8 +32,9 @@ import (
 func main() {
 	devIdentity := flag.String("dev-identity", "", "bypass Google ID token validation and use this identity (local dev/testing only)")
 	bootstrapAdmin := flag.String("bootstrap-admin", "", "identity granted admin access to repos with no admin assigned yet")
-	oauthClientID := flag.String("oauth-client-id", "", "Google OAuth 2.0 client ID advertised via /.well-known/ds-config (overrides OAUTH_CLIENT_ID env var)")
+	oauthClientID := flag.String("oauth-client-id", "", "Google OAuth 2.0 Web client ID advertised via /.well-known/ds-config (overrides OAUTH_CLIENT_ID env var)")
 	oauthClientSecret := flag.String("oauth-client-secret", "", "Google OAuth 2.0 client secret for the web OAuth callback handler (overrides OAUTH_CLIENT_SECRET env var)")
+	oauthCLIClientID := flag.String("oauth-cli-client-id", "", "Google OAuth 2.0 Desktop client ID for CLI bearer token audience validation (overrides OAUTH_CLI_CLIENT_ID env var)")
 	sessionSecretB64 := flag.String("session-secret", "", "base64-encoded HMAC secret for signing session cookies (overrides SESSION_SECRET env var)")
 	flag.Parse()
 
@@ -66,6 +69,9 @@ func main() {
 	}
 	if *oauthClientSecret == "" {
 		*oauthClientSecret = os.Getenv("OAUTH_CLIENT_SECRET")
+	}
+	if *oauthCLIClientID == "" {
+		*oauthCLIClientID = os.Getenv("OAUTH_CLI_CLIENT_ID")
 	}
 	if *sessionSecretB64 == "" {
 		*sessionSecretB64 = os.Getenv("SESSION_SECRET")
@@ -217,10 +223,55 @@ func main() {
 	}
 
 	jobStore := db.NewStore(database)
+
+	// Construct the Prometheus registry once and pass it to the server.
+	// The KMS encryptor's per-call observer is wired below so we get
+	// kms_operations_total{op,result} from production traffic.
+	metricsReg := metrics.New()
+	kmsObserver := func(op, result string) {
+		metricsReg.KMSOps().WithLabelValues(op, result).Inc()
+	}
+
+	// Build the repo-secrets encryptor + service. Dev mode (DEV_IDENTITY set)
+	// uses a local AES key persisted under ~/.docstore/dev-encryption-key.
+	// Production requires DOCSTORE_SECRETS_KMS_KEY pointing at a Cloud KMS
+	// resource — fail loud at startup if it is missing.
+	var secretsSvc secrets.Service
+	if *devIdentity != "" {
+		home, homeErr := os.UserHomeDir()
+		if homeErr != nil {
+			logger.Error("cannot resolve home directory for dev encryption key", "error", homeErr)
+			os.Exit(1)
+		}
+		keyPath := home + "/.docstore/dev-encryption-key"
+		enc, encErr := secrets.NewLocalEncryptor(keyPath)
+		if encErr != nil {
+			logger.Error("failed to create local secrets encryptor", "error", encErr, "path", keyPath)
+			os.Exit(1)
+		}
+		logger.Warn("DEV MODE — secrets sealed by local key, NOT KMS", "key_path", keyPath)
+		secretsSvc = secrets.NewService(enc, commitStore)
+	} else {
+		kmsKey := os.Getenv("DOCSTORE_SECRETS_KMS_KEY")
+		if kmsKey == "" {
+			logger.Error("DOCSTORE_SECRETS_KMS_KEY is required in non-dev mode")
+			os.Exit(1)
+		}
+		enc, encErr := secrets.NewKMSEncryptor(context.Background(), kmsKey)
+		if encErr != nil {
+			logger.Error("failed to create KMS secrets encryptor", "error", encErr, "key", kmsKey)
+			os.Exit(1)
+		}
+		enc.SetOpObserver(kmsObserver)
+		logger.Info("secrets encryptor configured", "backend", "kms", "key", kmsKey)
+		secretsSvc = secrets.NewService(enc, commitStore)
+	}
+
 	srv := server.NewWithOIDC(commitStore, database, bs, broker,
-		*devIdentity, *bootstrapAdmin, *oauthClientID, *oauthClientSecret,
+		*devIdentity, *bootstrapAdmin, *oauthClientID, *oauthClientSecret, *oauthCLIClientID,
 		jobStore, archiveHMACSecret, archiveBaseURL,
-		oidcJWKSURL, oidcAudience, oidcIssuer, ls, sessionSecret)
+		oidcJWKSURL, oidcAudience, oidcIssuer, ls, sessionSecret,
+		secretsSvc, metricsReg)
 
 	// Start the auto-merge worker. It subscribes to check.reported and
 	// review.submitted events and merges branches with auto_merge=true.

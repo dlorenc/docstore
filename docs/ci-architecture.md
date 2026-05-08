@@ -159,7 +159,7 @@ Deliveries are HMAC-SHA256 signed using `WEBHOOK_SECRET`. The scheduler verifies
 | `com.docstore.commit.created` | `proposal_synchronized` | Additionally, if the pushed branch has an open proposal and `on.proposal` is configured |
 | `com.docstore.proposal.opened` | `proposal` | If `on.proposal.base_branches` matches the proposal's base branch |
 | *(cron runner)* | `schedule` | If the current minute matches a `on.schedule[].cron` expression |
-| `POST /repos/:name/-/ci/run` on docstore (IAP-protected, writer+) | `manual` | Always |
+| `POST /repos/:name/-/ci/run` on docstore (auth-protected, writer+) | `manual` | Always |
 
 The `proposal_synchronized` trigger is synthetic — ci-scheduler detects it by querying `GET /repos/:name/-/proposals?state=open&branch=<branch>` after receiving a `commit.created` event. No separate event is emitted by docstore.
 
@@ -195,7 +195,7 @@ These map directly to the `event.*` fields available in `if:` expressions (see [
 
 ### Manual trigger
 
-The manual trigger endpoint moved to the main docstore server (IAP-protected, requires writer role):
+The manual trigger endpoint is on the main docstore server (requires writer role):
 
 ```bash
 curl -X POST https://docstore.dev/repos/acme/myrepo/-/ci/run \
