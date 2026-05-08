@@ -1,6 +1,6 @@
 module github.com/dlorenc/docstore
 
-go 1.26.2
+go 1.26.3
 
 require (
 	cloud.google.com/go/kms v1.29.0
