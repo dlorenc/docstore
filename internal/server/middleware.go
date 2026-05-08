@@ -616,8 +616,8 @@ func newGoogleAuthMiddleware(devIdentity string, clientIDs []string, sessionSecr
 				}
 			}
 
-			// No valid auth. Redirect web UI paths to login; return 401 for API paths.
-			if strings.HasPrefix(r.URL.Path, "/ui/") {
+			// No valid auth. Redirect browsers to login; return 401 for API clients.
+			if strings.Contains(r.Header.Get("Accept"), "text/html") {
 				loginURL := "/auth/login?redirect=" + r.URL.RequestURI()
 				http.Redirect(w, r, loginURL, http.StatusFound)
 				return

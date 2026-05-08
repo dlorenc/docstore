@@ -726,6 +726,7 @@ func TestGoogleAuthMiddleware_UIPathRedirectsToLogin(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/ui/repos", nil)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
