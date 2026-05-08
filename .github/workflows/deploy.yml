@@ -64,7 +64,7 @@ jobs:
             --network=default \
             --subnet=default \
             --vpc-egress=private-ranges-only \
-            --args=--bootstrap-admin=dlorenc@chainguard.dev
+            --args=--bootstrap-admin=dlorenc@chainguard.dev,--oauth-cli-client-id=320310132788-md94jtp0d9fdcdlq2quma4mcpr0ul1qr.apps.googleusercontent.com
 
       - name: Grant CI workers access to docstore internal URL
         run: |
