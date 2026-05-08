@@ -2,7 +2,7 @@
 
 ## Install the `ds` CLI
 
-Build from source (Go 1.25+ required):
+Build from source (Go 1.26+ required):
 
 ```bash
 git clone https://github.com/dlorenc/docstore
