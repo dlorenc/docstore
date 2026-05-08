@@ -1,6 +1,6 @@
 # API Reference
 
-All endpoints (except `GET /healthz`) require authentication. In production, the server validates the GCP IAP JWT from the `X-Goog-IAP-JWT-Assertion` header. In dev/test, set the `DEV_IDENTITY` env var on the server to bypass JWT validation.
+All endpoints (except `GET /healthz`) require authentication. In production, the server validates Google ID tokens — either from a session cookie (browser) or `Authorization: Bearer <id_token>` (CLI/API). In dev/test, set the `DEV_IDENTITY` env var on the server to bypass JWT validation.
 
 Repo-scoped endpoints use the `/-/` separator to allow org/repo names to contain slashes without ambiguity:
 
@@ -346,7 +346,7 @@ List reviews for a branch.
 
 Report a CI check result.
 
-**Auth:** IAP JWT (human users) or job OIDC JWT (`Authorization: Bearer {jwt}`, issued by `oidc.docstore.dev`).
+**Auth:** Google ID token (human users) or job OIDC JWT (`Authorization: Bearer {jwt}`, issued by `oidc.docstore.dev`).
 
 **Body:**
 ```json
@@ -420,7 +420,7 @@ Download the repo tree as a `.tar.gz`.
 - `branch` — Branch name (default `main`).
 - `at` — Sequence number.
 
-Requires authentication (IAP JWT or job OIDC JWT). For CI workers, use the presigned URL variant instead.
+Requires authentication (Google ID token or job OIDC JWT). For CI workers, use the presigned URL variant instead.
 
 ### `GET /repos/{name}/-/archive` (presigned — no auth required)
 

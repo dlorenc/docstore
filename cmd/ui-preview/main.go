@@ -424,7 +424,7 @@ func (e *notFoundErr) Error() string { return "branch not found" }
 // ---------------------------------------------------------------------------
 
 func main() {
-	h, err := ui.NewHandler(fakeRead{}, fakeWrite{}, nil, fakeAssemble, nil)
+	h, err := ui.NewHandler(fakeRead{}, fakeWrite{}, nil, nil, fakeAssemble, nil)
 	if err != nil {
 		log.Fatalf("ui init: %v", err)
 	}

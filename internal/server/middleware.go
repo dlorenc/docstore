@@ -226,6 +226,17 @@ func roleAllows(role model.RoleType, method, subPath string, r *http.Request) bo
 		return role == model.RoleAdmin
 	}
 
+	// Secrets endpoints — admin only for writes/deletes; reads fall through
+	// to the generic reader+ GET branch below. Per docs/secrets-design.md,
+	// there is no GET /secrets/{name} (no read-value route), and write paths
+	// are PUT/DELETE on /secrets/{name}.
+	if subPath == "secrets" && method != http.MethodGet {
+		return role == model.RoleAdmin
+	}
+	if strings.HasPrefix(subPath, "secrets/") && (method == http.MethodPut || method == http.MethodDelete) {
+		return role == model.RoleAdmin
+	}
+
 	// DELETE /releases/<name> — admin only.
 	if method == http.MethodDelete && strings.HasPrefix(subPath, "releases/") {
 		return role == model.RoleAdmin
@@ -551,16 +562,18 @@ func jwtAudienceContains(aud any, target string) bool {
 // requests. If devIdentity is non-empty, all validation is skipped and devIdentity
 // is used directly (for local dev/testing).
 //
-// clientID is the OAuth 2.0 client ID used to validate the audience claim of
-// Google ID tokens. sessionSecret is the HMAC key for signing session cookies;
-// nil disables session cookie auth.
-func GoogleAuthMiddleware(devIdentity, clientID string, sessionSecret []byte) func(http.Handler) http.Handler {
+// clientIDs is the list of OAuth 2.0 client IDs used to validate the audience
+// claim of Google ID tokens. A token is accepted if its audience matches any
+// entry in the list. Typically contains the web client ID and optionally the
+// Desktop/CLI client ID. sessionSecret is the HMAC key for signing session
+// cookies; nil disables session cookie auth.
+func GoogleAuthMiddleware(devIdentity string, clientIDs []string, sessionSecret []byte) func(http.Handler) http.Handler {
 	cache := newKeyCacheForURL(googleJWKURL)
-	return newGoogleAuthMiddleware(devIdentity, clientID, sessionSecret, cache.get)
+	return newGoogleAuthMiddleware(devIdentity, clientIDs, sessionSecret, cache.get)
 }
 
 // newGoogleAuthMiddleware is the testable core of GoogleAuthMiddleware.
-func newGoogleAuthMiddleware(devIdentity, clientID string, sessionSecret []byte, fetchKey func(kid string) (crypto.PublicKey, error)) func(http.Handler) http.Handler {
+func newGoogleAuthMiddleware(devIdentity string, clientIDs []string, sessionSecret []byte, fetchKey func(kid string) (crypto.PublicKey, error)) func(http.Handler) http.Handler {
 	if devIdentity != "" {
 		return func(next http.Handler) http.Handler {
 			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -577,7 +590,7 @@ func newGoogleAuthMiddleware(devIdentity, clientID string, sessionSecret []byte,
 			// Try Bearer token first (CLI and direct API use).
 			auth := r.Header.Get("Authorization")
 			if bearerToken := strings.TrimPrefix(auth, "Bearer "); bearerToken != "" && bearerToken != auth {
-				email, err := validateGoogleIDToken(bearerToken, fetchKey, clientID)
+				email, err := validateGoogleIDToken(bearerToken, fetchKey, clientIDs)
 				if err != nil {
 					slog.Warn("auth failed", "reason", "invalid_id_token", "path", r.URL.Path, "error", err)
 					writeAPIError(w, ErrCodeUnauthorized, http.StatusUnauthorized, "unauthenticated")
@@ -617,8 +630,9 @@ func newGoogleAuthMiddleware(devIdentity, clientID string, sessionSecret []byte,
 }
 
 // validateGoogleIDToken parses and validates a Google ID token (RS256 or ES256),
-// returning the email claim. The clientID is matched against the audience claim.
-func validateGoogleIDToken(tokenString string, fetchKey func(kid string) (crypto.PublicKey, error), clientID string) (string, error) {
+// returning the email claim. clientIDs is matched against the audience claim;
+// the token is accepted if its audience matches any non-empty entry in the list.
+func validateGoogleIDToken(tokenString string, fetchKey func(kid string) (crypto.PublicKey, error), clientIDs []string) (string, error) {
 	parts := strings.SplitN(tokenString, ".", 3)
 	if len(parts) != 3 {
 		return "", fmt.Errorf("invalid JWT format")
@@ -688,10 +702,11 @@ func validateGoogleIDToken(tokenString string, fetchKey func(kid string) (crypto
 		return "", fmt.Errorf("decode payload: %w", err)
 	}
 	var claims struct {
-		Email string  `json:"email"`
-		Exp   float64 `json:"exp"`
-		Iss   string  `json:"iss"`
-		Aud   any     `json:"aud"` // string or []interface{}
+		Email         string  `json:"email"`
+		EmailVerified bool    `json:"email_verified"`
+		Exp           float64 `json:"exp"`
+		Iss           string  `json:"iss"`
+		Aud           any     `json:"aud"` // string or []interface{}
 	}
 	if err := json.Unmarshal(payloadJSON, &claims); err != nil {
 		return "", fmt.Errorf("parse payload: %w", err)
@@ -707,13 +722,26 @@ func validateGoogleIDToken(tokenString string, fetchKey func(kid string) (crypto
 		return "", fmt.Errorf("invalid issuer: %q", claims.Iss)
 	}
 
-	// Validate audience against the configured OAuth client ID (if provided).
-	if clientID != "" && !jwtAudienceContains(claims.Aud, clientID) {
-		return "", fmt.Errorf("invalid audience")
+	// Validate audience against the configured OAuth client IDs (if any provided).
+	// Accept the token if its audience matches any non-empty entry in the list.
+	if len(clientIDs) > 0 {
+		matched := false
+		for _, id := range clientIDs {
+			if id != "" && jwtAudienceContains(claims.Aud, id) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return "", fmt.Errorf("invalid audience")
+		}
 	}
 
 	if claims.Email == "" {
 		return "", fmt.Errorf("missing email claim")
+	}
+	if !claims.EmailVerified {
+		return "", fmt.Errorf("email not verified")
 	}
 	return claims.Email, nil
 }

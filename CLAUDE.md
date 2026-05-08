@@ -19,7 +19,7 @@ export DATABASE_URL="postgres://docstore:docstore@localhost:5432/docstore?sslmod
 
 ### 2. Run the server in dev mode
 
-`DEV_IDENTITY` bypasses IAP authentication (required for local dev).
+`DEV_IDENTITY` bypasses OAuth authentication (required for local dev).
 `DEV_UI` makes the server read HTML templates from `internal/ui/templates/` on
 disk instead of the embedded copies, so template changes take effect on the next
 request without recompiling.
@@ -52,16 +52,16 @@ Air watches `*.go` files and rebuilds+restarts the server automatically.
 Template/CSS/JS edits take effect immediately without restart because `DEV_UI`
 reads them from disk at request time.
 
-### Note: production uses IAP
+### Note: production uses direct Google OAuth
 
 In production, the Cloud Run service sits behind a Global HTTPS Load Balancer
-with Google Cloud Identity-Aware Proxy (IAP) at `https://docstore.dev`. IAP
-handles authentication by injecting `X-Goog-IAP-JWT-Assertion` headers, which
-the app's `IAPMiddleware` validates. Direct requests to `*.run.app` are blocked
-(ingress is `internal-and-cloud-load-balancing`).
+at `https://docstore.dev`. Authentication is handled directly by the server via
+Google OAuth 2.0 — the server validates Google ID tokens from session cookies
+set by its own OAuth callback (`/auth/callback`). Direct requests to `*.run.app`
+are blocked (ingress is `internal-and-cloud-load-balancing`).
 
 `DEV_IDENTITY` / `--dev-identity` is **only for local development** — it bypasses
-IAP entirely and must never be set in production.
+OAuth entirely and must never be set in production.
 
 ### 4. Visual iteration with Playwright MCP
 
@@ -86,7 +86,7 @@ Go code changes trigger an air rebuild; template/CSS changes are instant.
 | Variable | Purpose |
 |---|---|
 | `DATABASE_URL` | Postgres DSN (required) |
-| `DEV_IDENTITY` | Bypass IAP — use this email as the caller identity |
+| `DEV_IDENTITY` | Bypass OAuth — use this email as the caller identity |
 | `DEV_UI` | Read templates from disk instead of embedded binary |
 | `PORT` | HTTP listen port (default: `8080`) |
 | `LOG_FORMAT` | `text` for human-readable logs (default: JSON) |

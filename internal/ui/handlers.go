@@ -16,6 +16,7 @@ import (
 	"github.com/dlorenc/docstore/internal/db"
 	evtypes "github.com/dlorenc/docstore/internal/events/types"
 	"github.com/dlorenc/docstore/internal/model"
+	"github.com/dlorenc/docstore/internal/secrets"
 	"github.com/dlorenc/docstore/internal/service"
 	"github.com/dlorenc/docstore/internal/store"
 )
@@ -64,6 +65,12 @@ type repoSettingsPage struct {
 	Repo  model.Repo
 	Roles []model.Role
 	Err   string
+}
+
+type repoSecretsPage struct {
+	Repo    model.Repo
+	Secrets []secrets.Metadata
+	Err     string
 }
 
 type branchRow struct {
@@ -1755,6 +1762,52 @@ func (h *Handler) renderRepoSettingsPage(w http.ResponseWriter, r *http.Request,
 			{Label: "settings", Href: ""},
 		},
 		Body: repoSettingsPage{Repo: *repo, Roles: roles, Err: errMsg},
+	})
+}
+
+// handleRepoSecrets renders the read-only secrets metadata page for a repo.
+// The page only shows names, sizes, and audit timestamps — plaintext is never
+// fetched. Writing and deleting secrets is intentionally CLI-only (`ds secrets
+// set / unset`); the browser surface for plaintext input has a wider threat
+// model (extensions, clipboard, screen recorders) and we don't want to invite
+// it.
+func (h *Handler) handleRepoSecrets(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	repoName := owner + "/" + name
+	ctx := r.Context()
+
+	repo, err := h.write.GetRepo(ctx, repoName)
+	if err != nil {
+		if errors.Is(err, db.ErrRepoNotFound) {
+			h.renderError(w, r, http.StatusNotFound, "repo not found: "+repoName)
+			return
+		}
+		slog.Error("ui get repo", "repo", repoName, "error", err)
+		h.renderError(w, r, http.StatusInternalServerError, "could not load repo")
+		return
+	}
+
+	if h.secrets == nil {
+		h.renderError(w, r, http.StatusServiceUnavailable, "secrets service is not configured")
+		return
+	}
+
+	list, err := h.secrets.List(ctx, repoName)
+	if err != nil {
+		slog.Error("ui list secrets", "repo", repoName, "error", err)
+		h.renderError(w, r, http.StatusInternalServerError, "could not load secrets")
+		return
+	}
+
+	h.render(w, r, h.tmpl.repoSecrets, "layout.html", pageData{
+		Title: repoName + " / secrets",
+		Breadcrumbs: []crumb{
+			{Label: "repos", Href: "/"},
+			{Label: repoName, Href: "/r/" + repoName},
+			{Label: "secrets", Href: ""},
+		},
+		Body: repoSecretsPage{Repo: *repo, Secrets: list},
 	})
 }
 

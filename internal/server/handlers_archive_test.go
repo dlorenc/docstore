@@ -277,7 +277,7 @@ func TestHandleArchivePresign_ChecksumWithReadStore(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandlePresignedArchive_MissingSig(t *testing.T) {
-	// Without sig param, the request is passed through to IAP and the inner mux.
+	// Without sig param, the request is passed through to the auth handler and inner mux.
 	// In the inner mux, "archive" with GET goes to handleArchive, which needs
 	// a read store. Without one configured, it returns 503.
 	// The key test: no sig → does NOT call handlePresignedArchive directly.
@@ -287,7 +287,7 @@ func TestHandlePresignedArchive_MissingSig(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/repos/org/myrepo/-/archive?branch=main", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
-	// Without sig, goes through IAP → inner mux → handleArchive → 503 (no read store)
+	// Without sig, goes through auth handler → inner mux → handleArchive → 503 (no read store)
 	// or 404 (repo not found via validateRepo with mockStore returning ErrRepoNotFound).
 	// Either way, it's not 403 (which would come from handlePresignedArchive's HMAC check).
 	if rec.Code == http.StatusForbidden {

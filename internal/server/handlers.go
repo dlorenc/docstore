@@ -425,6 +425,25 @@ func (s *server) handleReposPrefix(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
 
+	case endpoint == "secrets":
+		if r.Method == http.MethodGet {
+			s.handleListSecrets(w, r)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+
+	case strings.HasPrefix(endpoint, "secrets/"):
+		secname := strings.TrimPrefix(endpoint, "secrets/")
+		r.SetPathValue("secname", secname)
+		switch r.Method {
+		case http.MethodPut:
+			s.handleSetSecret(w, r)
+		case http.MethodDelete:
+			s.handleDeleteSecret(w, r)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+
 	default:
 		writeError(w, http.StatusNotFound, "not found")
 	}

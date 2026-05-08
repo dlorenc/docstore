@@ -135,6 +135,9 @@ func (s *server) handleTriggerCIRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.metrics != nil {
+		s.metrics.CIJobs().WithLabelValues("queued").Inc()
+	}
 	slog.Info("ci job manually triggered", "repo", repo, "branch", req.Branch, "sequence", branchInfo.HeadSequence, "job_id", job.ID)
 	writeJSON(w, http.StatusCreated, map[string]string{"run_id": job.ID})
 }

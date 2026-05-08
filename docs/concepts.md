@@ -57,7 +57,7 @@ A release pins a specific sequence number under a human-readable name (e.g. `v1.
 | | Git | DocStore |
 |---|---|---|
 | Storage | Local `.git/` object store | PostgreSQL (server-side) |
-| Auth | SSH keys / HTTPS tokens | GCP IAP (JWT) |
+| Auth | SSH keys / HTTPS tokens | Google OAuth (JWT) |
 | Access control | Repository-level (GitHub) | Per-repo RBAC with 4 roles |
 | Merge gating | Branch protection rules | OPA Rego policies + OWNERS |
 | CI | External (GitHub Actions) | Built-in (`ci.yaml` + BuildKit) |

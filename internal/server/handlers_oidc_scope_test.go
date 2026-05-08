@@ -67,7 +67,7 @@ func buildOIDCServer(t *testing.T, ms WriteStore) (http.Handler, *rsa.PrivateKey
 		oidcAudience: audience,
 		oidcIssuer:   issuer,
 	}
-	// Use devIdentity so IAP is bypassed for non-OIDC paths in the same test server.
+	// Use devIdentity so OAuth is bypassed for non-OIDC paths in the same test server.
 	handler := s.buildHandler("dev@example.com", "", ms)
 	return handler, key
 }

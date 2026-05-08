@@ -488,6 +488,51 @@ func TestLogCapture(t *testing.T) {
 	}
 }
 
+// TestRunWithUserSecretsSmoke verifies that a Config carrying cfg.UserSecrets
+// flows through Run without panicking and produces the expected pass result.
+// Phase 5 wires the values into the BuildKit session and per-step llb.AddSecret;
+// this test exercises that wiring against the live buildkitd. It does not
+// attempt to read the secret inside the step (that requires --mount=type=secret
+// in a real Dockerfile path) — it just guards that the secrets-provider
+// composition path doesn't break the basic happy path.
+func TestRunWithUserSecretsSmoke(t *testing.T) {
+	exec := newExecutor(t)
+
+	cfg := executor.Config{
+		Checks: []executor.Check{
+			{
+				Name:  "ci/with-secrets",
+				Image: "alpine",
+				Steps: []string{"echo no-leak"},
+				Secrets: []executor.SecretRequest{
+					{LocalName: "DOCKERHUB_TOKEN", RepoName: "DOCKERHUB_TOKEN"},
+				},
+			},
+		},
+		UserSecrets: map[string][]byte{
+			"DOCKERHUB_TOKEN": []byte("super-secret-value"),
+		},
+	}
+
+	results, err := exec.Run(t.Context(), "", cfg, ciconfig.TriggerContext{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	r := results[0]
+	if r.Status != "passed" {
+		t.Errorf("expected passed, got %s (logs: %s)", r.Status, r.Logs)
+	}
+	// Backstop: the literal plaintext must never reach the user-visible logs,
+	// even though the step here doesn't reference the secret. This guards the
+	// scrubber path in runCheck.
+	if strings.Contains(r.Logs, "super-secret-value") {
+		t.Errorf("secret plaintext leaked into logs: %s", r.Logs)
+	}
+}
+
 // TestE2ECacheWithChecksumAndSecrets verifies that BuildKit cache hits occur on
 // a second run when the source archive has the same checksum but a different URL,
 // and when OIDCRequestToken differs between runs.

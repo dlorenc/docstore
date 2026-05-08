@@ -34,7 +34,7 @@ go run ./cmd/docstore --dev-identity you@example.com
 DEV_IDENTITY=you@example.com DATABASE_URL=... go run ./cmd/docstore
 ```
 
-With `--dev-identity` set, the server skips IAP JWT validation and treats every request as that identity. **This is for local development only** — do not set this flag in production. Production uses Google Cloud IAP at `https://docstore.dev`.
+With `--dev-identity` set, the server skips OAuth JWT validation and treats every request as that identity. **This is for local development only** — do not set this flag in production. Production uses direct Google OAuth at `https://docstore.dev`.
 
 The server listens on port 8080 by default (`PORT` env var overrides it).
 

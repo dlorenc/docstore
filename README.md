@@ -17,7 +17,7 @@ DocStore is a server-side version control system for structured documents, built
 | [docs/concepts.md](docs/concepts.md) | Branching model, content addressing, how it differs from git |
 | [docs/cli-reference.md](docs/cli-reference.md) | All `ds` commands with flags and examples |
 | [docs/api-reference.md](docs/api-reference.md) | Full REST API |
-| [docs/deployment.md](docs/deployment.md) | Cloud Run + Cloud SQL + GKE setup, Global HTTPS LB + IAP |
+| [docs/deployment.md](docs/deployment.md) | Cloud Run + Cloud SQL + GKE setup, Global HTTPS LB + Google OAuth |
 | [docs/ci.md](docs/ci.md) | CI system: ci-scheduler, ci-worker, `.docstore/ci.yaml` DSL |
 | [docs/policy.md](docs/policy.md) | RBAC roles, OPA policy engine, OWNERS files |
 | [docs/events.md](docs/events.md) | Event types, SSE streaming, webhook subscriptions |
@@ -26,7 +26,7 @@ DocStore is a server-side version control system for structured documents, built
 
 ## Production
 
-The hosted instance is live at **https://docstore.dev**, deployed on Cloud Run behind a Global HTTPS Load Balancer with Google Cloud IAP. Any Google account can sign in — IAP handles authentication and injects the user's identity into the app.
+The hosted instance is live at **https://docstore.dev**, deployed on Cloud Run behind a Global HTTPS Load Balancer. Any Google account can sign in — the server handles authentication directly via Google OAuth 2.0.
 
 ## Quickstart
 
@@ -223,7 +223,7 @@ ds init https://docstore.example.com/repos/acme/myrepo --author bob@example.com
 ## Architecture at a glance
 
 ```
-ds CLI  ──►  https://docstore.dev (Global HTTPS LB + Cloud IAP)
+ds CLI  ──►  https://docstore.dev (Global HTTPS LB + Google OAuth)
                       │
              Cloud Run (docstore server)  ──►  Cloud SQL (PostgreSQL)
                       │
@@ -233,4 +233,4 @@ ds CLI  ──►  https://docstore.dev (Global HTTPS LB + Cloud IAP)
                                      ── BuildKit / LLB ──►  check results
 ```
 
-The server is a single stateless binary (`cmd/docstore`) deployed on Cloud Run, fronted by a Global HTTPS Load Balancer with Google Cloud IAP for authentication. All state is in PostgreSQL. The CI system is a separate pair of GKE workloads: `ci-scheduler` receives webhook events and queues jobs; `ci-worker` pods claim and execute jobs inside Kata Container microVMs.
+The server is a single stateless binary (`cmd/docstore`) deployed on Cloud Run, fronted by a Global HTTPS Load Balancer. Authentication is handled directly by the server via Google OAuth 2.0. All state is in PostgreSQL. The CI system is a separate pair of GKE workloads: `ci-scheduler` receives webhook events and queues jobs; `ci-worker` pods claim and execute jobs inside Kata Container microVMs.

@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -24,6 +27,7 @@ import (
 	"github.com/moby/buildkit/session/secrets/secretsprovider"
 	digest "github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
+	"gopkg.in/yaml.v3"
 
 	"github.com/dlorenc/docstore/internal/ciconfig"
 )
@@ -58,15 +62,185 @@ type Config struct {
 	// Not parsed from ci.yaml; populated by the CI worker at runtime.
 	OIDCRequestToken string `json:"-" yaml:"-"`
 	OIDCRequestURL   string `json:"-" yaml:"-"`
+
+	// UserSecrets maps a check's LocalName → resolved plaintext bytes for
+	// every repo secret requested by any check in this Config. Populated by
+	// the CI worker after calling /repos/{repo}/-/secrets/reveal on the
+	// docstore server. The unexported `json:"-" yaml:"-"` tags keep these
+	// values out of any wire format — they are runtime-only and must never
+	// be marshalled or logged.
+	//
+	// Phase 4 (this field) only stores the resolved values. Phase 5 wires
+	// them into the BuildKit DAG via secretsprovider.FromMap and
+	// llb.AddSecret on a per-check basis using the check's Secrets allowlist.
+	UserSecrets map[string][]byte `json:"-" yaml:"-"`
 }
 
 // Check is a single CI check configuration.
 type Check struct {
-	Name  string   `json:"name"  yaml:"name"`
-	Image string   `json:"image" yaml:"image"`
-	Steps []string `json:"steps" yaml:"steps"`
-	If    string   `json:"if,omitempty"    yaml:"if,omitempty"`    // expression; empty = always run
-	Needs []string `json:"needs,omitempty" yaml:"needs,omitempty"` // parsed but not yet implemented
+	Name    string          `json:"name"  yaml:"name"`
+	Image   string          `json:"image" yaml:"image"`
+	Steps   []string        `json:"steps" yaml:"steps"`
+	If      string          `json:"if,omitempty"      yaml:"if,omitempty"`      // expression; empty = always run
+	Needs   []string        `json:"needs,omitempty"   yaml:"needs,omitempty"`   // parsed but not yet implemented
+	Secrets []SecretRequest `json:"secrets,omitempty" yaml:"secrets,omitempty"` // per-check secrets allowlist
+}
+
+// SecretRequest is one entry in a check's secrets: allowlist.
+//
+// LocalName is the env-var-shaped name the secret is exposed as in the step's
+// container (e.g. /run/secrets/<LocalName>). RepoName is the name of the repo
+// secret to source from. When the user writes the simple form `- FOO` both
+// fields are "FOO". When they use the rename form `- LOCAL: REPO` the two
+// differ.
+//
+// JSON wire format mirrors the parsed shape: {"local_name":"...","repo_name":"..."}.
+// This keeps marshal/unmarshal symmetric and avoids needing a custom JSON decoder
+// for the polymorphic YAML form (the executor only sees structured JSON over the
+// wire — the heterogeneous shape is a YAML-only convenience).
+type SecretRequest struct {
+	LocalName string `json:"local_name" yaml:"-"`
+	RepoName  string `json:"repo_name"  yaml:"-"`
+}
+
+// UnmarshalYAML accepts either of:
+//
+//	- FOO              # scalar: LocalName == RepoName == "FOO"
+//	- LOCAL: REPO      # mapping with exactly one key: LocalName=LOCAL, RepoName=REPO
+//
+// Anything else (sequence, multi-key map, non-string values, empty entry) is
+// rejected with a clear error pointing at the source line.
+func (s *SecretRequest) UnmarshalYAML(node *yaml.Node) error {
+	switch node.Kind {
+	case yaml.ScalarNode:
+		if node.Tag != "" && node.Tag != "!!str" {
+			return fmt.Errorf("line %d: secrets entry must be a string or single-key mapping, got %s", node.Line, node.Tag)
+		}
+		if node.Value == "" {
+			return fmt.Errorf("line %d: secrets entry must not be empty", node.Line)
+		}
+		s.LocalName = node.Value
+		s.RepoName = node.Value
+		return nil
+	case yaml.MappingNode:
+		if len(node.Content) != 2 {
+			return fmt.Errorf("line %d: secrets entry mapping must have exactly one key (LOCAL: REPO), got %d", node.Line, len(node.Content)/2)
+		}
+		k, v := node.Content[0], node.Content[1]
+		if k.Kind != yaml.ScalarNode || (k.Tag != "" && k.Tag != "!!str") {
+			return fmt.Errorf("line %d: secrets entry key must be a string", k.Line)
+		}
+		if v.Kind != yaml.ScalarNode || (v.Tag != "" && v.Tag != "!!str") {
+			return fmt.Errorf("line %d: secrets entry value must be a string", v.Line)
+		}
+		if k.Value == "" || v.Value == "" {
+			return fmt.Errorf("line %d: secrets entry key and value must be non-empty", node.Line)
+		}
+		s.LocalName = k.Value
+		s.RepoName = v.Value
+		return nil
+	default:
+		return fmt.Errorf("line %d: secrets entry must be a string or single-key mapping", node.Line)
+	}
+}
+
+// secretNameRE matches POSIX-env-var-shaped names: leading uppercase letter,
+// followed by up to 63 uppercase/digit/underscore characters. Mirrors the repo
+// secret name pattern in docs/secrets-design.md.
+var secretNameRE = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,63}$`)
+
+// reservedSecretPrefix is the prefix reserved for built-in docstore secrets
+// (e.g. docstore_oidc_request_token). User-defined secrets in either the
+// LocalName or RepoName position must not start with this (case-insensitive).
+const reservedSecretPrefix = "DOCSTORE_"
+
+// ValidateSecretsAllowlist returns an error if any check in cfg references
+// secrets with an invalid local or repo name. This is a static check that
+// runs before scheduling — it cannot detect missing secrets (those are
+// resolved at dispatch time by the scheduler in phase 5).
+//
+// All problems across all checks are aggregated via errors.Join so a single
+// invocation surfaces every issue, not just the first.
+func ValidateSecretsAllowlist(cfg *Config) error {
+	if cfg == nil {
+		return nil
+	}
+	var errs []error
+	for _, check := range cfg.Checks {
+		seen := make(map[string]struct{}, len(check.Secrets))
+		for i, sec := range check.Secrets {
+			if err := validateSecretName("local name", sec.LocalName); err != nil {
+				errs = append(errs, fmt.Errorf("check %q secrets[%d]: %w", check.Name, i, err))
+			}
+			if err := validateSecretName("repo name", sec.RepoName); err != nil {
+				errs = append(errs, fmt.Errorf("check %q secrets[%d]: %w", check.Name, i, err))
+			}
+			if _, dup := seen[sec.LocalName]; dup && sec.LocalName != "" {
+				errs = append(errs, fmt.Errorf("check %q secrets[%d]: duplicate local name %q", check.Name, i, sec.LocalName))
+			}
+			seen[sec.LocalName] = struct{}{}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func validateSecretName(kind, name string) error {
+	if name == "" {
+		return fmt.Errorf("%s must not be empty", kind)
+	}
+	if !secretNameRE.MatchString(name) {
+		return fmt.Errorf("%s %q must match %s", kind, name, secretNameRE.String())
+	}
+	if strings.HasPrefix(strings.ToUpper(name), reservedSecretPrefix) {
+		return fmt.Errorf("%s %q must not use reserved prefix %q", kind, name, reservedSecretPrefix)
+	}
+	return nil
+}
+
+// buildSecretMap composes the BuildKit secrets map for one check session.
+// OIDC built-ins are keyed by their fixed SecretIDs; user secrets are keyed
+// by their LocalName. The reserved-prefix policy enforced by internal/secrets
+// guarantees these two keyspaces cannot collide, so a flat merge is safe and
+// no defensive overwrite logic is needed.
+//
+// Returns nil when there is nothing to attach so callers can skip wiring up
+// a secrets provider entirely.
+func buildSecretMap(oidcToken, oidcURL string, userSecrets map[string][]byte) map[string][]byte {
+	if oidcToken == "" && len(userSecrets) == 0 {
+		return nil
+	}
+	out := make(map[string][]byte, len(userSecrets)+2)
+	if oidcToken != "" {
+		out["docstore_oidc_request_token"] = []byte(oidcToken)
+		out["docstore_oidc_request_url"] = []byte(oidcURL)
+	}
+	maps.Copy(out, userSecrets)
+	return out
+}
+
+// scrubLogs returns a copy of buf with every non-empty value in secrets
+// replaced by `***`. It is a verbatim-substring backstop for accidental
+// `echo $TOKEN` style leaks; values that have been transformed in transit
+// (base64, hex, etc.) are NOT caught.
+//
+// Empty values are skipped — replacing the empty string would inject `***`
+// at every byte boundary and corrupt the buffer. Order is map-iteration order
+// (non-deterministic). With distinct user-supplied secret values that is
+// fine; a value that contains another value as a substring is the only case
+// where order is observable, and either replacement choice is acceptable
+// (both produce a buffer that no longer contains the inner value verbatim).
+func scrubLogs(buf []byte, secrets map[string][]byte) []byte {
+	if len(secrets) == 0 || len(buf) == 0 {
+		return buf
+	}
+	out := buf
+	for _, v := range secrets {
+		if len(v) == 0 {
+			continue
+		}
+		out = bytes.ReplaceAll(out, v, []byte("***"))
+	}
+	return out
 }
 
 // CheckResult is the result of executing a single check.
@@ -139,7 +313,7 @@ func (e *Executor) Run(ctx context.Context, source string, cfg Config, triggerCt
 					}
 				}
 			}()
-			results[j] = e.runCheck(ctx, source, check, cfg.CacheRef, cfg.DockerConfigDir, cfg.ArchiveChecksum, cfg.OIDCRequestToken, cfg.OIDCRequestURL)
+			results[j] = e.runCheck(ctx, source, check, cfg.CacheRef, cfg.DockerConfigDir, cfg.ArchiveChecksum, cfg.OIDCRequestToken, cfg.OIDCRequestURL, cfg.UserSecrets)
 		})
 	}
 	wg.Wait()
@@ -157,7 +331,11 @@ func (e *Executor) Close() error {
 // archiveChecksum, when non-empty, passes llb.Checksum to BuildKit for HTTP sources.
 // oidcToken and oidcURL, when non-empty, are exposed via BuildKit secret mounts so
 // they do not bust the cache key (unlike env var injection).
-func (e *Executor) runCheck(ctx context.Context, source string, check Check, cacheRef, dockerConfigDir, archiveChecksum, oidcToken, oidcURL string) CheckResult {
+// userSecrets maps LocalName → plaintext for every repo secret resolved for this
+// job; entries are exposed to a step only if the check's Secrets allowlist
+// includes that LocalName. Like OIDC secrets these are mounted via BuildKit's
+// secrets provider and are NOT part of the cache key.
+func (e *Executor) runCheck(ctx context.Context, source string, check Check, cacheRef, dockerConfigDir, archiveChecksum, oidcToken, oidcURL string, userSecrets map[string][]byte) CheckResult {
 	isHTTP := strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://")
 	isLocal := source != "" && !isHTTP
 
@@ -219,14 +397,12 @@ func (e *Executor) runCheck(ctx context.Context, source string, check Check, cac
 	}
 
 	sessionAttachables := []session.Attachable{authprovider.NewDockerAuthProvider(ap)}
-	if oidcToken != "" {
-		// Expose OIDC credentials as BuildKit secrets so they don't bust the
-		// cache key. Steps read from /run/secrets/docstore_oidc_request_token
-		// and /run/secrets/docstore_oidc_request_url.
-		secretMap := map[string][]byte{
-			"docstore_oidc_request_token": []byte(oidcToken),
-			"docstore_oidc_request_url":   []byte(oidcURL),
-		}
+	// Compose OIDC built-in secrets and per-job user secrets into a single map
+	// for the BuildKit session. BuildKit secret mounts are excluded from the
+	// cache key by design, so adding user secrets does NOT bust the cache.
+	// The DOCSTORE_* reserved-prefix check in internal/secrets prevents key
+	// collisions between OIDC IDs and user LocalNames.
+	if secretMap := buildSecretMap(oidcToken, oidcURL, userSecrets); len(secretMap) > 0 {
 		sessionAttachables = append(sessionAttachables, secretsprovider.FromMap(secretMap))
 	}
 
@@ -334,6 +510,15 @@ func (e *Executor) runCheck(ctx context.Context, source string, check Check, cac
 					llb.AddSecret("/run/secrets/docstore_oidc_request_url", llb.SecretID("docstore_oidc_request_url"), llb.SecretOptional),
 				)
 			}
+			// Per-step user secret mounts. Each entry's LocalName is both the
+			// SecretID (looked up in the session secretMap) and the basename
+			// under /run/secrets. SecretOptional means an absent entry is a
+			// no-op rather than a step failure at LLB construction time.
+			for _, sec := range check.Secrets {
+				runOpts = append(runOpts,
+					llb.AddSecret("/run/secrets/"+sec.LocalName, llb.SecretID(sec.LocalName), llb.SecretOptional),
+				)
+			}
 			exec := state.Run(runOpts...)
 			state = exec.Root()
 			srcMount = exec.GetMount("/src")
@@ -369,8 +554,15 @@ func (e *Executor) runCheck(ctx context.Context, source string, check Check, cac
 
 	collectWg.Wait()
 
+	// Scrub user-secret values out of captured logs before stringifying.
+	// This is a backstop for `echo $TOKEN` style mistakes — it is NOT a
+	// security boundary. Anything that mutates the bytes in transit
+	// (base64, hex, gzip, etc.) will not be caught and callers should not
+	// expect it to be.
+	scrubbed := scrubLogs(logBuf.Bytes(), userSecrets)
+
 	status := "passed"
-	logs := logBuf.String()
+	logs := string(scrubbed)
 	if solveErr != nil {
 		status = "failed"
 		if logs == "" {

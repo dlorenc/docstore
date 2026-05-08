@@ -223,7 +223,7 @@ func heartbeat(ctx context.Context, schedulerURL, jobID, requestToken string, do
 // getPresignedArchiveURL calls POST /repos/{repo}/-/archive/presign with the
 // request_token and returns the presigned URL and checksum for BuildKit to fetch
 // the archive. checksum is "sha256:<hex>" when the server computed it, or ""
-// if the server did not provide one. This endpoint bypasses IAP and uses the
+// if the server did not provide one. This endpoint bypasses OAuth and uses the
 // request_token for authentication.
 func getPresignedArchiveURL(ctx context.Context, docstoreURL, repo, requestToken string) (url, checksum string, err error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -559,13 +559,40 @@ func runJob(
 		return "passed", nil, nil
 	}
 
-	// 2. Obtain a presigned archive URL for BuildKit to fetch the source.
+	// 2. Validate the per-check secrets allowlist before doing any further
+	// network I/O. ValidateSecretsAllowlist enforces name shape, the reserved
+	// DOCSTORE_ prefix, and per-check duplicate LocalName detection.
+	if err := executor.ValidateSecretsAllowlist(cfg); err != nil {
+		_ = postCheckRun(ctx, httpClient, docstoreURL, job.Repo, requestToken, model.CreateCheckRunRequest{
+			Branch:    job.Branch,
+			CheckName: "ci/config",
+			Status:    model.CheckRunFailed,
+			Sequence:  &job.Sequence,
+		})
+		return fail(fmt.Sprintf("validate secrets allowlist: %v", err))
+	}
+
+	// 3. Resolve any per-check repo secrets into plaintext via the docstore
+	// reveal endpoint. fetchSecrets returns (nil, nil, nil) when no checks
+	// declare a secrets: block, so this is a no-op for jobs that don't use
+	// repo secrets. Populates cfg.UserSecrets for phase 5 (BuildKit wiring).
+	resolvedSecrets, missingSecrets, err := fetchSecrets(ctx, httpClient, docstoreURL, job.Repo, requestToken, cfg)
+	if err != nil {
+		return fail(fmt.Sprintf("fetch secrets: %v", err))
+	}
+	if len(missingSecrets) > 0 {
+		slog.Warn("some repo secrets are not configured",
+			"job_id", job.ID, "repo", job.Repo, "missing", missingSecrets)
+	}
+	cfg.UserSecrets = resolvedSecrets
+
+	// 4. Obtain a presigned archive URL for BuildKit to fetch the source.
 	archiveURL, archiveChecksum, err := getPresignedArchiveURL(ctx, docstoreURL, job.Repo, requestToken)
 	if err != nil {
 		return fail(fmt.Sprintf("get presigned archive URL: %v", err))
 	}
 
-	// 3. Mark each check as pending (in parallel).
+	// 5. Mark each check as pending (in parallel).
 	var pendingWg sync.WaitGroup
 	for _, check := range cfg.Checks {
 		pendingWg.Add(1)
@@ -583,7 +610,7 @@ func runJob(
 	}
 	pendingWg.Wait()
 
-	// 4. Execute all checks.
+	// 6. Execute all checks.
 	// Set runtime fields on cfg (not from ci.yaml).
 	cfg.CacheRef = cacheRef
 	cfg.DockerConfigDir = dockerConfigDir
@@ -595,7 +622,7 @@ func runJob(
 		return fail(fmt.Sprintf("executor: %v", err))
 	}
 
-	// 5. Upload logs and post results.
+	// 7. Upload logs and post results.
 	overallStatus := "passed"
 	var firstLogURL *string
 	for _, result := range results {
