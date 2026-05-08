@@ -4153,22 +4153,22 @@ func TestSafeRedirect(t *testing.T) {
 		want  string
 	}{
 		// valid relative paths pass through unchanged
-		{"", "/ui/"},
-		{"/ui/", "/ui/"},
+		{"", "/"},
+		{"/", "/"},
 		{"/ui/repos/acme/foo", "/ui/repos/acme/foo"},
 		{"/some/path?q=1", "/some/path?q=1"},
 		// absolute URLs must be rejected
-		{"https://evil.com", "/ui/"},
-		{"http://evil.com/path", "/ui/"},
-		{"ftp://evil.com", "/ui/"},
+		{"https://evil.com", "/"},
+		{"http://evil.com/path", "/"},
+		{"ftp://evil.com", "/"},
 		// protocol-relative URLs must be rejected
-		{"//evil.com", "/ui/"},
-		{"//evil.com/path", "/ui/"},
+		{"//evil.com", "/"},
+		{"//evil.com/path", "/"},
 		// URL-containing paths must be rejected
-		{"/path?next=https://evil.com", "/ui/"},
+		{"/path?next=https://evil.com", "/"},
 		// missing leading slash
-		{"evil.com", "/ui/"},
-		{"relative/path", "/ui/"},
+		{"evil.com", "/"},
+		{"relative/path", "/"},
 	}
 	for _, tc := range cases {
 		got := safeRedirect(tc.input)
@@ -4328,7 +4328,7 @@ func TestHandleAuthLogin_SanitizesRedirectParam(t *testing.T) {
 	for _, c := range w.Result().Cookies() {
 		if c.Name == oauthStateCookieName {
 			parts := strings.SplitN(c.Value, "|", 2)
-			if len(parts) == 2 && parts[1] != "/ui/" {
+			if len(parts) == 2 && parts[1] != "/" {
 				t.Errorf("expected redirect sanitized to /ui/, got %q", parts[1])
 			}
 			return
@@ -4426,7 +4426,7 @@ func TestHandleAuthLogout(t *testing.T) {
 		t.Fatalf("expected 302, got %d", w.Code)
 	}
 	loc := w.Header().Get("Location")
-	if loc != "/ui/" {
+	if loc != "/" {
 		t.Errorf("expected redirect to /ui/, got %q", loc)
 	}
 	// Session cookie must be cleared (MaxAge=-1)

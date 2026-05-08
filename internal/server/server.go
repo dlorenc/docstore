@@ -382,9 +382,6 @@ func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore Wri
 	outer.HandleFunc("GET /auth/login", s.handleAuthLogin)
 	outer.HandleFunc("GET /auth/callback", s.handleAuthCallback)
 	outer.HandleFunc("GET /auth/logout", s.handleAuthLogout)
-	outer.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/ui/", http.StatusFound)
-	})
 	if s.metrics != nil {
 		outer.Handle("GET /metrics", s.metrics.Handler())
 	}
@@ -893,10 +890,10 @@ func (s *server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 
 // safeRedirect validates that redirect is a safe relative path.
 // It must start with "/" and must not be a protocol-relative URL ("//...")
-// or contain "://" (absolute URL). Returns "/ui/" if the value is invalid.
+// or contain "://" (absolute URL). Returns "/" if the value is invalid.
 func safeRedirect(redirect string) string {
 	if redirect == "" || !strings.HasPrefix(redirect, "/") || strings.HasPrefix(redirect, "//") || strings.Contains(redirect, "://") {
-		return "/ui/"
+		return "/"
 	}
 	return redirect
 }
@@ -911,7 +908,7 @@ func (s *server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true,
 		Secure:   isSecureRequest(r),
 	})
-	http.Redirect(w, r, "/ui/", http.StatusFound)
+	http.Redirect(w, r, "/", http.StatusFound)
 }
 
 // isSecureRequest returns true if the request was made over HTTPS, checking
