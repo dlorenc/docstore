@@ -221,7 +221,7 @@ func NewWithPresign(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, 
 	devIdentity, bootstrapAdmin, oauthClientID, oauthClientSecret string,
 	jobStore jobTokenStore, archiveHMACSecret []byte, archiveBaseURL string) http.Handler {
 	return NewWithOIDC(writeStore, database, bs, broker,
-		devIdentity, bootstrapAdmin, oauthClientID, oauthClientSecret,
+		devIdentity, bootstrapAdmin, oauthClientID, oauthClientSecret, "",
 		jobStore, archiveHMACSecret, archiveBaseURL,
 		"", "", "", nil, nil, nil, nil)
 }
@@ -241,7 +241,7 @@ func NewWithPresign(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, 
 // reg is the Prometheus registry used to instrument HTTP and domain metrics; nil
 // disables instrumentation entirely (no /metrics endpoint, no middleware).
 func NewWithOIDC(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, broker *events.Broker,
-	devIdentity, bootstrapAdmin, oauthClientID, oauthClientSecret string,
+	devIdentity, bootstrapAdmin, oauthClientID, oauthClientSecret, oauthCLIClientID string,
 	jobStore jobTokenStore, archiveHMACSecret []byte, archiveBaseURL string,
 	oidcJWKSURL, oidcAudience, oidcIssuer string, ls logstore.LogStore, sessionSecret []byte,
 	secretsSvc secrets.Service, reg *metrics.Registry) http.Handler {
@@ -252,6 +252,7 @@ func NewWithOIDC(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, bro
 		broker:            broker,
 		globalAdmin:       bootstrapAdmin,
 		oauthClientID:     oauthClientID,
+		oauthCLIClientID:  oauthCLIClientID,
 		oauthClientSecret: oauthClientSecret,
 		sessionSecret:     sessionSecret,
 		archiveHMACSecret: archiveHMACSecret,
@@ -267,7 +268,7 @@ func NewWithOIDC(writeStore WriteStore, database *sql.DB, bs blob.BlobStore, bro
 	if oidcJWKSURL != "" {
 		s.oidcKeyCache = newKeyCacheForURL(oidcJWKSURL)
 	}
-	if oauthClientID != "" {
+	if oauthClientID != "" || oauthCLIClientID != "" {
 		s.googleKeyCache = newKeyCacheForURL(googleJWKURL)
 	}
 	if writeStore != nil {
@@ -457,7 +458,16 @@ func (s *server) buildHandler(devIdentity, bootstrapAdmin string, writeStore Wri
 	if writeStore != nil {
 		routed = RBACMiddleware(writeStore, bootstrapAdmin)(inner)
 	}
-	authHandler := GoogleAuthMiddleware(devIdentity, s.oauthClientID, s.sessionSecret)(routed)
+	// Build the audience list: include the web client ID and, if configured,
+	// the CLI Desktop client ID so both sources of bearer tokens are accepted.
+	var googleAudiences []string
+	if s.oauthClientID != "" {
+		googleAudiences = append(googleAudiences, s.oauthClientID)
+	}
+	if s.oauthCLIClientID != "" {
+		googleAudiences = append(googleAudiences, s.oauthCLIClientID)
+	}
+	authHandler := GoogleAuthMiddleware(devIdentity, googleAudiences, s.sessionSecret)(routed)
 
 	// Wrap the auth handler: intercept presign, HMAC-signed archive, and job
 	// OIDC token requests before Google ID token validation. Everything else falls through
@@ -593,10 +603,15 @@ type server struct {
 	// globalAdmin is the identity that may manage global resources like
 	// event subscriptions. Corresponds to the --bootstrap-admin flag.
 	globalAdmin string
-	// oauthClientID is the Google OAuth 2.0 client ID. Advertised via
+	// oauthClientID is the Google OAuth 2.0 Web client ID. Advertised via
 	// /.well-known/ds-config so CLI tools can perform the OAuth flow.
-	// Also used to validate the audience claim of Google ID tokens.
+	// Also used to validate the audience claim of Google ID tokens from web sessions.
 	oauthClientID string
+	// oauthCLIClientID is an additional OAuth 2.0 client ID (Desktop app) accepted
+	// for bearer token audience validation. CLI tools obtain tokens using the Desktop
+	// OAuth client, which embeds a different client_id in the audience claim.
+	// When non-empty, both oauthClientID and oauthCLIClientID are accepted.
+	oauthCLIClientID string
 	// oauthClientSecret is the Google OAuth 2.0 client secret used by
 	// the server-side /auth/callback handler to exchange authorization codes.
 	oauthClientSecret string
@@ -848,7 +863,7 @@ func (s *server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate the ID token and extract email.
-	email, err := validateGoogleIDToken(idToken, s.googleKeyCache.get, s.oauthClientID)
+	email, err := validateGoogleIDToken(idToken, s.googleKeyCache.get, []string{s.oauthClientID})
 	if err != nil {
 		slog.Warn("oauth id_token invalid", "error", err)
 		http.Error(w, "invalid id token", http.StatusUnauthorized)

@@ -32,8 +32,9 @@ import (
 func main() {
 	devIdentity := flag.String("dev-identity", "", "bypass Google ID token validation and use this identity (local dev/testing only)")
 	bootstrapAdmin := flag.String("bootstrap-admin", "", "identity granted admin access to repos with no admin assigned yet")
-	oauthClientID := flag.String("oauth-client-id", "", "Google OAuth 2.0 client ID advertised via /.well-known/ds-config (overrides OAUTH_CLIENT_ID env var)")
+	oauthClientID := flag.String("oauth-client-id", "", "Google OAuth 2.0 Web client ID advertised via /.well-known/ds-config (overrides OAUTH_CLIENT_ID env var)")
 	oauthClientSecret := flag.String("oauth-client-secret", "", "Google OAuth 2.0 client secret for the web OAuth callback handler (overrides OAUTH_CLIENT_SECRET env var)")
+	oauthCLIClientID := flag.String("oauth-cli-client-id", "", "Google OAuth 2.0 Desktop client ID for CLI bearer token audience validation (overrides OAUTH_CLI_CLIENT_ID env var)")
 	sessionSecretB64 := flag.String("session-secret", "", "base64-encoded HMAC secret for signing session cookies (overrides SESSION_SECRET env var)")
 	flag.Parse()
 
@@ -68,6 +69,9 @@ func main() {
 	}
 	if *oauthClientSecret == "" {
 		*oauthClientSecret = os.Getenv("OAUTH_CLIENT_SECRET")
+	}
+	if *oauthCLIClientID == "" {
+		*oauthCLIClientID = os.Getenv("OAUTH_CLI_CLIENT_ID")
 	}
 	if *sessionSecretB64 == "" {
 		*sessionSecretB64 = os.Getenv("SESSION_SECRET")
@@ -264,7 +268,7 @@ func main() {
 	}
 
 	srv := server.NewWithOIDC(commitStore, database, bs, broker,
-		*devIdentity, *bootstrapAdmin, *oauthClientID, *oauthClientSecret,
+		*devIdentity, *bootstrapAdmin, *oauthClientID, *oauthClientSecret, *oauthCLIClientID,
 		jobStore, archiveHMACSecret, archiveBaseURL,
 		oidcJWKSURL, oidcAudience, oidcIssuer, ls, sessionSecret,
 		secretsSvc, metricsReg)

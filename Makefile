@@ -3,8 +3,10 @@
 BINARY := docstore
 BUILD_DIR := bin
 DEFAULT_REMOTE ?= https://docstore.dev
-# OAuth client ID for docstore.dev (public — Desktop app clients are distributed openly).
-OAUTH_CLIENT_ID ?= 320310132788-md94jtp0d9fdcdlq2quma4mcpr0ul1qr.apps.googleusercontent.com
+# OAuth Web client ID for the server — used by the server OAuth callback and for Bearer token audience validation.
+OAUTH_CLIENT_ID ?= 320310132788-54g71elkoe3f6h5ljfb1u1kj7cmjnbau.apps.googleusercontent.com
+# OAuth Desktop client ID for the CLI binary — Desktop app clients are distributed openly.
+OAUTH_CLI_CLIENT_ID ?= 320310132788-md94jtp0d9fdcdlq2quma4mcpr0ul1qr.apps.googleusercontent.com
 # OAuth client secret — do NOT commit. Set via env var or GitHub Actions secret.
 # Local builds: make build-ds OAUTH_CLIENT_SECRET=<secret>
 # CI builds: injected from the OAUTH_CLIENT_SECRET Actions secret.
@@ -14,7 +16,7 @@ build:
 	go build -o $(BUILD_DIR)/$(BINARY) ./cmd/docstore
 
 build-ds:
-	go build -ldflags "-X main.defaultRemote=$(DEFAULT_REMOTE) -X main.defaultOAuthClientID=$(OAUTH_CLIENT_ID) -X main.defaultOAuthClientSecret=$(OAUTH_CLIENT_SECRET)" -o $(BUILD_DIR)/ds ./cmd/ds
+	go build -ldflags "-X main.defaultRemote=$(DEFAULT_REMOTE) -X main.defaultOAuthClientID=$(OAUTH_CLI_CLIENT_ID) -X main.defaultOAuthClientSecret=$(OAUTH_CLIENT_SECRET)" -o $(BUILD_DIR)/ds ./cmd/ds
 
 test:
 	go test ./...
