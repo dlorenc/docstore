@@ -730,7 +730,7 @@ func TestGoogleAuthMiddleware_UIPathRedirectsToLogin(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusFound {
-		t.Fatalf("expected 302 redirect for /ui/ path, got %d", rec.Code)
+		t.Fatalf("expected 302 redirect for browser request, got %d", rec.Code)
 	}
 	loc := rec.Header().Get("Location")
 	if !strings.HasPrefix(loc, "/auth/login") {
