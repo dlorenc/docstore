@@ -37,6 +37,19 @@ import (
 type Config struct {
 	Checks []Check `json:"checks" yaml:"checks"`
 
+	// Env holds top-level environment variables applied to every check.
+	// Per-check Env entries override these. Values are part of the BuildKit
+	// cache key — a churning value (timestamp, run ID) will bust the cache.
+	// User-supplied; the reserved-prefix policy in ValidateEnv prevents
+	// collisions with auto-injected DOCSTORE_* vars and the CI key.
+	Env map[string]string `json:"env,omitempty" yaml:"env,omitempty"`
+
+	// AutoEnv holds docstore-injected environment variables (CI=true and
+	// DOCSTORE_*) populated by the worker / `ds ci run` from job and trigger
+	// metadata. Applied with higher precedence than user Env so its values
+	// cannot be silently overridden. Not parsed from ci.yaml; runtime-only.
+	AutoEnv map[string]string `json:"-" yaml:"-"`
+
 	// CacheRef is an optional BuildKit registry cache reference of the form
 	// "host/org/repo:tag". When set, cache is exported to and imported from
 	// this OCI reference using the registry backend with insecure (HTTP) mode.
@@ -78,12 +91,13 @@ type Config struct {
 
 // Check is a single CI check configuration.
 type Check struct {
-	Name    string          `json:"name"  yaml:"name"`
-	Image   string          `json:"image" yaml:"image"`
-	Steps   []string        `json:"steps" yaml:"steps"`
-	If      string          `json:"if,omitempty"      yaml:"if,omitempty"`      // expression; empty = always run
-	Needs   []string        `json:"needs,omitempty"   yaml:"needs,omitempty"`   // parsed but not yet implemented
-	Secrets []SecretRequest `json:"secrets,omitempty" yaml:"secrets,omitempty"` // per-check secrets allowlist
+	Name    string            `json:"name"  yaml:"name"`
+	Image   string            `json:"image" yaml:"image"`
+	Steps   []string          `json:"steps" yaml:"steps"`
+	If      string            `json:"if,omitempty"      yaml:"if,omitempty"`      // expression; empty = always run
+	Needs   []string          `json:"needs,omitempty"   yaml:"needs,omitempty"`   // parsed but not yet implemented
+	Secrets []SecretRequest   `json:"secrets,omitempty" yaml:"secrets,omitempty"` // per-check secrets allowlist
+	Env     map[string]string `json:"env,omitempty"     yaml:"env,omitempty"`     // per-check env, overrides Config.Env
 }
 
 // SecretRequest is one entry in a check's secrets: allowlist.
@@ -195,6 +209,118 @@ func validateSecretName(kind, name string) error {
 		return fmt.Errorf("%s %q must not use reserved prefix %q", kind, name, reservedSecretPrefix)
 	}
 	return nil
+}
+
+// envNameRE matches POSIX env-var-shaped keys: letter or underscore start,
+// followed by letters / digits / underscores. Looser than secretNameRE because
+// real-world tooling commonly uses lowercase env (e.g. npm_config_*, http_proxy).
+var envNameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// reservedEnvPrefix and reservedEnvKey carve out the namespace docstore
+// auto-injects into every check. ValidateEnv rejects user attempts to set
+// these so an auto-injected value can never be silently shadowed.
+const (
+	reservedEnvPrefix = "DOCSTORE_"
+	reservedEnvKey    = "CI"
+)
+
+// ValidateEnv returns an error if cfg.Env or any check.Env declares a key with
+// an invalid shape, the reserved DOCSTORE_ prefix, or the reserved CI key.
+// AutoEnv is exempt — it is populated by docstore itself, not the user.
+//
+// All problems across all scopes are aggregated via errors.Join so a single
+// invocation surfaces every issue, not just the first.
+func ValidateEnv(cfg *Config) error {
+	if cfg == nil {
+		return nil
+	}
+	var errs []error
+	for k := range cfg.Env {
+		if err := validateEnvKey(k); err != nil {
+			errs = append(errs, fmt.Errorf("top-level env: %w", err))
+		}
+	}
+	for _, check := range cfg.Checks {
+		for k := range check.Env {
+			if err := validateEnvKey(k); err != nil {
+				errs = append(errs, fmt.Errorf("check %q env: %w", check.Name, err))
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func validateEnvKey(name string) error {
+	if name == "" {
+		return fmt.Errorf("env key must not be empty")
+	}
+	if !envNameRE.MatchString(name) {
+		return fmt.Errorf("env key %q must match %s", name, envNameRE.String())
+	}
+	upper := strings.ToUpper(name)
+	if upper == reservedEnvKey {
+		return fmt.Errorf("env key %q is reserved (auto-injected by docstore)", name)
+	}
+	if strings.HasPrefix(upper, reservedEnvPrefix) {
+		return fmt.Errorf("env key %q must not use reserved prefix %q", name, reservedEnvPrefix)
+	}
+	return nil
+}
+
+// AutoEnvMetadata carries the run-scoped values that callers (worker and
+// `ds ci run`) feed into BuildAutoEnv. Empty fields are simply omitted from
+// the resulting map so callers can pass partial metadata in local-dev contexts.
+type AutoEnvMetadata struct {
+	RunID      string // job ID; "local" for ds ci run
+	Repo       string // org/repo
+	Branch     string
+	Sequence   int64 // 0 = omit (ds ci run has no sequence)
+	Event      string
+	BaseBranch string
+	ProposalID string
+}
+
+// BuildAutoEnv composes the docstore-managed env map applied to every check.
+// CI=true is always present; the rest follow the truthiness of meta fields.
+// DOCSTORE_CHECK_NAME is NOT set here — it depends on the check and is added
+// inside runCheck.
+func BuildAutoEnv(meta AutoEnvMetadata) map[string]string {
+	out := map[string]string{"CI": "true"}
+	if meta.RunID != "" {
+		out["DOCSTORE_RUN_ID"] = meta.RunID
+	}
+	if meta.Repo != "" {
+		out["DOCSTORE_REPO"] = meta.Repo
+	}
+	if meta.Branch != "" {
+		out["DOCSTORE_BRANCH"] = meta.Branch
+	}
+	if meta.Sequence > 0 {
+		out["DOCSTORE_SEQUENCE"] = fmt.Sprintf("%d", meta.Sequence)
+	}
+	if meta.Event != "" {
+		out["DOCSTORE_EVENT"] = meta.Event
+	}
+	if meta.BaseBranch != "" {
+		out["DOCSTORE_BASE_BRANCH"] = meta.BaseBranch
+	}
+	if meta.ProposalID != "" {
+		out["DOCSTORE_PROPOSAL_ID"] = meta.ProposalID
+	}
+	return out
+}
+
+// mergeEnv composes the final env map for a single check, applying precedence:
+// top-level user env, then per-check user env, then auto-injected docstore vars
+// (which are immune to user shadowing because validation rejects their keys),
+// then DOCSTORE_CHECK_NAME for the check itself.
+func mergeEnv(top, perCheck, auto map[string]string, checkName string) map[string]string {
+	out := make(map[string]string, len(top)+len(perCheck)+len(auto)+1)
+	maps.Copy(out, top)
+	maps.Copy(out, perCheck)
+	maps.Copy(out, auto)
+	out["DOCSTORE_CHECK_NAME"] = checkName
+	return out
 }
 
 // buildSecretMap composes the BuildKit secrets map for one check session.
@@ -313,7 +439,8 @@ func (e *Executor) Run(ctx context.Context, source string, cfg Config, triggerCt
 					}
 				}
 			}()
-			results[j] = e.runCheck(ctx, source, check, cfg.CacheRef, cfg.DockerConfigDir, cfg.ArchiveChecksum, cfg.OIDCRequestToken, cfg.OIDCRequestURL, cfg.UserSecrets)
+			env := mergeEnv(cfg.Env, check.Env, cfg.AutoEnv, check.Name)
+			results[j] = e.runCheck(ctx, source, check, cfg.CacheRef, cfg.DockerConfigDir, cfg.ArchiveChecksum, cfg.OIDCRequestToken, cfg.OIDCRequestURL, cfg.UserSecrets, env)
 		})
 	}
 	wg.Wait()
@@ -335,7 +462,10 @@ func (e *Executor) Close() error {
 // job; entries are exposed to a step only if the check's Secrets allowlist
 // includes that LocalName. Like OIDC secrets these are mounted via BuildKit's
 // secrets provider and are NOT part of the cache key.
-func (e *Executor) runCheck(ctx context.Context, source string, check Check, cacheRef, dockerConfigDir, archiveChecksum, oidcToken, oidcURL string, userSecrets map[string][]byte) CheckResult {
+// env is the fully-merged map for this check (top-level + per-check + auto-injected
+// + DOCSTORE_CHECK_NAME) and is applied AFTER image defaults so user values win.
+// Unlike secrets, env values ARE part of the BuildKit cache key.
+func (e *Executor) runCheck(ctx context.Context, source string, check Check, cacheRef, dockerConfigDir, archiveChecksum, oidcToken, oidcURL string, userSecrets map[string][]byte, env map[string]string) CheckResult {
 	isHTTP := strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://")
 	isLocal := source != "" && !isHTTP
 
@@ -464,6 +594,15 @@ func (e *Executor) runCheck(ctx context.Context, source string, check Check, cac
 		// share the host network namespace and can reach dockerd via TCP.
 		// DOCKER_HOST is cache-stable (same value every run) so env var is fine here.
 		envOpts = append(envOpts, llb.AddEnv("DOCKER_HOST", "tcp://localhost:2375"))
+
+		// Apply user + auto-injected env. Iterate over sorted keys so the LLB
+		// definition is deterministic — BuildKit hashes RunOption order into
+		// the cache key, so map iteration order would otherwise produce a
+		// different digest on every run and silently bust the cache.
+		envKeys := slices.Sorted(maps.Keys(env))
+		for _, k := range envKeys {
+			envOpts = append(envOpts, llb.AddEnv(k, env[k]))
+		}
 
 		// Build the source mount based on the source type:
 		//   HTTP(S) URL → BuildKit fetches the tar directly; busybox extracts it to /src.

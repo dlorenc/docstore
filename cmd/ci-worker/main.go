@@ -572,6 +572,33 @@ func runJob(
 		return fail(fmt.Sprintf("validate secrets allowlist: %v", err))
 	}
 
+	// 2b. Validate user-supplied env: keys must be POSIX-shaped and must not
+	// collide with the reserved DOCSTORE_ prefix or the auto-injected CI key.
+	// Done before populating AutoEnv so a user attempt to set a reserved key
+	// surfaces as a clear validation error rather than a silent overwrite.
+	if err := executor.ValidateEnv(cfg); err != nil {
+		_ = postCheckRun(ctx, httpClient, docstoreURL, job.Repo, requestToken, model.CreateCheckRunRequest{
+			Branch:    job.Branch,
+			CheckName: "ci/config",
+			Status:    model.CheckRunFailed,
+			Sequence:  &job.Sequence,
+		})
+		return fail(fmt.Sprintf("validate env: %v", err))
+	}
+
+	// 2c. Populate auto-injected env from job + trigger metadata. AutoEnv has
+	// higher precedence than user Env in mergeEnv, so these values are immune
+	// to user shadowing even if validation is later bypassed.
+	cfg.AutoEnv = executor.BuildAutoEnv(executor.AutoEnvMetadata{
+		RunID:      job.ID,
+		Repo:       job.Repo,
+		Branch:     job.Branch,
+		Sequence:   job.Sequence,
+		Event:      triggerCtx.Type,
+		BaseBranch: triggerCtx.BaseBranch,
+		ProposalID: triggerCtx.ProposalID,
+	})
+
 	// 3. Resolve any per-check repo secrets into plaintext via the docstore
 	// reveal endpoint. fetchSecrets returns (nil, nil, nil) when no checks
 	// declare a secrets: block, so this is a no-op for jobs that don't use
