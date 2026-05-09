@@ -228,6 +228,9 @@ For each check (run in parallel via goroutines):
 The CI configuration file lives at `.docstore/ci.yaml` on `main`. Example:
 
 ```yaml
+env:
+  GOFLAGS: -mod=readonly
+
 checks:
   - name: ci/build
     image: golang:1.25
@@ -236,8 +239,10 @@ checks:
 
   - name: ci/test
     image: golang:1.25
+    env:
+      GO_TEST_TIMEOUT: 5m
     steps:
-      - go test ./...
+      - go test -timeout $GO_TEST_TIMEOUT ./...
 
   - name: ci/vet
     image: golang:1.25
@@ -251,6 +256,8 @@ checks:
 - `checks[].name` — Check name reported to docstore (e.g. `ci/build`). Must be unique within the file.
 - `checks[].image` — OCI image to use as the build environment. The image is pulled by buildkitd.
 - `checks[].steps` — Shell commands run in sequence inside the image with the source mounted at `/src`. Each step is executed as `sh -c <step>`. Steps within a check run sequentially; file mutations in `/src` persist between steps.
+- `checks[].env` — Map of environment variables exposed to every step in this check. Overrides top-level `env` for the same key.
+- `env` — Map of environment variables applied to every check. See [Environment variables](#environment-variables) below for precedence and naming rules.
 
 ### Notes
 
@@ -259,6 +266,44 @@ checks:
 - A check fails if any step exits non-zero.
 - `DOCKER_HOST=tcp://localhost:2375` is injected automatically, so check steps can run `docker build`, `docker push`, etc. The dockerd is running in the same Kata VM.
 - `DOCSTORE_OIDC_REQUEST_TOKEN` and `DOCSTORE_OIDC_REQUEST_URL` are injected into each check's environment so steps can themselves obtain OIDC tokens if needed.
+
+### Environment variables
+
+User-defined env vars can be set at two scopes:
+
+- Top-level `env:` applies to every check.
+- `checks[].env:` applies only to that check, and overrides the top-level value when keys collide.
+
+Precedence (lowest to highest, last writer wins):
+
+1. Image defaults (`PATH`, etc. resolved from the OCI image config).
+2. `DOCKER_HOST` (hard-coded so docker steps work out of the box).
+3. Top-level `env:`.
+4. `checks[].env:`.
+5. Auto-injected docstore vars (below) — these cannot be overridden by user env.
+
+Auto-injected per check:
+
+| Variable | Value |
+|---|---|
+| `CI` | `true` |
+| `DOCSTORE_RUN_ID` | CI job ID (or `local` under `ds ci run`) |
+| `DOCSTORE_REPO` | `org/repo` |
+| `DOCSTORE_BRANCH` | branch under test |
+| `DOCSTORE_SEQUENCE` | head sequence at enqueue time |
+| `DOCSTORE_EVENT` | trigger type: `push`, `proposal`, `proposal_synchronized`, `manual`, `schedule` |
+| `DOCSTORE_BASE_BRANCH` | proposal target branch (proposals only) |
+| `DOCSTORE_PROPOSAL_ID` | proposal ID (proposals only) |
+| `DOCSTORE_CHECK_NAME` | the running check's `name` |
+
+Naming rules for user env keys:
+
+- Must match `^[A-Za-z_][A-Za-z0-9_]*$` (POSIX env var shape; mixed case allowed).
+- Must not start with `DOCSTORE_` or be `CI` (case-insensitive). Both are reserved for auto-injection; conflicts are rejected at config load with a clear error.
+
+Cache behavior — important:
+
+Unlike `secrets:` (mounted via BuildKit secret mounts and **not** part of the cache key), `env:` values **are** part of the BuildKit cache key. A churning value such as a build timestamp or run ID will bust the cache on every run. For values that should not affect caching, either pass them through `secrets:` or export them inside the step itself (`steps: ["FOO=$(date) make build"]`) so they live in the shell environment instead of the BuildKit DAG.
 
 ## ci_jobs table
 

@@ -78,6 +78,20 @@ func (a *App) CIRun(checkFilter, trigger, baseBranch, buildkitAddr string) error
 		BaseBranch: baseBranch,
 	}
 
+	// 5b. Validate user-supplied env and seed AutoEnv with local stubs. The
+	// worker would set these from job metadata; locally we synthesize sensible
+	// values so checks can still rely on CI=true and DOCSTORE_BRANCH/EVENT.
+	if err := executor.ValidateEnv(&cfg); err != nil {
+		return fmt.Errorf("validate env: %w", err)
+	}
+	cfg.AutoEnv = executor.BuildAutoEnv(executor.AutoEnvMetadata{
+		RunID:      "local",
+		Repo:       "local",
+		Branch:     branch,
+		Event:      trigger,
+		BaseBranch: baseBranch,
+	})
+
 	// 6. Print header.
 	n := len(cfg.Checks)
 	word := "checks"
