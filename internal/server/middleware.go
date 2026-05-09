@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"crypto"
 	"crypto/ecdsa"
@@ -12,7 +11,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"math/big"
 	"net/http"
@@ -254,14 +252,7 @@ func roleAllows(role model.RoleType, method, subPath string, r *http.Request) bo
 
 	// POST /commit — writer+.
 	if method == http.MethodPost && subPath == "commit" {
-		if role != model.RoleWriter && role != model.RoleMaintainer && role != model.RoleAdmin {
-			return false
-		}
-		// Writers may not commit directly to main.
-		if role == model.RoleWriter && commitTargetsMain(r) {
-			return false
-		}
-		return true
+		return role == model.RoleWriter || role == model.RoleMaintainer || role == model.RoleAdmin
 	}
 
 	// POST /review — writer+.
@@ -281,11 +272,6 @@ func roleAllows(role model.RoleType, method, subPath string, r *http.Request) bo
 
 	// POST /check — writer+.
 	if method == http.MethodPost && subPath == "check" {
-		return role == model.RoleWriter || role == model.RoleMaintainer || role == model.RoleAdmin
-	}
-
-	// POST /review — writer+.
-	if method == http.MethodPost && subPath == "review" {
 		return role == model.RoleWriter || role == model.RoleMaintainer || role == model.RoleAdmin
 	}
 
@@ -353,28 +339,6 @@ func roleAllows(role model.RoleType, method, subPath string, r *http.Request) bo
 	}
 
 	return false
-}
-
-// commitTargetsMain peeks at the JSON request body to see whether the commit
-// is targeting the "main" branch. It replaces r.Body so the handler can still
-// read it.
-func commitTargetsMain(r *http.Request) bool {
-	if r.Body == nil {
-		return false
-	}
-	raw, err := io.ReadAll(r.Body)
-	r.Body.Close()
-	r.Body = io.NopCloser(bytes.NewReader(raw))
-	if err != nil {
-		return false
-	}
-	var req struct {
-		Branch string `json:"branch"`
-	}
-	if err := json.Unmarshal(raw, &req); err != nil {
-		return false
-	}
-	return req.Branch == "main"
 }
 
 // --- Job OIDC token middleware ---
