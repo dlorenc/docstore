@@ -10,7 +10,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -299,19 +298,6 @@ func TestRBACMiddleware_WriterCanCommitToBranch(t *testing.T) {
 	rec := rbacDo(t, h, http.MethodPost, "/repos/myrepo/myrepo/-/commit", `{"branch":"feature/work","message":"m","files":[]}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
-	}
-}
-
-func TestRBACMiddleware_WriterCannotCommitToMain(t *testing.T) {
-	store := &mockRoleStore{
-		getRoleFn: func(_ context.Context, repo, identity string) (*model.Role, error) {
-			return &model.Role{Identity: identity, Role: model.RoleWriter}, nil
-		},
-	}
-	h := rbacTestServer(store, "", "bob@example.com")
-	rec := rbacDo(t, h, http.MethodPost, "/repos/myrepo/myrepo/-/commit", `{"branch":"main","message":"m","files":[]}`)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d", rec.Code)
 	}
 }
 
@@ -1076,81 +1062,6 @@ func TestJobTokenMiddleware_WrongIssuer(t *testing.T) {
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 for wrong issuer, got %d", rec.Code)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// commitTargetsMain tests
-// ---------------------------------------------------------------------------
-
-func TestCommitTargetsMain_NilBody(t *testing.T) {
-	req := httptest.NewRequest(http.MethodPost, "/commit", nil)
-	req.Body = nil
-	if commitTargetsMain(req) {
-		t.Error("nil body should return false")
-	}
-}
-
-func TestCommitTargetsMain_EmptyBranchField(t *testing.T) {
-	req := httptest.NewRequest(http.MethodPost, "/commit", bytes.NewReader([]byte(`{}`)))
-	if commitTargetsMain(req) {
-		t.Error("missing branch field should return false")
-	}
-}
-
-func TestCommitTargetsMain_MalformedJSON(t *testing.T) {
-	bodies := []string{
-		`{"branch": `, // truncated
-		`not json at all`,
-		`{"branch":`,
-	}
-	for _, body := range bodies {
-		req := httptest.NewRequest(http.MethodPost, "/commit", bytes.NewReader([]byte(body)))
-		if commitTargetsMain(req) {
-			t.Errorf("body=%q: malformed JSON should return false", body)
-		}
-	}
-}
-
-func TestCommitTargetsMain_NonMainBranch(t *testing.T) {
-	bodies := []string{
-		`{"branch":"feature/work"}`,
-		`{"branch":""}`,
-		`{"branch":"Main"}`, // case-sensitive
-		`{}`,
-	}
-	for _, body := range bodies {
-		req := httptest.NewRequest(http.MethodPost, "/commit", bytes.NewReader([]byte(body)))
-		if commitTargetsMain(req) {
-			t.Errorf("body=%q: should return false for non-main branch", body)
-		}
-	}
-}
-
-func TestCommitTargetsMain_MainBranch(t *testing.T) {
-	body := `{"branch":"main","message":"m","files":[]}`
-	req := httptest.NewRequest(http.MethodPost, "/commit", bytes.NewReader([]byte(body)))
-	if !commitTargetsMain(req) {
-		t.Error("expected true for branch=main")
-	}
-}
-
-func TestCommitTargetsMain_BodyRestoredAfterRead(t *testing.T) {
-	// Verify that commitTargetsMain restores the body so downstream handlers
-	// can still read the full original content.
-	originalBody := `{"branch":"main","message":"a commit","files":[]}`
-	req := httptest.NewRequest(http.MethodPost, "/commit", bytes.NewReader([]byte(originalBody)))
-
-	if !commitTargetsMain(req) {
-		t.Error("expected true for branch=main")
-	}
-
-	remaining, err := io.ReadAll(req.Body)
-	if err != nil {
-		t.Fatalf("read body after commitTargetsMain: %v", err)
-	}
-	if string(remaining) != originalBody {
-		t.Errorf("body not restored: got %q, want %q", string(remaining), originalBody)
 	}
 }
 

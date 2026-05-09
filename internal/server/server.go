@@ -681,6 +681,11 @@ func (s *server) handleCommit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "branch is required")
 		return
 	}
+	// Writers may not commit directly to main; maintainers and admins may.
+	if RoleFromContext(r.Context()) == model.RoleWriter && req.Branch == "main" {
+		writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, "forbidden")
+		return
+	}
 	if len(req.Files) == 0 {
 		writeError(w, http.StatusBadRequest, "at least one file is required")
 		return

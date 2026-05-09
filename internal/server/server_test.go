@@ -776,6 +776,36 @@ func TestHandleCommit_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestHandleCommit_WriterCannotCommitToMain(t *testing.T) {
+	// Writer role is enforced at the handler level: writers may not commit
+	// to "main" directly. Maintainers and admins may.
+	store := &mockStore{
+		getRoleFn: func(_ context.Context, repo, identity string) (*model.Role, error) {
+			return &model.Role{Identity: identity, Role: model.RoleWriter}, nil
+		},
+		commitFn: func(ctx context.Context, req model.CommitRequest) (*model.CommitResponse, error) {
+			t.Fatal("store.Commit should not be called for writer+main")
+			return nil, nil
+		},
+	}
+	// Empty bootstrapAdmin so getRoleFn is used rather than bootstrap path.
+	srv := New(store, nil, devID, "")
+
+	body, _ := json.Marshal(model.CommitRequest{
+		Branch:  "main",
+		Files:   []model.FileChange{{Path: "hello.txt", Content: []byte("hello")}},
+		Message: "direct commit to main",
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/repos/default/default/-/commit", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
 // --- POST /repos/default/branch tests ---
 
 func TestHandleCreateBranch_Success(t *testing.T) {
