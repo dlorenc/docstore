@@ -65,13 +65,7 @@ func (s *server) handleCreateRelease(w http.ResponseWriter, r *http.Request) {
 	createdBy := IdentityFromContext(r.Context())
 	rel, err := s.commitStore.CreateRelease(r.Context(), repo, req.Name, sequence, req.Body, createdBy)
 	if err != nil {
-		switch {
-		case errors.Is(err, db.ErrReleaseExists):
-			writeAPIError(w, ErrCodeConflict, http.StatusConflict, "release already exists")
-		default:
-			slog.Error("internal error", "op", "create_release", "repo", repo, "error", err)
-			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
-		}
+		writeDBError(w, "create_release", repo, err)
 		return
 	}
 
@@ -123,13 +117,7 @@ func (s *server) handleGetRelease(w http.ResponseWriter, r *http.Request) {
 
 	rel, err := s.commitStore.GetRelease(r.Context(), repo, releaseName)
 	if err != nil {
-		switch {
-		case errors.Is(err, db.ErrReleaseNotFound):
-			writeAPIError(w, ErrCodeReleaseNotFound, http.StatusNotFound, "release not found")
-		default:
-			slog.Error("internal error", "op", "get_release", "repo", repo, "release", releaseName, "error", err)
-			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
-		}
+		writeDBError(w, "get_release", repo, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, rel)
@@ -144,13 +132,7 @@ func (s *server) handleDeleteRelease(w http.ResponseWriter, r *http.Request) {
 	releaseName := r.PathValue("release")
 
 	if err := s.commitStore.DeleteRelease(r.Context(), repo, releaseName); err != nil {
-		switch {
-		case errors.Is(err, db.ErrReleaseNotFound):
-			writeAPIError(w, ErrCodeReleaseNotFound, http.StatusNotFound, "release not found")
-		default:
-			slog.Error("internal error", "op", "delete_release", "repo", repo, "release", releaseName, "error", err)
-			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
-		}
+		writeDBError(w, "delete_release", repo, err)
 		return
 	}
 

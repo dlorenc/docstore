@@ -706,15 +706,7 @@ func (s *server) handleCommit(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := s.svc.Commit(r.Context(), identity, req)
 	if err != nil {
-		switch {
-		case errors.Is(err, db.ErrBranchNotFound):
-			writeAPIError(w, ErrCodeBranchNotFound, http.StatusNotFound, "branch not found")
-		case errors.Is(err, db.ErrBranchNotActive):
-			writeAPIError(w, ErrCodeBranchNotActive, http.StatusConflict, "branch is not active")
-		default:
-			slog.Error("internal error", "op", "commit", "repo", repo, "error", err)
-			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
-		}
+		writeDBError(w, "commit", repo, err)
 		return
 	}
 

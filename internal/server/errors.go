@@ -2,8 +2,12 @@ package server
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
+
+	"github.com/dlorenc/docstore/internal/db"
 )
 
 // ErrorCode is a machine-readable code included in every API error response.
@@ -71,6 +75,65 @@ func (e APIError) write(w http.ResponseWriter) {
 // Prefer this over writeError when a domain-specific code is available.
 func writeAPIError(w http.ResponseWriter, code ErrorCode, status int, msg string) {
 	APIError{Code: code, Message: msg, Status: status}.write(w)
+}
+
+// writeDBError maps known db sentinel errors to typed API error responses.
+// For unrecognised errors it logs at Error level and writes HTTP 500.
+// The op and repo parameters are used only in the slog record for the default case.
+func writeDBError(w http.ResponseWriter, op, repo string, err error) {
+	switch {
+	case errors.Is(err, db.ErrBranchNotFound):
+		writeAPIError(w, ErrCodeBranchNotFound, http.StatusNotFound, "branch not found")
+	case errors.Is(err, db.ErrBranchNotActive):
+		writeAPIError(w, ErrCodeBranchNotActive, http.StatusConflict, "branch is not active")
+	case errors.Is(err, db.ErrBranchExists):
+		writeAPIError(w, ErrCodeBranchExists, http.StatusConflict, "branch already exists")
+	case errors.Is(err, db.ErrBranchDraft):
+		writeAPIError(w, ErrCodeBranchDraft, http.StatusConflict, "branch is in draft state")
+	case errors.Is(err, db.ErrRepoNotFound):
+		writeAPIError(w, ErrCodeRepoNotFound, http.StatusNotFound, "repo not found")
+	case errors.Is(err, db.ErrRepoExists):
+		writeAPIError(w, ErrCodeRepoExists, http.StatusConflict, "repo already exists")
+	case errors.Is(err, db.ErrOrgNotFound):
+		writeAPIError(w, ErrCodeOrgNotFound, http.StatusNotFound, "org not found")
+	case errors.Is(err, db.ErrOrgExists):
+		writeAPIError(w, ErrCodeOrgExists, http.StatusConflict, "org already exists")
+	case errors.Is(err, db.ErrOrgHasRepos):
+		writeAPIError(w, ErrCodeConflict, http.StatusConflict, "org has repos; delete them first")
+	case errors.Is(err, db.ErrOrgMemberNotFound):
+		writeAPIError(w, ErrCodeNotFound, http.StatusNotFound, "member not found")
+	case errors.Is(err, db.ErrRoleNotFound):
+		writeAPIError(w, ErrCodeRoleNotFound, http.StatusNotFound, "role not found")
+	case errors.Is(err, db.ErrInviteNotFound):
+		writeAPIError(w, ErrCodeInviteNotFound, http.StatusNotFound, "invite not found")
+	case errors.Is(err, db.ErrInviteExpired):
+		writeAPIError(w, ErrCodeGone, http.StatusGone, "invite expired")
+	case errors.Is(err, db.ErrInviteAlreadyAccepted):
+		writeAPIError(w, ErrCodeConflict, http.StatusConflict, "invite already accepted")
+	case errors.Is(err, db.ErrEmailMismatch):
+		writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, "identity does not match invite email")
+	case errors.Is(err, db.ErrReleaseNotFound):
+		writeAPIError(w, ErrCodeReleaseNotFound, http.StatusNotFound, "release not found")
+	case errors.Is(err, db.ErrReleaseExists):
+		writeAPIError(w, ErrCodeConflict, http.StatusConflict, "release already exists")
+	case errors.Is(err, db.ErrSelfApproval):
+		writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, "reviewer cannot approve their own commits")
+	case errors.Is(err, db.ErrCommentNotFound):
+		writeAPIError(w, ErrCodeCommentNotFound, http.StatusNotFound, "comment not found")
+	case errors.Is(err, db.ErrProposalNotFound):
+		writeAPIError(w, ErrCodeProposalNotFound, http.StatusNotFound, "proposal not found")
+	case errors.Is(err, db.ErrProposalExists):
+		writeAPIError(w, ErrCodeProposalExists, http.StatusConflict, "branch already has an open proposal")
+	case errors.Is(err, db.ErrSubscriptionNotFound):
+		writeAPIError(w, ErrCodeSubscriptionNotFound, http.StatusNotFound, "subscription not found")
+	case errors.Is(err, db.ErrIssueNotFound):
+		writeAPIError(w, ErrCodeIssueNotFound, http.StatusNotFound, "issue not found")
+	case errors.Is(err, db.ErrIssueCommentNotFound):
+		writeAPIError(w, ErrCodeCommentNotFound, http.StatusNotFound, "comment not found")
+	default:
+		slog.Error("internal error", "op", op, "repo", repo, "error", err)
+		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
+	}
 }
 
 // statusToCode maps an HTTP status to a generic ErrorCode.

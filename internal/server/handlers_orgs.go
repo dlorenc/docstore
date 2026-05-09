@@ -38,13 +38,7 @@ func (s *server) handleCreateOrg(w http.ResponseWriter, r *http.Request) {
 	identity := IdentityFromContext(r.Context())
 	org, err := s.svc.CreateOrg(r.Context(), identity, req.Name)
 	if err != nil {
-		switch {
-		case errors.Is(err, db.ErrOrgExists):
-			writeAPIError(w, ErrCodeOrgExists, http.StatusConflict, "org already exists")
-		default:
-			slog.Error("internal error", "op", "create_org", "org", req.Name, "error", err)
-			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
-		}
+		writeDBError(w, "create_org", req.Name, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, org)
@@ -69,13 +63,7 @@ func (s *server) handleGetOrg(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("org")
 	org, err := s.commitStore.GetOrg(r.Context(), name)
 	if err != nil {
-		switch {
-		case errors.Is(err, db.ErrOrgNotFound):
-			writeAPIError(w, ErrCodeOrgNotFound, http.StatusNotFound, "org not found")
-		default:
-			slog.Error("internal error", "op", "get_org", "org", name, "error", err)
-			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
-		}
+		writeDBError(w, "get_org", name, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, org)
@@ -86,15 +74,7 @@ func (s *server) handleDeleteOrg(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("org")
 	err := s.commitStore.DeleteOrg(r.Context(), name)
 	if err != nil {
-		switch {
-		case errors.Is(err, db.ErrOrgNotFound):
-			writeAPIError(w, ErrCodeOrgNotFound, http.StatusNotFound, "org not found")
-		case errors.Is(err, db.ErrOrgHasRepos):
-			writeAPIError(w, ErrCodeConflict, http.StatusConflict, "org has repos; delete them first")
-		default:
-			slog.Error("internal error", "op", "delete_org", "org", name, "error", err)
-			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
-		}
+		writeDBError(w, "delete_org", name, err)
 		return
 	}
 	s.emit(r.Context(), evtypes.OrgDeleted{Org: name, DeletedBy: IdentityFromContext(r.Context())})
@@ -255,13 +235,7 @@ func (s *server) handleRemoveOrgMember(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.commitStore.RemoveOrgMember(r.Context(), org, identity); err != nil {
-		switch {
-		case errors.Is(err, db.ErrOrgMemberNotFound):
-			writeAPIError(w, ErrCodeNotFound, http.StatusNotFound, "member not found")
-		default:
-			slog.Error("internal error", "op", "remove_org_member", "org", org, "identity", identity, "error", err)
-			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
-		}
+		writeDBError(w, "remove_org_member", org, err)
 		return
 	}
 
@@ -377,19 +351,7 @@ func (s *server) handleAcceptInvite(w http.ResponseWriter, r *http.Request) {
 	identity := IdentityFromContext(r.Context())
 
 	if err := s.commitStore.AcceptInvite(r.Context(), org, token, identity); err != nil {
-		switch {
-		case errors.Is(err, db.ErrInviteNotFound):
-			writeAPIError(w, ErrCodeInviteNotFound, http.StatusNotFound, "invite not found")
-		case errors.Is(err, db.ErrInviteExpired):
-			writeAPIError(w, ErrCodeGone, http.StatusGone, "invite expired")
-		case errors.Is(err, db.ErrInviteAlreadyAccepted):
-			writeAPIError(w, ErrCodeConflict, http.StatusConflict, "invite already accepted")
-		case errors.Is(err, db.ErrEmailMismatch):
-			writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, "identity does not match invite email")
-		default:
-			slog.Error("internal error", "op", "accept_invite", "org", org, "error", err)
-			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
-		}
+		writeDBError(w, "accept_invite", org, err)
 		return
 	}
 
@@ -416,13 +378,7 @@ func (s *server) handleRevokeInvite(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.commitStore.RevokeInvite(r.Context(), org, inviteID); err != nil {
-		switch {
-		case errors.Is(err, db.ErrInviteNotFound):
-			writeAPIError(w, ErrCodeInviteNotFound, http.StatusNotFound, "invite not found")
-		default:
-			slog.Error("internal error", "op", "revoke_invite", "org", org, "invite_id", inviteID, "error", err)
-			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
-		}
+		writeDBError(w, "revoke_invite", org, err)
 		return
 	}
 

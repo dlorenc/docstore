@@ -112,12 +112,7 @@ func (s *server) handleGetIssue(w http.ResponseWriter, r *http.Request) {
 
 	iss, err := s.commitStore.GetIssue(r.Context(), repo, number)
 	if err != nil {
-		if errors.Is(err, db.ErrIssueNotFound) {
-			writeAPIError(w, ErrCodeIssueNotFound, http.StatusNotFound, "issue not found")
-		} else {
-			slog.Error("internal error", "op", "get_issue", "repo", repo, "error", err)
-			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
-		}
+		writeDBError(w, "get_issue", repo, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, iss)
@@ -150,14 +145,10 @@ func (s *server) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	iss, err := s.svc.UpdateIssue(r.Context(), identity, role, repo, number, req.Title, req.Body, labelsPtr)
 	if err != nil {
-		switch {
-		case errors.Is(err, service.ErrForbidden):
+		if errors.Is(err, service.ErrForbidden) {
 			writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, err.Error())
-		case errors.Is(err, db.ErrIssueNotFound):
-			writeAPIError(w, ErrCodeIssueNotFound, http.StatusNotFound, "issue not found")
-		default:
-			slog.Error("internal error", "op", "update_issue", "repo", repo, "error", err)
-			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
+		} else {
+			writeDBError(w, "update_issue", repo, err)
 		}
 		return
 	}
@@ -205,11 +196,8 @@ func (s *server) handleCloseIssue(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, err.Error())
 		case errors.Is(err, service.ErrConflict):
 			writeAPIError(w, ErrCodeConflict, http.StatusConflict, err.Error())
-		case errors.Is(err, db.ErrIssueNotFound):
-			writeAPIError(w, ErrCodeIssueNotFound, http.StatusNotFound, "issue not found")
 		default:
-			slog.Error("internal error", "op", "close_issue", "repo", repo, "error", err)
-			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
+			writeDBError(w, "close_issue", repo, err)
 		}
 		return
 	}
@@ -239,11 +227,8 @@ func (s *server) handleReopenIssue(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, err.Error())
 		case errors.Is(err, service.ErrConflict):
 			writeAPIError(w, ErrCodeConflict, http.StatusConflict, err.Error())
-		case errors.Is(err, db.ErrIssueNotFound):
-			writeAPIError(w, ErrCodeIssueNotFound, http.StatusNotFound, "issue not found")
 		default:
-			slog.Error("internal error", "op", "reopen_issue", "repo", repo, "error", err)
-			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
+			writeDBError(w, "reopen_issue", repo, err)
 		}
 		return
 	}
@@ -300,12 +285,7 @@ func (s *server) handleCreateIssueComment(w http.ResponseWriter, r *http.Request
 	identity := IdentityFromContext(r.Context())
 	c, err := s.svc.CreateIssueComment(r.Context(), identity, repo, number, req.Body)
 	if err != nil {
-		if errors.Is(err, db.ErrIssueNotFound) {
-			writeAPIError(w, ErrCodeIssueNotFound, http.StatusNotFound, "issue not found")
-		} else {
-			slog.Error("internal error", "op", "create_issue_comment", "repo", repo, "error", err)
-			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
-		}
+		writeDBError(w, "create_issue_comment", repo, err)
 		return
 	}
 
@@ -340,14 +320,10 @@ func (s *server) handleUpdateIssueComment(w http.ResponseWriter, r *http.Request
 
 	c, err := s.svc.UpdateIssueComment(r.Context(), identity, role, repo, number, commentID, req.Body)
 	if err != nil {
-		switch {
-		case errors.Is(err, service.ErrForbidden):
+		if errors.Is(err, service.ErrForbidden) {
 			writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, err.Error())
-		case errors.Is(err, db.ErrIssueCommentNotFound):
-			writeAPIError(w, ErrCodeCommentNotFound, http.StatusNotFound, "comment not found")
-		default:
-			slog.Error("internal error", "op", "update_issue_comment", "repo", repo, "error", err)
-			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
+		} else {
+			writeDBError(w, "update_issue_comment", repo, err)
 		}
 		return
 	}
@@ -372,14 +348,10 @@ func (s *server) handleDeleteIssueComment(w http.ResponseWriter, r *http.Request
 	role := RoleFromContext(r.Context())
 
 	if err := s.svc.DeleteIssueComment(r.Context(), identity, role, repo, commentID); err != nil {
-		switch {
-		case errors.Is(err, service.ErrForbidden):
+		if errors.Is(err, service.ErrForbidden) {
 			writeAPIError(w, ErrCodeForbidden, http.StatusForbidden, err.Error())
-		case errors.Is(err, db.ErrIssueCommentNotFound):
-			writeAPIError(w, ErrCodeCommentNotFound, http.StatusNotFound, "comment not found")
-		default:
-			slog.Error("internal error", "op", "delete_issue_comment", "repo", repo, "error", err)
-			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
+		} else {
+			writeDBError(w, "delete_issue_comment", repo, err)
 		}
 		return
 	}
