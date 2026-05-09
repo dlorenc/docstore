@@ -61,6 +61,32 @@ func fetchVersionContentHash(ctx context.Context, tx *sql.Tx, versionID *string)
 	return hash, nil
 }
 
+// batchFetchVersionContentHashes fetches content_hash for multiple version_ids in one query.
+// Returns a map of version_id → content_hash. Version IDs not found in documents are absent
+// from the map (deleted files should be excluded from the input or handled by the caller).
+func batchFetchVersionContentHashes(ctx context.Context, tx *sql.Tx, versionIDs []string) (map[string]string, error) {
+	if len(versionIDs) == 0 {
+		return map[string]string{}, nil
+	}
+	rows, err := tx.QueryContext(ctx,
+		"SELECT version_id::text, content_hash FROM documents WHERE version_id = ANY($1)",
+		pq.Array(versionIDs),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("batch fetch content hashes: %w", err)
+	}
+	defer rows.Close()
+	result := make(map[string]string, len(versionIDs))
+	for rows.Next() {
+		var vid, contentHash string
+		if err := rows.Scan(&vid, &contentHash); err != nil {
+			return nil, fmt.Errorf("scan content hash: %w", err)
+		}
+		result[vid] = contentHash
+	}
+	return result, rows.Err()
+}
+
 // updateCommitHash stores the given hash on the commits row identified by repo+seq.
 func updateCommitHash(ctx context.Context, tx *sql.Tx, repo string, seq int64, hash string) error {
 	_, err := tx.ExecContext(ctx,
@@ -714,11 +740,21 @@ func (s *Store) Merge(ctx context.Context, req model.MergeRequest) (*model.Merge
 		if err != nil {
 			return err
 		}
+		mergeVIDs := make([]string, 0, len(branchChanges))
+		for _, versionID := range branchChanges {
+			if versionID != nil {
+				mergeVIDs = append(mergeVIDs, *versionID)
+			}
+		}
+		mergeContentHashes, err := batchFetchVersionContentHashes(ctx, tx, mergeVIDs)
+		if err != nil {
+			return err
+		}
 		hashFiles := make([]hash.File, 0, len(branchChanges))
 		for path, versionID := range branchChanges {
-			contentHash, err := fetchVersionContentHash(ctx, tx, versionID)
-			if err != nil {
-				return err
+			var contentHash string
+			if versionID != nil {
+				contentHash = mergeContentHashes[*versionID]
 			}
 			hashFiles = append(hashFiles, hash.File{Path: path, ContentHash: contentHash})
 		}
@@ -836,6 +872,20 @@ func (s *Store) Rebase(ctx context.Context, req model.RebaseRequest) (*model.Reb
 			return fmt.Errorf("branch commit groups: %w", err)
 		}
 
+		// Batch-fetch all content hashes needed for the rebase before the replay loop.
+		rebaseVIDs := make([]string, 0)
+		for _, g := range groups {
+			for _, f := range g.files {
+				if f.versionID != nil {
+					rebaseVIDs = append(rebaseVIDs, *f.versionID)
+				}
+			}
+		}
+		rebaseContentHashes, err := batchFetchVersionContentHashes(ctx, tx, rebaseVIDs)
+		if err != nil {
+			return fmt.Errorf("batch fetch rebase content hashes: %w", err)
+		}
+
 		// Replay each group as a new global sequence on the branch.
 		author := req.Author
 		if author == "" {
@@ -871,9 +921,9 @@ func (s *Store) Rebase(ctx context.Context, req model.RebaseRequest) (*model.Reb
 			}
 			hashFiles := make([]hash.File, 0, len(g.files))
 			for _, f := range g.files {
-				contentHash, err := fetchVersionContentHash(ctx, tx, f.versionID)
-				if err != nil {
-					return err
+				var contentHash string
+				if f.versionID != nil {
+					contentHash = rebaseContentHashes[*f.versionID]
 				}
 				hashFiles = append(hashFiles, hash.File{Path: f.path, ContentHash: contentHash})
 			}
