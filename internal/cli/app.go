@@ -1033,7 +1033,9 @@ func (a *App) syncTree(cfg *Config, branch string, skipVerify bool) error {
 	for path := range st.Files {
 		if _, ok := serverFiles[path]; !ok {
 			localPath := filepath.Join(a.Dir, filepath.FromSlash(path))
-			os.Remove(localPath)
+			if err := os.Remove(localPath); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("removing %s: %w", localPath, err)
+			}
 			removed++
 		}
 	}
@@ -1085,7 +1087,10 @@ func (a *App) Merge() error {
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("reading response body: %w", err)
+	}
 
 	if resp.StatusCode == http.StatusConflict {
 		var conflictErr model.MergeConflictError
@@ -1286,7 +1291,10 @@ func (a *App) patchJSON(cfg *Config, urlStr string, body any) (*http.Response, e
 
 // readError extracts an error message from an API error response.
 func (a *App) readError(resp *http.Response) error {
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("server error (status %d)", resp.StatusCode)
+	}
 	var errResp model.ErrorResponse
 	if err := json.Unmarshal(body, &errResp); err == nil && errResp.Error != "" {
 		return fmt.Errorf("server error: %s", errResp.Error)
@@ -1515,7 +1523,10 @@ func (a *App) Rebase() error {
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("reading response body: %w", err)
+	}
 
 	if resp.StatusCode == http.StatusConflict {
 		var conflictErr model.RebaseConflictError
@@ -2088,8 +2099,9 @@ func (a *App) Resolve(path string) error {
 		return err
 	}
 
-	os.Remove(mainConflict)
-	os.Remove(branchConflict)
+	// Best-effort cleanup of conflict files; the commit already succeeded.
+	_ = os.Remove(mainConflict)
+	_ = os.Remove(branchConflict)
 
 	fmt.Fprintf(a.Out, "resolved %s, committed as sequence %d\n", path, commitResp.Sequence)
 	return nil
