@@ -192,24 +192,16 @@ func RBACMiddleware(roles RoleStore, bootstrapAdmin string) func(http.Handler) h
 
 // repoAndSubPath extracts the repo name and sub-path from a /repos/.../-/subpath URL.
 // Returns ("", "") for non-repo paths or bare /repos/:repopath paths with no /-/ separator.
+// Delegates to splitRepoPath for the core parsing logic.
 //
 // Examples:
 //
 //	/repos/acme/myrepo/-/commit  →  ("acme/myrepo", "commit")
 //	/repos/acme/team/sub/-/tree  →  ("acme/team/sub", "tree")
 //	/repos/acme/myrepo            →  ("", "")  — bare repo, no RBAC check needed
-//
-// NOTE: parseRepoPath in handlers.go parses the same "/-/" URL format for routing.
-// Both functions must be kept in sync if the URL structure changes.
 func repoAndSubPath(path string) (repo, subPath string) {
-	const prefix = "/repos/"
-	if !strings.HasPrefix(path, prefix) {
-		return "", ""
-	}
-	rest := path[len(prefix):]
-	repo, subPath, found := strings.Cut(rest, "/-/")
-	if !found {
-		// /repos/:repopath with no /-/ — no sub-path, no RBAC check needed.
+	repo, subPath, ok := splitRepoPath(path)
+	if !ok || subPath == "" {
 		return "", ""
 	}
 	return repo, subPath

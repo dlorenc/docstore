@@ -10,30 +10,14 @@ import (
 )
 
 // parseRepoPath parses a /repos/... URL path into the full repo name and the
-// endpoint string that follows the "/-/" separator.
+// endpoint string that follows the "/-/" separator. Delegates to splitRepoPath.
 //
 //	/repos/acme/myrepo/-/tree        → ("acme/myrepo", "tree", true)
 //	/repos/acme/team/sub/-/commit    → ("acme/team/sub", "commit", true)
 //	/repos/acme/myrepo               → ("acme/myrepo", "", true)  // bare repo
 //	/something/else                  → ("", "", false)
-//
-// NOTE: repoAndSubPath in middleware.go parses the same "/-/" URL format for
-// RBAC purposes. Both functions must be kept in sync if the URL structure changes.
 func parseRepoPath(path string) (repoName, endpoint string, ok bool) {
-	const prefix = "/repos/"
-	if !strings.HasPrefix(path, prefix) {
-		return "", "", false
-	}
-	rest := path[len(prefix):]
-	if rest == "" {
-		return "", "", false
-	}
-	repoName, endpoint, found := strings.Cut(rest, "/-/")
-	if !found {
-		// Bare /repos/:repopath — no endpoint
-		return rest, "", true
-	}
-	return repoName, endpoint, true
+	return splitRepoPath(path)
 }
 
 // handleReposPrefix is the catch-all handler for all /repos/... paths (except

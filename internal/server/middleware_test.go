@@ -1066,8 +1066,50 @@ func TestJobTokenMiddleware_WrongIssuer(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// repoAndSubPath tests
+// URL parsing tests
 // ---------------------------------------------------------------------------
+
+// TestSplitRepoPathConsistency verifies that parseRepoPath and repoAndSubPath
+// agree on the repo name and endpoint for every path that contains a "/-/"
+// separator. Both functions delegate to splitRepoPath, so any divergence would
+// indicate a bug in the wrapper logic.
+func TestSplitRepoPathConsistency(t *testing.T) {
+	paths := []string{
+		"/repos/acme/myrepo/-/tree",
+		"/repos/acme/myrepo/-/commit",
+		"/repos/acme/myrepo/-/branch/feature/with/slashes",
+		"/repos/acme/team/sub/-/tree",
+		"/repos/acme/team/sub/-/roles/bob@example.com",
+		"/repos/org/myrepo/-/branches",
+		// Paths without /-/ — both functions return empty strings for repo/endpoint.
+		"/repos/myrepo",
+		"/repos/org/myrepo",
+		"/healthz",
+		"",
+	}
+	for _, path := range paths {
+		parsedRepo, parsedEndpoint, parsedOK := parseRepoPath(path)
+		rbacRepo, rbacEndpoint := repoAndSubPath(path)
+
+		// For paths with a /-/ separator, both functions must agree on repo and endpoint.
+		if parsedOK && parsedEndpoint != "" {
+			if parsedRepo != rbacRepo {
+				t.Errorf("path=%q: repo mismatch: parseRepoPath=%q repoAndSubPath=%q",
+					path, parsedRepo, rbacRepo)
+			}
+			if parsedEndpoint != rbacEndpoint {
+				t.Errorf("path=%q: endpoint mismatch: parseRepoPath=%q repoAndSubPath=%q",
+					path, parsedEndpoint, rbacEndpoint)
+			}
+		} else {
+			// No /-/ separator: repoAndSubPath must return ("", "").
+			if rbacRepo != "" || rbacEndpoint != "" {
+				t.Errorf("path=%q: repoAndSubPath should return (\"\", \"\") for bare/non-repo path, got (%q, %q)",
+					path, rbacRepo, rbacEndpoint)
+			}
+		}
+	}
+}
 
 func TestRepoAndSubPath(t *testing.T) {
 	tests := []struct {
