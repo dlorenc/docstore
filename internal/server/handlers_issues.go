@@ -64,6 +64,9 @@ func (s *server) handleListIssues(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
 		return
 	}
+	if issues == nil {
+		issues = []model.Issue{}
+	}
 	writeJSON(w, http.StatusOK, model.ListIssuesResponse{Issues: issues})
 }
 
@@ -266,6 +269,9 @@ func (s *server) handleListIssueComments(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
+	if comments == nil {
+		comments = []model.IssueComment{}
+	}
 	writeJSON(w, http.StatusOK, model.ListIssueCommentsResponse{Comments: comments})
 }
 
@@ -398,6 +404,9 @@ func (s *server) handleListIssueRefs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
+	if refs == nil {
+		refs = []model.IssueRef{}
+	}
 	writeJSON(w, http.StatusOK, model.ListIssueRefsResponse{Refs: refs})
 }
 
@@ -459,6 +468,9 @@ func (s *server) handleProposalIssues(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
+	if issues == nil {
+		issues = []model.Issue{}
+	}
 	writeJSON(w, http.StatusOK, model.ListIssuesResponse{Issues: issues})
 }
 
@@ -479,6 +491,9 @@ func (s *server) handleCommitIssues(w http.ResponseWriter, r *http.Request) {
 		slog.Error("internal error", "op", "commit_issues", "repo", repo, "error", err)
 		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
+	}
+	if issues == nil {
+		issues = []model.Issue{}
 	}
 	writeJSON(w, http.StatusOK, model.ListIssuesResponse{Issues: issues})
 }
