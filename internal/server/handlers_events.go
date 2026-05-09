@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dlorenc/docstore/internal/db"
 	"github.com/dlorenc/docstore/internal/model"
 )
 
@@ -124,13 +123,7 @@ func (s *server) handleDeleteSubscription(w http.ResponseWriter, r *http.Request
 	if !isAdmin {
 		sub, err := s.commitStore.GetSubscription(r.Context(), id)
 		if err != nil {
-			switch {
-			case errors.Is(err, db.ErrSubscriptionNotFound):
-				writeAPIError(w, ErrCodeSubscriptionNotFound, http.StatusNotFound, "subscription not found")
-			default:
-				slog.Error("internal error", "op", "get_subscription", "id", id, "error", err)
-				writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
-			}
+			writeDBError(w, "get_subscription", id, err)
 			return
 		}
 		if sub.CreatedBy != identity {
@@ -140,13 +133,7 @@ func (s *server) handleDeleteSubscription(w http.ResponseWriter, r *http.Request
 	}
 
 	if err := s.commitStore.DeleteSubscription(r.Context(), id); err != nil {
-		switch {
-		case errors.Is(err, db.ErrSubscriptionNotFound):
-			writeAPIError(w, ErrCodeSubscriptionNotFound, http.StatusNotFound, "subscription not found")
-		default:
-			slog.Error("internal error", "op", "delete_subscription", "id", id, "error", err)
-			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
-		}
+		writeDBError(w, "delete_subscription", id, err)
 		return
 	}
 
@@ -165,13 +152,7 @@ func (s *server) handleResumeSubscription(w http.ResponseWriter, r *http.Request
 	if !isAdmin {
 		sub, err := s.commitStore.GetSubscription(r.Context(), id)
 		if err != nil {
-			switch {
-			case errors.Is(err, db.ErrSubscriptionNotFound):
-				writeAPIError(w, ErrCodeSubscriptionNotFound, http.StatusNotFound, "subscription not found")
-			default:
-				slog.Error("internal error", "op", "get_subscription", "id", id, "error", err)
-				writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
-			}
+			writeDBError(w, "get_subscription", id, err)
 			return
 		}
 		if sub.CreatedBy != identity {
@@ -181,13 +162,7 @@ func (s *server) handleResumeSubscription(w http.ResponseWriter, r *http.Request
 	}
 
 	if err := s.commitStore.ResumeSubscription(r.Context(), id); err != nil {
-		switch {
-		case errors.Is(err, db.ErrSubscriptionNotFound):
-			writeAPIError(w, ErrCodeSubscriptionNotFound, http.StatusNotFound, "subscription not found")
-		default:
-			slog.Error("internal error", "op", "resume_subscription", "id", id, "error", err)
-			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
-		}
+		writeDBError(w, "resume_subscription", id, err)
 		return
 	}
 

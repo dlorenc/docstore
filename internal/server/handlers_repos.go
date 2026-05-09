@@ -2,7 +2,6 @@ package server
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -42,15 +41,7 @@ func (s *server) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 	identity := IdentityFromContext(r.Context())
 	repo, err := s.svc.CreateRepo(r.Context(), identity, req)
 	if err != nil {
-		switch {
-		case errors.Is(err, db.ErrRepoExists):
-			writeAPIError(w, ErrCodeRepoExists, http.StatusConflict, "repo already exists")
-		case errors.Is(err, db.ErrOrgNotFound):
-			writeAPIError(w, ErrCodeOrgNotFound, http.StatusNotFound, "org not found")
-		default:
-			slog.Error("internal error", "op", "create_repo", "repo", req.Name, "error", err)
-			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
-		}
+		writeDBError(w, "create_repo", req.Name, err)
 		return
 	}
 
@@ -77,13 +68,7 @@ func (s *server) handleGetRepo(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	repo, err := s.commitStore.GetRepo(r.Context(), name)
 	if err != nil {
-		switch {
-		case errors.Is(err, db.ErrRepoNotFound):
-			writeAPIError(w, ErrCodeRepoNotFound, http.StatusNotFound, "repo not found")
-		default:
-			slog.Error("internal error", "op", "get_repo", "repo", name, "error", err)
-			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
-		}
+		writeDBError(w, "get_repo", name, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, repo)
@@ -94,13 +79,7 @@ func (s *server) handleDeleteRepo(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	err := s.commitStore.DeleteRepo(r.Context(), name)
 	if err != nil {
-		switch {
-		case errors.Is(err, db.ErrRepoNotFound):
-			writeAPIError(w, ErrCodeRepoNotFound, http.StatusNotFound, "repo not found")
-		default:
-			slog.Error("internal error", "op", "delete_repo", "repo", name, "error", err)
-			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
-		}
+		writeDBError(w, "delete_repo", name, err)
 		return
 	}
 
@@ -150,13 +129,7 @@ func (s *server) handlePurge(w http.ResponseWriter, r *http.Request) {
 		DryRun:    req.DryRun,
 	})
 	if err != nil {
-		switch {
-		case errors.Is(err, db.ErrRepoNotFound):
-			writeAPIError(w, ErrCodeRepoNotFound, http.StatusNotFound, "repo not found")
-		default:
-			slog.Error("internal error", "op", "purge", "repo", repo, "error", err)
-			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
-		}
+		writeDBError(w, "purge", repo, err)
 		return
 	}
 

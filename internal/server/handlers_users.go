@@ -2,11 +2,9 @@ package server
 
 import (
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"net/http"
 
-	"github.com/dlorenc/docstore/internal/db"
 	evtypes "github.com/dlorenc/docstore/internal/events/types"
 	"github.com/dlorenc/docstore/internal/model"
 )
@@ -81,13 +79,7 @@ func (s *server) handleDeleteRole(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.commitStore.DeleteRole(r.Context(), repo, identity); err != nil {
-		switch {
-		case errors.Is(err, db.ErrRoleNotFound):
-			writeError(w, http.StatusNotFound, "role not found")
-		default:
-			slog.Error("internal error", "op", "delete_role", "repo", repo, "identity", identity, "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
-		}
+		writeDBError(w, "delete_role", repo, err)
 		return
 	}
 

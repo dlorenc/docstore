@@ -1,12 +1,8 @@
 package server
 
 import (
-	"errors"
-	"log/slog"
 	"net/http"
 	"strings"
-
-	"github.com/dlorenc/docstore/internal/db"
 )
 
 // parseRepoPath parses a /repos/... URL path into the full repo name and the
@@ -460,12 +456,7 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 func (s *server) validateRepo(w http.ResponseWriter, r *http.Request, repo string) bool {
 	_, err := s.commitStore.GetRepo(r.Context(), repo)
 	if err != nil {
-		if errors.Is(err, db.ErrRepoNotFound) {
-			writeAPIError(w, ErrCodeRepoNotFound, http.StatusNotFound, "repo not found")
-		} else {
-			slog.Error("internal error", "op", "validate_repo", "repo", repo, "error", err)
-			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "query failed")
-		}
+		writeDBError(w, "validate_repo", repo, err)
 		return false
 	}
 	return true

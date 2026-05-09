@@ -65,15 +65,7 @@ func (s *server) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := s.commitStore.CreateBranch(r.Context(), req)
 	if err != nil {
-		switch {
-		case errors.Is(err, db.ErrBranchExists):
-			writeAPIError(w, ErrCodeBranchExists, http.StatusConflict, "branch already exists")
-		case errors.Is(err, db.ErrRepoNotFound):
-			writeAPIError(w, ErrCodeRepoNotFound, http.StatusNotFound, "repo not found")
-		default:
-			slog.Error("internal error", "op", "create_branch", "repo", repo, "error", err)
-			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
-		}
+		writeDBError(w, "create_branch", repo, err)
 		return
 	}
 
@@ -112,13 +104,7 @@ func (s *server) handleUpdateBranch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.commitStore.UpdateBranchDraft(r.Context(), repo, bname, req.Draft); err != nil {
-		switch {
-		case errors.Is(err, db.ErrBranchNotFound):
-			writeAPIError(w, ErrCodeBranchNotFound, http.StatusNotFound, "branch not found")
-		default:
-			slog.Error("internal error", "op", "update_branch", "repo", repo, "branch", bname, "error", err)
-			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
-		}
+		writeDBError(w, "update_branch", repo, err)
 		return
 	}
 
@@ -146,13 +132,7 @@ func (s *server) handleEnableAutoMerge(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.commitStore.SetBranchAutoMerge(r.Context(), repo, bname, true); err != nil {
-		switch {
-		case errors.Is(err, db.ErrBranchNotFound):
-			writeAPIError(w, ErrCodeBranchNotFound, http.StatusNotFound, "branch not found")
-		default:
-			slog.Error("internal error", "op", "enable_auto_merge", "repo", repo, "branch", bname, "error", err)
-			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
-		}
+		writeDBError(w, "enable_auto_merge", repo, err)
 		return
 	}
 
@@ -181,13 +161,7 @@ func (s *server) handleDisableAutoMerge(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if err := s.commitStore.SetBranchAutoMerge(r.Context(), repo, bname, false); err != nil {
-		switch {
-		case errors.Is(err, db.ErrBranchNotFound):
-			writeAPIError(w, ErrCodeBranchNotFound, http.StatusNotFound, "branch not found")
-		default:
-			slog.Error("internal error", "op", "disable_auto_merge", "repo", repo, "branch", bname, "error", err)
-			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
-		}
+		writeDBError(w, "disable_auto_merge", repo, err)
 		return
 	}
 
@@ -216,15 +190,7 @@ func (s *server) handleDeleteBranch(w http.ResponseWriter, r *http.Request) {
 
 	err := s.commitStore.DeleteBranch(r.Context(), repo, bname)
 	if err != nil {
-		switch {
-		case errors.Is(err, db.ErrBranchNotFound):
-			writeAPIError(w, ErrCodeBranchNotFound, http.StatusNotFound, "branch not found")
-		case errors.Is(err, db.ErrBranchNotActive):
-			writeAPIError(w, ErrCodeBranchNotActive, http.StatusConflict, "branch is already merged or abandoned")
-		default:
-			slog.Error("internal error", "op", "delete_branch", "repo", repo, "branch", bname, "error", err)
-			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
-		}
+		writeDBError(w, "delete_branch", repo, err)
 		return
 	}
 
@@ -346,8 +312,7 @@ func (s *server) handleRebase(w http.ResponseWriter, r *http.Request) {
 
 	resp, conflicts, err := s.commitStore.Rebase(r.Context(), req)
 	if err != nil {
-		switch {
-		case errors.Is(err, db.ErrRebaseConflict):
+		if errors.Is(err, db.ErrRebaseConflict) {
 			slog.Warn("rebase conflict", "repo", repo, "branch", req.Branch, "conflicts", len(conflicts))
 			apiConflicts := make([]model.ConflictEntry, len(conflicts))
 			for i, c := range conflicts {
@@ -358,13 +323,8 @@ func (s *server) handleRebase(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			writeJSON(w, http.StatusConflict, model.RebaseConflictError{Conflicts: apiConflicts})
-		case errors.Is(err, db.ErrBranchNotFound):
-			writeAPIError(w, ErrCodeBranchNotFound, http.StatusNotFound, "branch not found")
-		case errors.Is(err, db.ErrBranchNotActive):
-			writeAPIError(w, ErrCodeBranchNotActive, http.StatusConflict, "branch is not active")
-		default:
-			slog.Error("internal error", "op", "rebase", "repo", repo, "branch", req.Branch, "error", err)
-			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
+		} else {
+			writeDBError(w, "rebase", repo, err)
 		}
 		return
 	}

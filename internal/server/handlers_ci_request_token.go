@@ -126,13 +126,7 @@ func (s *server) handleCICheck(w http.ResponseWriter, r *http.Request) {
 	}
 	cr, err := s.commitStore.CreateCheckRun(r.Context(), repoName, req.Branch, req.CheckName, req.Status, reporter, req.LogURL, req.Sequence, attempt, req.Metadata)
 	if err != nil {
-		switch {
-		case errors.Is(err, db.ErrBranchNotFound):
-			writeAPIError(w, ErrCodeBranchNotFound, http.StatusNotFound, "branch not found")
-		default:
-			slog.Error("internal error", "op", "ci_check", "repo", repoName, "error", err)
-			writeAPIError(w, ErrCodeInternalError, http.StatusInternalServerError, "internal server error")
-		}
+		writeDBError(w, "ci_check", repoName, err)
 		return
 	}
 
